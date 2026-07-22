@@ -1,0 +1,7 @@
+board_manager:
+  additional_urls:
+    - https://espressif.github.io/arduino-esp32/package_esp32_index.json
+directories:
+  data: local_tools/arduino/data
+  downloads: local_tools/arduino/downloads
+  user: local_tools/arduino/user

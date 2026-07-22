@@ -1,0 +1,11 @@
+/build/
+/local_tools/
+/out/
+/tools/arduino-cli/
+/tools/ffmpeg/
+/.tmp/
+*.a
+*.exe
+*.o
+*.obj
+__pycache__/
