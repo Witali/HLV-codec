@@ -11,6 +11,10 @@ constexpr bool kScaleVideoToDisplay = false;
 // cost of reduced colour precision and some additional unpacking work.
 constexpr bool kUseCompactY6U5V5 = true;
 
+// Decode frame N on CPU1 while CPU0 converts and queues frame N-1 to the
+// display. Predictive decoding itself remains ordered between frames.
+constexpr bool kUseDualCorePipeline = true;
+
 // Keep this false while isolating the playback reset caused by DAC DMA.
 // Audio packets remain in the HLV file but are skipped by the player.
 constexpr bool kEnableAudio = false;

@@ -11,12 +11,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # Decode and color conversion benefit from the full ESP32 clock.  Optimize the
 # rest for size to retain internal SRAM and instruction-cache headroom.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-# HLV decode is single-threaded. Running only PRO CPU frees the APP CPU cache
-# bank and scheduler state; RTC fast memory is then safe as an extra 8-bit heap
-# region. Do not enable ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY: byte accesses in
-# that mode are exception-emulated and far too slow for video planes.
-CONFIG_FREERTOS_UNICORE=y
-CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y
+# The optional playback pipeline pins orchestration/rendering to PRO CPU and
+# decoding to APP CPU. RTC fast memory cannot join the heap in dual-core mode.
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
+# Do not enable ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY: byte accesses in that
+# mode are exception-emulated and far too slow for video planes.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
 CONFIG_COMPILER_CXX_EXCEPTIONS=n

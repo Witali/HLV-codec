@@ -15,6 +15,8 @@ DAC GPIO26.
   buffer, then fills eight reusable 7680-byte packet blocks (60 KiB total);
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
+- decodes frame N on CPU1 while CPU0 converts and queues frame N-1 for the
+  display, without copying either compressed packets or YUV frames;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
 - feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
   buffer, so display transfers do not directly clock the sound;
@@ -43,6 +45,23 @@ The current diagnostic build also sets `kEnableAudio = false` in the same
 settings file. This bypasses DAC setup and the FreeRTOS audio queue while
 leaving the audio track in the HLV file untouched, allowing compact video
 playback to be tested independently of the DAC DMA restart fault.
+
+## Dual-core playback mode
+
+`kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
+build. The main task remains pinned to PRO CPU (CPU0) and owns SD reads, RGB565
+conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
+performs ordered HLV decoding. Two one-entry FreeRTOS queues pass a packet
+descriptor to CPU1 and return a frame descriptor to CPU0; pixel data remains
+in the decoder's two existing predictive frame buffers.
+
+HLV P-frames depend on the immediately preceding reconstructed frame and their
+entropy stream is sequential, so two arbitrary frames cannot be safely decoded
+at the same time. Instead, while CPU1 decodes frame N from frame N-1, CPU0 only
+reads frame N-1 for display conversion. Before frame N+1 starts, both actions
+have completed, allowing the old buffer to be reused safely. This overlaps the
+two largest CPU stages while preserving bitstream order and adding no third
+framebuffer. Set the flag to `false` to retain the sequential comparison mode.
 
 ## Segmented ESP32 decoder
 
@@ -96,7 +115,7 @@ constexpr bool kScaleVideoToDisplay = false;
 - `true` stretches each frame to 320x240 using nearest-neighbour sampling and
   transfers the complete display on every frame.
 
-Both modes convert and send four rows at a time and do not allocate a full
+Both modes convert and send 16 rows at a time and do not allocate a full
 RGB framebuffer. The scaling mode adds only coordinate maps and one cached
 RGB row (1760 bytes in the current build).
 

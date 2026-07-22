@@ -13,11 +13,12 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 `sdkconfig.defaults` profile also disables coredumps, the task watchdog,
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
-UART0 at 115200 remains enabled for diagnostics. The single-core configuration
-does not reduce decoder
-parallelism (HLV decoding is sequential); it frees the second cache bank and
-allows the otherwise unused 8 KiB RTC Fast RAM to join the byte-addressable
-heap. Slow exception-emulated byte access to ordinary IRAM stays disabled.
+UART0 at 115200 remains enabled for diagnostics. The default dual-core
+pipeline pins ordered HLV decoding to APP CPU (CPU1), while the main task on
+PRO CPU (CPU0) converts the preceding frame to RGB565 and queues its SPI DMA
+strips. Predictive P-frames are never decoded out of order. Dual-core mode
+cannot add the 8 KiB RTC Fast RAM to the heap. Slow exception-emulated byte
+access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main` and `hlv1` components explicitly use `-O3`.
 
@@ -54,6 +55,8 @@ not written to internal flash.
   reusable 7680-byte packet blocks (60 KiB).
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
+- Scheduling: one 4 KiB CPU1 decoder task and two one-entry queues; only frame
+  descriptors cross cores, so no YUV frame or packet payload is copied.
 - Audio: 4 KiB stream buffer feeding six 256-byte DAC DMA descriptors.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
@@ -61,6 +64,9 @@ Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
 centred presentation or nearest-neighbour scaling to 320x240.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
+`kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
+`true`; set it to `false` to compare against sequential playback without
+changing the HLV file.
 `kEnableAudio` is temporarily `false` in this test build so video playback can
 be checked independently of the DAC DMA fault. The audio track remains in the
 HLV file and is skipped without being copied or queued.

@@ -13,8 +13,10 @@
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include "sdmmc_cmd.h"
 
 #include "board_config.hpp"
@@ -35,6 +37,21 @@ constexpr size_t kAudioStreamBytes = 4096;
 constexpr size_t kAudioWriteBytes = 256;
 constexpr uint32_t kAudioReceiveTimeoutMs = 100;
 constexpr int kAudioWriteTimeoutMs = 100;
+constexpr uint32_t kDecodeWorkerStackBytes = 4096;
+
+static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
+                  !player_settings::kUseDualCorePipeline,
+              "Dual-core playback requires a two-core FreeRTOS build");
+
+struct DecodeRequest {
+    const HLV1Packet *packet;
+};
+
+struct DecodeResult {
+    int result;
+    const HLV1Frame *frame;
+    uint32_t decode_us;
+};
 
 CydDisplay display;
 FILE *video_file = nullptr;
@@ -47,6 +64,7 @@ uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint64_t sd_read_us_total = 0;
 uint32_t sd_read_us_max = 0;
+uint32_t sd_packets_read = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
@@ -64,10 +82,77 @@ volatile bool audio_stop_requested = false;
 bool audio_enabled = false;
 bool audio_started = false;
 volatile uint32_t audio_underruns = 0;
+QueueHandle_t decode_request_queue = nullptr;
+QueueHandle_t decode_result_queue = nullptr;
+TaskHandle_t decode_task_handle = nullptr;
+bool decode_in_flight = false;
+HLV1Frame pending_frame{};
+bool pending_frame_valid = false;
+uint32_t pending_decode_us = 0;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
 int64_t millisNow() { return microsNow() / 1000; }
+
+void decodeTask(void *) {
+    DecodeRequest request{};
+    for (;;) {
+        if (xQueueReceive(decode_request_queue, &request,
+                          portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        DecodeResult result{};
+        const int64_t start = microsNow();
+        result.result = decoder.decode(request.packet, &result.frame);
+        result.decode_us = static_cast<uint32_t>(microsNow() - start);
+        xQueueSend(decode_result_queue, &result, portMAX_DELAY);
+    }
+}
+
+bool startDecodeWorker() {
+    if (!player_settings::kUseDualCorePipeline) {
+        ESP_LOGI(kTag, "Playback pipeline: single-core sequential mode");
+        return true;
+    }
+    if (decode_task_handle) return true;
+    decode_request_queue = xQueueCreate(1, sizeof(DecodeRequest));
+    decode_result_queue = xQueueCreate(1, sizeof(DecodeResult));
+    if (!decode_request_queue || !decode_result_queue) {
+        if (decode_request_queue) vQueueDelete(decode_request_queue);
+        if (decode_result_queue) vQueueDelete(decode_result_queue);
+        decode_request_queue = nullptr;
+        decode_result_queue = nullptr;
+        return false;
+    }
+    if (xTaskCreatePinnedToCore(decodeTask, "hlv-decode",
+                                kDecodeWorkerStackBytes, nullptr, 2,
+                                &decode_task_handle, 1) != pdPASS) {
+        vQueueDelete(decode_request_queue);
+        vQueueDelete(decode_result_queue);
+        decode_request_queue = nullptr;
+        decode_result_queue = nullptr;
+        return false;
+    }
+    ESP_LOGI(kTag,
+             "Playback pipeline: CPU0 SD/render, CPU1 ordered HLV decode");
+    return true;
+}
+
+bool submitDecode(const HLV1Packet *packet) {
+    if (!decode_task_handle || decode_in_flight || !packet) return false;
+    DecodeRequest request{packet};
+    if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
+    decode_in_flight = true;
+    return true;
+}
+
+bool waitDecode(DecodeResult *result) {
+    if (!decode_in_flight || !result) return false;
+    if (xQueueReceive(decode_result_queue, result, portMAX_DELAY) != pdTRUE)
+        return false;
+    decode_in_flight = false;
+    return true;
+}
 
 int clamp8(int value) {
     return value < 0 ? 0 : value > 255 ? 255 : value;
@@ -301,8 +386,8 @@ bool prepareAudio(const HLV1Header &header) {
     }
 
     audio_stop_requested = false;
-    if (xTaskCreate(audioTask, "hlv-audio", 3072, nullptr, 2,
-                    &audio_task_handle) != pdPASS) {
+    if (xTaskCreatePinnedToCore(audioTask, "hlv-audio", 3072, nullptr, 2,
+                                &audio_task_handle, 0) != pdPASS) {
         stopAudio();
         return false;
     }
@@ -351,6 +436,12 @@ void startAudio() {
 }
 
 void closeVideo() {
+    if (decode_in_flight) {
+        DecodeResult ignored{};
+        waitDecode(&ignored);
+    }
+    pending_frame_valid = false;
+    pending_decode_us = 0;
     stopAudio();
     decoder.end();
     if (video_file) {
@@ -427,6 +518,14 @@ bool openVideo() {
              static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockBytes),
              static_cast<unsigned>(decoder.packetCapacity()),
              static_cast<unsigned>(decoder.dmaBlockCount()));
+    // Allocate the large predictive planes and packet blocks before the
+    // worker stack, preserving the largest possible contiguous heap regions.
+    if (!startDecodeWorker()) {
+        showStatus("Dual-core init failed",
+                   "cannot create CPU1 decoder task");
+        closeVideo();
+        return false;
+    }
 
     frame_period_us = static_cast<int64_t>(
         (1000000ULL * sequence_header.fps_den) / sequence_header.fps_num);
@@ -436,6 +535,7 @@ bool openVideo() {
     dropped_deadlines = 0;
     sd_read_us_total = 0;
     sd_read_us_max = 0;
+    sd_packets_read = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
     if (player_settings::kScaleVideoToDisplay) {
@@ -522,21 +622,64 @@ void failPlayback(const char *title, int result) {
     last_retry_ms = millisNow();
 }
 
-void playOneFrame() {
-    HLV1Packet packet{};
+bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
+    waitUntil(next_present_us);
+    if (!decoded_frames) startAudio();
+    const int64_t render_start = microsNow();
+    if (!renderFrame(frame)) return false;
+    const uint32_t render_us =
+        static_cast<uint32_t>(microsNow() - render_start);
+    ++decoded_frames;
+
+    next_present_us += frame_period_us;
+    const int64_t lateness = microsNow() - next_present_us;
+    if (lateness > frame_period_us) {
+        ++dropped_deadlines;
+        next_present_us = microsNow();
+    }
+
+    if ((decoded_frames % 60U) == 0U) {
+        const uint32_t sd_average = sd_packets_read
+                                        ? static_cast<uint32_t>(
+                                              sd_read_us_total /
+                                              sd_packets_read)
+                                        : 0;
+        ESP_LOGI(kTag,
+                 "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
+                 "render_queue=%uus late=%u heap=%u",
+                 decoded_frames, sd_average, sd_read_us_max, decode_us,
+                 render_us, dropped_deadlines,
+                 static_cast<unsigned>(
+                     heap_caps_get_free_size(MALLOC_CAP_8BIT)));
+    }
+    return true;
+}
+
+void readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
-    const int packet_result = decoder.readPacket(video_file, &packet);
+    *result = decoder.readPacket(video_file, packet);
     const uint32_t read_us =
         static_cast<uint32_t>(microsNow() - read_start);
     sd_read_us_total += read_us;
     sd_read_us_max = std::max(sd_read_us_max, read_us);
+    if (*result == HLV1_OK) ++sd_packets_read;
+}
+
+void finishVideoLoop() {
+    finishAudio();
+    waitUntil(next_present_us);
+    ESP_LOGI(kTag, "Loop: %u frames, %u late, %u audio underruns",
+             decoded_frames, dropped_deadlines,
+             static_cast<unsigned>(audio_underruns));
+    if (!openVideo()) last_retry_ms = millisNow();
+}
+
+void playOneFrameSequential() {
+    HLV1Packet packet{};
+    int packet_result = HLV1_OK;
+    readPacket(&packet, &packet_result);
     if (packet_result == HLV1_EOF) {
-        finishAudio();
-        waitUntil(next_present_us);
-        ESP_LOGI(kTag, "Loop: %u frames, %u late, %u audio underruns",
-                 decoded_frames, dropped_deadlines,
-                 static_cast<unsigned>(audio_underruns));
-        if (!openVideo()) last_retry_ms = millisNow();
+        finishVideoLoop();
         return;
     }
     if (packet_result != HLV1_OK) {
@@ -560,34 +703,67 @@ void playOneFrame() {
         return;
     }
 
-    waitUntil(next_present_us);
-    if (!decoded_frames) startAudio();
-    const int64_t render_start = microsNow();
-    if (!renderFrame(frame)) {
+    if (!presentFrame(frame, decode_us)) {
+        failPlayback("Display DMA error", HLV1_ERR_IO);
+    }
+}
+
+void playOneFramePipelined() {
+    HLV1Packet packet{};
+    int packet_result = HLV1_OK;
+    readPacket(&packet, &packet_result);
+    if (packet_result == HLV1_EOF) {
+        if (pending_frame_valid) {
+            const bool rendered =
+                presentFrame(&pending_frame, pending_decode_us);
+            pending_frame_valid = false;
+            if (!rendered) {
+                failPlayback("Display DMA error", HLV1_ERR_IO);
+                return;
+            }
+        }
+        finishVideoLoop();
+        return;
+    }
+    if (packet_result != HLV1_OK) {
+        failPlayback("Packet read error", packet_result);
+        return;
+    }
+    if (!queueAudio(packet)) {
+        hlv1_packet_free(&packet);
+        failPlayback("Audio queue error", HLV1_ERR_IO);
+        return;
+    }
+    if (!submitDecode(&packet)) {
+        hlv1_packet_free(&packet);
+        failPlayback("Decode pipeline error", HLV1_ERR_IO);
+        return;
+    }
+
+    bool rendered = true;
+    if (pending_frame_valid) {
+        rendered = presentFrame(&pending_frame, pending_decode_us);
+        pending_frame_valid = false;
+    }
+
+    DecodeResult result{};
+    const bool received = waitDecode(&result);
+    hlv1_packet_free(&packet);
+    if (!received) {
+        failPlayback("Decode pipeline error", HLV1_ERR_IO);
+        return;
+    }
+    if (!rendered) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    const uint32_t render_us =
-        static_cast<uint32_t>(microsNow() - render_start);
-    ++decoded_frames;
-
-    next_present_us += frame_period_us;
-    const int64_t lateness = microsNow() - next_present_us;
-    if (lateness > frame_period_us) {
-        ++dropped_deadlines;
-        next_present_us = microsNow();
+    if (result.result != HLV1_OK) {
+        failPlayback("Decode error", result.result);
+        return;
     }
-
-    if ((decoded_frames % 60U) == 0U) {
-        ESP_LOGI(kTag,
-                 "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
-                 "render_queue=%uus late=%u heap=%u",
-                 decoded_frames,
-                 static_cast<unsigned>(sd_read_us_total / decoded_frames),
-                 sd_read_us_max, decode_us, render_us, dropped_deadlines,
-                 static_cast<unsigned>(
-                     heap_caps_get_free_size(MALLOC_CAP_8BIT)));
-    }
+    pending_frame = *result.frame;
+    pending_decode_us = result.decode_us;
+    pending_frame_valid = true;
 }
 
 }  // namespace
@@ -611,7 +787,11 @@ extern "C" void app_main(void) {
 
     for (;;) {
         if (video_file && decoder.ready()) {
-            playOneFrame();
+            if (player_settings::kUseDualCorePipeline) {
+                playOneFramePipelined();
+            } else {
+                playOneFrameSequential();
+            }
             continue;
         }
         if (millisNow() - last_retry_ms >= kRetryDelayMs) {
