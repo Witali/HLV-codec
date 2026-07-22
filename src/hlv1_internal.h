@@ -66,6 +66,9 @@ int hlv1_bw_finish(HLV1BitWriter *bw);
 typedef struct HLV1BitReader {
     const uint8_t *ptr;
     const uint8_t *end;
+    const HLV1Packet *packet;
+    size_t next_offset;
+    size_t byte_limit;
     uint64_t cache;
     unsigned bits;
     uint64_t bits_left;
@@ -74,6 +77,7 @@ typedef struct HLV1BitReader {
 
 void hlv1_br_init(HLV1BitReader *br, const uint8_t *data,
                   size_t size, uint32_t valid_bits);
+void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *packet);
 uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count);
 uint32_t hlv1_br_get_ue(HLV1BitReader *br);
 int32_t hlv1_br_get_se(HLV1BitReader *br);

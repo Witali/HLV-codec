@@ -11,8 +11,8 @@ DAC GPIO26.
 - decodes HLV-1 stream versions 1 through 12;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in eight-row strips, without a full RGB framebuffer;
-- reads SD sectors on SPI3/VSPI at 20 MHz using DMA and an aligned 8 KiB
-  read-ahead buffer;
+- reads packet payloads on SPI3/VSPI at 20 MHz directly into eight reusable,
+  DMA-capable 8 KiB blocks;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
 - feeds six 256-sample DMA buffers from a separate 8 KiB FreeRTOS stream
@@ -27,11 +27,34 @@ DMA are active. The 320x180 profile pads internally to 320x192; its two frames
 consume 184,320 bytes. It preserves the official movie resolution and leaves
 30 black rows above and below the picture.
 
+## Segmented ESP32 decoder
+
+The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
+portable predictive decoder first and then allocates an eight-block packet
+pool from internal SRAM. Every block preferentially uses DMA-capable memory;
+if decoder fragmentation exhausts that heap, only the remaining blocks fall
+back to ordinary 8-bit internal SRAM. Its 65,536-byte capacity covers the
+60,538-byte maximum packet in the prepared Big Buck Bunny file without
+requiring one equally large contiguous heap region.
+
+Packet data is read sequentially into the blocks and CRC-32 is updated during
+the read. The bit reader advances to the next block without joining or copying
+the payload. PCM at the packet tail is likewise sent to the FreeRTOS audio
+stream one contiguous span at a time. The blocks are retained for the complete
+playback session, so the frame loop performs no packet `malloc` or `free`.
+The startup log reports the actual direct-DMA block count; the ESP-IDF SD
+driver supplies its DMA-safe fallback for any ordinary internal block.
+
+The ordinary desktop encoder and decoder retain their contiguous packet path.
+The on-disk HLV format is unchanged. A packet larger than 65,536 bytes is
+rejected with an out-of-memory error instead of fragmenting the ESP32 heap.
+
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
 ten-second file. The DAC DMA clock uses APLL rather than frame timing, while
 audio samples are divided among frame packets with rational accounting to
 avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
-container layout.
+container layout. DAC writes use a finite timeout so stopping or reopening a
+video cannot strand an audio task and leak its stack.
 
 ## Display scaling setting
 

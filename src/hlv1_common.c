@@ -49,6 +49,60 @@ uint32_t hlv1_crc32(const uint8_t *data, size_t size) {
     return c ^ 0xFFFFFFFFU;
 }
 
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    for (size_t i = 0; i < size; ++i)
+        crc = crc_table[(crc ^ data[i]) & 0xFFU] ^ (crc >> 8);
+    return crc;
+}
+
+size_t hlv1_packet_payload_span(const HLV1Packet *p, size_t offset,
+                                const uint8_t **data) {
+    if (data) *data = NULL;
+    if (!p || !data || offset >= p->payload_size) return 0;
+    size_t remaining = (size_t)p->payload_size - offset;
+    if (p->payload) {
+        if (p->payload_blocks) return 0;
+        *data = p->payload + offset;
+        return remaining;
+    }
+    if (!p->payload_blocks || !p->payload_block_count ||
+        !p->payload_block_size)
+        return 0;
+    size_t block = offset / p->payload_block_size;
+    size_t within = offset % p->payload_block_size;
+    if (block >= p->payload_block_count || !p->payload_blocks[block]) return 0;
+    *data = p->payload_blocks[block] + within;
+    return HLV1_MIN(remaining, p->payload_block_size - within);
+}
+
+static int packet_storage_valid(const HLV1Packet *p) {
+    if (!p) return 0;
+    if (!p->payload_size)
+        return !(p->payload && p->payload_blocks);
+    size_t offset = 0;
+    while (offset < p->payload_size) {
+        const uint8_t *data;
+        size_t span = hlv1_packet_payload_span(p, offset, &data);
+        if (!span || !data) return 0;
+        offset += span;
+    }
+    return 1;
+}
+
+static uint32_t packet_crc32(const HLV1Packet *p) {
+    crc_init();
+    uint32_t crc = 0xFFFFFFFFU;
+    size_t offset = 0;
+    while (offset < p->payload_size) {
+        const uint8_t *data;
+        size_t span = hlv1_packet_payload_span(p, offset, &data);
+        if (!span) return 0;
+        crc = crc32_update(crc, data, span);
+        offset += span;
+    }
+    return crc ^ 0xFFFFFFFFU;
+}
+
 /* --- Fixed-size container headers -------------------------------------- */
 int hlv1_header_write(FILE *file, const HLV1Header *h) {
     if (!file || !h || !h->width || !h->height || !h->fps_num || !h->fps_den)
@@ -125,7 +179,7 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
 }
 
 int hlv1_packet_write(FILE *file, const HLV1Packet *p) {
-    if (!file || !p || (!p->payload && p->payload_size)) return HLV1_ERR_ARGUMENT;
+    if (!file || !packet_storage_valid(p)) return HLV1_ERR_ARGUMENT;
     uint8_t b[HLV1_FRAME_HEADER_SIZE] = {0};
     memcpy(b, HLV1_FRAME_MAGIC, 4);
     b[4] = p->frame_type;
@@ -134,17 +188,21 @@ int hlv1_packet_write(FILE *file, const HLV1Packet *p) {
     b[7] = p->q_shift;
     hlv1_wr32(b + 8, p->bit_length);
     hlv1_wr32(b + 12, p->payload_size);
-    hlv1_wr32(b + 16, hlv1_crc32(p->payload, p->payload_size));
+    hlv1_wr32(b + 16, packet_crc32(p));
     if (fwrite(b, 1, sizeof b, file) != sizeof b) return HLV1_ERR_IO;
-    if (p->payload_size && fwrite(p->payload, 1, p->payload_size, file) != p->payload_size)
-        return HLV1_ERR_IO;
+    size_t offset = 0;
+    while (offset < p->payload_size) {
+        const uint8_t *data;
+        size_t span = hlv1_packet_payload_span(p, offset, &data);
+        if (!span || fwrite(data, 1, span, file) != span) return HLV1_ERR_IO;
+        offset += span;
+    }
     return HLV1_OK;
 }
 
-int hlv1_packet_read(FILE *file, HLV1Packet *p) {
-    if (!file || !p) return HLV1_ERR_ARGUMENT;
+static int packet_header_read(FILE *file, HLV1Packet *p,
+                              uint32_t *expected_crc) {
     uint8_t b[HLV1_FRAME_HEADER_SIZE];
-    memset(p, 0, sizeof *p);
     size_t got = fread(b, 1, sizeof b, file);
     if (got == 0 && feof(file)) return HLV1_EOF;
     if (got != sizeof b) return HLV1_ERR_IO;
@@ -155,10 +213,20 @@ int hlv1_packet_read(FILE *file, HLV1Packet *p) {
     p->q_shift = b[7];
     p->bit_length = hlv1_rd32(b + 8);
     p->payload_size = hlv1_rd32(b + 12);
-    uint32_t expected_crc = hlv1_rd32(b + 16);
+    *expected_crc = hlv1_rd32(b + 16);
     if (p->frame_type > HLV1_FRAME_P || !p->q_y || !p->q_uv ||
-        p->q_shift > 3 || p->bit_length > p->payload_size * 8ULL || p->payload_size > (1U << 30))
+        p->q_shift > 3 || p->bit_length > p->payload_size * 8ULL ||
+        p->payload_size > (1U << 30))
         return HLV1_ERR_FORMAT;
+    return HLV1_OK;
+}
+
+int hlv1_packet_read(FILE *file, HLV1Packet *p) {
+    if (!file || !p) return HLV1_ERR_ARGUMENT;
+    memset(p, 0, sizeof *p);
+    uint32_t expected_crc;
+    int result = packet_header_read(file, p, &expected_crc);
+    if (result != HLV1_OK) return result;
     if (p->payload_size) {
         p->payload = (uint8_t *)malloc(p->payload_size);
         if (!p->payload) return HLV1_ERR_MEMORY;
@@ -168,6 +236,43 @@ int hlv1_packet_read(FILE *file, HLV1Packet *p) {
         }
     }
     if (hlv1_crc32(p->payload, p->payload_size) != expected_crc) {
+        hlv1_packet_free(p);
+        return HLV1_ERR_CRC;
+    }
+    return HLV1_OK;
+}
+
+int hlv1_packet_read_blocks(FILE *file, HLV1Packet *p,
+                            uint8_t **blocks, size_t block_count,
+                            size_t block_size) {
+    if (!file || !p || !blocks || !block_count || !block_size ||
+        block_count > SIZE_MAX / block_size)
+        return HLV1_ERR_ARGUMENT;
+    memset(p, 0, sizeof *p);
+    uint32_t expected_crc;
+    int result = packet_header_read(file, p, &expected_crc);
+    if (result != HLV1_OK) return result;
+    if (p->payload_size > block_count * block_size) {
+        memset(p, 0, sizeof *p);
+        return HLV1_ERR_MEMORY;
+    }
+    p->payload_blocks = blocks;
+    p->payload_block_count = block_count;
+    p->payload_block_size = block_size;
+    crc_init();
+    uint32_t crc = 0xFFFFFFFFU;
+    size_t offset = 0;
+    while (offset < p->payload_size) {
+        size_t block = offset / block_size;
+        size_t span = HLV1_MIN((size_t)p->payload_size - offset, block_size);
+        if (!blocks[block] || fread(blocks[block], 1, span, file) != span) {
+            hlv1_packet_free(p);
+            return HLV1_ERR_IO;
+        }
+        crc = crc32_update(crc, blocks[block], span);
+        offset += span;
+    }
+    if ((crc ^ 0xFFFFFFFFU) != expected_crc) {
         hlv1_packet_free(p);
         return HLV1_ERR_CRC;
     }
@@ -195,14 +300,14 @@ size_t hlv1_packet_audio_size(const HLV1Packet *p) {
 
 const uint8_t *hlv1_packet_audio_data(const HLV1Packet *p) {
     size_t audio_size = hlv1_packet_audio_size(p);
-    if (!p || !audio_size || !p->payload) return NULL;
+    if (!p || !audio_size || !p->payload || p->payload_blocks) return NULL;
     return p->payload + hlv1_packet_video_payload_size(p);
 }
 
 int hlv1_packet_append_audio(HLV1Packet *p,
                              const uint8_t *samples, size_t size) {
     if (!p || (!samples && size) ||
-        (p->payload_size && !p->payload) ||
+        p->payload_blocks || (p->payload_size && !p->payload) ||
         p->bit_length > (uint64_t)p->payload_size * 8U)
         return HLV1_ERR_ARGUMENT;
     if (!size) return HLV1_OK;
@@ -395,7 +500,18 @@ int hlv1_bw_finish(HLV1BitWriter *bw) {
 
 /* --- Normative MSB-first bit reader ------------------------------------ */
 static void br_refill(HLV1BitReader *br) {
-    while (br->bits <= 56 && br->ptr < br->end) {
+    while (br->bits <= 56) {
+        if (br->ptr == br->end) {
+            if (!br->packet || br->next_offset >= br->byte_limit) break;
+            const uint8_t *data;
+            size_t span = hlv1_packet_payload_span(
+                br->packet, br->next_offset, &data);
+            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
+            if (!span) { br->error = HLV1_ERR_BITSTREAM; break; }
+            br->ptr = data;
+            br->end = data + span;
+            br->next_offset += span;
+        }
         br->cache |= (uint64_t)(*br->ptr++) << (56 - br->bits);
         br->bits += 8;
     }
@@ -406,6 +522,14 @@ void hlv1_br_init(HLV1BitReader *br, const uint8_t *data, size_t size, uint32_t 
     br->ptr = data;
     br->end = data + size;
     br->bits_left = valid_bits;
+    br_refill(br);
+}
+
+void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *p) {
+    memset(br, 0, sizeof *br);
+    br->packet = p;
+    br->byte_limit = hlv1_packet_video_payload_size(p);
+    br->bits_left = p ? p->bit_length : 0;
     br_refill(br);
 }
 

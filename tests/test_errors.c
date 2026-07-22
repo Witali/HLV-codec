@@ -90,6 +90,35 @@ int main(void) {
     CHECK(hlv1_packet_audio_size(&read_packet) == sizeof audio);
     CHECK(!memcmp(hlv1_packet_audio_data(&read_packet), audio, sizeof audio));
     hlv1_packet_free(&read_packet);
+
+    unsigned char block_storage[3][3];
+    unsigned char *blocks[] = {
+        block_storage[0], block_storage[1], block_storage[2]
+    };
+    const unsigned char complete_payload[] = {
+        0x12, 0x34, 0x56, 0x78, 0x00, 0x40, 0x80, 0xC0, 0xFF
+    };
+    rewind(f);
+    CHECK(hlv1_packet_read_blocks(f, &read_packet, blocks, 3, 3) == HLV1_OK);
+    CHECK(read_packet.payload == NULL && read_packet.payload_blocks == blocks);
+    CHECK(hlv1_packet_audio_data(&read_packet) == NULL);
+    for (size_t i = 0; i < sizeof complete_payload; ++i) {
+        const unsigned char *span = NULL;
+        CHECK(hlv1_packet_payload_span(&read_packet, i, &span) != 0);
+        CHECK(span != NULL && *span == complete_payload[i]);
+    }
+    FILE *segmented_copy = tmpfile();
+    CHECK(segmented_copy != NULL);
+    CHECK(hlv1_packet_write(segmented_copy, &read_packet) == HLV1_OK);
+    rewind(segmented_copy);
+    HLV1Packet copied_packet;
+    CHECK(hlv1_packet_read(segmented_copy, &copied_packet) == HLV1_OK);
+    CHECK(copied_packet.payload_size == sizeof complete_payload);
+    CHECK(!memcmp(copied_packet.payload, complete_payload,
+                  sizeof complete_payload));
+    hlv1_packet_free(&copied_packet);
+    hlv1_packet_free(&read_packet);
+    fclose(segmented_copy);
     hlv1_packet_free(&audio_packet);
     fclose(f);
 

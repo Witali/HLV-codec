@@ -110,6 +110,9 @@ typedef struct HLV1Packet {
     uint32_t bit_length;     /**< Number of valid bits in payload. */
     uint32_t payload_size;   /**< Allocated payload bytes. */
     uint8_t *payload;        /**< Owned buffer; release with hlv1_packet_free(). */
+    uint8_t **payload_blocks; /**< Borrowed fixed-size blocks, or NULL. */
+    size_t payload_block_count; /**< Number of pointers in payload_blocks. */
+    size_t payload_block_size;  /**< Capacity of every borrowed block. */
 } HLV1Packet;
 
 /**
@@ -191,13 +194,25 @@ int hlv1_header_write(FILE *file, const HLV1Header *header);
 int hlv1_header_read(FILE *file, HLV1Header *header);
 int hlv1_packet_write(FILE *file, const HLV1Packet *packet);
 int hlv1_packet_read(FILE *file, HLV1Packet *packet);
+/* Read into caller-owned, reusable fixed-size blocks.  Blocks are not freed by
+ * hlv1_packet_free().  This avoids a large contiguous allocation and per-frame
+ * malloc/free on fragmented-memory targets. */
+int hlv1_packet_read_blocks(FILE *file, HLV1Packet *packet,
+                            uint8_t **blocks, size_t block_count,
+                            size_t block_size);
 void hlv1_packet_free(HLV1Packet *packet);
 
 /* Packet payload layout helpers.  Video occupies ceil(bit_length/8) bytes;
  * any remaining bytes are audio for that frame's presentation interval. */
 size_t hlv1_packet_video_payload_size(const HLV1Packet *packet);
 size_t hlv1_packet_audio_size(const HLV1Packet *packet);
+/* Contiguous audio pointer, or NULL for segmented packets.  Use payload_span
+ * to consume a segmented audio tail without copying it. */
 const uint8_t *hlv1_packet_audio_data(const HLV1Packet *packet);
+/* Return the contiguous span beginning at payload offset.  A segmented packet
+ * may require repeated calls; zero means an invalid offset or storage. */
+size_t hlv1_packet_payload_span(const HLV1Packet *packet, size_t offset,
+                                const uint8_t **data);
 int hlv1_packet_append_audio(HLV1Packet *packet,
                              const uint8_t *samples, size_t size);
 
@@ -266,6 +281,12 @@ void hlv1_decoder_destroy(HLV1Decoder *decoder);
 int hlv1_decoder_decode(HLV1Decoder *decoder,
                         const HLV1Packet *packet,
                         const HLV1Frame **frame);
+/* ESP32-style segmented input path.  The packet must have been populated by
+ * hlv1_packet_read_blocks(); decoding semantics and reference state match the
+ * ordinary contiguous decoder. */
+int hlv1_decoder_decode_blocks(HLV1Decoder *decoder,
+                               const HLV1Packet *packet,
+                               const HLV1Frame **frame);
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *decoder);
 
 /** Map the user-facing 1..100 scale to stable v1/v2 quantizer mantissas. */

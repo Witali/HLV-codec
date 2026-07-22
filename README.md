@@ -46,8 +46,10 @@ The CYD2USB firmware reads HLV-1 from a FAT32 microSD card over an independent
 SPI3/VSPI DMA bus, displays it on the 320x240 ST7789 over SPI2 DMA, and plays
 its mono track through DAC GPIO26 DMA and the onboard amplifier. The included
 Big Buck Bunny profile preserves the official 320x180 resolution and centres
-it without scaling. All downloadable tools, board packages and libraries are
-kept under this repository:
+it without scaling. Its ESP32-specific decoder reads packets into a reusable
+8 x 8 KiB DMA block pool, so a frame never needs one large contiguous payload
+allocation. All downloadable tools, board packages and libraries are kept
+under this repository:
 
 ```powershell
 .\scripts\bootstrap.ps1

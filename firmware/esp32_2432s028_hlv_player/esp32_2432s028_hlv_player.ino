@@ -12,6 +12,7 @@
 
 #include <hlv1.h>
 
+#include "HlvEsp32Decoder.hpp"
 #include "LGFX_CYD2USB.hpp"
 #include "PlayerSettings.hpp"
 
@@ -24,10 +25,11 @@ constexpr uint32_t kRetryDelayMs = 2000;
 constexpr size_t kAudioStreamBytes = 8192;
 constexpr size_t kAudioWriteBytes = 256;
 constexpr uint32_t kAudioReceiveTimeoutMs = 100;
+constexpr int kAudioWriteTimeoutMs = 100;
 
 LGFX_CYD2USB display;
 FILE *video_file = nullptr;
-HLV1Decoder *decoder = nullptr;
+HlvEsp32Decoder decoder;
 HLV1Header sequence_header{};
 uint32_t frame_period_us = 0;
 uint32_t next_present_us = 0;
@@ -40,7 +42,6 @@ uint16_t rgb_rows[kScreenWidth * kRowsPerTransfer];
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
-DMA_ATTR uint8_t sd_read_buffer[player_settings::kSdReadBufferBytes];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
@@ -143,7 +144,7 @@ bool mountSdCard() {
         bus.data5_io_num = -1;
         bus.data6_io_num = -1;
         bus.data7_io_num = -1;
-        bus.max_transfer_sz = player_settings::kSdReadBufferBytes;
+        bus.max_transfer_sz = HlvEsp32Decoder::kPacketBlockBytes;
         const esp_err_t bus_result = spi_bus_initialize(
             SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
         if (bus_result != ESP_OK) {
@@ -195,15 +196,22 @@ void audioTask(void *) {
             received = sizeof samples;
             ++audio_underruns;
         }
-        size_t loaded = 0;
-        const esp_err_t result = dac_continuous_write(
-            audio_dac, samples, received, &loaded, -1);
-        if (result != ESP_OK || loaded != received) {
-            Serial.printf("DAC write failed: %d, %u/%u bytes\n",
-                          static_cast<int>(result),
-                          static_cast<unsigned>(loaded),
-                          static_cast<unsigned>(received));
-            break;
+        size_t offset = 0;
+        while (offset < received && !audio_stop_requested) {
+            size_t loaded = 0;
+            const esp_err_t result = dac_continuous_write(
+                audio_dac, samples + offset, received - offset, &loaded,
+                kAudioWriteTimeoutMs);
+            offset += loaded;
+            if (result == ESP_ERR_TIMEOUT) continue;
+            if (result != ESP_OK) {
+                Serial.printf("DAC write failed: %d, %u/%u bytes\n",
+                              static_cast<int>(result),
+                              static_cast<unsigned>(offset),
+                              static_cast<unsigned>(received));
+                audio_stop_requested = true;
+                break;
+            }
         }
     }
     audio_task_handle = nullptr;
@@ -214,10 +222,15 @@ void stopAudio() {
     if (audio_task_handle) {
         audio_stop_requested = true;
         xTaskNotifyGive(audio_task_handle);
-        const uint32_t deadline = millis() + 250;
+        const uint32_t deadline = millis() + 500;
         while (audio_task_handle &&
                static_cast<int32_t>(deadline - millis()) > 0) {
             delay(1);
+        }
+        if (audio_task_handle) {
+            Serial.println("DAC task did not stop; deleting it");
+            vTaskDelete(audio_task_handle);
+            audio_task_handle = nullptr;
         }
     }
     if (audio_dac) {
@@ -271,14 +284,20 @@ bool prepareAudio(const HLV1Header &header) {
 
 bool queueAudio(const HLV1Packet &packet) {
     if (!audio_enabled) return true;
-    const uint8_t *data = hlv1_packet_audio_data(&packet);
-    size_t remaining = hlv1_packet_audio_size(&packet);
-    while (remaining) {
-        size_t sent = xStreamBufferSend(
-            audio_stream, data, remaining, pdMS_TO_TICKS(1000));
-        if (!sent) return false;
-        data += sent;
-        remaining -= sent;
+    size_t offset = hlv1_packet_video_payload_size(&packet);
+    while (offset < packet.payload_size) {
+        const uint8_t *data = nullptr;
+        size_t span = hlv1_packet_payload_span(&packet, offset, &data);
+        if (!span || !data) return false;
+        size_t sent_from_span = 0;
+        while (sent_from_span < span) {
+            size_t sent = xStreamBufferSend(
+                audio_stream, data + sent_from_span, span - sent_from_span,
+                pdMS_TO_TICKS(1000));
+            if (!sent) return false;
+            sent_from_span += sent;
+        }
+        offset += span;
     }
     return true;
 }
@@ -302,10 +321,7 @@ void startAudio() {
 
 void closeVideo() {
     stopAudio();
-    if (decoder) {
-        hlv1_decoder_destroy(decoder);
-        decoder = nullptr;
-    }
+    decoder.end();
     if (video_file) {
         fclose(video_file);
         video_file = nullptr;
@@ -313,11 +329,16 @@ void closeVideo() {
 }
 
 void reportHeap(const char *stage) {
-    Serial.printf("%s: free heap=%u, largest block=%u\n",
+    Serial.printf("%s: free heap=%u, largest block=%u, DMA free=%u, "
+                  "DMA largest=%u\n",
                   stage,
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(
-                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(
+                      heap_caps_get_free_size(MALLOC_CAP_DMA)),
+                  static_cast<unsigned>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 }
 
 bool openVideo() {
@@ -328,10 +349,9 @@ bool openVideo() {
         Serial.printf("Cannot open %s\n", player_settings::kVideoPath);
         return false;
     }
-    if (setvbuf(video_file, reinterpret_cast<char *>(sd_read_buffer),
-                _IOFBF, sizeof sd_read_buffer)) {
-        showStatus("SD buffer failed", "Cannot allocate the read buffer");
-        Serial.println("setvbuf failed for the microSD video file");
+    if (setvbuf(video_file, nullptr, _IONBF, 0)) {
+        showStatus("SD setup failed", "Cannot configure direct reads");
+        Serial.println("Could not set unbuffered microSD reads");
         closeVideo();
         return false;
     }
@@ -359,13 +379,19 @@ bool openVideo() {
     }
 
     reportHeap("before decoder");
-    decoder = hlv1_decoder_create(&sequence_header);
-    if (!decoder) {
+    const int decoder_result = decoder.begin(sequence_header);
+    if (decoder_result != HLV1_OK) {
         showStatus("Not enough RAM", "Use at most the 320x180 profile");
-        reportHeap("decoder allocation failed");
+        reportHeap("decoder or packet pool allocation failed");
         closeVideo();
         return false;
     }
+    Serial.printf("ESP32 packet pool: %u x %u bytes = %u bytes, "
+                  "%u blocks direct-DMA\n",
+                  static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockCount),
+                  static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockBytes),
+                  static_cast<unsigned>(decoder.packetCapacity()),
+                  static_cast<unsigned>(decoder.dmaBlockCount()));
 
     frame_period_us = static_cast<uint32_t>(
         (1000000ULL * sequence_header.fps_den) / sequence_header.fps_num);
@@ -462,7 +488,7 @@ void failPlayback(const char *title, int result) {
 void playOneFrame() {
     HLV1Packet packet{};
     const uint32_t read_start = micros();
-    const int packet_result = hlv1_packet_read(video_file, &packet);
+    const int packet_result = decoder.readPacket(video_file, &packet);
     const uint32_t read_us = micros() - read_start;
     sd_read_us_total += read_us;
     sd_read_us_max = max(sd_read_us_max, read_us);
@@ -487,7 +513,7 @@ void playOneFrame() {
 
     const HLV1Frame *frame = nullptr;
     const uint32_t decode_start = micros();
-    const int decode_result = hlv1_decoder_decode(decoder, &packet, &frame);
+    const int decode_result = decoder.decode(&packet, &frame);
     const uint32_t decode_us = micros() - decode_start;
     hlv1_packet_free(&packet);
     if (decode_result != HLV1_OK) {
@@ -539,7 +565,7 @@ void setup() {
 }
 
 void loop() {
-    if (video_file && decoder) {
+    if (video_file && decoder.ready()) {
         playOneFrame();
         return;
     }

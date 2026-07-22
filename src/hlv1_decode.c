@@ -763,9 +763,9 @@ void hlv1_decoder_destroy(HLV1Decoder *d) {
 
 /* Decode one complete packet.  The first packet must be a keyframe; a packet
  * is committed as the new reference only after all syntax has validated. */
-int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
-                        const HLV1Frame **frame) {
-    if (!d || !p || !frame || (!p->payload && p->payload_size)) return HLV1_ERR_ARGUMENT;
+static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
+                                 const HLV1Frame **frame,
+                                 int segmented) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
     unsigned version = hlv1_stream_version(&d->header);
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
@@ -777,7 +777,10 @@ int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
     int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
 
     HLV1BitReader br;
-    hlv1_br_init(&br, p->payload, p->payload_size, p->bit_length);
+    if (segmented)
+        hlv1_br_init_packet(&br, p);
+    else
+        hlv1_br_init(&br, p->payload, p->payload_size, p->bit_length);
     int pw = d->current.padded_width, ph = d->current.padded_height;
     int global_mvx = 0, global_mvy = 0;
     int use_global = 0;
@@ -1020,6 +1023,24 @@ int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
     d->stats.decoded_bits += p->bit_length;
     *frame = &d->previous;
     return HLV1_OK;
+}
+
+int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
+                        const HLV1Frame **frame) {
+    if (!d || !p || !frame || p->payload_blocks ||
+        (!p->payload && p->payload_size))
+        return HLV1_ERR_ARGUMENT;
+    return decoder_decode_packet(d, p, frame, 0);
+}
+
+int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
+                               const HLV1Frame **frame) {
+    const uint8_t *first_payload = NULL;
+    if (!d || !p || !frame || p->payload ||
+        (p->payload_size &&
+         !hlv1_packet_payload_span(p, 0, &first_payload)))
+        return HLV1_ERR_ARGUMENT;
+    return decoder_decode_packet(d, p, frame, 1);
 }
 
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *d) {

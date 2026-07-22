@@ -415,6 +415,49 @@ static int test_encoder_clone(void) {
     return failed;
 }
 
+static int test_segmented_decode(void) {
+    HLV1Header h = {64,48,15,1,0,4,55,4,0,HLV1_VERSION};
+    HLV1Encoder *e = hlv1_encoder_create(&h, 1000.0);
+    HLV1Decoder *d = hlv1_decoder_create(&h);
+    HLV1Frame input;
+    if (!e || !d || hlv1_frame_alloc(&input, h.width, h.height) < 0)
+        return 1;
+    make_motion_frame(&input, 3);
+
+    HLV1Packet contiguous, segmented;
+    const HLV1Frame *encoded = NULL, *decoded = NULL;
+    if (hlv1_encoder_encode(e, &input, &contiguous, &encoded) < 0)
+        return 1;
+    FILE *file = tmpfile();
+    if (!file || hlv1_packet_write(file, &contiguous) < 0) return 1;
+
+    const size_t block_size = 7;
+    size_t block_count = (contiguous.payload_size + block_size - 1) / block_size;
+    uint8_t **blocks = (uint8_t **)calloc(block_count, sizeof *blocks);
+    if (!blocks) return 1;
+    for (size_t i = 0; i < block_count; ++i) {
+        blocks[i] = (uint8_t *)malloc(block_size);
+        if (!blocks[i]) return 1;
+    }
+    rewind(file);
+    int result = hlv1_packet_read_blocks(file, &segmented, blocks,
+                                         block_count, block_size);
+    if (result == HLV1_OK)
+        result = hlv1_decoder_decode_blocks(d, &segmented, &decoded);
+    int failed = result != HLV1_OK || !same_frame(encoded, decoded);
+
+    hlv1_packet_free(&segmented);
+    hlv1_packet_free(&contiguous);
+    for (size_t i = 0; i < block_count; ++i) free(blocks[i]);
+    free(blocks);
+    fclose(file);
+    hlv1_frame_free(&input);
+    hlv1_encoder_destroy(e);
+    hlv1_decoder_destroy(d);
+    if (failed) fprintf(stderr, "segmented packet decode failed\n");
+    return failed;
+}
+
 int main(void) {
     if (test_quality_qstep_range()) {
         fprintf(stderr, "quality/qstep range test failed\n");
@@ -434,7 +477,8 @@ int main(void) {
         test_version(HLV1_STREAM_VERSION_12) ||
         test_split_v3() || test_extended_quant_v4() || test_odd_motion_v5() ||
         test_half_motion_v6() || test_palette_v12() ||
-        test_adaptive_gop_v12() || test_encoder_clone()) return 1;
+        test_adaptive_gop_v12() || test_encoder_clone() ||
+        test_segmented_decode()) return 1;
     puts("HLV-1 C round-trip v1-v12 including FILL/SKIP/SPLIT/half-pixel/global/VLC: PASS");
     return 0;
 }
