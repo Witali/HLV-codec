@@ -1,9 +1,9 @@
 # HLV-1 player for ESP32-2432S028 CYD2USB
 
 The board in `IMG_20260722_174354.jpg` and `IMG_20260722_174401.jpg` is the
-two-USB ESP32-2432S028 variant commonly called CYD2USB.  It normally uses an
-ST7789 display controller.  The player is deliberately video-only for the
-first hardware milestone.
+two-USB ESP32-2432S028 variant commonly called CYD2USB. It normally uses an
+ST7789 display controller and an NS8002/8002A-class mono amplifier driven by
+DAC GPIO26.
 
 ## What the firmware does
 
@@ -11,16 +11,23 @@ first hardware milestone.
 - decodes HLV-1 stream versions 1 through 12;
 - plays the first 256x192 profile centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in eight-row strips, without a full RGB framebuffer;
+- plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
+- feeds six 256-sample DMA buffers from a separate 8 KiB FreeRTOS stream
+  buffer, so display transfers do not directly clock the sound;
 - repeats the file continuously;
-- prints decode/render timing and free heap to the 115200-baud serial console.
+- prints decode/render timing, audio underruns and free heap to the 115200-baud
+  serial console.
 
 The HLV decoder keeps two padded YUV420 frames.  Full 320x240 would consume
 230,400 bytes and exceed the largest usable internal-DRAM regions on this
 board.  The first profile uses 256x192 at 15 fps: its two frames consume
 147,456 bytes and output is shown pixel-for-pixel with black borders.
 
-Audio is not implemented yet.  The board amplifier is connected to GPIO26 and
-can be added after video playback is stable.
+The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
+ten-second file. The DAC DMA clock uses APLL rather than frame timing, while
+audio samples are divided among frame packets with rational accounting to
+avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
+container layout.
 
 ## Prepare a video on Windows
 
@@ -37,10 +44,23 @@ To convert an existing video:
 .\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4
 ```
 
-The result is `out\video.hlv`.  The build script packages it as
-`build\esp32\littlefs.bin`.  The default 4 MB partition layout reserves
-0x160000 bytes (about 1.38 MiB) for LittleFS, so the generated 729 KB test
-video fits with room for filesystem metadata.
+The first audio stream is automatically downmixed to mono, resampled to
+16 kHz and muxed into the HLV file. The default volume is deliberately 20%
+because the onboard amplifier can be loud. Conversion controls include:
+
+```powershell
+# Quieter 16 kHz audio
+.\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 -AudioVolume 0.10
+
+# Video only
+.\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 -NoAudio
+```
+
+The result is `out\video.hlv`. The build script packages it as
+`build\esp32\littlefs.bin`. The default 4 MB partition layout reserves
+0x160000 bytes (about 1.38 MiB) for LittleFS. Always check the resulting size:
+uncompressed 16 kHz audio consumes 16,000 bytes per second in addition to the
+compressed video.
 
 ## Project-local dependencies
 
@@ -88,6 +108,11 @@ If the display shows unstable pixels, lower `cfg.freq_write` from 80 MHz to
 | ST7789 TFT (HSPI) | SCK 14, MOSI 13, MISO 12, CS 15, DC 2, BL 21 |
 | unused microSD (VSPI) | SCK 18, MOSI 23, MISO 19, CS 5 |
 | onboard amplifier | DAC GPIO26 |
+
+The speaker connector is a bridged amplifier output. Connect a small speaker
+between the connector's two output pins; do not connect either speaker pin to
+board ground and do not feed that connector into a grounded oscilloscope or
+PC line input. GPIO26 itself carries the DAC signal before amplification.
 
 References:
 

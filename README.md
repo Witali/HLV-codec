@@ -1,6 +1,9 @@
 # HLV-1 v0.3 development build
 
-HLV-1 is an experimental low-complexity video codec for QVGA-class displays and microcontrollers. This build contains a portable C encoder and decoder, a static library, Y4M pipe tools, correctness tests, and a resumable benchmark harness.
+HLV-1 is an experimental low-complexity audio/video format for QVGA-class
+displays and microcontrollers. This build contains a portable C encoder and
+decoder, a static library, Y4M/PCM tools, correctness tests, and a resumable
+benchmark harness.
 
 The decoder accepts stream syntax v1 through v12. New encodes use **stream
 v12** by default.  The stable syntax now includes:
@@ -13,6 +16,10 @@ v12** by default.  The stable syntax now includes:
 - directional intra prediction;
 - strict 2/4-colour palette blocks;
 - the original simple 4×4 integer WHT reconstruction.
+
+The container can also carry unsigned 8-bit mono PCM in each video frame
+packet. At the ESP32 default of 16 kHz it costs 16 KB/s and can be sent
+directly to the chip's DAC. See [`docs/AUDIO_FORMAT.md`](docs/AUDIO_FORMAT.md).
 
 ## Build and verify
 
@@ -36,9 +43,10 @@ On Windows with the Visual Studio C/C++ tools installed:
 ## ESP32-2432S028 playback
 
 The CYD2USB firmware decodes a 256x192 HLV-1 file from the board's internal
-LittleFS flash partition and displays it pixel-for-pixel in the centre of the
-320x240 ST7789 panel.  All downloadable tools, board packages and libraries
-are kept under this repository:
+LittleFS flash partition, displays it pixel-for-pixel in the centre of the
+320x240 ST7789 panel, and plays its mono track through DAC GPIO26 and the
+onboard amplifier. All downloadable tools, board packages and libraries are
+kept under this repository:
 
 ```powershell
 .\scripts\bootstrap.ps1
