@@ -58,6 +58,22 @@ Build and test the desktop tools with MSVC:
 .\scripts\build_msvc.ps1
 ```
 
+## Native Windows player
+
+The desktop build produces `build\msvc\hlvplay.exe`, a native HLV player that
+uses only Windows GDI and `waveOut`; FFmpeg and external codec packs are not
+needed at runtime. It plays the embedded PCM_U8 mono track, preserves the video
+aspect ratio, supports pause/resume, native-size centred display and
+drag-and-drop:
+
+```powershell
+.\scripts\build_windows_player.ps1
+.\build\msvc\hlvplay.exe .\out\video.hlv
+```
+
+See [`docs/WINDOWS_PLAYER.md`](docs/WINDOWS_PLAYER.md) for controls and the
+headless full-file validation mode.
+
 ## ESP32-2432S028 playback
 
 The pure ESP-IDF CYD2USB firmware reads HLV-1 from a FAT32 microSD card over an
