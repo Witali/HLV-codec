@@ -66,7 +66,9 @@ and plays its mono track through DAC GPIO26 DMA and the onboard amplifier. The
 included Big Buck Bunny profile preserves the official 320x180 resolution and
 centres it without scaling. Its ESP32-specific decoder reads packets into a
 reusable 8 x 7680-byte DMA block pool, so a frame never needs one large
-contiguous payload allocation. Arduino and LovyanGFX are not part of the build.
+contiguous payload allocation. The current test configuration also packs both
+predictive frames as Y6/U5/V5 4:2:0, reducing their storage plus working rows
+from 184,320 to 138,240 bytes. Arduino and LovyanGFX are not part of the build.
 The pinned ESP-IDF, Python environment and ESP32 toolchain live inside the
 firmware project directory:
 

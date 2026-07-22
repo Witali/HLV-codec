@@ -79,33 +79,32 @@ uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
 
 void convertNativeRow(const HLV1Frame *frame, int source_y,
                       uint16_t *output) {
-    const uint8_t *luma = frame->y + source_y * frame->stride_y;
-    const uint8_t *chroma_u =
-        frame->u + (source_y >> 1) * frame->stride_u;
-    const uint8_t *chroma_v =
-        frame->v + (source_y >> 1) * frame->stride_v;
-
+    const int chroma_y = source_y >> 1;
     for (int x = 0; x < frame->width; x += 2) {
-        const int u = static_cast<int>(chroma_u[x >> 1]) - 128;
-        const int v = static_cast<int>(chroma_v[x >> 1]) - 128;
+        const int chroma_x = x >> 1;
+        const int u = static_cast<int>(
+                          hlv1_frame_u_sample(frame, chroma_x, chroma_y)) -
+                      128;
+        const int v = static_cast<int>(
+                          hlv1_frame_v_sample(frame, chroma_x, chroma_y)) -
+                      128;
         const int red_add = 409 * v + 128;
         const int green_add = -100 * u - 208 * v + 128;
         const int blue_add = 516 * u + 128;
-        output[x] = yuvToRgb565(luma[x], red_add, green_add, blue_add);
+        output[x] = yuvToRgb565(
+            hlv1_frame_y_sample(frame, x, source_y),
+            red_add, green_add, blue_add);
         if (x + 1 < frame->width) {
-            output[x + 1] =
-                yuvToRgb565(luma[x + 1], red_add, green_add, blue_add);
+            output[x + 1] = yuvToRgb565(
+                hlv1_frame_y_sample(frame, x + 1, source_y),
+                red_add, green_add, blue_add);
         }
     }
 }
 
 void convertScaledRow(const HLV1Frame *frame, int source_y,
                       uint16_t *output) {
-    const uint8_t *luma = frame->y + source_y * frame->stride_y;
-    const uint8_t *chroma_u =
-        frame->u + (source_y >> 1) * frame->stride_u;
-    const uint8_t *chroma_v =
-        frame->v + (source_y >> 1) * frame->stride_v;
+    const int chroma_y = source_y >> 1;
     int previous_chroma_x = -1;
     int red_add = 0;
     int green_add = 0;
@@ -115,15 +114,22 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
         const int source_x = scaled_x_map[output_x];
         const int chroma_x = source_x >> 1;
         if (chroma_x != previous_chroma_x) {
-            const int u = static_cast<int>(chroma_u[chroma_x]) - 128;
-            const int v = static_cast<int>(chroma_v[chroma_x]) - 128;
+            const int u = static_cast<int>(
+                              hlv1_frame_u_sample(frame, chroma_x,
+                                                 chroma_y)) -
+                          128;
+            const int v = static_cast<int>(
+                              hlv1_frame_v_sample(frame, chroma_x,
+                                                 chroma_y)) -
+                          128;
             red_add = 409 * v + 128;
             green_add = -100 * u - 208 * v + 128;
             blue_add = 516 * u + 128;
             previous_chroma_x = chroma_x;
         }
-        output[output_x] =
-            yuvToRgb565(luma[source_x], red_add, green_add, blue_add);
+        output[output_x] = yuvToRgb565(
+            hlv1_frame_y_sample(frame, source_x, source_y),
+            red_add, green_add, blue_add);
     }
 }
 
@@ -390,7 +396,8 @@ bool openVideo() {
     }
 
     reportHeap("before decoder");
-    const int decoder_result = decoder.begin(sequence_header);
+    const int decoder_result = decoder.begin(
+        sequence_header, player_settings::kUseCompactY6U5V5);
     if (decoder_result != HLV1_OK) {
         showStatus("Not enough RAM", "use at most the 320x180 profile");
         reportHeap("decoder or packet-pool allocation failed");
@@ -424,10 +431,13 @@ bool openVideo() {
         }
     }
 
-    ESP_LOGI(kTag, "Playing v%u in %s mode", sequence_header.version,
+    ESP_LOGI(kTag, "Playing v%u in %s mode, frame storage=%s",
+             sequence_header.version,
              player_settings::kScaleVideoToDisplay
                  ? "scale-to-320x240"
-                 : "native-centred");
+                 : "native-centred",
+             decoder.compactYuv() ? "packed Y6/U5/V5 4:2:0"
+                                  : "8-bit YUV 4:2:0");
     reportHeap("decoder ready");
     return true;
 }

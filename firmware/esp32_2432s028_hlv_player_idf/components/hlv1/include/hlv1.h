@@ -138,6 +138,47 @@ typedef struct HLV1Frame {
     uint8_t *v;
 } HLV1Frame;
 
+/* ESP-class compact frame storage. Samples are packed little-endian within
+ * each byte-aligned row and expand back onto an MSB-aligned 8-bit grid. */
+#define HLV1_FRAME_STORAGE_CONTIGUOUS 0
+#define HLV1_FRAME_STORAGE_PLANAR 1
+#define HLV1_FRAME_STORAGE_Y6_U5_V5 2
+
+static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
+                                                int x, unsigned bits) {
+    unsigned bit = (unsigned)x * bits;
+    unsigned byte = bit >> 3;
+    unsigned shift = bit & 7U;
+    unsigned value = row[byte];
+    if (shift + bits > 8U) value |= (unsigned)row[byte + 1] << 8;
+    value = (value >> shift) & ((1U << bits) - 1U);
+    return (uint8_t)(value << (8U - bits));
+}
+
+static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,
+                                           int x, int y) {
+    const uint8_t *row = frame->y + y * frame->stride_y;
+    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
+               ? hlv1_frame_packed_sample(row, x, 6)
+               : row[x];
+}
+
+static inline uint8_t hlv1_frame_u_sample(const HLV1Frame *frame,
+                                           int x, int y) {
+    const uint8_t *row = frame->u + y * frame->stride_u;
+    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
+               ? hlv1_frame_packed_sample(row, x, 5)
+               : row[x];
+}
+
+static inline uint8_t hlv1_frame_v_sample(const HLV1Frame *frame,
+                                           int x, int y) {
+    const uint8_t *row = frame->v + y * frame->stride_v;
+    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
+               ? hlv1_frame_packed_sample(row, x, 5)
+               : row[x];
+}
+
 /**
  * Syntax statistics and architecture-independent decoder work counters.
  *
@@ -275,6 +316,13 @@ const HLV1Stats *hlv1_encoder_stats(const HLV1Encoder *encoder);
 
 /** Create/destroy a sequential decoder for one sequence header. */
 HLV1Decoder *hlv1_decoder_create(const HLV1Header *header);
+
+/**
+ * Create the ESP-oriented decoder with packed Y6/U5/V5 4:2:0 reference
+ * frames. Reconstruction is intentionally quantized to that precision after
+ * every macroblock, trading a small amount of quality for lower RAM usage.
+ */
+HLV1Decoder *hlv1_decoder_create_y6_u5_v5(const HLV1Header *header);
 void hlv1_decoder_destroy(HLV1Decoder *decoder);
 
 /** Decode one packet.  P-frames require a successfully decoded reference. */

@@ -49,9 +49,12 @@ not written to internal flash.
 
 - Display: ST7789 at 40 MHz, two reusable 320x4 RGB565 DMA strips.
 - Storage: SDSPI at 20 MHz, eight reusable 7680-byte packet blocks (60 KiB).
-- Video: two padded YUV420 reference/reconstruction frames, no RGB framebuffer.
+- Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
+  138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
 - Audio: 4 KiB stream buffer feeding six 256-byte DAC DMA descriptors.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
 centred presentation or nearest-neighbour scaling to 320x240.
+`kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
+test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.

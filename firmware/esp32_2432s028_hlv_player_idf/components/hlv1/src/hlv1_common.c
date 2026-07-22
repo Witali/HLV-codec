@@ -349,7 +349,7 @@ int hlv1_frame_alloc(HLV1Frame *f, int width, int height) {
         f->u = (uint8_t *)malloc(c_size);
         f->v = (uint8_t *)malloc(c_size);
         f->storage = f->y;
-        f->storage_mode = 1;
+        f->storage_mode = HLV1_FRAME_STORAGE_PLANAR;
         if (!f->y || !f->u || !f->v) {
             free(f->y);
             free(f->u);
@@ -366,7 +366,7 @@ int hlv1_frame_alloc(HLV1Frame *f, int width, int height) {
 
 void hlv1_frame_free(HLV1Frame *f) {
     if (!f) return;
-    if (f->storage_mode == 1) {
+    if (f->storage_mode != HLV1_FRAME_STORAGE_CONTIGUOUS) {
         free(f->u);
         free(f->v);
     }

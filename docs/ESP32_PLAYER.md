@@ -22,11 +22,20 @@ DAC GPIO26.
 - prints decode/render timing, audio underruns and free heap to the 115200-baud
   serial console.
 
-The HLV decoder keeps two padded YUV420 frames. Full 320x240 would consume
-230,400 bytes and exceed the practical internal-RAM budget once SD and audio
-DMA are active. The 320x180 profile pads internally to 320x192; its two frames
-consume 184,320 bytes. It preserves the official movie resolution and leaves
-30 black rows above and below the picture.
+The test build enables packed Y6/U5/V5 4:2:0 frame storage. At 320x180 the two
+packed frames and the decoder's macroblock-row work area consume 138,240 bytes,
+instead of 184,320 bytes for two padded 8-bit frames. The 320x180 profile pads
+internally to 320x192, preserves the official movie resolution and leaves 30
+black rows above and below the picture.
+
+The compile-time flag `kUseCompactY6U5V5` in
+`firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp` is currently
+`true`. The on-disk HLV stream remains ordinary 8-bit YUV420. The compact
+decoder rounds reconstructed luma to six bits and chroma to five bits after
+each macroblock, then packs both predictive frames by row. This saves 46,080
+bytes at 320x180, but it is intentionally not bit-exact: banding and gradual
+P-frame prediction drift are possible. Set the flag to `false` for the original
+8-bit reference path.
 
 ## Segmented ESP32 decoder
 
@@ -62,7 +71,7 @@ video cannot strand an audio task and leak its stack.
 ## Display scaling setting
 
 The compile-time flag `kScaleVideoToDisplay` is in
-`firmware/esp32_2432s028_hlv_player/PlayerSettings.hpp`:
+`firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp`:
 
 ```cpp
 constexpr bool kScaleVideoToDisplay = false;
