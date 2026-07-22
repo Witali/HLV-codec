@@ -1,9 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = `
-        (Join-Path (Split-Path $PSScriptRoot -Parent) "build\esp32"),
-    [string]$VideoFile = `
-        (Join-Path (Split-Path $PSScriptRoot -Parent) "out\video.hlv")
+        (Join-Path (Split-Path $PSScriptRoot -Parent) "build\esp32")
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,11 +22,6 @@ if (-not (Test-Path -LiteralPath $cli) -or
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
-if (-not (Test-Path -LiteralPath $VideoFile)) {
-    & (Join-Path $PSScriptRoot "prepare_esp32_video.ps1") `
-        -OutputFile $VideoFile
-}
-
 & (Join-Path $PSScriptRoot "arduino.ps1") compile `
     --fqbn esp32:esp32:jczn_2432s028r `
     --board-options PartitionScheme=default `
@@ -36,8 +29,4 @@ if (-not (Test-Path -LiteralPath $VideoFile)) {
     --output-dir $OutputDirectory `
     $sketch
 
-& (Join-Path $PSScriptRoot "build_littlefs.ps1") `
-    -InputFile $VideoFile `
-    -OutputFile (Join-Path $OutputDirectory "littlefs.bin")
-
-Write-Host "ESP32 firmware and internal video image are ready in $OutputDirectory"
+Write-Host "ESP32 SD-player firmware is ready in $OutputDirectory"

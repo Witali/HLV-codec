@@ -2,8 +2,7 @@
 param(
     [Parameter(Mandatory)][string]$Port,
     [switch]$SkipBuild,
-    [ValidateSet(115200, 230400, 460800, 921600)][int]$Baud = 460800,
-    [switch]$LittleFSOnly
+    [ValidateSet(115200, 230400, 460800, 921600)][int]$Baud = 460800
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +14,6 @@ $partitions = Join-Path $buildDirectory `
     "esp32_2432s028_hlv_player.ino.partitions.bin"
 $application = Join-Path $buildDirectory `
     "esp32_2432s028_hlv_player.ino.bin"
-$littlefsImage = Join-Path $buildDirectory "littlefs.bin"
 $bootApplication = Join-Path $repo `
     "local_tools\arduino\data\packages\esp32\hardware\esp32\3.3.8\tools\partitions\boot_app0.bin"
 $esptoolRoot = Join-Path $repo `
@@ -24,11 +22,7 @@ $esptoolRoot = Join-Path $repo `
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build_esp32.ps1")
 }
-$images = if ($LittleFSOnly) {
-    @($littlefsImage)
-} else {
-    @($bootloader, $partitions, $bootApplication, $application, $littlefsImage)
-}
+$images = @($bootloader, $partitions, $bootApplication, $application)
 foreach ($image in $images) {
     if (-not (Test-Path -LiteralPath $image)) {
         throw "Flash image is missing: $image. Run .\scripts\build_esp32.ps1 first."
@@ -43,19 +37,12 @@ if (-not $esptool) {
 
 Write-Host "Put the board in download mode: hold BOOT, tap RST, then release BOOT."
 Write-Host "Waiting for the ROM loader on $Port..."
-$writeImages = if ($LittleFSOnly) {
-    @(
-        "0x290000", $littlefsImage
-    )
-} else {
-    @(
-        "0x1000", $bootloader,
-        "0x8000", $partitions,
-        "0xe000", $bootApplication,
-        "0x10000", $application,
-        "0x290000", $littlefsImage
-    )
-}
+$writeImages = @(
+    "0x1000", $bootloader,
+    "0x8000", $partitions,
+    "0xe000", $bootApplication,
+    "0x10000", $application
+)
 & $esptool --chip esp32 --port $Port --baud $Baud `
     --before no-reset --after hard-reset --connect-attempts 60 `
     write-flash --flash-mode dio --flash-freq 40m --flash-size 4MB `
@@ -64,8 +51,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Uploading the firmware and LittleFS video image failed."
 }
 
-if ($LittleFSOnly) {
-    Write-Host "LittleFS video.hlv was uploaded to internal flash."
-} else {
-    Write-Host "Firmware and video.hlv were uploaded to internal flash."
-}
+Write-Host "SD-player firmware was uploaded. video.hlv remains on microSD."

@@ -1,10 +1,14 @@
 #include <Arduino.h>
-#include <LittleFS.h>
 #include <driver/dac_continuous.h>
+#include <driver/sdspi_host.h>
+#include <driver/spi_master.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
+#include <esp_vfs_fat.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/stream_buffer.h>
 #include <freertos/task.h>
+#include <sdmmc_cmd.h>
 
 #include <hlv1.h>
 
@@ -13,7 +17,6 @@
 
 namespace {
 
-constexpr char kVideoPath[] = "/littlefs/video.hlv";
 constexpr int kScreenWidth = 320;
 constexpr int kScreenHeight = 240;
 constexpr int kRowsPerTransfer = 8;
@@ -31,10 +34,16 @@ uint32_t next_present_us = 0;
 uint32_t decoded_frames = 0;
 uint32_t dropped_deadlines = 0;
 uint32_t last_retry_ms = 0;
+uint64_t sd_read_us_total = 0;
+uint32_t sd_read_us_max = 0;
 uint16_t rgb_rows[kScreenWidth * kRowsPerTransfer];
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
+DMA_ATTR uint8_t sd_read_buffer[player_settings::kSdReadBufferBytes];
+sdmmc_card_t *sd_card = nullptr;
+bool sd_bus_initialized = false;
+bool sd_mounted = false;
 StreamBufferHandle_t audio_stream = nullptr;
 TaskHandle_t audio_task_handle = nullptr;
 dac_continuous_handle_t audio_dac = nullptr;
@@ -118,6 +127,60 @@ void showStatus(const char *title, const char *detail = nullptr) {
         display.setCursor(8, 44);
         display.println(detail);
     }
+}
+
+bool mountSdCard() {
+    if (sd_mounted) return true;
+
+    if (!sd_bus_initialized) {
+        spi_bus_config_t bus{};
+        bus.mosi_io_num = CYD_SD_MOSI;
+        bus.miso_io_num = CYD_SD_MISO;
+        bus.sclk_io_num = CYD_SD_SCK;
+        bus.quadwp_io_num = -1;
+        bus.quadhd_io_num = -1;
+        bus.data4_io_num = -1;
+        bus.data5_io_num = -1;
+        bus.data6_io_num = -1;
+        bus.data7_io_num = -1;
+        bus.max_transfer_sz = player_settings::kSdReadBufferBytes;
+        const esp_err_t bus_result = spi_bus_initialize(
+            SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
+        if (bus_result != ESP_OK) {
+            Serial.printf("SD SPI3 DMA init failed: %s\n",
+                          esp_err_to_name(bus_result));
+            return false;
+        }
+        sd_bus_initialized = true;
+    }
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI3_HOST;
+    host.max_freq_khz = player_settings::kSdClockKhz;
+
+    sdspi_device_config_t device = SDSPI_DEVICE_CONFIG_DEFAULT();
+    device.host_id = SPI3_HOST;
+    device.gpio_cs = static_cast<gpio_num_t>(CYD_SD_SS);
+
+    esp_vfs_fat_mount_config_t mount{};
+    mount.format_if_mount_failed = false;
+    mount.max_files = 1;
+    mount.allocation_unit_size = 16 * 1024;
+    mount.disk_status_check_enable = false;
+    mount.use_one_fat = false;
+
+    const esp_err_t mount_result = esp_vfs_fat_sdspi_mount(
+        "/sdcard", &host, &device, &mount, &sd_card);
+    if (mount_result != ESP_OK) {
+        Serial.printf("microSD mount failed: %s\n",
+                      esp_err_to_name(mount_result));
+        return false;
+    }
+    sd_mounted = true;
+    Serial.printf("microSD mounted on SPI3 at %d kHz with DMA\n",
+                  player_settings::kSdClockKhz);
+    sdmmc_card_print_info(stdout, sd_card);
+    return true;
 }
 
 void audioTask(void *) {
@@ -259,10 +322,17 @@ void reportHeap(const char *stage) {
 
 bool openVideo() {
     closeVideo();
-    video_file = fopen(kVideoPath, "rb");
+    video_file = fopen(player_settings::kVideoPath, "rb");
     if (!video_file) {
-        showStatus("video.hlv missing", "Run upload_esp32.ps1 with a video");
-        Serial.printf("Cannot open %s\n", kVideoPath);
+        showStatus("video.hlv missing", "Copy it to the microSD card root");
+        Serial.printf("Cannot open %s\n", player_settings::kVideoPath);
+        return false;
+    }
+    if (setvbuf(video_file, reinterpret_cast<char *>(sd_read_buffer),
+                _IOFBF, sizeof sd_read_buffer)) {
+        showStatus("SD buffer failed", "Cannot allocate the read buffer");
+        Serial.println("setvbuf failed for the microSD video file");
+        closeVideo();
         return false;
     }
 
@@ -303,6 +373,8 @@ bool openVideo() {
     next_present_us = micros();
     decoded_frames = 0;
     dropped_deadlines = 0;
+    sd_read_us_total = 0;
+    sd_read_us_max = 0;
     display.fillScreen(0x0000);
 
     if (player_settings::kScaleVideoToDisplay) {
@@ -389,7 +461,11 @@ void failPlayback(const char *title, int result) {
 
 void playOneFrame() {
     HLV1Packet packet{};
+    const uint32_t read_start = micros();
     const int packet_result = hlv1_packet_read(video_file, &packet);
+    const uint32_t read_us = micros() - read_start;
+    sd_read_us_total += read_us;
+    sd_read_us_max = max(sd_read_us_max, read_us);
     if (packet_result == HLV1_EOF) {
         finishAudio();
         waitUntil(next_present_us);
@@ -434,8 +510,11 @@ void playOneFrame() {
     }
 
     if ((decoded_frames % 60U) == 0U) {
-        Serial.printf("frame=%u decode=%uus render=%uus late=%u heap=%u\n",
-                      decoded_frames, decode_us, render_us, dropped_deadlines,
+        Serial.printf("frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
+                      "render=%uus late=%u heap=%u\n",
+                      decoded_frames,
+                      static_cast<unsigned>(sd_read_us_total / decoded_frames),
+                      sd_read_us_max, decode_us, render_us, dropped_deadlines,
                       static_cast<unsigned>(ESP.getFreeHeap()));
     }
 }
@@ -449,18 +528,13 @@ void setup() {
     display.init();
     display.setRotation(1);
     display.setBrightness(255);
-    showStatus("HLV-1 player", "Mounting internal flash...");
+    showStatus("HLV-1 SD player", "Mounting microSD...");
 
-    if (!LittleFS.begin(false, "/littlefs", 4, "spiffs")) {
-        showStatus("LittleFS failed", "Flash firmware and video again");
-        Serial.println("LittleFS.begin failed");
+    if (!mountSdCard()) {
+        showStatus("microSD failed", "Insert a FAT32 card and reset");
         last_retry_ms = millis();
         return;
     }
-
-    Serial.printf("LittleFS: %u/%u bytes used\n",
-                  static_cast<unsigned>(LittleFS.usedBytes()),
-                  static_cast<unsigned>(LittleFS.totalBytes()));
     if (!openVideo()) last_retry_ms = millis();
 }
 
@@ -472,7 +546,7 @@ void loop() {
 
     if (millis() - last_retry_ms >= kRetryDelayMs) {
         last_retry_ms = millis();
-        openVideo();
+        if (mountSdCard()) openVideo();
     }
     delay(20);
 }

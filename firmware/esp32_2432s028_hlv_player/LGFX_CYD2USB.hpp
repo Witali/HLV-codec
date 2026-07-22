@@ -4,8 +4,8 @@
 
 /*
  * Display configuration for the two-USB ESP32-2432S028 (CYD2USB).
- * This board revision uses an ST7789 on HSPI.  VSPI remains free for a later
- * microSD option; the first player milestone reads video from internal flash.
+ * This board revision uses an ST7789 on HSPI. VSPI remains independent and is
+ * used by the player for DMA reads from the microSD socket.
  */
 class LGFX_CYD2USB : public lgfx::LGFX_Device {
     lgfx::Bus_SPI bus_;
