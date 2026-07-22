@@ -9,7 +9,7 @@ first hardware milestone.
 
 - reads `/video.hlv` from the internal LittleFS flash partition;
 - decodes HLV-1 stream versions 1 through 12;
-- plays the first 256x192 profile and scales it to the 320x240 panel;
+- plays the first 256x192 profile centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in eight-row strips, without a full RGB framebuffer;
 - repeats the file continuously;
 - prints decode/render timing and free heap to the 115200-baud serial console.
@@ -17,8 +17,7 @@ first hardware milestone.
 The HLV decoder keeps two padded YUV420 frames.  Full 320x240 would consume
 230,400 bytes and exceed the largest usable internal-DRAM regions on this
 board.  The first profile uses 256x192 at 15 fps: its two frames consume
-147,456 bytes and output is enlarged to the panel with nearest-neighbour
-scaling.
+147,456 bytes and output is shown pixel-for-pixel with black borders.
 
 Audio is not implemented yet.  The board amplifier is connected to GPIO26 and
 can be added after video playback is stable.

@@ -99,7 +99,7 @@ bool openVideo() {
     reportHeap("before decoder");
     decoder = hlv1_decoder_create(&sequence_header);
     if (!decoder) {
-        showStatus("Not enough RAM", "Use a 320x240 low-bitrate HLV file");
+        showStatus("Not enough RAM", "Use a 256x192 HLV file");
         reportHeap("decoder allocation failed");
         closeVideo();
         return false;
@@ -134,34 +134,34 @@ void waitUntil(uint32_t deadline) {
 }
 
 void renderFrame(const HLV1Frame *frame) {
-    display.startWrite();
-    for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
-        const int rows = min(kRowsPerTransfer, kScreenHeight - y0);
-        for (int row = 0; row < rows; ++row) {
-            const int output_y = y0 + row;
-            const int source_y = output_y * frame->height / kScreenHeight;
-            const uint8_t *luma =
-                frame->y + source_y * frame->stride_y;
-            const uint8_t *chroma_u =
-                frame->u + (source_y >> 1) * frame->stride_u;
-            const uint8_t *chroma_v =
-                frame->v + (source_y >> 1) * frame->stride_v;
-            uint16_t *output = rgb_rows + row * kScreenWidth;
+    const int x_offset = (kScreenWidth - frame->width) / 2;
+    const int y_offset = (kScreenHeight - frame->height) / 2;
 
-            for (int x = 0; x < kScreenWidth; ++x) {
-                const int source_x = x * frame->width / kScreenWidth;
-                const int u =
-                    static_cast<int>(chroma_u[source_x >> 1]) - 128;
-                const int v =
-                    static_cast<int>(chroma_v[source_x >> 1]) - 128;
+    display.startWrite();
+    for (int y0 = 0; y0 < frame->height; y0 += kRowsPerTransfer) {
+        const int rows = min(kRowsPerTransfer, frame->height - y0);
+        for (int row = 0; row < rows; ++row) {
+            const int y = y0 + row;
+            const uint8_t *luma = frame->y + y * frame->stride_y;
+            const uint8_t *chroma_u = frame->u + (y >> 1) * frame->stride_u;
+            const uint8_t *chroma_v = frame->v + (y >> 1) * frame->stride_v;
+            uint16_t *output = rgb_rows + row * frame->width;
+
+            for (int x = 0; x < frame->width; x += 2) {
+                const int u = static_cast<int>(chroma_u[x >> 1]) - 128;
+                const int v = static_cast<int>(chroma_v[x >> 1]) - 128;
                 const int red_add = 409 * v + 128;
                 const int green_add = -100 * u - 208 * v + 128;
                 const int blue_add = 516 * u + 128;
-                output[x] = yuvToRgb565(
-                    luma[source_x], red_add, green_add, blue_add);
+                output[x] = yuvToRgb565(luma[x], red_add, green_add, blue_add);
+                if (x + 1 < frame->width) {
+                    output[x + 1] = yuvToRgb565(
+                        luma[x + 1], red_add, green_add, blue_add);
+                }
             }
         }
-        display.pushImage(0, y0, kScreenWidth, rows, rgb_rows);
+        display.pushImage(x_offset, y_offset + y0,
+                          frame->width, rows, rgb_rows);
         yield();
     }
     display.endWrite();

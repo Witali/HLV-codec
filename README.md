@@ -36,8 +36,9 @@ On Windows with the Visual Studio C/C++ tools installed:
 ## ESP32-2432S028 playback
 
 The CYD2USB firmware decodes a 256x192 HLV-1 file from the board's internal
-LittleFS flash partition and scales it to the 320x240 ST7789 panel.  All
-downloadable tools, board packages and libraries are kept under this repository:
+LittleFS flash partition and displays it pixel-for-pixel in the centre of the
+320x240 ST7789 panel.  All downloadable tools, board packages and libraries
+are kept under this repository:
 
 ```powershell
 .\scripts\bootstrap.ps1
