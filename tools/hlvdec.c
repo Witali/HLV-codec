@@ -35,7 +35,7 @@ static void close_if_file(FILE *f, FILE *standard) {
 
 static void usage(const char *p) {
     fprintf(stderr,
-            "Usage: %s input.hlv|- output.y4m|-\n"
+            "Usage: %s input.hlv|- output.y4m|- [--audio-out audio.u8|-]\n"
             "Example: %s input.hlv - | ffplay -f yuv4mpegpipe -i -\n",
             p, p);
 }
@@ -43,7 +43,16 @@ static double now_sec(void) { return (double)clock() / CLOCKS_PER_SEC; }
 
 int main(int argc, char **argv) {
     binary_stdio();
-    if (argc != 3) { usage(argv[0]); return 2; }
+    if (argc != 3 && argc != 5) { usage(argv[0]); return 2; }
+    const char *audio_path = NULL;
+    if (argc == 5) {
+        if (strcmp(argv[3], "--audio-out")) { usage(argv[0]); return 2; }
+        audio_path = argv[4];
+        if (!strcmp(argv[2], "-") && !strcmp(audio_path, "-")) {
+            fprintf(stderr, "Video and audio cannot both use stdout\n");
+            return 2;
+        }
+    }
     FILE *in = open_input(argv[1]);
     if (!in) { perror(argv[1]); return 1; }
     FILE *out = open_output(argv[2]);
@@ -51,6 +60,12 @@ int main(int argc, char **argv) {
 
     HLV1Header h; int r = hlv1_header_read(in, &h);
     if (r < 0) { fprintf(stderr, "Header: %s\n", hlv1_strerror(r)); return 1; }
+    if (audio_path && !(h.flags & HLV1_FLAG_AUDIO)) {
+        fprintf(stderr, "The HLV stream has no audio track\n");
+        return 1;
+    }
+    FILE *audio = audio_path ? open_output(audio_path) : NULL;
+    if (audio_path && !audio) { perror(audio_path); return 1; }
     HLV1Y4M y4m; r = hlv1_y4m_open_write(&y4m, out, h.width, h.height, h.fps_num, h.fps_den);
     if (r < 0) { fprintf(stderr, "Y4M: %s\n", hlv1_strerror(r)); return 1; }
     HLV1Decoder *dec = hlv1_decoder_create(&h);
@@ -61,6 +76,15 @@ int main(int argc, char **argv) {
         HLV1Packet p; r = hlv1_packet_read(in, &p);
         if (r == HLV1_EOF) break;
         if (r < 0) { fprintf(stderr, "Packet: %s\n", hlv1_strerror(r)); return 1; }
+        if (audio) {
+            size_t audio_size = hlv1_packet_audio_size(&p);
+            const uint8_t *audio_data = hlv1_packet_audio_data(&p);
+            if (audio_size && fwrite(audio_data, 1, audio_size, audio) != audio_size) {
+                fprintf(stderr, "Audio write failed\n");
+                hlv1_packet_free(&p);
+                return 1;
+            }
+        }
         const HLV1Frame *f;
         r = hlv1_decoder_decode(dec, &p, &f); hlv1_packet_free(&p);
         if (r < 0) { fprintf(stderr, "Decode: %s at frame %u\n", hlv1_strerror(r), frames); return 1; }
@@ -70,6 +94,7 @@ int main(int argc, char **argv) {
         ++frames;
     }
     if (fflush(out)) { fprintf(stderr, "Output flush failed\n"); return 1; }
+    if (audio && fflush(audio)) { fprintf(stderr, "Audio flush failed\n"); return 1; }
 
     double elapsed = now_sec() - start;
     const HLV1Stats *s = hlv1_decoder_stats(dec);
@@ -82,5 +107,6 @@ int main(int argc, char **argv) {
 
     hlv1_decoder_destroy(dec);
     close_if_file(in, stdin); close_if_file(out, stdout);
+    close_if_file(audio, stdout);
     return 0;
 }

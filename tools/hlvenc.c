@@ -44,6 +44,43 @@ static void close_if_file(FILE *f, FILE *standard) {
     if (f && f != standard) fclose(f);
 }
 
+typedef struct AudioInput {
+    FILE *file;
+    uint32_t sample_rate;
+    uint64_t phase;
+    uint64_t bytes;
+} AudioInput;
+
+/* Attach exactly one video-frame interval of unsigned 8-bit mono PCM.  The
+ * rational accumulator alternates sample counts without long-term A/V drift. */
+static int append_audio_interval(AudioInput *audio, int fps_num, int fps_den,
+                                 HLV1Packet *packet) {
+    if (!audio || !audio->file) return HLV1_OK;
+    uint64_t step = (uint64_t)audio->sample_rate * (uint32_t)fps_den;
+    if (audio->phase > UINT64_MAX - step) return HLV1_ERR_RANGE;
+    audio->phase += step;
+    uint64_t sample_count = audio->phase / (uint32_t)fps_num;
+    audio->phase %= (uint32_t)fps_num;
+    if (sample_count > SIZE_MAX) return HLV1_ERR_RANGE;
+    size_t size = (size_t)sample_count;
+    if (!size) return HLV1_OK;
+
+    uint8_t *samples = (uint8_t *)malloc(size);
+    if (!samples) return HLV1_ERR_MEMORY;
+    size_t got = fread(samples, 1, size, audio->file);
+    if (got < size) {
+        if (ferror(audio->file)) {
+            free(samples);
+            return HLV1_ERR_IO;
+        }
+        memset(samples + got, 128, size - got);
+    }
+    int result = hlv1_packet_append_audio(packet, samples, size);
+    free(samples);
+    if (result >= 0) audio->bytes += size;
+    return result;
+}
+
 static void usage(const char *p) {
     fprintf(stderr,
         "Usage: %s input.y4m|- output.hlv|- [options]\n"
@@ -76,6 +113,8 @@ static void usage(const char *p) {
         "  --motion-candidates N fully RDO-test 1..8 motion candidates (default by preset)\n"
         "  --max-frames N    stop after N frames\n"
         "  --recon FILE.y4m  write encoder reconstruction\n"
+        "  --audio-u8 FILE   mux unsigned 8-bit mono raw PCM\n"
+        "  --audio-rate N    PCM sample rate in Hz (default 16000)\n"
         "\n"
         "Examples:\n"
         "  ffmpeg -i input.mp4 -vf scale=320:240,fps=15,format=yuv420p "
@@ -545,6 +584,8 @@ int main(int argc, char **argv) {
     int rd_luma_weight = 4;
     const char *preset = "balanced";
     const char *recon_path = NULL;
+    const char *audio_path = NULL;
+    int audio_rate = 16000;
     const char *cq_log_path = NULL;
     const char *two_pass_log_path = NULL;
 
@@ -576,6 +617,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--motion-candidates") && i + 1 < argc) { motion_candidates = atoi(argv[++i]); motion_candidates_set = 1; }
         else if (!strcmp(argv[i], "--max-frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--recon") && i + 1 < argc) recon_path = argv[++i];
+        else if (!strcmp(argv[i], "--audio-u8") && i + 1 < argc) audio_path = argv[++i];
+        else if (!strcmp(argv[i], "--audio-rate") && i + 1 < argc) audio_rate = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--preset") && i + 1 < argc) preset = argv[++i];
         else { usage(argv[0]); return 2; }
     }
@@ -606,6 +649,8 @@ int main(int argc, char **argv) {
         cq_trials < 2 || cq_trials > 10 ||
         two_pass_window_seconds < 0.0 || two_pass_window_seconds > 120.0 ||
         two_pass_trials < 2 || two_pass_trials > 10 ||
+        audio_rate < 1000 || audio_rate > 65535 ||
+        (audio_path && !strcmp(audio_path, "-")) ||
         (two_pass_window_seconds > 0.0 && !bitrate_kbps) ||
         (two_pass_log_path && two_pass_window_seconds <= 0.0) ||
         (adaptive_quality && target_psnr > 0.0) ||
@@ -621,6 +666,17 @@ int main(int argc, char **argv) {
     if (r < 0) {
         fprintf(stderr, "Y4M: %s\n", hlv1_strerror(r));
         close_if_file(in, stdin); return 1;
+    }
+
+    AudioInput audio = {0};
+    if (audio_path) {
+        audio.file = fopen(audio_path, "rb");
+        if (!audio.file) {
+            perror(audio_path);
+            close_if_file(in, stdin);
+            return 1;
+        }
+        audio.sample_rate = (uint32_t)audio_rate;
     }
 
     int output_seekable = 0;
@@ -672,6 +728,12 @@ int main(int argc, char **argv) {
     HLV1Header h = {(uint16_t)y4m.width, (uint16_t)y4m.height,
                     (uint16_t)y4m.fps_num, (uint16_t)y4m.fps_den,
                     0, (uint16_t)gop, (uint8_t)quality, (uint8_t)search, 0, (uint8_t)syntax};
+    if (audio.file) {
+        h.flags |= HLV1_FLAG_AUDIO;
+        h.audio_codec = HLV1_AUDIO_PCM_U8;
+        h.audio_sample_rate = (uint16_t)audio.sample_rate;
+        h.audio_channels = 1;
+    }
     if ((r = hlv1_header_write(out, &h)) < 0) {
         fprintf(stderr, "%s\n", hlv1_strerror(r)); return 1;
     }
@@ -868,6 +930,14 @@ int main(int argc, char **argv) {
                     return 1;
                 }
                 actual_total += packet.payload_size + HLV1_FRAME_HEADER_SIZE;
+                r = append_audio_interval(&audio, y4m.fps_num, y4m.fps_den,
+                                          &packet);
+                if (r < 0) {
+                    fprintf(stderr, "Audio: %s\n", hlv1_strerror(r));
+                    hlv1_packet_free(&packet);
+                    fclose(spool);
+                    return 1;
+                }
                 r = hlv1_packet_write(out, &packet);
                 hlv1_packet_free(&packet);
                 if (r < 0) {
@@ -1002,6 +1072,12 @@ int main(int argc, char **argv) {
         }
         uint32_t encoded_packet_bytes = p.payload_size + HLV1_FRAME_HEADER_SIZE;
         int encoded_frame_type = p.frame_type;
+        r = append_audio_interval(&audio, y4m.fps_num, y4m.fps_den, &p);
+        if (r < 0) {
+            fprintf(stderr, "Audio: %s\n", hlv1_strerror(r));
+            hlv1_packet_free(&p);
+            return 1;
+        }
         r = hlv1_packet_write(out, &p);
         hlv1_packet_free(&p);
         if (r < 0) { fprintf(stderr, "Write: %s\n", hlv1_strerror(r)); return 1; }
@@ -1076,6 +1152,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "\rEncoded %u frames in %.3f s (%.2f fps), payload %.3f MiB, preset %s\n",
             encoded_frames, elapsed, elapsed > 0 ? encoded_frames / elapsed : 0,
             s ? s->payload_bytes / 1048576.0 : 0.0, preset);
+    if (audio.file)
+        fprintf(stderr, "Audio: PCM_U8 mono %u Hz, %.3f MiB\n",
+                audio.sample_rate, audio.bytes / 1048576.0);
     fprintf(stderr, "RDO: chroma-scale %.3f, luma-weight %d, lambda-scale %.3f, AC-deadzone %.3f, motion-candidates %d",
             chroma_scale, rd_luma_weight, rd_lambda_scale, ac_deadzone,
             motion_candidates);
@@ -1126,5 +1205,6 @@ int main(int argc, char **argv) {
     if (recon && recon != stdout) fclose(recon);
     if (cq_log) fclose(cq_log);
     if (two_pass_log) fclose(two_pass_log);
+    if (audio.file) fclose(audio.file);
     return 0;
 }
