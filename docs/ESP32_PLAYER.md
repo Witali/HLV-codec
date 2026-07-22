@@ -9,14 +9,16 @@ first hardware milestone.
 
 - reads `/video.hlv` from the internal LittleFS flash partition;
 - decodes HLV-1 stream versions 1 through 12;
-- accepts images up to 320x240;
+- plays the first 256x192 profile and scales it to the 320x240 panel;
 - converts YUV420 to RGB565 in eight-row strips, without a full RGB framebuffer;
 - repeats the file continuously;
 - prints decode/render timing and free heap to the 115200-baud serial console.
 
-The HLV decoder keeps two padded YUV420 frames.  At 320x240 this consumes
-230,400 bytes, so the starter conversion uses 15 fps and moderate quality to
-leave room for compressed packets and the Arduino runtime.
+The HLV decoder keeps two padded YUV420 frames.  Full 320x240 would consume
+230,400 bytes and exceed the largest usable internal-DRAM regions on this
+board.  The first profile uses 256x192 at 15 fps: its two frames consume
+147,456 bytes and output is enlarged to the panel with nearest-neighbour
+scaling.
 
 Audio is not implemented yet.  The board amplifier is connected to GPIO26 and
 can be added after video playback is stable.
@@ -38,7 +40,7 @@ To convert an existing video:
 
 The result is `out\video.hlv`.  The build script packages it as
 `build\esp32\littlefs.bin`.  The default 4 MB partition layout reserves
-0x160000 bytes (about 1.38 MiB) for LittleFS, so the generated 991 KB test
+0x160000 bytes (about 1.38 MiB) for LittleFS, so the generated 729 KB test
 video fits with room for filesystem metadata.
 
 ## Project-local dependencies
@@ -67,17 +69,18 @@ the local CLI, and upload:
 
 ```powershell
 .\scripts\arduino.ps1 board list
-.\scripts\upload_esp32.ps1 -Port COM5
+.\scripts\upload_esp32.ps1 -Port COM8
 ```
 
-Replace `COM5` with the detected port.  The upload script writes both the
-program and `littlefs.bin` to internal flash; no microSD card is needed.  If
-the display shows unstable pixels, lower `cfg.freq_write` from 80 MHz to
-40 MHz in `LGFX_CYD2USB.hpp`.
+Replace `COM8` if the board appears on another port.  This CYD2USB revision
+does not reliably enter the ROM downloader through the CH340 control lines.
+When the script asks, hold the board's `BOOT` button, briefly press and release
+`RST`, then release `BOOT`.  The script waits for that sequence and directly
+writes the bootloader, partition table, program and `littlefs.bin` to internal
+flash; no microSD card is needed.
 
-If upload reports `Wrong boot mode (0x13)`, enter the ROM downloader manually:
-hold the board's `BOOT` button, briefly press and release `RST`, then release
-`BOOT` and run the upload command again.
+If the display shows unstable pixels, lower `cfg.freq_write` from 80 MHz to
+40 MHz in `LGFX_CYD2USB.hpp`.
 
 ## Hardware mapping
 

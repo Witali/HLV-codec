@@ -11,6 +11,8 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $encoder = Join-Path $repo "build\msvc\hlvenc.exe"
 $ffmpeg = Join-Path $repo "tools\ffmpeg\bin\ffmpeg.exe"
+$videoWidth = 256
+$videoHeight = 192
 
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
@@ -31,8 +33,10 @@ $temporaryY4m = Join-Path ([IO.Path]::GetTempPath()) `
     ("hlv1-esp32-{0}.y4m" -f [guid]::NewGuid().ToString("N"))
 
 try {
-    $filter = "fps=$Fps,scale=320:240:force_original_aspect_ratio=decrease:" +
-        "flags=lanczos,pad=320:240:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p"
+    $filter = "fps=$Fps,scale=${videoWidth}:${videoHeight}:" +
+        "force_original_aspect_ratio=decrease:flags=lanczos," +
+        "pad=${videoWidth}:${videoHeight}:(ow-iw)/2:(oh-ih)/2:black," +
+        "format=yuv420p"
 
     if ($InputFile) {
         $InputFile = (Resolve-Path -LiteralPath $InputFile).Path
@@ -40,7 +44,7 @@ try {
             -vf $filter -f yuv4mpegpipe $temporaryY4m
     } else {
         & $ffmpeg -y -hide_banner -loglevel error -f lavfi `
-            -i "testsrc2=size=320x240:rate=${Fps}:duration=$Duration" -an `
+            -i "testsrc2=size=${videoWidth}x${videoHeight}:rate=${Fps}:duration=$Duration" -an `
             -vf "format=yuv420p" -f yuv4mpegpipe $temporaryY4m
     }
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg conversion failed." }
