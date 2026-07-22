@@ -1,0 +1,177 @@
+# HLV-1 v0.3 development build
+
+HLV-1 is an experimental low-complexity video codec for QVGA-class displays and microcontrollers. This build contains a portable C encoder and decoder, a static library, Y4M pipe tools, correctness tests, and a resumable benchmark harness.
+
+The decoder accepts stream syntax v1 through v12. New encodes use **stream
+v12** by default.  The stable syntax now includes:
+
+- short `SKIP` and zero-residual paths;
+- 16×16 and optional four-way 8×8 motion prediction;
+- integer, half-pixel, and optional global motion;
+- extended quantizer range;
+- compact residual masks and coefficient VLC;
+- directional intra prediction;
+- strict 2/4-colour palette blocks;
+- the original simple 4×4 integer WHT reconstruction.
+
+## Build and verify
+
+```sh
+make -j
+make test
+make sanitize
+```
+
+`make test` covers v1-v12 round-trip, forced `FILL`/`SKIP`/split/palette
+paths, encoder-state cloning, malformed headers, truncated packets, CRC
+errors, and invalid frame ordering. `make sanitize` repeats the tests with
+AddressSanitizer and UndefinedBehaviorSanitizer.
+
+## FFmpeg pipe encoding
+
+The source aspect ratio can be preserved by scaling and padding:
+
+```sh
+ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
+  -vf "fps=15,scale=320:240:force_original_aspect_ratio=decrease:flags=lanczos,pad=320:240:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p" \
+  -f yuv4mpegpipe - \
+| ./hlvenc - output.hlv --preset balanced --quality 55
+```
+
+Presets:
+
+- `fast`: no motion search, GOP 24;
+- `balanced`: motion radius 4 pixels, GOP 30;
+- `slow`: motion radius 8 pixels, GOP 45.
+
+Use older `--syntax N` values only for legacy comparisons. The default is `--syntax 12`.
+
+## Constant and adaptive quality
+
+Fixed minimum frame quality, measured as reconstructed YUV420 PSNR:
+
+```sh
+ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
+  -f yuv4mpegpipe - \
+| ./hlvenc - output.hlv --target-psnr 35 --cq-trials 5
+```
+
+Perceptually adaptive quality keeps calm/predictable frames near 35 dB and
+allows fast, highly detailed material to fall toward 30 dB:
+
+```sh
+ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
+  -f yuv4mpegpipe - \
+| ./hlvenc - output.hlv \
+    --adaptive-quality --psnr-min 30 --psnr-max 35 \
+    --cq-trials 5 --cq-log quality.csv
+```
+
+The analysis compensates a small global translation before measuring motion,
+so a slow camera pan remains a high-quality scene. Static fine detail also
+stays sharp; detail lowers the target mainly when it moves. Trial encodes and
+RDO adjustments are encoder-only and do not change decoder complexity or the
+v12 bitstream.
+
+## Optional adaptive K/P and GOP
+
+HLV can compare a forced P-frame and K-frame from the same cloned predictive
+state. This is an encoder-only decision and does not change syntax v12 or
+decoder cost:
+
+```sh
+./hlvenc input.y4m output.hlv \
+  --adaptive-gop --gop 100 \
+  --min-key-interval 8 --keyframe-bias 1.00
+```
+
+`--gop` is the hard maximum interval. The strict default bias `1.00` selects a
+K-frame only when its current RDO cost is no greater than the P candidate. The
+feature is optional because it increases encode time. See
+`docs/ADAPTIVE_GOP.md` for measurements.
+
+## Bounded local two-pass bitrate mode
+
+A pipe cannot be rewound, so HLV uses a rolling fragment analysis rather than
+requiring a first pass over the complete input. The current fragment is spooled
+to a temporary raw-YUV file, probed from a clone of the exact encoder state,
+and then immediately encoded and discarded:
+
+```sh
+ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
+  -f yuv4mpegpipe - \
+| ./hlvenc - output.hlv \
+    --bitrate 400 \
+    --two-pass-window 10 \
+    --two-pass-trials 5 \
+    --two-pass-log windows.csv
+```
+
+Only the current 10-second fragment is retained. The first stable version
+selects one qstep for the complete fragment, which makes the output pass
+reproduce the selected probe size exactly. Later work will test cautious
+within-window allocation without sacrificing bitrate accuracy.
+
+## Decode through FFmpeg
+
+```sh
+./hlvdec output.hlv - \
+| ffmpeg -hide_banner -loglevel error -f yuv4mpegpipe -i - decoded.mp4
+```
+
+Direct playback:
+
+```sh
+./hlvdec output.hlv - | ffplay -f yuv4mpegpipe -i -
+```
+
+Both tools accept `-` for stdin or stdout. A stream written to stdout has `frame_count=0`; decoders read packets until EOF. Diagnostics are written to stderr only.
+
+## Reproducible local suite
+
+Generate five synthetic five-minute sources covering motion, fine texture, smooth imagery, screen content, and photographic panning:
+
+```sh
+python3 scripts/make_local_suite.py --duration 300 --fps 10
+```
+
+Run a small but complete five-minute sweep that can resume after interruption:
+
+```sh
+python3 scripts/benchmark.py \
+  --sources bench/sources/*_5min.mp4 \
+  --duration 300 --fps 10 \
+  --hlv-syntaxes 2 --hlv-presets balanced --hlv-qualities 40,55,70 \
+  --codecs mjpeg,h264,vp8 \
+  --mjpeg-values 2,6,12 --h264-values 18,26,34 --vp8-values 10,28,46 \
+  --prefix local_5min --keep-files --resume
+```
+
+MPEG-1/2 accept only standardized frame rates in FFmpeg. Compare them in a separate 25 fps run:
+
+```sh
+python3 scripts/benchmark.py \
+  --sources bench/sources/*_5min.mp4 \
+  --duration 60 --fps 25 \
+  --hlv-syntaxes 2 --hlv-presets balanced --hlv-qualities 40,55,70 \
+  --codecs mpeg1,mpeg2 --mpeg1-values 2,6,12 --mpeg2-values 2,6,12 \
+  --prefix mpeg_25fps --keep-files --resume
+```
+
+The harness normalizes each source once to an FFV1 reference. HLV and every comparator then receive exactly those reconstructed frames. Results are atomically saved after every completed point.
+
+Create a Markdown summary:
+
+```sh
+python3 scripts/summarize_results.py bench/results/local_5min.json
+```
+
+## Open movie sources
+
+`bench/OPEN_SOURCES.md` lists recommended open material. The helper below downloads the two sources whose direct Wikimedia URLs are included in this release:
+
+```sh
+python3 scripts/fetch_open_sources.py
+```
+
+The project does not automate downloading arbitrary YouTube material. Keep the required attribution when redistributing open movies.
