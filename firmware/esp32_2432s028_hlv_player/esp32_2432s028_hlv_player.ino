@@ -9,6 +9,7 @@
 #include <hlv1.h>
 
 #include "LGFX_CYD2USB.hpp"
+#include "PlayerSettings.hpp"
 
 namespace {
 
@@ -31,6 +32,9 @@ uint32_t decoded_frames = 0;
 uint32_t dropped_deadlines = 0;
 uint32_t last_retry_ms = 0;
 uint16_t rgb_rows[kScreenWidth * kRowsPerTransfer];
+uint16_t scaled_rgb_row[kScreenWidth];
+uint16_t scaled_x_map[kScreenWidth];
+uint16_t scaled_y_map[kScreenHeight];
 StreamBufferHandle_t audio_stream = nullptr;
 TaskHandle_t audio_task_handle = nullptr;
 dac_continuous_handle_t audio_dac = nullptr;
@@ -51,6 +55,56 @@ uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
     return static_cast<uint16_t>(((red & 0xF8) << 8) |
                                  ((green & 0xFC) << 3) |
                                  (blue >> 3));
+}
+
+void convertNativeRow(const HLV1Frame *frame, int source_y,
+                      uint16_t *output) {
+    const uint8_t *luma = frame->y + source_y * frame->stride_y;
+    const uint8_t *chroma_u =
+        frame->u + (source_y >> 1) * frame->stride_u;
+    const uint8_t *chroma_v =
+        frame->v + (source_y >> 1) * frame->stride_v;
+
+    for (int x = 0; x < frame->width; x += 2) {
+        const int u = static_cast<int>(chroma_u[x >> 1]) - 128;
+        const int v = static_cast<int>(chroma_v[x >> 1]) - 128;
+        const int red_add = 409 * v + 128;
+        const int green_add = -100 * u - 208 * v + 128;
+        const int blue_add = 516 * u + 128;
+        output[x] = yuvToRgb565(luma[x], red_add, green_add, blue_add);
+        if (x + 1 < frame->width) {
+            output[x + 1] = yuvToRgb565(
+                luma[x + 1], red_add, green_add, blue_add);
+        }
+    }
+}
+
+void convertScaledRow(const HLV1Frame *frame, int source_y,
+                      uint16_t *output) {
+    const uint8_t *luma = frame->y + source_y * frame->stride_y;
+    const uint8_t *chroma_u =
+        frame->u + (source_y >> 1) * frame->stride_u;
+    const uint8_t *chroma_v =
+        frame->v + (source_y >> 1) * frame->stride_v;
+    int previous_chroma_x = -1;
+    int red_add = 0;
+    int green_add = 0;
+    int blue_add = 0;
+
+    for (int output_x = 0; output_x < kScreenWidth; ++output_x) {
+        const int source_x = scaled_x_map[output_x];
+        const int chroma_x = source_x >> 1;
+        if (chroma_x != previous_chroma_x) {
+            const int u = static_cast<int>(chroma_u[chroma_x]) - 128;
+            const int v = static_cast<int>(chroma_v[chroma_x]) - 128;
+            red_add = 409 * v + 128;
+            green_add = -100 * u - 208 * v + 128;
+            blue_add = 516 * u + 128;
+            previous_chroma_x = chroma_x;
+        }
+        output[output_x] = yuvToRgb565(
+            luma[source_x], red_add, green_add, blue_add);
+    }
 }
 
 void showStatus(const char *title, const char *detail = nullptr) {
@@ -251,10 +305,25 @@ bool openVideo() {
     dropped_deadlines = 0;
     display.fillScreen(0x0000);
 
+    if (player_settings::kScaleVideoToDisplay) {
+        for (int x = 0; x < kScreenWidth; ++x) {
+            scaled_x_map[x] = static_cast<uint16_t>(
+                (x * sequence_header.width) / kScreenWidth);
+        }
+        for (int y = 0; y < kScreenHeight; ++y) {
+            scaled_y_map[y] = static_cast<uint16_t>(
+                (y * sequence_header.height) / kScreenHeight);
+        }
+    }
+
     Serial.printf("Playing %ux%u, %u/%u fps, stream v%u\n",
                   sequence_header.width, sequence_header.height,
                   sequence_header.fps_num, sequence_header.fps_den,
                   sequence_header.version);
+    Serial.printf("Display mode: %s\n",
+                  player_settings::kScaleVideoToDisplay
+                      ? "scale to 320x240"
+                      : "native size, centred");
     reportHeap("decoder ready");
     return true;
 }
@@ -272,6 +341,27 @@ void waitUntil(uint32_t deadline) {
 }
 
 void renderFrame(const HLV1Frame *frame) {
+    if (player_settings::kScaleVideoToDisplay) {
+        int cached_source_y = -1;
+        display.startWrite();
+        for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
+            const int rows = min(kRowsPerTransfer, kScreenHeight - y0);
+            for (int row = 0; row < rows; ++row) {
+                const int source_y = scaled_y_map[y0 + row];
+                if (source_y != cached_source_y) {
+                    convertScaledRow(frame, source_y, scaled_rgb_row);
+                    cached_source_y = source_y;
+                }
+                memcpy(rgb_rows + row * kScreenWidth, scaled_rgb_row,
+                       sizeof(uint16_t) * kScreenWidth);
+            }
+            display.pushImage(0, y0, kScreenWidth, rows, rgb_rows);
+            yield();
+        }
+        display.endWrite();
+        return;
+    }
+
     const int x_offset = (kScreenWidth - frame->width) / 2;
     const int y_offset = (kScreenHeight - frame->height) / 2;
 
@@ -280,23 +370,8 @@ void renderFrame(const HLV1Frame *frame) {
         const int rows = min(kRowsPerTransfer, frame->height - y0);
         for (int row = 0; row < rows; ++row) {
             const int y = y0 + row;
-            const uint8_t *luma = frame->y + y * frame->stride_y;
-            const uint8_t *chroma_u = frame->u + (y >> 1) * frame->stride_u;
-            const uint8_t *chroma_v = frame->v + (y >> 1) * frame->stride_v;
             uint16_t *output = rgb_rows + row * frame->width;
-
-            for (int x = 0; x < frame->width; x += 2) {
-                const int u = static_cast<int>(chroma_u[x >> 1]) - 128;
-                const int v = static_cast<int>(chroma_v[x >> 1]) - 128;
-                const int red_add = 409 * v + 128;
-                const int green_add = -100 * u - 208 * v + 128;
-                const int blue_add = 516 * u + 128;
-                output[x] = yuvToRgb565(luma[x], red_add, green_add, blue_add);
-                if (x + 1 < frame->width) {
-                    output[x + 1] = yuvToRgb565(
-                        luma[x + 1], red_add, green_add, blue_add);
-                }
-            }
+            convertNativeRow(frame, y, output);
         }
         display.pushImage(x_offset, y_offset + y0,
                           frame->width, rows, rgb_rows);

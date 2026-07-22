@@ -29,6 +29,26 @@ audio samples are divided among frame packets with rational accounting to
 avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
 container layout.
 
+## Display scaling setting
+
+The compile-time flag `kScaleVideoToDisplay` is in
+`firmware/esp32_2432s028_hlv_player/PlayerSettings.hpp`:
+
+```cpp
+constexpr bool kScaleVideoToDisplay = false;
+```
+
+- `false` draws the video at its native resolution in the centre. The complete
+  display is cleared once, then only the video rectangle is transferred over
+  SPI on each frame. A 256x192 frame is placed at (32, 24), leaving black
+  borders.
+- `true` stretches each frame to 320x240 using nearest-neighbour sampling and
+  transfers the complete display on every frame.
+
+Both modes convert and send eight rows at a time and do not allocate a full
+RGB framebuffer. The scaling mode adds only coordinate maps and one cached
+RGB row (1760 bytes in the current build).
+
 ## Prepare a video on Windows
 
 Visual Studio C/C++ tools must be installed.  FFmpeg is downloaded into the
