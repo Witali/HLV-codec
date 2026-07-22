@@ -59,4 +59,7 @@ if ($LASTEXITCODE -ne 0) { throw "test_roundtrip failed." }
 & (Join-Path $OutputDirectory "test_errors.exe")
 if ($LASTEXITCODE -ne 0) { throw "test_errors failed." }
 
+& (Join-Path $PSScriptRoot "build_windows_player.ps1") `
+    -OutputDirectory $OutputDirectory -SkipCompilerCheck
+
 Write-Host "MSVC tools are ready in $OutputDirectory"
