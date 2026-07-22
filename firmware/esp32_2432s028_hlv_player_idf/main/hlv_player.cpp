@@ -266,6 +266,10 @@ void stopAudio() {
 bool prepareAudio(const HLV1Header &header) {
     stopAudio();
     if (!(header.flags & HLV1_FLAG_AUDIO)) return true;
+    if (!player_settings::kEnableAudio) {
+        ESP_LOGW(kTag, "Audio output disabled in player settings");
+        return true;
+    }
 
     audio_stream = xStreamBufferCreate(kAudioStreamBytes, kAudioWriteBytes);
     if (!audio_stream) return false;

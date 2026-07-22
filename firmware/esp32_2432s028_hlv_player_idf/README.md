@@ -58,3 +58,6 @@ Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
 centred presentation or nearest-neighbour scaling to 320x240.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
+`kEnableAudio` is temporarily `false` in this test build so video playback can
+be checked independently of the DAC DMA fault. The audio track remains in the
+HLV file and is skipped without being copied or queued.

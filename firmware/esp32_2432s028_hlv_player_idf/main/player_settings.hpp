@@ -11,6 +11,10 @@ constexpr bool kScaleVideoToDisplay = false;
 // cost of reduced colour precision and some additional unpacking work.
 constexpr bool kUseCompactY6U5V5 = true;
 
+// Keep this false while isolating the playback reset caused by DAC DMA.
+// Audio packets remain in the HLV file but are skipped by the player.
+constexpr bool kEnableAudio = false;
+
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
 constexpr int kSdClockKhz = 20000;
 

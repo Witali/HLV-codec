@@ -37,6 +37,11 @@ bytes at 320x180, but it is intentionally not bit-exact: banding and gradual
 P-frame prediction drift are possible. Set the flag to `false` for the original
 8-bit reference path.
 
+The current diagnostic build also sets `kEnableAudio = false` in the same
+settings file. This bypasses DAC setup and the FreeRTOS audio queue while
+leaving the audio track in the HLV file untouched, allowing compact video
+playback to be tested independently of the DAC DMA restart fault.
+
 ## Segmented ESP32 decoder
 
 The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
