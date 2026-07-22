@@ -157,6 +157,29 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     }
 }
 
+/* A zero-motion SKIP already has exactly the representation required by the
+ * next compact reference frame.  Preserve those packed bits instead of
+ * quantizing and packing the unpacked predictor again. */
+static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
+    const HLV1Frame *src = &d->previous;
+    HLV1Frame *dst = &d->compact_current;
+    int y_byte = mb_x * 6 / 8;
+    for (int y = 0; y < 16; ++y) {
+        memcpy(dst->y + (mb_y + y) * dst->stride_y + y_byte,
+               src->y + (mb_y + y) * src->stride_y + y_byte, 12);
+    }
+
+    int chroma_x = mb_x / 2;
+    int chroma_y = mb_y / 2;
+    int chroma_byte = chroma_x * 5 / 8;
+    for (int y = 0; y < 8; ++y) {
+        memcpy(dst->u + (chroma_y + y) * dst->stride_u + chroma_byte,
+               src->u + (chroma_y + y) * src->stride_u + chroma_byte, 5);
+        memcpy(dst->v + (chroma_y + y) * dst->stride_v + chroma_byte,
+               src->v + (chroma_y + y) * src->stride_v + chroma_byte, 5);
+    }
+}
+
 /* --- Small deterministic arithmetic helpers --------------------------- */
 static int median3(int a, int b, int c) {
     if (a > b) { int t = a; a = b; b = t; }
@@ -1102,12 +1125,17 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
             int mode = get_mode(&br, version, p->frame_type, use_global);
             if (br.error) return br.error;
             int r = HLV1_OK;
+            int compact_output_ready = 0;
             int context_mvx = fallback_mvx, context_mvy = fallback_mvy;
             switch (mode) {
             case HLV1_MODE_SKIP:
                 if (p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
                 predict_motion(d, x, y, 0, 0, denominator);
+                if (d->compact_y6_u5_v5) {
+                    compact_copy_macroblock(d, x, y);
+                    compact_output_ready = 1;
+                }
                 context_mvx = context_mvy = 0;
                 d->stats.skipped++;
                 break;
@@ -1275,7 +1303,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 return HLV1_ERR_BITSTREAM;
             }
             if (r < 0) return r;
-            if (d->compact_y6_u5_v5)
+            if (d->compact_y6_u5_v5 && !compact_output_ready)
                 compact_store_macroblock(d, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
