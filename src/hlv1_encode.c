@@ -1656,10 +1656,12 @@ HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
                     src->previous.padded_height;
     size_t c_size = (size_t)src->previous.stride_u *
                     (src->previous.padded_height / 2);
-    memcpy(dst->previous.storage, src->previous.storage,
-           y_size + 2 * c_size);
-    memcpy(dst->current.storage, src->current.storage,
-           y_size + 2 * c_size);
+    memcpy(dst->previous.y, src->previous.y, y_size);
+    memcpy(dst->previous.u, src->previous.u, c_size);
+    memcpy(dst->previous.v, src->previous.v, c_size);
+    memcpy(dst->current.y, src->current.y, y_size);
+    memcpy(dst->current.u, src->current.u, c_size);
+    memcpy(dst->current.v, src->current.v, c_size);
 
     if (src->mv_cols > 0) {
         size_t bytes = (size_t)src->mv_cols * sizeof(int16_t);

@@ -170,11 +170,28 @@ int hlv1_frame_alloc(HLV1Frame *f, int width, int height) {
     size_t y_size = (size_t)f->stride_y * f->padded_height;
     size_t c_size = (size_t)f->stride_u * (f->padded_height / 2);
     if (y_size > SIZE_MAX - 2 * c_size) return HLV1_ERR_RANGE;
+    /* Prefer one cache-friendly allocation.  Small MCUs can have enough total
+     * heap while no individual region can hold a complete QVGA YUV420 frame;
+     * fall back to independently allocated planes in that case. */
     f->storage = (uint8_t *)malloc(y_size + 2 * c_size);
-    if (!f->storage) return HLV1_ERR_MEMORY;
-    f->y = f->storage;
-    f->u = f->y + y_size;
-    f->v = f->u + c_size;
+    if (f->storage) {
+        f->y = f->storage;
+        f->u = f->y + y_size;
+        f->v = f->u + c_size;
+    } else {
+        f->y = (uint8_t *)malloc(y_size);
+        f->u = (uint8_t *)malloc(c_size);
+        f->v = (uint8_t *)malloc(c_size);
+        f->storage = f->y;
+        f->storage_mode = 1;
+        if (!f->y || !f->u || !f->v) {
+            free(f->y);
+            free(f->u);
+            free(f->v);
+            memset(f, 0, sizeof *f);
+            return HLV1_ERR_MEMORY;
+        }
+    }
     memset(f->y, 0, y_size);
     memset(f->u, 128, c_size);
     memset(f->v, 128, c_size);
@@ -183,7 +200,13 @@ int hlv1_frame_alloc(HLV1Frame *f, int width, int height) {
 
 void hlv1_frame_free(HLV1Frame *f) {
     if (!f) return;
-    free(f->storage);
+    if (f->storage_mode == 1) {
+        free(f->u);
+        free(f->v);
+    }
+    if (f->storage) {
+        free(f->storage);
+    }
     memset(f, 0, sizeof *f);
 }
 
