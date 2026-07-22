@@ -41,6 +41,14 @@ extern "C" {
 #define HLV1_HEADER_SIZE 28
 #define HLV1_FRAME_HEADER_SIZE 20
 
+/* Optional sequence features.  Audio reuses reserved container bytes and does
+ * not change the video syntax version. */
+#define HLV1_FLAG_AUDIO 0x01
+
+/* Audio samples are interleaved into the tail of each video packet. */
+#define HLV1_AUDIO_NONE   0
+#define HLV1_AUDIO_PCM_U8 1
+
 /* Frame types.  Decoding order is identical to display order; HLV-1 has no
  * B-frames or future-frame dependencies. */
 #define HLV1_FRAME_KEY 0
@@ -86,8 +94,11 @@ typedef struct HLV1Header {
     uint16_t gop;            /**< Maximum distance between keyframes. */
     uint8_t quality;         /**< Informational friendly quality setting. */
     uint8_t search_radius;   /**< Informational encoder search radius. */
-    uint8_t flags;           /**< Reserved sequence flags; write zero. */
+    uint8_t flags;           /**< HLV1_FLAG_* sequence features. */
     uint8_t version;         /**< Zero aliases syntax v1 for source compatibility. */
+    uint16_t audio_sample_rate; /**< Audio samples per second; zero without audio. */
+    uint8_t audio_codec;     /**< HLV1_AUDIO_* value. */
+    uint8_t audio_channels;  /**< Interleaved channels; PCM_U8 currently requires 1. */
 } HLV1Header;
 
 /** One compressed frame packet, excluding its on-disk 20-byte packet header. */
@@ -181,6 +192,14 @@ int hlv1_header_read(FILE *file, HLV1Header *header);
 int hlv1_packet_write(FILE *file, const HLV1Packet *packet);
 int hlv1_packet_read(FILE *file, HLV1Packet *packet);
 void hlv1_packet_free(HLV1Packet *packet);
+
+/* Packet payload layout helpers.  Video occupies ceil(bit_length/8) bytes;
+ * any remaining bytes are audio for that frame's presentation interval. */
+size_t hlv1_packet_video_payload_size(const HLV1Packet *packet);
+size_t hlv1_packet_audio_size(const HLV1Packet *packet);
+const uint8_t *hlv1_packet_audio_data(const HLV1Packet *packet);
+int hlv1_packet_append_audio(HLV1Packet *packet,
+                             const uint8_t *samples, size_t size);
 
 /* Frame lifetime helpers. */
 int hlv1_frame_alloc(HLV1Frame *frame, int width, int height);

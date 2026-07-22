@@ -19,7 +19,7 @@ const char *hlv1_strerror(int result) {
     case HLV1_ERR_MEMORY: return "out of memory";
     case HLV1_ERR_IO: return "I/O error";
     case HLV1_ERR_FORMAT: return "invalid or unsupported HLV-1 format";
-    case HLV1_ERR_CRC: return "frame CRC mismatch";
+    case HLV1_ERR_CRC: return "packet CRC mismatch";
     case HLV1_ERR_RANGE: return "value outside valid range";
     case HLV1_ERR_BITSTREAM: return "invalid or truncated bitstream";
     default: return "unknown error";
@@ -58,6 +58,16 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     unsigned version = hlv1_stream_version(h);
     if (version < HLV1_STREAM_VERSION_1 || version > HLV1_VERSION)
         return HLV1_ERR_ARGUMENT;
+    if (h->flags & (uint8_t)~HLV1_FLAG_AUDIO)
+        return HLV1_ERR_ARGUMENT;
+    if (h->flags & HLV1_FLAG_AUDIO) {
+        if (h->audio_codec != HLV1_AUDIO_PCM_U8 ||
+            !h->audio_sample_rate || h->audio_channels != 1)
+            return HLV1_ERR_ARGUMENT;
+    } else if (h->audio_codec != HLV1_AUDIO_NONE ||
+               h->audio_sample_rate || h->audio_channels) {
+        return HLV1_ERR_ARGUMENT;
+    }
     b[4] = (uint8_t)version;
     b[5] = h->flags;
     hlv1_wr16(b + 6, h->width);
@@ -69,8 +79,10 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     b[20] = h->quality;
     b[21] = h->search_radius;
     b[22] = 16;
-    b[23] = 0;
-    hlv1_wr32(b + 24, 0);
+    b[23] = h->audio_codec;
+    hlv1_wr16(b + 24, h->audio_sample_rate);
+    b[26] = h->audio_channels;
+    b[27] = 0;
     return fwrite(b, 1, sizeof b, file) == sizeof b ? HLV1_OK : HLV1_ERR_IO;
 }
 
@@ -81,7 +93,8 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
     if (got == 0 && feof(file)) return HLV1_EOF;
     if (got != sizeof b) return HLV1_ERR_IO;
     if (memcmp(b, HLV1_MAGIC, 4) ||
-        b[4] < HLV1_STREAM_VERSION_1 || b[4] > HLV1_VERSION || b[22] != 16)
+        b[4] < HLV1_STREAM_VERSION_1 || b[4] > HLV1_VERSION ||
+        b[22] != 16 || b[27] != 0)
         return HLV1_ERR_FORMAT;
     memset(h, 0, sizeof *h);
     h->flags = b[5];
@@ -94,8 +107,20 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
     h->gop = hlv1_rd16(b + 18);
     h->quality = b[20];
     h->search_radius = b[21];
-    if (!h->width || !h->height || !h->fps_num || !h->fps_den)
+    h->audio_codec = b[23];
+    h->audio_sample_rate = hlv1_rd16(b + 24);
+    h->audio_channels = b[26];
+    if (!h->width || !h->height || !h->fps_num || !h->fps_den ||
+        (h->flags & (uint8_t)~HLV1_FLAG_AUDIO))
         return HLV1_ERR_FORMAT;
+    if (h->flags & HLV1_FLAG_AUDIO) {
+        if (h->audio_codec != HLV1_AUDIO_PCM_U8 ||
+            !h->audio_sample_rate || h->audio_channels != 1)
+            return HLV1_ERR_FORMAT;
+    } else if (h->audio_codec != HLV1_AUDIO_NONE ||
+               h->audio_sample_rate || h->audio_channels) {
+        return HLV1_ERR_FORMAT;
+    }
     return HLV1_OK;
 }
 
@@ -153,6 +178,42 @@ void hlv1_packet_free(HLV1Packet *p) {
     if (!p) return;
     free(p->payload);
     memset(p, 0, sizeof *p);
+}
+
+size_t hlv1_packet_video_payload_size(const HLV1Packet *p) {
+    if (!p) return 0;
+    uint64_t size = ((uint64_t)p->bit_length + 7U) / 8U;
+    return size <= p->payload_size ? (size_t)size : 0;
+}
+
+size_t hlv1_packet_audio_size(const HLV1Packet *p) {
+    if (!p) return 0;
+    size_t video_size = hlv1_packet_video_payload_size(p);
+    if (!video_size && p->bit_length) return 0;
+    return p->payload_size - video_size;
+}
+
+const uint8_t *hlv1_packet_audio_data(const HLV1Packet *p) {
+    size_t audio_size = hlv1_packet_audio_size(p);
+    if (!p || !audio_size || !p->payload) return NULL;
+    return p->payload + hlv1_packet_video_payload_size(p);
+}
+
+int hlv1_packet_append_audio(HLV1Packet *p,
+                             const uint8_t *samples, size_t size) {
+    if (!p || (!samples && size) ||
+        (p->payload_size && !p->payload) ||
+        p->bit_length > (uint64_t)p->payload_size * 8U)
+        return HLV1_ERR_ARGUMENT;
+    if (!size) return HLV1_OK;
+    if (size > UINT32_MAX - p->payload_size) return HLV1_ERR_RANGE;
+    size_t new_size = (size_t)p->payload_size + size;
+    uint8_t *payload = (uint8_t *)realloc(p->payload, new_size);
+    if (!payload) return HLV1_ERR_MEMORY;
+    memcpy(payload + p->payload_size, samples, size);
+    p->payload = payload;
+    p->payload_size = (uint32_t)new_size;
+    return HLV1_OK;
 }
 
 /* --- Padded YUV420 frame storage --------------------------------------- */

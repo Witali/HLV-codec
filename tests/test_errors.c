@@ -6,6 +6,7 @@
 #include "hlv1.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define CHECK(expr) do { \
@@ -40,6 +41,58 @@ int main(void) {
     CHECK(got.width == h.width && got.height == h.height && got.version == h.version);
     fclose(f);
 
+    h.flags = HLV1_FLAG_AUDIO;
+    h.audio_codec = HLV1_AUDIO_PCM_U8;
+    h.audio_sample_rate = 16000;
+    h.audio_channels = 1;
+    f = tmpfile();
+    CHECK(f != NULL);
+    CHECK(hlv1_header_write(f, &h) == HLV1_OK);
+    rewind(f);
+    CHECK(hlv1_header_read(f, &got) == HLV1_OK);
+    CHECK(got.flags == h.flags && got.audio_codec == h.audio_codec &&
+          got.audio_sample_rate == h.audio_sample_rate &&
+          got.audio_channels == h.audio_channels);
+    fclose(f);
+
+    HLV1Header invalid_audio = test_header();
+    invalid_audio.flags = HLV1_FLAG_AUDIO;
+    invalid_audio.audio_codec = HLV1_AUDIO_PCM_U8;
+    invalid_audio.audio_channels = 1;
+    f = tmpfile();
+    CHECK(f != NULL);
+    CHECK(hlv1_header_write(f, &invalid_audio) == HLV1_ERR_ARGUMENT);
+    fclose(f);
+
+    const unsigned char video_bytes[] = {0x12, 0x34, 0x56, 0x78};
+    const unsigned char audio[] = {0x00, 0x40, 0x80, 0xC0, 0xFF};
+    HLV1Packet read_packet;
+    HLV1Packet audio_packet;
+    memset(&audio_packet, 0, sizeof audio_packet);
+    audio_packet.frame_type = HLV1_FRAME_KEY;
+    audio_packet.q_y = 8;
+    audio_packet.q_uv = 10;
+    audio_packet.bit_length = 29;
+    audio_packet.payload_size = 4;
+    audio_packet.payload = (unsigned char *)malloc(4);
+    CHECK(audio_packet.payload != NULL);
+    memcpy(audio_packet.payload, video_bytes, 4);
+    CHECK(hlv1_packet_append_audio(&audio_packet, audio, sizeof audio) == HLV1_OK);
+    CHECK(hlv1_packet_video_payload_size(&audio_packet) == 4);
+    CHECK(hlv1_packet_audio_size(&audio_packet) == sizeof audio);
+    CHECK(!memcmp(hlv1_packet_audio_data(&audio_packet), audio, sizeof audio));
+    f = tmpfile();
+    CHECK(f != NULL);
+    CHECK(hlv1_packet_write(f, &audio_packet) == HLV1_OK);
+    rewind(f);
+    CHECK(hlv1_packet_read(f, &read_packet) == HLV1_OK);
+    CHECK(hlv1_packet_video_payload_size(&read_packet) == 4);
+    CHECK(hlv1_packet_audio_size(&read_packet) == sizeof audio);
+    CHECK(!memcmp(hlv1_packet_audio_data(&read_packet), audio, sizeof audio));
+    hlv1_packet_free(&read_packet);
+    hlv1_packet_free(&audio_packet);
+    fclose(f);
+
     f = tmpfile();
     CHECK(f != NULL);
     unsigned char bad_header[HLV1_HEADER_SIZE] = {0};
@@ -65,7 +118,6 @@ int main(void) {
     CHECK(fputc(0xFF, f) != EOF);
     fflush(f);
     rewind(f);
-    HLV1Packet read_packet;
     CHECK(hlv1_packet_read(f, &read_packet) == HLV1_ERR_CRC);
     fclose(f);
 

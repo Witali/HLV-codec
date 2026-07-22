@@ -1016,7 +1016,7 @@ int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
     d->have_previous = 1;
     d->stats.frames++;
     d->stats.keyframes += p->frame_type == HLV1_FRAME_KEY;
-    d->stats.payload_bytes += p->payload_size;
+    d->stats.payload_bytes += hlv1_packet_video_payload_size(p);
     d->stats.decoded_bits += p->bit_length;
     *frame = &d->previous;
     return HLV1_OK;
