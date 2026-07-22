@@ -361,7 +361,7 @@ bool openVideo() {
     reportHeap("before decoder");
     decoder = hlv1_decoder_create(&sequence_header);
     if (!decoder) {
-        showStatus("Not enough RAM", "Use a 256x192 HLV file");
+        showStatus("Not enough RAM", "Use at most the 320x180 profile");
         reportHeap("decoder allocation failed");
         closeVideo();
         return false;

@@ -48,7 +48,7 @@ $writeImages = @(
     write-flash --flash-mode dio --flash-freq 40m --flash-size 4MB `
     @writeImages
 if ($LASTEXITCODE -ne 0) {
-    throw "Uploading the firmware and LittleFS video image failed."
+    throw "Uploading the SD-player firmware failed."
 }
 
 Write-Host "SD-player firmware was uploaded. video.hlv remains on microSD."
