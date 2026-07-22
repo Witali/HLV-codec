@@ -371,6 +371,11 @@ bool openVideo() {
         closeVideo();
         return false;
     }
+    Serial.printf("HLV file: %ux%u, %u/%u fps, %u frames, audio=%u Hz\n",
+                  sequence_header.width, sequence_header.height,
+                  sequence_header.fps_num, sequence_header.fps_den,
+                  sequence_header.frame_count,
+                  sequence_header.audio_sample_rate);
     if (!prepareAudio(sequence_header)) {
         showStatus("Audio init failed", "DAC GPIO26 could not start");
         Serial.println("Cannot initialize continuous DAC audio");

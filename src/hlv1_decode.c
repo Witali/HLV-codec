@@ -8,6 +8,17 @@
  */
 #include "hlv1_internal.h"
 
+#ifdef ARDUINO_ARCH_ESP32
+#include <esp_heap_caps.h>
+static void trace_decoder_heap(const char *stage) {
+    printf("HLV decoder %s: heap=%u, largest=%u\n", stage,
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+#else
+static void trace_decoder_heap(const char *stage) { (void)stage; }
+#endif
+
 /* Must match the encoder coefficient scan exactly. */
 static const uint8_t scan4[16] = {
     0, 1, 4, 5, 2, 8, 3, 12, 6, 9, 7, 13, 10, 11, 14, 15
@@ -731,12 +742,18 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
         hlv1_stream_version(header) > HLV1_VERSION) return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
+    trace_decoder_heap("after state");
     d->header = *header;
-    if (hlv1_frame_alloc(&d->previous, header->width, header->height) < 0 ||
-        hlv1_frame_alloc(&d->current, header->width, header->height) < 0) {
+    if (hlv1_frame_alloc(&d->previous, header->width, header->height) < 0) {
         hlv1_decoder_destroy(d);
         return NULL;
     }
+    trace_decoder_heap("after previous frame");
+    if (hlv1_frame_alloc(&d->current, header->width, header->height) < 0) {
+        hlv1_decoder_destroy(d);
+        return NULL;
+    }
+    trace_decoder_heap("after current frame");
     if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
         d->mv_cols = d->current.padded_width / 16;
         size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
@@ -749,6 +766,7 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
             return NULL;
         }
     }
+    trace_decoder_heap("after motion state");
     return d;
 }
 

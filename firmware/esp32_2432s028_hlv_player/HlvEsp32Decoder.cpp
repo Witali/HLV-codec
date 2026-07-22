@@ -1,11 +1,25 @@
 #include "HlvEsp32Decoder.hpp"
 
+#include <Arduino.h>
 #include <esp_heap_caps.h>
 
 int HlvEsp32Decoder::begin(const HLV1Header &header) {
     end();
     decoder_ = hlv1_decoder_create(&header);
-    if (!decoder_) return HLV1_ERR_MEMORY;
+    if (!decoder_) {
+        Serial.println("ESP32 core decoder allocation failed");
+        return HLV1_ERR_MEMORY;
+    }
+    Serial.printf("Core decoder allocated: heap=%u, largest=%u, "
+                  "DMA free=%u, DMA largest=%u\n",
+                  static_cast<unsigned>(heap_caps_get_free_size(
+                      MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(
+                      MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(heap_caps_get_free_size(
+                      MALLOC_CAP_DMA)),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(
+                      MALLOC_CAP_DMA)));
 
     for (size_t i = 0; i < kPacketBlockCount; ++i) {
         packet_blocks_[i] = static_cast<uint8_t *>(heap_caps_malloc(
@@ -15,6 +29,15 @@ int HlvEsp32Decoder::begin(const HLV1Header &header) {
             packet_blocks_[i] = static_cast<uint8_t *>(heap_caps_malloc(
                 kPacketBlockBytes, MALLOC_CAP_8BIT));
         if (!packet_blocks_[i]) {
+            Serial.printf("Packet pool allocation failed at block %u/%u: "
+                          "heap=%u, largest=%u\n",
+                          static_cast<unsigned>(i + 1),
+                          static_cast<unsigned>(kPacketBlockCount),
+                          static_cast<unsigned>(heap_caps_get_free_size(
+                              MALLOC_CAP_8BIT)),
+                          static_cast<unsigned>(
+                              heap_caps_get_largest_free_block(
+                                  MALLOC_CAP_8BIT)));
             end();
             return HLV1_ERR_MEMORY;
         }
