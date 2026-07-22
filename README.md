@@ -42,14 +42,15 @@ On Windows with the Visual Studio C/C++ tools installed:
 
 ## ESP32-2432S028 playback
 
-The CYD2USB firmware reads HLV-1 from a FAT32 microSD card over an independent
-SPI3/VSPI DMA bus, displays it on the 320x240 ST7789 over SPI2 DMA, and plays
-its mono track through DAC GPIO26 DMA and the onboard amplifier. The included
-Big Buck Bunny profile preserves the official 320x180 resolution and centres
-it without scaling. Its ESP32-specific decoder reads packets into a reusable
-8 x 8 KiB DMA block pool, so a frame never needs one large contiguous payload
-allocation. All downloadable tools, board packages and libraries are kept
-under this repository:
+The pure ESP-IDF CYD2USB firmware reads HLV-1 from a FAT32 microSD card over an
+independent SPI3/VSPI DMA bus, displays it on the 320x240 ST7789 over SPI2 DMA,
+and plays its mono track through DAC GPIO26 DMA and the onboard amplifier. The
+included Big Buck Bunny profile preserves the official 320x180 resolution and
+centres it without scaling. Its ESP32-specific decoder reads packets into a
+reusable 8 x 7680-byte DMA block pool, so a frame never needs one large
+contiguous payload allocation. Arduino and LovyanGFX are not part of the build.
+The pinned ESP-IDF, Python environment and ESP32 toolchain live inside the
+firmware project directory:
 
 ```powershell
 .\scripts\bootstrap.ps1
@@ -57,6 +58,7 @@ under this repository:
 .\scripts\prepare_esp32_video.ps1 -InputFile `
     .\out\sources\BigBuckBunny_320x180.mp4 -Width 320 -Height 180
 .\scripts\build_esp32.ps1
+.\scripts\upload_esp32.ps1 -Port COM8
 ```
 
 See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload

@@ -10,12 +10,13 @@ DAC GPIO26.
 - reads `/sdcard/video.hlv` from a FAT16/FAT32 microSD card;
 - decodes HLV-1 stream versions 1 through 12;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts YUV420 to RGB565 in eight-row strips, without a full RGB framebuffer;
+- converts YUV420 to RGB565 in four-row strips, without a full RGB framebuffer;
 - reads packet payloads on SPI3/VSPI at 20 MHz directly into eight reusable,
-  DMA-capable 8 KiB blocks;
-- writes the ST7789 on the independent SPI2/HSPI bus using DMA;
+  DMA-capable 7680-byte blocks (60 KiB total);
+- writes the ST7789 on the independent SPI2/HSPI bus using two alternating
+  320x4 DMA strips, overlapping conversion with transfer;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
-- feeds six 256-sample DMA buffers from a separate 8 KiB FreeRTOS stream
+- feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
   buffer, so display transfers do not directly clock the sound;
 - repeats the file continuously;
 - prints decode/render timing, audio underruns and free heap to the 115200-baud
@@ -45,8 +46,10 @@ playback session, so the frame loop performs no packet `malloc` or `free`.
 The startup log reports the actual direct-DMA block count; the ESP-IDF SD
 driver supplies its DMA-safe fallback for any ordinary internal block.
 
-The ordinary desktop encoder and decoder retain their contiguous packet path.
-The on-disk HLV format is unchanged. A packet larger than 65,536 bytes is
+The pool capacity is 61,440 bytes, which covers the measured 60,538-byte
+maximum packet in the prepared movie while saving 4 KiB versus 8x8 KiB. The
+ordinary desktop encoder and decoder retain their contiguous packet path.
+The on-disk HLV format is unchanged. A packet larger than 61,440 bytes is
 rejected with an out-of-memory error instead of fragmenting the ESP32 heap.
 
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
@@ -72,7 +75,7 @@ constexpr bool kScaleVideoToDisplay = false;
 - `true` stretches each frame to 320x240 using nearest-neighbour sampling and
   transfers the complete display on every frame.
 
-Both modes convert and send eight rows at a time and do not allocate a full
+Both modes convert and send four rows at a time and do not allocate a full
 RGB framebuffer. The scaling mode adds only coordinate maps and one cached
 RGB row (1760 bytes in the current build).
 
@@ -136,20 +139,26 @@ MP4 and generated HLV are ignored by Git. Big Buck Bunny is a Blender
 Foundation open movie licensed under Creative Commons Attribution 3.0:
 <https://studio.blender.org/projects/big-buck-bunny/>.
 
-## Project-local dependencies
+## Pure ESP-IDF firmware and project-local dependencies
 
-The toolchain is isolated from every other project.  The bootstrap script
-downloads pinned versions of FFmpeg, Arduino CLI, the Espressif core and
-LovyanGFX into this repository only:
+The default firmware is the independent project in
+`firmware/esp32_2432s028_hlv_player_idf`. It uses ESP-IDF APIs directly:
+`esp_lcd` for the ST7789, SDSPI/FatFs for the card, and the continuous DAC
+driver for sound. Arduino and LovyanGFX are not linked. The previous Arduino
+sketch remains next to it only as a migration reference.
+
+The firmware toolchain is isolated from every other project. Its bootstrap
+downloads the pinned full ESP-IDF 5.5.5 archive, a local Python and the ESP32
+compiler/debug tools into the firmware's own `.tools` directory:
 
 ```powershell
 .\scripts\bootstrap.ps1
 ```
 
-Dependencies are placed in `tools\ffmpeg`, `tools\arduino-cli` and
-`local_tools\arduino`.  These directories are ignored by Git because they
-are generated and large.  Only PowerShell and the Visual Studio C compiler
-are shared system prerequisites; no global Arduino or FFmpeg files are used.
+FFmpeg used by the desktop converter remains in the repository's
+`tools\ffmpeg` directory. Firmware dependencies are ignored by Git because
+they are generated and large. No global ESP-IDF, Arduino package or Python
+installation is used by the firmware build.
 
 Build the SD-player firmware:
 
@@ -158,10 +167,9 @@ Build the SD-player firmware:
 ```
 
 Connect the board through its CH340 USB port, find the port with
-the local CLI, and upload:
+Windows Device Manager, and upload:
 
 ```powershell
-.\scripts\arduino.ps1 board list
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
 
@@ -173,8 +181,9 @@ writes the bootloader, partition table and application to internal flash. The
 uploader defaults to a conservative 460800 baud. `video.hlv` is not flashed;
 it remains on the removable card.
 
-If the display shows unstable pixels, lower `cfg.freq_write` from 80 MHz to
-40 MHz in `LGFX_CYD2USB.hpp`.
+The IDF driver defaults to a conservative 40 MHz LCD clock. If the display
+still shows unstable pixels, lower `kDisplayClockHz` in
+`main/player_settings.hpp` to 26 MHz.
 
 ## Hardware mapping
 

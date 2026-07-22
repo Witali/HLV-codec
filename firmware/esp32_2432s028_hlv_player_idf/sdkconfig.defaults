@@ -1,0 +1,64 @@
+# ESP32-2432S028 (original ESP32, 4 MiB DIO flash, no PSRAM)
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_BEFORE_NORESET=y
+CONFIG_ESPTOOLPY_AFTER_RESET=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Decode and color conversion benefit from the full ESP32 clock.  Optimize the
+# rest for size to retain internal SRAM and instruction-cache headroom.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# HLV decode is single-threaded. Running only PRO CPU frees the APP CPU cache
+# bank and scheduler state; RTC fast memory is then safe as an extra 8-bit heap
+# region. Do not enable ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY: byte accesses in
+# that mode are exception-emulated and far too slow for video planes.
+CONFIG_FREERTOS_UNICORE=y
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+CONFIG_LIBC_NEWLIB_NANO_FORMAT=y
+
+# Keep UART0 logging for COM8 diagnostics, but omit verbose framework output.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# The player has no network, Bluetooth, provisioning, shell, OTA or NVS.
+# MINIMAL_BUILD prevents those component libraries and their Kconfig trees
+# from entering the build; these options remove optional core facilities.
+CONFIG_ESP_TASK_WDT_EN=n
+CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=n
+CONFIG_FREERTOS_USE_TIMERS=n
+CONFIG_HEAP_POISONING_DISABLED=y
+
+# FAT is read-only from the application's point of view: one unbuffered file,
+# no long names, no relative paths, no per-file cache and no codepage tables.
+CONFIG_FATFS_LFN_NONE=y
+CONFIG_FATFS_VOLUME_COUNT=1
+CONFIG_FATFS_SECTOR_512=y
+CONFIG_FATFS_FS_LOCK=0
+CONFIG_FATFS_PER_FILE_CACHE=n
+CONFIG_FATFS_USE_FASTSEEK=n
+CONFIG_FATFS_USE_STRFUNC_NONE=y
+
+# fopen/read/lseek are required for HLV, directory traversal, select, termios
+# and /dev/null are not.
+CONFIG_VFS_SUPPORT_IO=y
+CONFIG_VFS_MAX_COUNT=3
+CONFIG_VFS_SUPPORT_DIR=n
+CONFIG_VFS_SUPPORT_SELECT=n
+CONFIG_VFS_SUPPORT_TERMIOS=n
+CONFIG_VFS_INITIALIZE_DEV_NULL=n
+
+# Main owns only orchestration.  Decode and audio work use separately sized
+# allocations/tasks, so this stack need not inherit Arduino's larger default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+CONFIG_FREERTOS_HZ=1000
