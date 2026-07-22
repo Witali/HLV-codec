@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Port,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [ValidateSet(115200, 230400, 460800, 921600)][int]$Baud = 460800,
+    [switch]$LittleFSOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +24,11 @@ $esptoolRoot = Join-Path $repo `
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build_esp32.ps1")
 }
-$images = @($bootloader, $partitions, $bootApplication,
-    $application, $littlefsImage)
+$images = if ($LittleFSOnly) {
+    @($littlefsImage)
+} else {
+    @($bootloader, $partitions, $bootApplication, $application, $littlefsImage)
+}
 foreach ($image in $images) {
     if (-not (Test-Path -LiteralPath $image)) {
         throw "Flash image is missing: $image. Run .\scripts\build_esp32.ps1 first."
@@ -38,16 +43,29 @@ if (-not $esptool) {
 
 Write-Host "Put the board in download mode: hold BOOT, tap RST, then release BOOT."
 Write-Host "Waiting for the ROM loader on $Port..."
-& $esptool --chip esp32 --port $Port --baud 921600 `
+$writeImages = if ($LittleFSOnly) {
+    @(
+        "0x290000", $littlefsImage
+    )
+} else {
+    @(
+        "0x1000", $bootloader,
+        "0x8000", $partitions,
+        "0xe000", $bootApplication,
+        "0x10000", $application,
+        "0x290000", $littlefsImage
+    )
+}
+& $esptool --chip esp32 --port $Port --baud $Baud `
     --before no-reset --after hard-reset --connect-attempts 60 `
     write-flash --flash-mode dio --flash-freq 40m --flash-size 4MB `
-    0x1000 $bootloader `
-    0x8000 $partitions `
-    0xe000 $bootApplication `
-    0x10000 $application `
-    0x290000 $littlefsImage
+    @writeImages
 if ($LASTEXITCODE -ne 0) {
     throw "Uploading the firmware and LittleFS video image failed."
 }
 
-Write-Host "Firmware and video.hlv were uploaded to internal flash."
+if ($LittleFSOnly) {
+    Write-Host "LittleFS video.hlv was uploaded to internal flash."
+} else {
+    Write-Host "Firmware and video.hlv were uploaded to internal flash."
+}

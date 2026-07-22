@@ -98,6 +98,14 @@ When the script asks, hold the board's `BOOT` button, briefly press and release
 writes the bootloader, partition table, program and `littlefs.bin` to internal
 flash; no microSD card is needed.
 
+The uploader defaults to a conservative 460800 baud. If a transfer is
+interrupted only while writing the large LittleFS image after the application
+has already passed hash verification, retry just that image:
+
+```powershell
+.\scripts\upload_esp32.ps1 -Port COM8 -SkipBuild -LittleFSOnly
+```
+
 If the display shows unstable pixels, lower `cfg.freq_write` from 80 MHz to
 40 MHz in `LGFX_CYD2USB.hpp`.
 
