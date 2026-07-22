@@ -298,10 +298,47 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         }
         int inv_x = denominator - fx;
         int inv_y = denominator - fy;
-        int round = denominator * denominator / 2;
+        unsigned denominator_shift = denominator == 4 ? 2U : 1U;
         uint8_t top_samples[17];
         uint8_t bottom_samples[17];
-        int row_samples = w + (fx ? 1 : 0);
+        int row_samples = w + !!fx;
+        if (!fy) {
+            int round = denominator >> 1;
+            for (int yy = 0; yy < h; ++yy) {
+                uint8_t *out = dst + yy * dst_stride;
+                hlv1_frame_unpack_packed_samples(
+                    packed_base + (by + yy) * packed_stride,
+                    bx, packed_bits, top_samples, row_samples);
+                for (int xx = 0; xx < w; ++xx) {
+                    out[xx] = (uint8_t)(
+                        (top_samples[xx] * inv_x +
+                         top_samples[xx + 1] * fx + round) >>
+                        denominator_shift);
+                }
+            }
+            return;
+        }
+        if (!fx) {
+            int round = denominator >> 1;
+            for (int yy = 0; yy < h; ++yy) {
+                uint8_t *out = dst + yy * dst_stride;
+                hlv1_frame_unpack_packed_samples(
+                    packed_base + (by + yy) * packed_stride,
+                    bx, packed_bits, top_samples, w);
+                hlv1_frame_unpack_packed_samples(
+                    packed_base + (by + yy + 1) * packed_stride,
+                    bx, packed_bits, bottom_samples, w);
+                for (int xx = 0; xx < w; ++xx) {
+                    out[xx] = (uint8_t)(
+                        (top_samples[xx] * inv_y +
+                         bottom_samples[xx] * fy + round) >>
+                        denominator_shift);
+                }
+            }
+            return;
+        }
+        int round = (denominator * denominator) >> 1;
+        unsigned bilinear_shift = denominator_shift * 2U;
         for (int yy = 0; yy < h; ++yy) {
             uint8_t *out = dst + yy * dst_stride;
             hlv1_frame_unpack_packed_samples(
@@ -314,15 +351,11 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
             }
             for (int xx = 0; xx < w; ++xx) {
                 int top_left = top_samples[xx];
-                int top_right = fx ? top_samples[xx + 1] : top_left;
-                int bottom_left = fy ? bottom_samples[xx] : top_left;
-                int bottom_right = fy
-                    ? (fx ? bottom_samples[xx + 1] : bottom_left)
-                    : top_right;
-                int top = top_left * inv_x + top_right * fx;
-                int bottom = bottom_left * inv_x + bottom_right * fx;
-                out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) /
-                                    (denominator * denominator));
+                int top = top_left * inv_x + top_samples[xx + 1] * fx;
+                int bottom = bottom_samples[xx] * inv_x +
+                             bottom_samples[xx + 1] * fx;
+                out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) >>
+                                    bilinear_shift);
             }
         }
         return;
@@ -337,12 +370,14 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         HLV1_PRED_STAT_ADD(stats, interpolated_hv_samples, (uint64_t)w * h);
         int inv_x = denominator - fx;
         int round = denominator / 2;
+        unsigned denominator_shift = denominator == 4 ? 2U : 1U;
         for (int yy = 0; yy < h; ++yy) {
             const uint8_t *row = src + (by + yy) * src_stride + bx;
             uint8_t *out = dst + yy * dst_stride;
             for (int xx = 0; xx < w; ++xx)
-                out[xx] = (uint8_t)((row[xx] * inv_x + row[xx + 1] * fx + round) /
-                                    denominator);
+                out[xx] = (uint8_t)((row[xx] * inv_x +
+                                    row[xx + 1] * fx + round) >>
+                                    denominator_shift);
         }
         return;
     }
@@ -350,13 +385,15 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         HLV1_PRED_STAT_ADD(stats, interpolated_hv_samples, (uint64_t)w * h);
         int inv_y = denominator - fy;
         int round = denominator / 2;
+        unsigned denominator_shift = denominator == 4 ? 2U : 1U;
         for (int yy = 0; yy < h; ++yy) {
             const uint8_t *row = src + (by + yy) * src_stride + bx;
             const uint8_t *next = row + src_stride;
             uint8_t *out = dst + yy * dst_stride;
             for (int xx = 0; xx < w; ++xx)
-                out[xx] = (uint8_t)((row[xx] * inv_y + next[xx] * fy + round) /
-                                    denominator);
+                out[xx] = (uint8_t)((row[xx] * inv_y +
+                                    next[xx] * fy + round) >>
+                                    denominator_shift);
         }
         return;
     }
@@ -364,6 +401,7 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
     int inv_x = denominator - fx;
     int inv_y = denominator - fy;
     int round = denominator * denominator / 2;
+    unsigned denominator_shift = denominator == 4 ? 4U : 2U;
     for (int yy = 0; yy < h; ++yy) {
         const uint8_t *row = src + (by + yy) * src_stride + bx;
         const uint8_t *next = row + src_stride;
@@ -371,8 +409,8 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         for (int xx = 0; xx < w; ++xx) {
             int top = row[xx] * inv_x + row[xx + 1] * fx;
             int bottom = next[xx] * inv_x + next[xx + 1] * fx;
-            out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) /
-                                (denominator * denominator));
+            out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) >>
+                                denominator_shift);
         }
     }
 }

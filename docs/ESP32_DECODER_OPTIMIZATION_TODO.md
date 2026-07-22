@@ -18,7 +18,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Compile decoder statistics out of the ESP32 hot path.
 - [x] Evaluate fixed Y6/U5/V5 unpack kernels (rejected: slower).
 - [x] Add an ESP32-oriented 32-bit bitreader.
-- [ ] Specialise integer, half-pixel and quarter-pixel interpolation.
+- [x] Specialise integer, half-pixel and quarter-pixel interpolation.
 - [ ] Copy eligible zero-residual INTER/GLOBAL blocks in packed form.
 - [ ] Optimise sparse residual and WHT paths without new lookup buffers.
 - [ ] Compare compiler/code-layout variants and retain the fastest no-RAM option.
@@ -34,6 +34,7 @@ matching the firmware's decoder-facing storage model.
 | Statistics compiled out | 13.544 s | 1981.7 | +4.5% FPS | `bdb0842a1e1a3a72` | -280 B heap | accepted |
 | Fixed Y6/U5/V5 unpack kernels | 14.016 s | 1915.0 | -3.4% FPS | `bdb0842a1e1a3a72` | 0 | rejected |
 | 32-bit bitreader (x86 simulator) | 15.574 s | 1723.5 | +11.8% vs BR64 x86 | `bdb0842a1e1a3a72` | reduced stack | accepted |
+| Power-of-two interpolation | 14.690 s | 1827.2 | +2.8% QEMU FPS | `bdb0842a1e1a3a72` | 0 | accepted |
 
 ### Xtensa QEMU cross-check
 
@@ -47,6 +48,7 @@ the same guest count exactly.
 |---|---:|---:|---|---:|
 | 64-bit bitreader | 1,345,721 | 178.343 FPS | `5ec770b88da1aad6` | baseline |
 | 32-bit bitreader | 1,119,401 | 214.400 FPS | `5ec770b88da1aad6` | +20.2% FPS |
+| Specialised interpolation | 1,088,924 | 220.400 FPS | `5ec770b88da1aad6` | +2.8% FPS |
 
 The FPS column is a CPU-only normalisation of the guest counter, not a promise
 of physical-board frame rate. QEMU does not model Xtensa pipeline stalls,
@@ -69,6 +71,12 @@ The bitreader comparison uses the simulator's 32-bit x86 target so the cost of
 refill reservoir. Xtensa QEMU confirms the direction with a larger 20.2%
 CPU-only throughput improvement. ESP-IDF static DRAM remains 49,328 bytes;
 absolute timing still needs the physical board.
+
+HLV v12 uses half-pixel luma and quarter-pixel chroma motion. Specialising
+those power-of-two cases removes general integer division and per-sample axis
+selection from fractional prediction. It adds no heap or static DRAM; static
+DRAM remains 49,328 bytes. The extra specialised code raises Flash Code from
+149,308 to 164,472 bytes, leaving 84% of the application partition free.
 
 ## Simulation layers
 
