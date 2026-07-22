@@ -499,8 +499,14 @@ int hlv1_bw_finish(HLV1BitWriter *bw) {
 }
 
 /* --- Normative MSB-first bit reader ------------------------------------ */
+#if HLV1_FAST_32BIT_BITREADER
+#define HLV1_BR_CACHE_BITS 32U
+#else
+#define HLV1_BR_CACHE_BITS 64U
+#endif
+
 static void br_refill(HLV1BitReader *br) {
-    while (br->bits <= 56) {
+    while (br->bits <= HLV1_BR_CACHE_BITS - 8U) {
         if (br->ptr == br->end) {
             if (!br->packet || br->next_offset >= br->byte_limit) break;
             const uint8_t *data;
@@ -512,7 +518,8 @@ static void br_refill(HLV1BitReader *br) {
             br->end = data + span;
             br->next_offset += span;
         }
-        br->cache |= (uint64_t)(*br->ptr++) << (56 - br->bits);
+        br->cache |=
+            (uint64_t)(*br->ptr++) << (HLV1_BR_CACHE_BITS - 8U - br->bits);
         br->bits += 8;
     }
 }
@@ -539,10 +546,36 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
         return 0;
     }
     if (br->bits < count) br_refill(br);
+#if HLV1_FAST_32BIT_BITREADER
+    uint32_t v = 0;
+    if (br->bits < count) {
+        unsigned prefix_bits = br->bits;
+        unsigned remaining = count - prefix_bits;
+        if (prefix_bits)
+            v = br->cache >> (HLV1_BR_CACHE_BITS - prefix_bits);
+        br->cache = 0;
+        br->bits = 0;
+        br_refill(br);
+        if (br->bits < remaining) {
+            br->error = HLV1_ERR_BITSTREAM;
+            return 0;
+        }
+        v = (v << remaining) |
+            (br->cache >> (HLV1_BR_CACHE_BITS - remaining));
+        br->cache = remaining == HLV1_BR_CACHE_BITS
+                        ? 0 : br->cache << remaining;
+        br->bits -= remaining;
+    } else if (count) {
+        v = br->cache >> (HLV1_BR_CACHE_BITS - count);
+        br->cache = count == HLV1_BR_CACHE_BITS ? 0 : br->cache << count;
+        br->bits -= count;
+    }
+#else
     if (br->bits < count) { br->error = HLV1_ERR_BITSTREAM; return 0; }
     uint32_t v = count ? (uint32_t)(br->cache >> (64 - count)) : 0;
     if (count) br->cache <<= count;
     br->bits -= count;
+#endif
     br->bits_left -= count;
     br_refill(br);
     return v;
@@ -550,6 +583,39 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
 
 uint32_t hlv1_br_get_ue(HLV1BitReader *br) {
     if (!br || !br->bits_left) { if (br) br->error = HLV1_ERR_BITSTREAM; return 0; }
+#if HLV1_FAST_32BIT_BITREADER
+    unsigned leading = 0;
+    for (;;) {
+        if (!br->bits) br_refill(br);
+        if (!br->bits) {
+            br->error = HLV1_ERR_BITSTREAM;
+            return 0;
+        }
+#if defined(__GNUC__) || defined(__clang__)
+        unsigned zeros = br->cache ? (unsigned)__builtin_clz(br->cache) : 32U;
+#else
+        unsigned zeros = 0;
+        uint32_t mask = UINT32_C(1) << 31;
+        while (mask && !(br->cache & mask)) { ++zeros; mask >>= 1; }
+#endif
+        if (zeros < br->bits) {
+            if (leading + zeros > 31U || zeros + 1U > br->bits_left) {
+                br->error = HLV1_ERR_BITSTREAM;
+                return 0;
+            }
+            leading += zeros;
+            (void)hlv1_br_get(br, zeros + 1U);
+            break;
+        }
+        unsigned available = br->bits;
+        if (leading + available > 31U || available >= br->bits_left) {
+            br->error = HLV1_ERR_BITSTREAM;
+            return 0;
+        }
+        (void)hlv1_br_get(br, available);
+        leading += available;
+    }
+#else
     if (br->bits < 32) br_refill(br);
     unsigned leading;
 #if defined(__GNUC__) || defined(__clang__)
@@ -562,6 +628,7 @@ uint32_t hlv1_br_get_ue(HLV1BitReader *br) {
         return 0;
     }
     (void)hlv1_br_get(br, leading + 1);
+#endif
     uint32_t suffix = leading ? hlv1_br_get(br, leading) : 0;
     if (br->error) return 0;
     return ((1U << leading) | suffix) - 1U;

@@ -10,6 +10,10 @@
 
 #include "hlv1.h"
 
+#ifndef HLV1_FAST_32BIT_BITREADER
+#define HLV1_FAST_32BIT_BITREADER 0
+#endif
+
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -69,9 +73,17 @@ typedef struct HLV1BitReader {
     const HLV1Packet *packet;
     size_t next_offset;
     size_t byte_limit;
+#if HLV1_FAST_32BIT_BITREADER
+    uint32_t cache;
+#else
     uint64_t cache;
+#endif
     unsigned bits;
+#if HLV1_FAST_32BIT_BITREADER
+    uint32_t bits_left;
+#else
     uint64_t bits_left;
+#endif
     int error;
 } HLV1BitReader;
 

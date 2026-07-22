@@ -17,4 +17,5 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     HLV1_ENABLE_DECODER_STATS=0
+    HLV1_FAST_32BIT_BITREADER=1
 )
