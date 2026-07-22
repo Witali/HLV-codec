@@ -5,8 +5,14 @@ param(
     [ValidateRange(1, 30)][int]$Fps = 15,
     [ValidateRange(1, 100)][int]$Quality = 45,
     [ValidateRange(1, 120)][int]$Duration = 10,
+    [ValidateRange(16, 320)][int]$Width = 256,
+    [ValidateRange(16, 240)][int]$Height = 192,
     [ValidateRange(8000, 48000)][int]$AudioRate = 16000,
     [ValidateRange(0.0, 1.0)][double]$AudioVolume = 0.20,
+    [ValidateRange(-60.0, -1.0)][double]$AudioThresholdDb = -18.0,
+    [ValidateRange(1.0, 20.0)][double]$AudioRatio = 2.5,
+    [ValidateRange(0.0, 12.0)][double]$AudioMakeupDb = 2.0,
+    [switch]$NoAudioCompression,
     [switch]$NoAudio
 )
 
@@ -14,9 +20,12 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $encoder = Join-Path $repo "build\msvc\hlvenc.exe"
 $ffmpeg = Join-Path $repo "tools\ffmpeg\bin\ffmpeg.exe"
-$ffprobe = Join-Path $repo "tools\ffmpeg\bin\ffprobe.exe"
-$videoWidth = 256
-$videoHeight = 192
+$videoWidth = $Width
+$videoHeight = $Height
+
+if (($videoWidth % 2) -or ($videoHeight % 2)) {
+    throw "HLV YUV420 dimensions must be even."
+}
 
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
@@ -47,6 +56,18 @@ try {
     $haveAudio = $false
     $audioVolumeText = $AudioVolume.ToString(
         [Globalization.CultureInfo]::InvariantCulture)
+    $audioThresholdText = $AudioThresholdDb.ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
+    $audioRatioText = $AudioRatio.ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
+    $audioMakeupText = $AudioMakeupDb.ToString(
+        [Globalization.CultureInfo]::InvariantCulture)
+    $audioFilter = "volume=$audioVolumeText"
+    if (-not $NoAudioCompression) {
+        $audioFilter = "acompressor=threshold=${audioThresholdText}dB:" +
+            "ratio=${audioRatioText}:attack=20:release=250:" +
+            "makeup=${audioMakeupText}dB,$audioFilter"
+    }
 
     if ($InputFile) {
         $InputFile = (Resolve-Path -LiteralPath $InputFile).Path
@@ -55,12 +76,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "ffmpeg video conversion failed." }
 
         if (-not $NoAudio) {
-            $audioStreams = & $ffprobe -v error -select_streams a:0 `
-                -show_entries stream=index -of "csv=p=0" $InputFile
-            if ($LASTEXITCODE -ne 0) { throw "ffprobe audio detection failed." }
-            if ($audioStreams) {
+            & $ffmpeg -v error -i $InputFile -map 0:a:0 `
+                -frames:a 1 -f null - 2>$null
+            if ($LASTEXITCODE -eq 0) {
                 & $ffmpeg -y -hide_banner -loglevel error -i $InputFile `
-                    -map 0:a:0 -vn -af "volume=$audioVolumeText" `
+                    -map 0:a:0 -vn -af $audioFilter `
                     -ac 1 -ar $AudioRate -f u8 $temporaryAudio
                 if ($LASTEXITCODE -ne 0) { throw "ffmpeg audio conversion failed." }
                 $haveAudio = $true
@@ -76,7 +96,7 @@ try {
         if (-not $NoAudio) {
             & $ffmpeg -y -hide_banner -loglevel error -f lavfi `
                 -i "sine=frequency=440:sample_rate=${AudioRate}:duration=$Duration" `
-                -af "volume=$audioVolumeText" -ac 1 -ar $AudioRate `
+                -af $audioFilter -ac 1 -ar $AudioRate `
                 -f u8 $temporaryAudio
             if ($LASTEXITCODE -ne 0) { throw "ffmpeg test audio generation failed." }
             $haveAudio = $true
@@ -100,7 +120,7 @@ try {
 
     $size = (Get-Item -LiteralPath $OutputFile).Length
     Write-Host ("Ready: {0} ({1:N0} bytes)" -f $OutputFile, $size)
-    Write-Host "build_esp32.ps1 will package it into the internal LittleFS image."
+    Write-Host "Copy it to the microSD root as video.hlv."
 } finally {
     if (Test-Path -LiteralPath $temporaryY4m) {
         Remove-Item -LiteralPath $temporaryY4m -Force
