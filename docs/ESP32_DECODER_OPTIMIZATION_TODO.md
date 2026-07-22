@@ -19,7 +19,8 @@ matching the firmware's decoder-facing storage model.
 - [x] Evaluate fixed Y6/U5/V5 unpack kernels (rejected: slower).
 - [x] Add an ESP32-oriented 32-bit bitreader.
 - [x] Specialise integer, half-pixel and quarter-pixel interpolation.
-- [ ] Copy eligible zero-residual INTER/GLOBAL blocks in packed form.
+- [x] Evaluate packed zero-residual INTER/GLOBAL copies (rejected: +0.04%
+      QEMU throughput for substantial extra code).
 - [ ] Optimise sparse residual and WHT paths without new lookup buffers.
 - [ ] Compare compiler/code-layout variants and retain the fastest no-RAM option.
 - [ ] Remove repeated address calculations from macroblock hot paths.
@@ -38,7 +39,12 @@ matching the firmware's decoder-facing storage model.
 
 ### Xtensa QEMU cross-check
 
-The QEMU image embeds an exact 120-frame prefix copied from `out/video.hlv`.
+The QEMU image embeds 120 exact frames copied from `out/video.hlv`.
+The current standard sample consists of four complete 30-frame GOP windows
+distributed across the film (`0-29`, `2236-2265`, `4500-4529`, and
+`6720-6749`). This preserves the real key/P-frame ratio while exercising
+different scenes. Every window starts at a keyframe, so P-frame dependencies
+remain valid after concatenation.
 Only `HlvEsp32Decoder::decode()` is measured with the ESP32 `CCOUNT` register;
 packet reads, frame hashing and logging are outside the measured interval.
 QEMU runs with deterministic instruction counting, so repeated runs reproduce
@@ -49,6 +55,20 @@ the same guest count exactly.
 | 64-bit bitreader | 1,345,721 | 178.343 FPS | `5ec770b88da1aad6` | baseline |
 | 32-bit bitreader | 1,119,401 | 214.400 FPS | `5ec770b88da1aad6` | +20.2% FPS |
 | Specialised interpolation | 1,088,924 | 220.400 FPS | `5ec770b88da1aad6` | +2.8% FPS |
+
+The table above records the initial sequential-prefix checks. The
+representative four-GOP sample is the baseline for subsequent work:
+
+| Variant | Guest cycles/frame | 240 MHz CPU-only estimate | 120-frame hash | Decision |
+|---|---:|---:|---|---|
+| Final checkpoint decoder | 638,131 | 376.098 FPS | `be4876ff1c6b8461` | baseline |
+| Direct-copy experiment control | 638,192 | 376.062 FPS | `be4876ff1c6b8461` | control |
+| Direct packed INTER/GLOBAL trial | 637,933 | 376.214 FPS | `be4876ff1c6b8461` | rejected |
+
+The direct-copy trial read the macroblock residual flag before prediction and
+bit-shifted eligible integer-motion Y6/U5/V5 blocks directly between packed
+references. Its 0.04% QEMU improvement did not justify the extra branches and
+code size, so all trial decoder changes were removed.
 
 The FPS column is a CPU-only normalisation of the guest counter, not a promise
 of physical-board frame rate. QEMU does not model Xtensa pipeline stalls,
@@ -101,5 +121,6 @@ Run the default and control variants from the ESP-IDF project directory:
 
 `setup-qemu.ps1` installs the Espressif QEMU package below the project's
 `.tools` directory. The generated 120-frame clip and all build directories are
-ignored by Git. No encoder is called or changed: the preparation script copies
-complete HLV packets and only patches the copied header's frame count.
+ignored by Git. No encoder is called or changed: the preparation script indexes
+the existing stream, copies complete GOP packet ranges, and only patches the
+copied header's frame count.

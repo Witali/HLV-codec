@@ -52,8 +52,9 @@ not written to internal flash.
 
 An off-board benchmark boots the real ESP-IDF decoder in Espressif QEMU and
 measures only `decode()` with the guest ESP32 cycle counter. Its 120-frame test
-clip is copied packet-for-packet from an existing HLV file; it never runs or
-modifies the encoder.
+clip contains four complete GOP windows distributed across the existing HLV
+file. Packets are copied byte-for-byte and every window starts at a keyframe;
+the benchmark never runs or modifies the encoder.
 
 ```powershell
 .\qemu-benchmark.ps1 -BitReaderBits 32
