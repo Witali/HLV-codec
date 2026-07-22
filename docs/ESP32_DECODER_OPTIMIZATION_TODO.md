@@ -14,7 +14,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Establish reproducible simulator baseline.
 - [x] Remove all SKIP unpacking by reading compact intra neighbours from the
       packed current frame.
-- [ ] Compile decoder statistics out of the ESP32 hot path.
+- [x] Compile decoder statistics out of the ESP32 hot path.
 - [ ] Add fixed Y6/U5/V5 unpack kernels.
 - [ ] Add an ESP32-oriented 32-bit bitreader.
 - [ ] Specialise integer, half-pixel and quarter-pixel interpolation.
@@ -30,10 +30,16 @@ matching the firmware's decoder-facing storage model.
 |---|---:|---:|---:|---|---:|---|
 | Baseline after packed SKIP copy | 15.493 s | 1732.5 | — | `bdb0842a1e1a3a72` | 0 | accepted |
 | No compact SKIP unpack | 14.155 s | 1896.2 | +9.5% FPS | `bdb0842a1e1a3a72` | 0 | accepted |
+| Statistics compiled out | 13.544 s | 1981.7 | +4.5% FPS | `bdb0842a1e1a3a72` | -280 B heap | accepted |
 
 The ESP-IDF size report after the SKIP change remains at 49,328 bytes of static
 DRAM. The larger decoder code increases Flash Code from 149,120 to 155,296 bytes
 but does not consume additional runtime RAM.
+
+Compiling decoder statistics out also removes the 35 64-bit counters from each
+decoder instance (280 bytes). Static DRAM remains 49,328 bytes, while Flash Code
+falls from 155,296 to 147,936 bytes. `hlv1_decoder_stats()` remains ABI-compatible
+and returns a zero-filled read-only record in this build.
 
 Host timings are comparative, not estimates of ESP32 wall-clock performance.
 Optimisations that help x64 but add work to 32-bit Xtensa must be validated on

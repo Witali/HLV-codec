@@ -8,6 +8,25 @@
  */
 #include "hlv1_internal.h"
 
+#ifndef HLV1_ENABLE_DECODER_STATS
+#define HLV1_ENABLE_DECODER_STATS 1
+#endif
+
+#if HLV1_ENABLE_DECODER_STATS
+#define HLV1_STATS_FIELD HLV1Stats stats;
+#define HLV1_STATS_PARAMETER HLV1Stats *stats,
+#define HLV1_STATS_ARGUMENT(d) &(d)->stats,
+#define HLV1_STAT_ADD(d, field, value) ((d)->stats.field += (value))
+#define HLV1_PRED_STAT_ADD(stats, field, value) \
+    do { if (stats) (stats)->field += (value); } while (0)
+#else
+#define HLV1_STATS_FIELD
+#define HLV1_STATS_PARAMETER
+#define HLV1_STATS_ARGUMENT(d)
+#define HLV1_STAT_ADD(d, field, value) ((void)0)
+#define HLV1_PRED_STAT_ADD(stats, field, value) ((void)0)
+#endif
+
 #ifdef ARDUINO_ARCH_ESP32
 #include <esp_heap_caps.h>
 static void trace_decoder_heap(const char *stage) {
@@ -33,7 +52,7 @@ struct HLV1Decoder {
     HLV1Frame compact_current;
     int compact_y6_u5_v5;
     int have_previous;
-    HLV1Stats stats;
+    HLV1_STATS_FIELD
     int mv_cols;
     int16_t *mv_top_x;
     int16_t *mv_top_y;
@@ -232,7 +251,7 @@ static int floor_div(int value, int divisor) {
     return q;
 }
 
-static void predict_plane_fractional(HLV1Stats *stats,
+static void predict_plane_fractional(HLV1_STATS_PARAMETER
                                      uint8_t *dst, int dst_stride,
                                      int w, int h,
                                      const HLV1Frame *src_frame,
@@ -245,12 +264,14 @@ static void predict_plane_fractional(HLV1Stats *stats,
     int fx = origin_x_num - bx * denominator;
     int fy = origin_y_num - by * denominator;
     if (src_frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
-        uint64_t samples = (uint64_t)w * h;
-        if (stats) {
-            if (!fx && !fy) stats->copied_samples += samples;
-            else if (!fx || !fy) stats->interpolated_hv_samples += samples;
-            else stats->interpolated_bilinear_samples += samples;
-        }
+        if (!fx && !fy)
+            HLV1_PRED_STAT_ADD(stats, copied_samples, (uint64_t)w * h);
+        else if (!fx || !fy)
+            HLV1_PRED_STAT_ADD(stats, interpolated_hv_samples,
+                               (uint64_t)w * h);
+        else
+            HLV1_PRED_STAT_ADD(stats, interpolated_bilinear_samples,
+                               (uint64_t)w * h);
         const uint8_t *packed_base;
         int packed_stride;
         unsigned packed_bits;
@@ -307,13 +328,13 @@ static void predict_plane_fractional(HLV1Stats *stats,
         return;
     }
     if (!fx && !fy) {
-        if (stats) stats->copied_samples += (uint64_t)w * h;
+        HLV1_PRED_STAT_ADD(stats, copied_samples, (uint64_t)w * h);
         copy_block(dst, dst_stride, src + by * src_stride + bx,
                    src_stride, w, h);
         return;
     }
     if (!fy) {
-        if (stats) stats->interpolated_hv_samples += (uint64_t)w * h;
+        HLV1_PRED_STAT_ADD(stats, interpolated_hv_samples, (uint64_t)w * h);
         int inv_x = denominator - fx;
         int round = denominator / 2;
         for (int yy = 0; yy < h; ++yy) {
@@ -326,7 +347,7 @@ static void predict_plane_fractional(HLV1Stats *stats,
         return;
     }
     if (!fx) {
-        if (stats) stats->interpolated_hv_samples += (uint64_t)w * h;
+        HLV1_PRED_STAT_ADD(stats, interpolated_hv_samples, (uint64_t)w * h);
         int inv_y = denominator - fy;
         int round = denominator / 2;
         for (int yy = 0; yy < h; ++yy) {
@@ -339,7 +360,7 @@ static void predict_plane_fractional(HLV1Stats *stats,
         }
         return;
     }
-    if (stats) stats->interpolated_bilinear_samples += (uint64_t)w * h;
+    HLV1_PRED_STAT_ADD(stats, interpolated_bilinear_samples, (uint64_t)w * h);
     int inv_x = denominator - fx;
     int inv_y = denominator - fy;
     int round = denominator * denominator / 2;
@@ -371,7 +392,7 @@ static void predict_motion(HLV1Decoder *d, int x, int y, int mvx, int mvy,
                            int denominator) {
     HLV1Frame *cur = &d->current;
     const HLV1Frame *ref = &d->previous;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_Y, x, y),
                              cur->stride_y, 16, 16,
                              ref, HLV1_PLANE_Y, ref->y, ref->stride_y,
@@ -379,12 +400,12 @@ static void predict_motion(HLV1Decoder *d, int x, int y, int mvx, int mvy,
                              y * denominator + mvy, denominator);
     int cx = x / 2, cy = y / 2;
     int cden = denominator * 2;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_U, cx, cy),
                              cur->stride_u, 8, 8,
                              ref, HLV1_PLANE_U, ref->u, ref->stride_u,
                              cx * cden + mvx, cy * cden + mvy, cden);
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_V, cx, cy),
                              cur->stride_v, 8, 8,
                              ref, HLV1_PLANE_V, ref->v, ref->stride_v,
@@ -395,7 +416,7 @@ static void predict_motion_sb8(HLV1Decoder *d, int x, int y, int mvx, int mvy,
                                int denominator) {
     HLV1Frame *cur = &d->current;
     const HLV1Frame *ref = &d->previous;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_Y, x, y),
                              cur->stride_y, 8, 8,
                              ref, HLV1_PLANE_Y, ref->y, ref->stride_y,
@@ -403,12 +424,12 @@ static void predict_motion_sb8(HLV1Decoder *d, int x, int y, int mvx, int mvy,
                              y * denominator + mvy, denominator);
     int cx = x / 2, cy = y / 2;
     int cden = denominator * 2;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_U, cx, cy),
                              cur->stride_u, 4, 4,
                              ref, HLV1_PLANE_U, ref->u, ref->stride_u,
                              cx * cden + mvx, cy * cden + mvy, cden);
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_V, cx, cy),
                              cur->stride_v, 4, 4,
                              ref, HLV1_PLANE_V, ref->v, ref->stride_v,
@@ -420,19 +441,19 @@ static void predict_motion_rect(HLV1Decoder *d, int x, int y,
                                 int denominator) {
     HLV1Frame *cur = &d->current;
     const HLV1Frame *ref = &d->previous;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_Y, x, y),
                              cur->stride_y, w, h,
                              ref, HLV1_PLANE_Y, ref->y, ref->stride_y,
                              x * denominator + mvx,
                              y * denominator + mvy, denominator);
     int cx = x / 2, cy = y / 2, cden = denominator * 2;
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_U, cx, cy),
                              cur->stride_u, w / 2, h / 2,
                              ref, HLV1_PLANE_U, ref->u, ref->stride_u,
                              cx * cden + mvx, cy * cden + mvy, cden);
-    predict_plane_fractional(&d->stats,
+    predict_plane_fractional(HLV1_STATS_ARGUMENT(d)
                              current_plane_ptr(d, HLV1_PLANE_V, cx, cy),
                              cur->stride_v, w / 2, h / 2,
                              ref, HLV1_PLANE_V, ref->v, ref->stride_v,
@@ -490,7 +511,7 @@ static int decode_gradient(HLV1Decoder *d, HLV1BitReader *br, int x, int y) {
     predict_gradient_plane(current_plane_ptr(d, HLV1_PLANE_V, cx, cy),
                            cur->stride_v,
                            8, 8, base[2], dx[2], dy[2]);
-    d->stats.gradient_samples += 384;
+    HLV1_STAT_ADD(d, gradient_samples, 384);
     return HLV1_OK;
 }
 
@@ -524,12 +545,12 @@ static int decode_palette(HLV1Decoder *d, HLV1BitReader *br, int x, int y) {
             dv[xx] = colors[index][2];
         }
     }
-    d->stats.palette_samples += 384;
+    HLV1_STAT_ADD(d, palette_samples, 384);
     return HLV1_OK;
 }
 
 static void predict_fill(HLV1Decoder *d, int x, int y, const uint8_t means[3]) {
-    d->stats.fill_samples += 384;
+    HLV1_STAT_ADD(d, fill_samples, 384);
     HLV1Frame *cur = &d->current;
     fill_block(current_plane_ptr(d, HLV1_PLANE_Y, x, y),
                cur->stride_y, 16, 16, means[0]);
@@ -677,7 +698,7 @@ static void predict_intra_plane(HLV1Decoder *d, int plane, int stride,
 }
 
 static void predict_intra(HLV1Decoder *d, int x, int y, int mode) {
-    d->stats.intra_samples += 384;
+    HLV1_STAT_ADD(d, intra_samples, 384);
     HLV1Frame *cur = &d->current;
     predict_intra_plane(d, HLV1_PLANE_Y, cur->stride_y, x, y, 16, mode);
     int cx = x / 2, cy = y / 2;
@@ -734,6 +755,9 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
                                        HLV1BitReader *br,
                                        uint8_t *dst, int stride,
                                        int qstep, int coeff_mode) {
+#if !HLV1_ENABLE_DECODER_STATS
+    (void)d;
+#endif
     uint32_t count;
     int32_t qcoeff[16] = {0};
     int pos = -1;
@@ -745,8 +769,9 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
         count = 1;
         qcoeff[0] = level;
         only_dc = 1;
-        d->stats.run_zero_symbols++;
-        if (level == 1 || level == -1) d->stats.unit_level_symbols++;
+        HLV1_STAT_ADD(d, run_zero_symbols, 1);
+        if (level == 1 || level == -1)
+            HLV1_STAT_ADD(d, unit_level_symbols, 1);
     } else {
         if (br->error) return br->error;
         count = hlv1_br_get_ue(br) + 1U;
@@ -765,8 +790,9 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
             if (br->error) return br->error;
             if (run > 16U || pos + (int)run + 1 >= 16)
                 return HLV1_ERR_BITSTREAM;
-            if (run == 0) d->stats.run_zero_symbols++;
-            if (level == 1 || level == -1) d->stats.unit_level_symbols++;
+            if (run == 0) HLV1_STAT_ADD(d, run_zero_symbols, 1);
+            if (level == 1 || level == -1)
+                HLV1_STAT_ADD(d, unit_level_symbols, 1);
             pos += (int)run + 1;
             int idx = scan4[pos];
             qcoeff[idx] = level;
@@ -774,16 +800,16 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
         }
     }
 
-    d->stats.coefficient_symbols += count;
-    if (count == 1) d->stats.single_coefficient_blocks++;
-    else if (count == 2) d->stats.two_coefficient_blocks++;
+    HLV1_STAT_ADD(d, coefficient_symbols, count);
+    if (count == 1) HLV1_STAT_ADD(d, single_coefficient_blocks, 1);
+    else if (count == 2) HLV1_STAT_ADD(d, two_coefficient_blocks, 1);
 
     if (only_dc) {
-        d->stats.dc_only_blocks++;
+        HLV1_STAT_ADD(d, dc_only_blocks, 1);
         return add_dc_only(dst, stride, qcoeff[0], qstep);
     }
 
-    d->stats.inverse_wht_blocks++;
+    HLV1_STAT_ADD(d, inverse_wht_blocks, 1);
     int dc_step = HLV1_MAX(1, qstep / 2);
     int32_t coeff[16];
     for (int i = 0; i < 16; ++i)
@@ -799,10 +825,10 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
 
 static int decode_residual_4x4(HLV1Decoder *d, HLV1BitReader *br,
                                uint8_t *dst, int stride, int qstep) {
-    d->stats.residual_blocks++;
+    HLV1_STAT_ADD(d, residual_blocks, 1);
     if (!hlv1_br_get(br, 1)) {
         if (br->error) return br->error;
-        d->stats.zero_residual_blocks++;
+        HLV1_STAT_ADD(d, zero_residual_blocks, 1);
         return HLV1_OK;
     }
     return decode_nonzero_residual_4x4(d, br, dst, stride, qstep, 0);
@@ -868,9 +894,9 @@ static int decode_plane_residual_masked(HLV1Decoder *d, HLV1BitReader *br,
                                         int coeff_mode) {
     for (int by = 0; by < h; by += 4)
         for (int bx = 0; bx < w; bx += 4, ++*block_index) {
-            d->stats.residual_blocks++;
+            HLV1_STAT_ADD(d, residual_blocks, 1);
             if (!(mask & (UINT32_C(1) << *block_index))) {
-                d->stats.zero_residual_blocks++;
+                HLV1_STAT_ADD(d, zero_residual_blocks, 1);
                 continue;
             }
             int r = decode_nonzero_residual_4x4(
@@ -972,8 +998,8 @@ static int decode_optional_sb8_residual(HLV1Decoder *d, HLV1BitReader *br,
     uint32_t has_residual = hlv1_br_get(br, 1);
     if (br->error) return br->error;
     if (!has_residual) {
-        d->stats.residual_blocks += 6;
-        d->stats.zero_residual_blocks += 6;
+        HLV1_STAT_ADD(d, residual_blocks, 6);
+        HLV1_STAT_ADD(d, zero_residual_blocks, 6);
         return HLV1_OK;
     }
     return version >= HLV1_STREAM_VERSION_8 && q_y >= 64
@@ -1047,9 +1073,9 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
         uint32_t has_residual = hlv1_br_get(br, 1);
         if (br->error) return br->error;
         if (!has_residual) {
-            d->stats.residual_blocks += 24;
-            d->stats.zero_residual_blocks += 24;
-            d->stats.zero_residual_macroblocks++;
+            HLV1_STAT_ADD(d, residual_blocks, 24);
+            HLV1_STAT_ADD(d, zero_residual_blocks, 24);
+            HLV1_STAT_ADD(d, zero_residual_macroblocks, 1);
             return HLV1_OK;
         }
     }
@@ -1202,7 +1228,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                         mv_column, d->mv_cols,
                                         fallback_mvx, fallback_mvy,
                                         &predictor_mvx, &predictor_mvy);
-                d->stats.motion_predictor_blocks++;
+                HLV1_STAT_ADD(d, motion_predictor_blocks, 1);
             }
             int mode = get_mode(&br, version, p->frame_type, use_global);
             if (br.error) return br.error;
@@ -1216,12 +1242,12 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 if (d->compact_y6_u5_v5) {
                     compact_copy_macroblock(d, x, y);
                     compact_output_ready = 1;
-                    d->stats.copied_samples += 384;
+                    HLV1_STAT_ADD(d, copied_samples, 384);
                 } else {
                     predict_motion(d, x, y, 0, 0, denominator);
                 }
                 context_mvx = context_mvy = 0;
-                d->stats.skipped++;
+                HLV1_STAT_ADD(d, skipped, 1);
                 break;
             case HLV1_MODE_INTER: {
                 if (p->frame_type != HLV1_FRAME_P || !d->have_previous)
@@ -1242,7 +1268,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 predict_motion(d, x, y, mvx, mvy, denominator);
                 context_mvx = mvx; context_mvy = mvy;
                 r = decode_optional_mb_residual(d, &br, version, x, y, q_y, q_uv);
-                d->stats.inter++;
+                HLV1_STAT_ADD(d, inter, 1);
                 break;
             }
             case HLV1_MODE_GLOBAL:
@@ -1255,7 +1281,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 context_mvx = global_mvx; context_mvy = global_mvy;
                 r = decode_optional_mb_residual(d, &br, version,
                                                 x, y, q_y, q_uv);
-                d->stats.global++;
+                HLV1_STAT_ADD(d, global, 1);
                 break;
             case HLV1_MODE_SPLIT_INTER: {
                 if (version < HLV1_STREAM_VERSION_3 ||
@@ -1324,7 +1350,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                                     x, y, q_y, q_uv);
                     if (r < 0) return r;
                 }
-                d->stats.split_inter++;
+                HLV1_STAT_ADD(d, split_inter, 1);
                 break;
             }
             case HLV1_MODE_FILL: {
@@ -1340,12 +1366,12 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     if (r < 0) return r;
                     r = decode_optional_mb_residual(d, &br, version,
                                                     x, y, q_y, q_uv);
-                    d->stats.gradient++;
+                    HLV1_STAT_ADD(d, gradient, 1);
                 } else {
                     predict_fill(d, x, y, means);
                     r = decode_optional_mb_residual(d, &br, version,
                                                     x, y, q_y, q_uv);
-                    d->stats.fill++;
+                    HLV1_STAT_ADD(d, fill, 1);
                 }
                 break;
             }
@@ -1356,13 +1382,13 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 if (r < 0) return r;
                 r = decode_optional_mb_residual(d, &br, version,
                                                 x, y, q_y, q_uv);
-                d->stats.gradient++;
+                HLV1_STAT_ADD(d, gradient, 1);
                 break;
             case HLV1_MODE_PALETTE:
                 if (version < HLV1_STREAM_VERSION_12)
                     return HLV1_ERR_BITSTREAM;
                 r = decode_palette(d, &br, x, y);
-                d->stats.palette++;
+                HLV1_STAT_ADD(d, palette, 1);
                 break;
             case HLV1_MODE_INTRA_DC: {
                 int intra_mode = HLV1_INTRA_DC;
@@ -1375,12 +1401,12 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 r = decode_optional_mb_residual(d, &br, version,
                                                 x, y, q_y, q_uv);
                 if (intra_mode == HLV1_INTRA_VERTICAL)
-                    d->stats.intra_vertical++;
+                    HLV1_STAT_ADD(d, intra_vertical, 1);
                 else if (intra_mode == HLV1_INTRA_HORIZONTAL)
-                    d->stats.intra_horizontal++;
+                    HLV1_STAT_ADD(d, intra_horizontal, 1);
                 else if (intra_mode == HLV1_INTRA_PLANE)
-                    d->stats.intra_plane++;
-                else d->stats.intra_dc++;
+                    HLV1_STAT_ADD(d, intra_plane, 1);
+                else HLV1_STAT_ADD(d, intra_dc, 1);
                 break;
             }
             default:
@@ -1394,7 +1420,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;
                 d->mv_cur_y[mv_column] = (int16_t)context_mvy;
             }
-            d->stats.macroblocks++;
+            HLV1_STAT_ADD(d, macroblocks, 1);
         }
         if (p->frame_type == HLV1_FRAME_P &&
             version >= HLV1_STREAM_VERSION_11) {
@@ -1415,10 +1441,10 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
         d->current = tmp;
     }
     d->have_previous = 1;
-    d->stats.frames++;
-    d->stats.keyframes += p->frame_type == HLV1_FRAME_KEY;
-    d->stats.payload_bytes += hlv1_packet_video_payload_size(p);
-    d->stats.decoded_bits += p->bit_length;
+    HLV1_STAT_ADD(d, frames, 1);
+    HLV1_STAT_ADD(d, keyframes, p->frame_type == HLV1_FRAME_KEY);
+    HLV1_STAT_ADD(d, payload_bytes, hlv1_packet_video_payload_size(p));
+    HLV1_STAT_ADD(d, decoded_bits, p->bit_length);
     *frame = &d->previous;
     return HLV1_OK;
 }
@@ -1442,5 +1468,10 @@ int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
 }
 
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *d) {
+#if HLV1_ENABLE_DECODER_STATS
     return d ? &d->stats : NULL;
+#else
+    static const HLV1Stats empty_stats = {0};
+    return d ? &empty_stats : NULL;
+#endif
 }
