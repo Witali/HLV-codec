@@ -30,6 +30,7 @@ constexpr int kScreenWidth = CydDisplay::kWidth;
 constexpr int kScreenHeight = CydDisplay::kHeight;
 constexpr int kRowsPerTransfer = CydDisplay::kRowsPerTransfer;
 constexpr uint32_t kRetryDelayMs = 2000;
+constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
 constexpr size_t kAudioWriteBytes = 256;
 constexpr uint32_t kAudioReceiveTimeoutMs = 100;
@@ -52,6 +53,7 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
+alignas(4) uint8_t video_read_ahead[kVideoReadAheadBytes];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
@@ -378,8 +380,10 @@ bool openVideo() {
                    "copy it to the microSD card root");
         return false;
     }
-    if (std::setvbuf(video_file, nullptr, _IONBF, 0)) {
-        showStatus("SD setup failed", "cannot configure direct reads");
+    if (std::setvbuf(video_file,
+                     reinterpret_cast<char *>(video_read_ahead),
+                     _IOFBF, sizeof video_read_ahead)) {
+        showStatus("SD setup failed", "cannot configure read-ahead");
         closeVideo();
         return false;
     }
@@ -418,7 +422,7 @@ bool openVideo() {
         closeVideo();
         return false;
     }
-    ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u direct-DMA",
+    ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u DMA-capable",
              static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockCount),
              static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockBytes),
              static_cast<unsigned>(decoder.packetCapacity()),

@@ -11,8 +11,8 @@ DAC GPIO26.
 - decodes HLV-1 stream versions 1 through 12;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in four-row strips, without a full RGB framebuffer;
-- reads packet payloads on SPI3/VSPI at 20 MHz directly into eight reusable,
-  DMA-capable 7680-byte blocks (60 KiB total);
+- reads SPI3/VSPI at 20 MHz with DMA into a 16 KiB aligned stdio read-ahead
+  buffer, then fills eight reusable 7680-byte packet blocks (60 KiB total);
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x4 DMA strips, overlapping conversion with transfer;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
@@ -59,8 +59,13 @@ the read. The bit reader advances to the next block without joining or copying
 the payload. PCM at the packet tail is likewise sent to the FreeRTOS audio
 stream one contiguous span at a time. The blocks are retained for the complete
 playback session, so the frame loop performs no packet `malloc` or `free`.
-The startup log reports the actual direct-DMA block count; the ESP-IDF SD
+The startup log reports the actual DMA-capable block count; the ESP-IDF SD
 driver supplies its DMA-safe fallback for any ordinary internal block.
+
+The stdio layer uses a fixed 16 KiB aligned read-ahead buffer. This costs 16
+KiB of the RAM saved by compact frame storage, but combines small packet/header
+reads into longer SDSPI transactions. On the reference card it reduced average
+packet-read time from roughly 50--55 ms to 5--6 ms.
 
 The pool capacity is 61,440 bytes, which covers the measured 60,538-byte
 maximum packet in the prepared movie while saving 4 KiB versus 8x8 KiB. The

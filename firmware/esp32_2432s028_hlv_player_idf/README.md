@@ -50,7 +50,8 @@ not written to internal flash.
 ## Resource choices
 
 - Display: ST7789 at 40 MHz, two reusable 320x4 RGB565 DMA strips.
-- Storage: SDSPI at 20 MHz, eight reusable 7680-byte packet blocks (60 KiB).
+- Storage: SDSPI DMA at 20 MHz, a 16 KiB aligned read-ahead buffer and eight
+  reusable 7680-byte packet blocks (60 KiB).
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
 - Audio: 4 KiB stream buffer feeding six 256-byte DAC DMA descriptors.
