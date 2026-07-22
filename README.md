@@ -27,6 +27,27 @@ paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.
 
+On Windows with the Visual Studio C/C++ tools installed:
+
+```powershell
+.\scripts\build_msvc.ps1
+```
+
+## ESP32-2432S028 playback
+
+The CYD2USB firmware decodes a 320x240 HLV-1 file from the board's internal
+LittleFS flash partition and displays it on the ST7789 panel.  All downloadable
+tools, board packages and libraries are kept under this repository:
+
+```powershell
+.\scripts\bootstrap.ps1
+.\scripts\build_esp32.ps1
+.\scripts\prepare_esp32_video.ps1
+```
+
+See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload
+instructions.
+
 ## FFmpeg pipe encoding
 
 The source aspect ratio can be preserved by scaling and padding:
