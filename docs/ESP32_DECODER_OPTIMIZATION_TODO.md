@@ -15,7 +15,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Remove all SKIP unpacking by reading compact intra neighbours from the
       packed current frame.
 - [x] Compile decoder statistics out of the ESP32 hot path.
-- [ ] Add fixed Y6/U5/V5 unpack kernels.
+- [x] Evaluate fixed Y6/U5/V5 unpack kernels (rejected: slower).
 - [ ] Add an ESP32-oriented 32-bit bitreader.
 - [ ] Specialise integer, half-pixel and quarter-pixel interpolation.
 - [ ] Copy eligible zero-residual INTER/GLOBAL blocks in packed form.
@@ -31,6 +31,7 @@ matching the firmware's decoder-facing storage model.
 | Baseline after packed SKIP copy | 15.493 s | 1732.5 | — | `bdb0842a1e1a3a72` | 0 | accepted |
 | No compact SKIP unpack | 14.155 s | 1896.2 | +9.5% FPS | `bdb0842a1e1a3a72` | 0 | accepted |
 | Statistics compiled out | 13.544 s | 1981.7 | +4.5% FPS | `bdb0842a1e1a3a72` | -280 B heap | accepted |
+| Fixed Y6/U5/V5 unpack kernels | 14.016 s | 1915.0 | -3.4% FPS | `bdb0842a1e1a3a72` | 0 | rejected |
 
 The ESP-IDF size report after the SKIP change remains at 49,328 bytes of static
 DRAM. The larger decoder code increases Flash Code from 149,120 to 155,296 bytes
