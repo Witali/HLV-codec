@@ -68,9 +68,9 @@ esp_err_t CydDisplay::init() {
 
     esp_lcd_panel_dev_config_t panel_config{};
     panel_config.reset_gpio_num = GPIO_NUM_NC;
-    // Match Panel_ST7789's working LovyanGFX configuration: the glass uses
-    // the controller's BGR element order even though callers submit RGB565.
-    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+    // The conversion buffers contain conventional RGB565.  This CYD2USB
+    // panel expects the controller's RGB element order; BGR swaps red/blue.
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
     // rgb565 values are produced in the ESP32's native little-endian order.
     panel_config.data_endian = LCD_RGB_DATA_ENDIAN_LITTLE;
     panel_config.bits_per_pixel = 16;
