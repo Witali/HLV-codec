@@ -96,44 +96,50 @@ static uint8_t *current_plane_ptr(HLV1Decoder *d, int plane,
     return base + (d->compact_y6_u5_v5 ? y % rows : y) * stride + x;
 }
 
-static uint8_t reference_plane_sample(const HLV1Frame *f, int plane,
-                                      int x, int y) {
-    if (plane == HLV1_PLANE_Y) return hlv1_frame_y_sample(f, x, y);
-    if (plane == HLV1_PLANE_U) return hlv1_frame_u_sample(f, x, y);
-    return hlv1_frame_v_sample(f, x, y);
-}
-
-static void packed_plane_store(uint8_t *row, int x, unsigned bits,
-                               uint8_t value) {
-    unsigned bit = (unsigned)x * bits;
-    unsigned byte = bit >> 3;
-    unsigned shift = bit & 7U;
-    unsigned sample_mask = (1U << bits) - 1U;
-    unsigned mask = sample_mask << shift;
-    unsigned window = row[byte];
-    if (shift + bits > 8U) window |= (unsigned)row[byte + 1] << 8;
-    window = (window & ~mask) | (((unsigned)value & sample_mask) << shift);
-    row[byte] = (uint8_t)window;
-    if (shift + bits > 8U) row[byte + 1] = (uint8_t)(window >> 8);
-}
-
-static uint8_t quantize_sample(uint8_t value, unsigned bits) {
-    unsigned shift = 8U - bits;
-    unsigned maximum = (1U << bits) - 1U;
-    unsigned code = ((unsigned)value + (1U << (shift - 1U))) >> shift;
+static uint8_t compact_quantize_code(uint8_t *value, unsigned shift,
+                                     unsigned maximum) {
+    unsigned code = ((unsigned)*value + (1U << (shift - 1U))) >> shift;
     if (code > maximum) code = maximum;
-    return (uint8_t)(code << shift);
+    *value = (uint8_t)(code << shift);
+    return (uint8_t)code;
+}
+
+static void compact_store_luma16(uint8_t *dst, uint8_t *src) {
+    for (int x = 0; x < 16; x += 4) {
+        uint8_t a = compact_quantize_code(&src[x], 2, 63);
+        uint8_t b = compact_quantize_code(&src[x + 1], 2, 63);
+        uint8_t c = compact_quantize_code(&src[x + 2], 2, 63);
+        uint8_t d = compact_quantize_code(&src[x + 3], 2, 63);
+        dst[0] = (uint8_t)(a | (b << 6));
+        dst[1] = (uint8_t)((b >> 2) | (c << 4));
+        dst[2] = (uint8_t)((c >> 4) | (d << 2));
+        dst += 3;
+    }
+}
+
+static void compact_store_chroma8(uint8_t *dst, uint8_t *src) {
+    uint8_t a = compact_quantize_code(&src[0], 3, 31);
+    uint8_t b = compact_quantize_code(&src[1], 3, 31);
+    uint8_t c = compact_quantize_code(&src[2], 3, 31);
+    uint8_t d = compact_quantize_code(&src[3], 3, 31);
+    uint8_t e = compact_quantize_code(&src[4], 3, 31);
+    uint8_t f = compact_quantize_code(&src[5], 3, 31);
+    uint8_t g = compact_quantize_code(&src[6], 3, 31);
+    uint8_t h = compact_quantize_code(&src[7], 3, 31);
+    dst[0] = (uint8_t)(a | (b << 5));
+    dst[1] = (uint8_t)((b >> 3) | (c << 2) | (d << 7));
+    dst[2] = (uint8_t)((d >> 1) | (e << 4));
+    dst[3] = (uint8_t)((e >> 4) | (f << 1) | (g << 6));
+    dst[4] = (uint8_t)((g >> 2) | (h << 3));
 }
 
 static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     HLV1Frame *packed = &d->compact_current;
     for (int y = 0; y < 16; ++y) {
         uint8_t *src = current_plane_ptr(d, HLV1_PLANE_Y, mb_x, mb_y + y);
-        uint8_t *dst = packed->y + (mb_y + y) * packed->stride_y;
-        for (int x = 0; x < 16; ++x) {
-            src[x] = quantize_sample(src[x], 6);
-            packed_plane_store(dst, mb_x + x, 6, (uint8_t)(src[x] >> 2));
-        }
+        uint8_t *dst = packed->y + (mb_y + y) * packed->stride_y +
+                       mb_x * 6 / 8;
+        compact_store_luma16(dst, src);
     }
     int chroma_x = mb_x / 2;
     int chroma_y = mb_y / 2;
@@ -144,12 +150,9 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
         for (int y = 0; y < 8; ++y) {
             uint8_t *src = current_plane_ptr(d, plane,
                                              chroma_x, chroma_y + y);
-            uint8_t *dst = packed_base + (chroma_y + y) * packed_stride;
-            for (int x = 0; x < 8; ++x) {
-                src[x] = quantize_sample(src[x], 5);
-                packed_plane_store(dst, chroma_x + x, 5,
-                                   (uint8_t)(src[x] >> 3));
-            }
+            uint8_t *dst = packed_base + (chroma_y + y) * packed_stride +
+                           chroma_x * 5 / 8;
+            compact_store_chroma8(dst, src);
         }
     }
 }
@@ -220,30 +223,58 @@ static void predict_plane_fractional(HLV1Stats *stats,
     int fy = origin_y_num - by * denominator;
     if (src_frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
         uint64_t samples = (uint64_t)w * h;
-        if (!fx && !fy) stats->copied_samples += samples;
-        else if (!fx || !fy) stats->interpolated_hv_samples += samples;
-        else stats->interpolated_bilinear_samples += samples;
+        if (stats) {
+            if (!fx && !fy) stats->copied_samples += samples;
+            else if (!fx || !fy) stats->interpolated_hv_samples += samples;
+            else stats->interpolated_bilinear_samples += samples;
+        }
+        const uint8_t *packed_base;
+        int packed_stride;
+        unsigned packed_bits;
+        if (src_plane == HLV1_PLANE_Y) {
+            packed_base = src_frame->y;
+            packed_stride = src_frame->stride_y;
+            packed_bits = 6;
+        } else if (src_plane == HLV1_PLANE_U) {
+            packed_base = src_frame->u;
+            packed_stride = src_frame->stride_u;
+            packed_bits = 5;
+        } else {
+            packed_base = src_frame->v;
+            packed_stride = src_frame->stride_v;
+            packed_bits = 5;
+        }
+        if (!fx && !fy) {
+            for (int yy = 0; yy < h; ++yy) {
+                hlv1_frame_unpack_packed_samples(
+                    packed_base + (by + yy) * packed_stride,
+                    bx, packed_bits, dst + yy * dst_stride, w);
+            }
+            return;
+        }
         int inv_x = denominator - fx;
         int inv_y = denominator - fy;
         int round = denominator * denominator / 2;
+        uint8_t top_samples[17];
+        uint8_t bottom_samples[17];
+        int row_samples = w + (fx ? 1 : 0);
         for (int yy = 0; yy < h; ++yy) {
             uint8_t *out = dst + yy * dst_stride;
+            hlv1_frame_unpack_packed_samples(
+                packed_base + (by + yy) * packed_stride,
+                bx, packed_bits, top_samples, row_samples);
+            if (fy) {
+                hlv1_frame_unpack_packed_samples(
+                    packed_base + (by + yy + 1) * packed_stride,
+                    bx, packed_bits, bottom_samples, row_samples);
+            }
             for (int xx = 0; xx < w; ++xx) {
-                int sx = bx + xx;
-                int sy = by + yy;
-                int top_left = reference_plane_sample(
-                    src_frame, src_plane, sx, sy);
-                if (!fx && !fy) {
-                    out[xx] = (uint8_t)top_left;
-                    continue;
-                }
-                int top_right = fx ? reference_plane_sample(
-                    src_frame, src_plane, sx + 1, sy) : top_left;
-                int bottom_left = fy ? reference_plane_sample(
-                    src_frame, src_plane, sx, sy + 1) : top_left;
-                int bottom_right = fx && fy ? reference_plane_sample(
-                    src_frame, src_plane, sx + 1, sy + 1)
-                    : (fy ? bottom_left : top_right);
+                int top_left = top_samples[xx];
+                int top_right = fx ? top_samples[xx + 1] : top_left;
+                int bottom_left = fy ? bottom_samples[xx] : top_left;
+                int bottom_right = fy
+                    ? (fx ? bottom_samples[xx + 1] : bottom_left)
+                    : top_right;
                 int top = top_left * inv_x + top_right * fx;
                 int bottom = bottom_left * inv_x + bottom_right * fx;
                 out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) /

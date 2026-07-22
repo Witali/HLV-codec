@@ -18,6 +18,8 @@ does not reduce decoder
 parallelism (HLV decoding is sequential); it frees the second cache bank and
 allows the otherwise unused 8 KiB RTC Fast RAM to join the byte-addressable
 heap. Slow exception-emulated byte access to ordinary IRAM stays disabled.
+ESP-IDF libraries retain size optimization, while the latency-sensitive
+`main` and `hlv1` components explicitly use `-O3`.
 
 ## Build and flash
 

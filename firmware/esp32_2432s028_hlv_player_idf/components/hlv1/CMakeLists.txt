@@ -8,7 +8,7 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
-    -Os
+    -O3
     -ffunction-sections
     -fdata-sections
     -Wall

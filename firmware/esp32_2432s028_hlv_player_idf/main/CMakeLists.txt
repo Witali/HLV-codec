@@ -23,7 +23,7 @@ idf_component_register(
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE
-    -Os
+    -O3
     -ffunction-sections
     -fdata-sections
     -Wall

@@ -49,6 +49,9 @@ uint32_t sd_read_us_max = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
+uint8_t native_y_row[kScreenWidth];
+uint8_t native_u_row[kScreenWidth / 2];
+uint8_t native_v_row[kScreenWidth / 2];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
@@ -80,24 +83,31 @@ uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
 void convertNativeRow(const HLV1Frame *frame, int source_y,
                       uint16_t *output) {
     const int chroma_y = source_y >> 1;
+    const uint8_t *y_row = frame->y + source_y * frame->stride_y;
+    const uint8_t *u_row = frame->u + chroma_y * frame->stride_u;
+    const uint8_t *v_row = frame->v + chroma_y * frame->stride_v;
+    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
+        hlv1_frame_unpack_packed_samples(
+            y_row, 0, 6, native_y_row, frame->width);
+        hlv1_frame_unpack_packed_samples(
+            u_row, 0, 5, native_u_row, (frame->width + 1) / 2);
+        hlv1_frame_unpack_packed_samples(
+            v_row, 0, 5, native_v_row, (frame->width + 1) / 2);
+        y_row = native_y_row;
+        u_row = native_u_row;
+        v_row = native_v_row;
+    }
     for (int x = 0; x < frame->width; x += 2) {
         const int chroma_x = x >> 1;
-        const int u = static_cast<int>(
-                          hlv1_frame_u_sample(frame, chroma_x, chroma_y)) -
-                      128;
-        const int v = static_cast<int>(
-                          hlv1_frame_v_sample(frame, chroma_x, chroma_y)) -
-                      128;
+        const int u = static_cast<int>(u_row[chroma_x]) - 128;
+        const int v = static_cast<int>(v_row[chroma_x]) - 128;
         const int red_add = 409 * v + 128;
         const int green_add = -100 * u - 208 * v + 128;
         const int blue_add = 516 * u + 128;
-        output[x] = yuvToRgb565(
-            hlv1_frame_y_sample(frame, x, source_y),
-            red_add, green_add, blue_add);
+        output[x] = yuvToRgb565(y_row[x], red_add, green_add, blue_add);
         if (x + 1 < frame->width) {
             output[x + 1] = yuvToRgb565(
-                hlv1_frame_y_sample(frame, x + 1, source_y),
-                red_add, green_add, blue_add);
+                y_row[x + 1], red_add, green_add, blue_add);
         }
     }
 }

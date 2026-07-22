@@ -155,6 +155,31 @@ static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
     return (uint8_t)(value << (8U - bits));
 }
 
+/* Expand a consecutive span without repeating bit-offset multiplication and
+ * cross-byte branches for every sample.  Motion compensation and display
+ * conversion use this hot path for complete 8/16-pixel blocks or scanlines. */
+static inline void hlv1_frame_unpack_packed_samples(const uint8_t *row,
+                                                     int x, unsigned bits,
+                                                     uint8_t *output,
+                                                     int count) {
+    if (count <= 0) return;
+    unsigned bit = (unsigned)x * bits;
+    const uint8_t *input = row + (bit >> 3);
+    unsigned cached = 8U - (bit & 7U);
+    unsigned window = (unsigned)*input++ >> (bit & 7U);
+    const unsigned mask = (1U << bits) - 1U;
+    const unsigned output_shift = 8U - bits;
+    for (int i = 0; i < count; ++i) {
+        if (cached < bits) {
+            window |= (unsigned)*input++ << cached;
+            cached += 8U;
+        }
+        output[i] = (uint8_t)((window & mask) << output_shift);
+        window >>= bits;
+        cached -= bits;
+    }
+}
+
 static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->y + y * frame->stride_y;

@@ -35,7 +35,9 @@ decoder rounds reconstructed luma to six bits and chroma to five bits after
 each macroblock, then packs both predictive frames by row. This saves 46,080
 bytes at 320x180, but it is intentionally not bit-exact: banding and gradual
 P-frame prediction drift are possible. Set the flag to `false` for the original
-8-bit reference path.
+8-bit reference path. The compact path expands consecutive reference spans and
+display rows in batches rather than performing a fresh bit lookup per pixel;
+the application and decoder components are compiled with `-O3`.
 
 The current diagnostic build also sets `kEnableAudio = false` in the same
 settings file. This bypasses DAC setup and the FreeRTOS audio queue while
