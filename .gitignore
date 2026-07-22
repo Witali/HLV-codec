@@ -4,6 +4,20 @@ build/
 /tools/arduino-cli/
 /tools/ffmpeg/
 /.tmp/
+
+# Generated and source video files stay outside Git.
+*.hlv
+*.y4m
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.mpeg
+*.mpg
+*.m2ts
+*.ts
+
 *.a
 *.exe
 *.o
