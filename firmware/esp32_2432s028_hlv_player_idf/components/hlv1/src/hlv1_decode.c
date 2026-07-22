@@ -544,6 +544,32 @@ static uint8_t intra_dc_plane(HLV1Decoder *d, int plane, int stride,
                               int px, int py, int size) {
     uint32_t sum = 0;
     unsigned count = 0;
+    if (d->compact_y6_u5_v5) {
+        const HLV1Frame *packed = &d->compact_current;
+        if (py > 0) {
+            for (int i = 0; i < size; ++i) {
+                if (plane == HLV1_PLANE_Y)
+                    sum += hlv1_frame_y_sample(packed, px + i, py - 1);
+                else if (plane == HLV1_PLANE_U)
+                    sum += hlv1_frame_u_sample(packed, px + i, py - 1);
+                else
+                    sum += hlv1_frame_v_sample(packed, px + i, py - 1);
+            }
+            count += (unsigned)size;
+        }
+        if (px > 0) {
+            for (int i = 0; i < size; ++i) {
+                if (plane == HLV1_PLANE_Y)
+                    sum += hlv1_frame_y_sample(packed, px - 1, py + i);
+                else if (plane == HLV1_PLANE_U)
+                    sum += hlv1_frame_u_sample(packed, px - 1, py + i);
+                else
+                    sum += hlv1_frame_v_sample(packed, px - 1, py + i);
+            }
+            count += (unsigned)size;
+        }
+        return count ? (uint8_t)rounded_mean_even(sum, count) : 128;
+    }
     if (py > 0) {
         const uint8_t *top = current_plane_ptr(d, plane, px, py - 1);
         for (int i = 0; i < size; ++i) sum += top[i];
@@ -563,6 +589,62 @@ static void predict_intra_plane(HLV1Decoder *d, int plane, int stride,
     if (mode == HLV1_INTRA_DC) {
         fill_block(dst, stride, size, size,
                    intra_dc_plane(d, plane, stride, px, py, size));
+        return;
+    }
+    if (d->compact_y6_u5_v5) {
+        const HLV1Frame *packed = &d->compact_current;
+        if (mode == HLV1_INTRA_HORIZONTAL) {
+            for (int y = 0; y < size; ++y) {
+                uint8_t value = 128;
+                if (px > 0) {
+                    if (plane == HLV1_PLANE_Y)
+                        value = hlv1_frame_y_sample(packed, px - 1, py + y);
+                    else if (plane == HLV1_PLANE_U)
+                        value = hlv1_frame_u_sample(packed, px - 1, py + y);
+                    else
+                        value = hlv1_frame_v_sample(packed, px - 1, py + y);
+                }
+                memset(dst + y * stride, value, (size_t)size);
+            }
+            return;
+        }
+
+        /* Reuse the destination's last row as a temporary top-edge cache.
+         * The final row is overwritten left-to-right only after each cached
+         * sample has been consumed, so compact intra needs no extra stack or
+         * heap storage. */
+        uint8_t *top = dst + (size - 1) * stride;
+        for (int x = 0; x < size; ++x) {
+            uint8_t value = 128;
+            if (py > 0) {
+                if (plane == HLV1_PLANE_Y)
+                    value = hlv1_frame_y_sample(packed, px + x, py - 1);
+                else if (plane == HLV1_PLANE_U)
+                    value = hlv1_frame_u_sample(packed, px + x, py - 1);
+                else
+                    value = hlv1_frame_v_sample(packed, px + x, py - 1);
+            }
+            top[x] = value;
+        }
+        if (mode == HLV1_INTRA_VERTICAL) {
+            for (int y = 0; y < size - 1; ++y)
+                memcpy(dst + y * stride, top, (size_t)size);
+            return;
+        }
+        for (int y = 0; y < size; ++y) {
+            uint8_t left = 128;
+            if (px > 0) {
+                if (plane == HLV1_PLANE_Y)
+                    left = hlv1_frame_y_sample(packed, px - 1, py + y);
+                else if (plane == HLV1_PLANE_U)
+                    left = hlv1_frame_u_sample(packed, px - 1, py + y);
+                else
+                    left = hlv1_frame_v_sample(packed, px - 1, py + y);
+            }
+            for (int x = 0; x < size; ++x)
+                dst[y * stride + x] =
+                    (uint8_t)(((unsigned)top[x] + left + 1U) >> 1);
+        }
         return;
     }
     const uint8_t *top = py > 0
@@ -1131,10 +1213,12 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
             case HLV1_MODE_SKIP:
                 if (p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
-                predict_motion(d, x, y, 0, 0, denominator);
                 if (d->compact_y6_u5_v5) {
                     compact_copy_macroblock(d, x, y);
                     compact_output_ready = 1;
+                    d->stats.copied_samples += 384;
+                } else {
+                    predict_motion(d, x, y, 0, 0, denominator);
                 }
                 context_mvx = context_mvy = 0;
                 d->stats.skipped++;
