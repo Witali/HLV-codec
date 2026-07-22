@@ -48,6 +48,24 @@ connection mode so it does not undo that sequence before connecting.
 Place `video.hlv` in the root of a FAT16/FAT32 microSD card. The file itself is
 not written to internal flash.
 
+## Xtensa QEMU decoder benchmark
+
+An off-board benchmark boots the real ESP-IDF decoder in Espressif QEMU and
+measures only `decode()` with the guest ESP32 cycle counter. Its 120-frame test
+clip is copied packet-for-packet from an existing HLV file; it never runs or
+modifies the encoder.
+
+```powershell
+.\qemu-benchmark.ps1 -BitReaderBits 32
+.\qemu-benchmark.ps1 -BitReaderBits 64
+```
+
+The first run installs QEMU under this project's `.tools` directory. Generated
+clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
+32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
+physical board because QEMU is not cycle-accurate and does not model SD or
+display DMA timing.
+
 ## Resource choices
 
 - Display: ST7789 at 40 MHz, two reusable 320x16 RGB565 DMA strips.
