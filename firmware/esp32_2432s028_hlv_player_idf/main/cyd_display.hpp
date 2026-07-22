@@ -12,7 +12,7 @@ class CydDisplay {
 public:
     static constexpr int kWidth = 320;
     static constexpr int kHeight = 240;
-    static constexpr int kRowsPerTransfer = 4;
+    static constexpr int kRowsPerTransfer = 16;
 
     esp_err_t init();
     esp_err_t clear(uint16_t rgb565);

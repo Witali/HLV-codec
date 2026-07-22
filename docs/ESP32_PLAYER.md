@@ -10,11 +10,11 @@ DAC GPIO26.
 - reads `/sdcard/video.hlv` from a FAT16/FAT32 microSD card;
 - decodes HLV-1 stream versions 1 through 12;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts YUV420 to RGB565 in four-row strips, without a full RGB framebuffer;
+- converts YUV420 to RGB565 in 16-row strips, without a full RGB framebuffer;
 - reads SPI3/VSPI at 20 MHz with DMA into a 16 KiB aligned stdio read-ahead
   buffer, then fills eight reusable 7680-byte packet blocks (60 KiB total);
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
-  320x4 DMA strips, overlapping conversion with transfer;
+  320x16 DMA strips, overlapping conversion with transfer;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
 - feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
   buffer, so display transfers do not directly clock the sound;
