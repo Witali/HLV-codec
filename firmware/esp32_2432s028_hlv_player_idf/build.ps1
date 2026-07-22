@@ -4,7 +4,7 @@ param([switch]$Clean)
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
 
-& (Join-Path $project "bootstrap.ps1")
+& (Join-Path $project "setup.ps1")
 if ($Clean) {
     & (Join-Path $project "idf.ps1") -IdfArguments @("fullclean")
 }

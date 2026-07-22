@@ -147,12 +147,12 @@ The default firmware is the independent project in
 driver for sound. Arduino and LovyanGFX are not linked. The previous Arduino
 sketch remains next to it only as a migration reference.
 
-The firmware toolchain is isolated from every other project. Its bootstrap
+The firmware toolchain is isolated from every other project. Its setup script
 downloads the pinned full ESP-IDF 5.5.5 archive, a local Python and the ESP32
 compiler/debug tools into the firmware's own `.tools` directory:
 
 ```powershell
-.\scripts\bootstrap.ps1
+.\setup.ps1
 ```
 
 FFmpeg used by the desktop converter remains in the repository's

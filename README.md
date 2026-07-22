@@ -23,6 +23,24 @@ directly to the chip's DAC. See [`docs/AUDIO_FORMAT.md`](docs/AUDIO_FORMAT.md).
 
 ## Build and verify
 
+On Windows, run the repository setup first:
+
+```powershell
+.\setup.ps1
+```
+
+It verifies or installs the Visual Studio C++ workload and places FFmpeg,
+Python 3.11 plus the benchmark packages, and the complete ESP32 toolchain
+inside this repository. Re-running it is safe. To prohibit automatic Visual
+Studio installation while still checking for an existing compiler, pass
+`-SkipVisualStudioInstall`.
+
+Run repository Python helpers through the local environment as follows:
+
+```powershell
+.\scripts\python.ps1 .\scripts\compare_hlv_versions.py --help
+```
+
 ```sh
 make -j
 make test
@@ -34,7 +52,7 @@ paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.
 
-On Windows with the Visual Studio C/C++ tools installed:
+Build and test the desktop tools with MSVC:
 
 ```powershell
 .\scripts\build_msvc.ps1
@@ -53,7 +71,7 @@ The pinned ESP-IDF, Python environment and ESP32 toolchain live inside the
 firmware project directory:
 
 ```powershell
-.\scripts\bootstrap.ps1
+.\setup.ps1
 .\scripts\fetch_big_buck_bunny.ps1
 .\scripts\prepare_esp32_video.ps1 -InputFile `
     .\out\sources\BigBuckBunny_320x180.mp4 -Width 320 -Height 180

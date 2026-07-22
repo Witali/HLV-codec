@@ -14,7 +14,7 @@ $marker = Join-Path $tools "ready-v5.5.5"
 
 if (-not (Test-Path -LiteralPath (Join-Path $idf "tools\idf.py")) -or
     -not (Test-Path -LiteralPath $marker)) {
-    & (Join-Path $project "bootstrap.ps1")
+    & (Join-Path $project "setup.ps1")
 }
 
 $savedPath = $env:Path

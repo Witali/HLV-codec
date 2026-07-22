@@ -24,7 +24,7 @@ heap. Slow exception-emulated byte access to ordinary IRAM stays disabled.
 All generated dependencies are placed below this directory in `.tools`:
 
 ```powershell
-.\bootstrap.ps1
+.\setup.ps1
 .\build.ps1
 .\flash.ps1 -Port COM8
 .\monitor.ps1 -Port COM8
@@ -33,6 +33,7 @@ All generated dependencies are placed below this directory in `.tools`:
 The repository-level wrappers run the same commands:
 
 ```powershell
+.\setup.ps1
 .\scripts\build_esp32.ps1
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
