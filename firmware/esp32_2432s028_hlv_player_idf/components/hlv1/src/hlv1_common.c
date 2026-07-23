@@ -587,6 +587,19 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
 uint32_t hlv1_br_get_ue(HLV1BitReader *br) {
     if (!br || !br->bits_left) { if (br) br->error = HLV1_ERR_BITSTREAM; return 0; }
 #if HLV1_FAST_32BIT_BITREADER
+#if defined(__GNUC__) || defined(__clang__)
+    /* Most Exp-Golomb values fit completely in the current 32-bit cache.
+     * Consume prefix, marker and suffix together so the common case performs
+     * one cache update instead of two nested bitreader calls. */
+    unsigned cached_zeros =
+        br->cache ? (unsigned)__builtin_clz(br->cache) : 32U;
+    unsigned cached_code_bits = cached_zeros * 2U + 1U;
+    if (cached_zeros <= 15U &&
+        cached_code_bits <= br->bits &&
+        cached_code_bits <= br->bits_left) {
+        return hlv1_br_get(br, cached_code_bits) - 1U;
+    }
+#endif
     unsigned leading = 0;
     for (;;) {
         if (!br->bits) br_refill(br);

@@ -60,7 +60,7 @@ Coefficient distribution:
 - [x] Inline cached extraction, defer refill until data is required and keep
       packet-span/error handling in the slow helper.
 - [ ] Load multiple bitstream bytes at once where safe.
-- [ ] Consume a complete in-cache Exp-Golomb code without nested bitreader
+- [x] Consume a complete in-cache Exp-Golomb code without nested bitreader
       calls.
 - [ ] Add a combined fast path for the frequent `run=0, level=+/-1`
       coefficient representation, with an exact fallback for every other
@@ -101,9 +101,17 @@ Their measurements are retained in
 | --- | ---: | ---: | --- | --- |
 | Fresh baseline | 381.49 | 611,435 | `be4876ff1c6b8461` | baseline |
 | Inline cached read with lazy refill | 336.81 | 486,412 | `be4876ff1c6b8461` | accepted |
+| Single-step cached Exp-Golomb | 337.51* | 454,488 | `be4876ff1c6b8461` | accepted |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
 `bdb0842a1e1a3a72`. QEMU heap is unchanged. The application binary grows by
 3,280 bytes because the short extraction path is now present at its call
 sites; the partition still has 48% free.
+
+The cached Exp-Golomb path removes a further 6.6% of QEMU cycles, for a
+cumulative 25.7% reduction from baseline. It adds 800 bytes to the application
+binary and does not change heap. The native number marked with `*` uses the
+portable fallback because MSVC does not expose the GCC/Clang `clz` intrinsic
+used by the Xtensa fast path; it is a hash check rather than a comparable
+timing result.
