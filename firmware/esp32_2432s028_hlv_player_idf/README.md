@@ -45,6 +45,16 @@ The board normally needs manual download mode: hold `BOOT`, briefly press and
 release `RST`, then release `BOOT`. The project selects esptool's `no_reset`
 connection mode so it does not undo that sequence before connecting.
 
+The ST7789 and SD-card SPI clocks are available under the `HLV player`
+section of ESP-IDF menuconfig:
+
+```powershell
+.\idf.ps1 -IdfArguments @("menuconfig")
+```
+
+Clean builds default to an 80 MHz display clock and a 40 MHz SD-card clock.
+Reduce either value if the board or card shows transfer errors.
+
 Place `video.hlv` in the root of a FAT16/FAT32 microSD card. The file itself is
 not written to internal flash.
 
@@ -69,9 +79,10 @@ display DMA timing.
 
 ## Resource choices
 
-- Display: ST7789 at 40 MHz, two reusable 320x16 RGB565 DMA strips.
-- Storage: SDSPI DMA at 20 MHz, a 16 KiB aligned read-ahead buffer and eight
-  reusable 7680-byte packet blocks (60 KiB).
+- Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
+  strips.
+- Storage: SDSPI DMA at configurable 40 MHz, a 16 KiB aligned read-ahead
+  buffer and eight reusable 7680-byte packet blocks (60 KiB).
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
 - Scheduling: one 4 KiB CPU1 decoder task and two one-entry queues; only frame

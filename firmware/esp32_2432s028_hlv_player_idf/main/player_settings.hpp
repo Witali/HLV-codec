@@ -1,5 +1,7 @@
 #pragma once
 
+#include "sdkconfig.h"
+
 namespace player_settings {
 
 // false: draw at native resolution in the centre with black borders.
@@ -20,10 +22,9 @@ constexpr bool kUseDualCorePipeline = true;
 constexpr bool kEnableAudio = false;
 
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
-constexpr int kSdClockKhz = 20000;
-
-// 40 MHz leaves enough bandwidth for 320x240x16 at 15 fps and is more robust
-// on the long PCB traces than the former LovyanGFX 80 MHz setting.
-constexpr int kDisplayClockHz = 40000000;
+constexpr int kSdClockKhz =
+    CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ * 1000;
+constexpr int kDisplayClockHz =
+    CONFIG_HLV_PLAYER_DISPLAY_SPI_CLOCK_MHZ * 1000000;
 
 }  // namespace player_settings
