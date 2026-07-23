@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <cerrno>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <sys/stat.h>
 
 #include "driver/dac_continuous.h"
 #include "driver/sdspi_host.h"
@@ -25,6 +27,7 @@
 #include "hlv1.h"
 #include "hlv_esp32_decoder.hpp"
 #include "player_settings.hpp"
+#include "uart_file_upload.hpp"
 
 namespace {
 
@@ -49,6 +52,14 @@ constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
+constexpr int kUploadBarX = 16;
+constexpr int kUploadBarY = (kScreenHeight - 16) / 2;
+constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
+constexpr int kUploadBarHeight = 16;
+constexpr int kUploadBarBorder = 2;
+constexpr uint16_t kUploadBarBorderColor = 0xffff;
+constexpr uint16_t kUploadBarEmptyColor = 0x2104;
+constexpr uint16_t kUploadBarFillColor = 0x07e0;
 
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
                   !player_settings::kUseDualCorePipeline,
@@ -70,6 +81,7 @@ CydDisplay display;
 FILE *video_file = nullptr;
 FILE *audio_file = nullptr;
 HlvEsp32Decoder decoder;
+UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 int64_t frame_period_us = 0;
 int64_t next_present_us = 0;
@@ -120,6 +132,7 @@ bool pending_frame_valid = false;
 uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
+int upload_progress_pixels = -1;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
@@ -274,6 +287,48 @@ void showStatus(const char *title, const char *detail = nullptr) {
     }
 }
 
+void beginUploadProgress() {
+    display.clear(0x0000);
+    uint16_t *pixels = display.acquireBuffer();
+    if (!pixels) return;
+    for (int y = 0; y < kUploadBarHeight; ++y) {
+        for (int x = 0; x < kUploadBarWidth; ++x) {
+            const bool border =
+                x < kUploadBarBorder ||
+                x >= kUploadBarWidth - kUploadBarBorder ||
+                y < kUploadBarBorder ||
+                y >= kUploadBarHeight - kUploadBarBorder;
+            pixels[y * kUploadBarWidth + x] =
+                border ? kUploadBarBorderColor : kUploadBarEmptyColor;
+        }
+    }
+    if (display.drawBitmap(kUploadBarX, kUploadBarY, kUploadBarWidth,
+                           kUploadBarHeight, pixels) != ESP_OK) {
+        ESP_LOGE(kTag, "Could not draw UART upload progress bar");
+    }
+    upload_progress_pixels = 0;
+}
+
+void updateUploadProgress(uint32_t received, uint32_t total, void *) {
+    if (!total) return;
+    const int inner_width = kUploadBarWidth - 2 * kUploadBarBorder;
+    const int filled = static_cast<int>(
+        (static_cast<uint64_t>(received) * inner_width) / total);
+    if (filled <= upload_progress_pixels) return;
+
+    const int changed = filled - upload_progress_pixels;
+    const int x = kUploadBarX + kUploadBarBorder +
+                  upload_progress_pixels;
+    uint16_t *pixels = display.acquireBuffer();
+    if (!pixels) return;
+    const int inner_height = kUploadBarHeight - 2 * kUploadBarBorder;
+    std::fill_n(pixels, changed * inner_height, kUploadBarFillColor);
+    if (display.drawBitmap(x, kUploadBarY + kUploadBarBorder,
+                           changed, inner_height, pixels) == ESP_OK) {
+        upload_progress_pixels = filled;
+    }
+}
+
 bool mountSdCard() {
     if (sd_mounted) return true;
 
@@ -322,6 +377,15 @@ bool mountSdCard() {
         return false;
     }
     sd_mounted = true;
+    if (mkdir(player_settings::kVideoDirectory, 0775) != 0 &&
+        errno != EEXIST) {
+        ESP_LOGE(kTag, "Cannot create %s: errno=%d",
+                 player_settings::kVideoDirectory, errno);
+        esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
+        sd_card = nullptr;
+        sd_mounted = false;
+        return false;
+    }
     ESP_LOGI(kTag, "microSD: SPI3 at %d kHz with DMA",
              player_settings::kSdClockKhz);
     if (!player_settings::kLogFrameTimings) {
@@ -664,7 +728,7 @@ bool openVideo() {
     video_file = std::fopen(player_settings::kVideoPath, "rb");
     if (!video_file) {
         showStatus("video.hlv missing",
-                   "copy it to the microSD card root");
+                   "upload it to the HLV directory");
         return false;
     }
     if (std::setvbuf(video_file,
@@ -1079,8 +1143,35 @@ extern "C" void app_main(void) {
     } else if (!openVideo()) {
         last_retry_ms = millisNow();
     }
+    const esp_err_t uart_result =
+        uart_upload.begin(CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+    if (uart_result != ESP_OK) {
+        ESP_LOGE(kTag, "UART upload initialization failed: %s",
+                 esp_err_to_name(uart_result));
+    }
 
     for (;;) {
+        UartUploadRequest upload_request{};
+        if (uart_upload.pollRequest(&upload_request)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+                continue;
+            }
+            closeVideo();
+            beginUploadProgress();
+            char stored_path[128]{};
+            const bool stored = uart_upload.receive(
+                upload_request, player_settings::kVideoDirectory,
+                stored_path, sizeof stored_path, updateUploadProgress,
+                nullptr);
+            display.flush();
+            showStatus(stored ? "UART upload complete"
+                              : "UART upload failed",
+                       upload_request.filename);
+            if (!openVideo()) last_retry_ms = millisNow();
+            continue;
+        }
         if (video_file && decoder.ready()) {
             if (player_settings::kUseDualCorePipeline) {
                 playOneFramePipelined();

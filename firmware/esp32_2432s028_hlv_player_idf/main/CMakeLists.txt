@@ -20,6 +20,7 @@ else()
             "hlv_player.cpp"
             "cyd_display.cpp"
             "hlv_esp32_decoder.cpp"
+            "uart_file_upload.cpp"
         INCLUDE_DIRS "."
         REQUIRES
             hlv1
@@ -27,6 +28,7 @@ else()
             esp_driver_gpio
             esp_driver_sdspi
             esp_driver_spi
+            esp_driver_uart
             esp_lcd
             esp_rom
             esp_timer

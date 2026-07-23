@@ -48,9 +48,11 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=n
 CONFIG_FREERTOS_USE_TIMERS=n
 CONFIG_HEAP_POISONING_DISABLED=y
 
-# FAT is read-only from the application's point of view: one unbuffered file,
-# no long names, no relative paths, no per-file cache and no codepage tables.
-CONFIG_FATFS_LFN_NONE=y
+# UART uploads require directory creation, replacement and descriptive ASCII
+# filenames. Long-name work buffers live on the heap only during filesystem
+# operations; the player still keeps per-file caches and string helpers off.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=63
 CONFIG_FATFS_VOLUME_COUNT=1
 CONFIG_FATFS_SECTOR_512=y
 CONFIG_FATFS_FS_LOCK=0
@@ -58,11 +60,11 @@ CONFIG_FATFS_PER_FILE_CACHE=n
 CONFIG_FATFS_USE_FASTSEEK=n
 CONFIG_FATFS_USE_STRFUNC_NONE=y
 
-# fopen/read/lseek are required for HLV, directory traversal, select, termios
-# and /dev/null are not.
+# fopen/read/write/lseek and directory mutations are required for HLV UART
+# uploads; directory iteration, select, termios and /dev/null are not.
 CONFIG_VFS_SUPPORT_IO=y
 CONFIG_VFS_MAX_COUNT=3
-CONFIG_VFS_SUPPORT_DIR=n
+CONFIG_VFS_SUPPORT_DIR=y
 CONFIG_VFS_SUPPORT_SELECT=n
 CONFIG_VFS_SUPPORT_TERMIOS=n
 CONFIG_VFS_INITIALIZE_DEV_NULL=n

@@ -42,7 +42,8 @@ constexpr AvSyncMode kAvSyncMode = AvSyncMode::kLoopAudioForLateVideo;
 // while this measurement mode is enabled.
 constexpr bool kLogFrameTimings = true;
 
-constexpr char kVideoPath[] = "/sdcard/video.hlv";
+constexpr char kVideoDirectory[] = "/sdcard/HLV";
+constexpr char kVideoPath[] = "/sdcard/HLV/video.hlv";
 constexpr int kSdClockKhz =
     CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ * 1000;
 constexpr int kDisplayClockHz =
