@@ -120,6 +120,7 @@ volatile uint32_t audio_played_samples = 0;
 volatile uint32_t audio_pending_samples = 0;
 volatile uint32_t audio_rebuffers = 0;
 volatile uint32_t audio_silence_chunks = 0;
+volatile uint32_t audio_underrun_samples = 0;
 volatile bool audio_loop_hold = false;
 volatile uint32_t audio_loop_events = 0;
 volatile uint32_t audio_loop_chunks = 0;
@@ -275,6 +276,7 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
 }
 
 void showStatus(const char *title, const char *detail = nullptr) {
+    esp_rom_printf("S,%s,%s\n", title, detail ? detail : "");
     if (detail) {
         ESP_LOGW(kTag, "%s: %s", title, detail);
     } else {
@@ -518,6 +520,12 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
                     sizeof audio_dma_samples - received);
         if (audio_started) {
             audio_silence_chunks = audio_silence_chunks + 1;
+            if (!audio_prefetch_eof) {
+                audio_underrun_samples =
+                    audio_underrun_samples +
+                    static_cast<uint32_t>(
+                        sizeof audio_dma_samples - received);
+            }
         }
     }
 
@@ -579,6 +587,7 @@ void stopAudio() {
     audio_pending_samples = 0;
     audio_rebuffers = 0;
     audio_silence_chunks = 0;
+    audio_underrun_samples = 0;
     audio_loop_hold = false;
     audio_loop_events = 0;
     audio_loop_chunks = 0;
@@ -1004,6 +1013,20 @@ bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
         // following frame.
         esp_rom_printf("F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
                        decode_us, render_us, work_us, present_us);
+        if (audio_enabled && decoded_frames % 30U == 0U) {
+            esp_rom_printf(
+                "A,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                decoded_frames,
+                static_cast<unsigned>(
+                    xStreamBufferBytesAvailable(audio_stream)),
+                static_cast<unsigned>(audio_pending_samples),
+                static_cast<unsigned>(audio_played_samples),
+                static_cast<unsigned>(audio_rebuffers),
+                static_cast<unsigned>(audio_underrun_samples),
+                static_cast<unsigned>(audio_silence_chunks),
+                static_cast<unsigned>(audio_loop_events),
+                static_cast<unsigned>(audio_loop_chunks));
+        }
     }
     return true;
 }
@@ -1034,9 +1057,12 @@ void finishVideoLoop() {
     }
     ESP_LOGI(kTag,
              "Loop: %u frames, %u late, %u skipped, %u rebuffers, "
+             "%u missing audio samples, %u silence chunks, "
              "%u audio loops (%u DMA chunks)",
              decoded_frames, dropped_deadlines, skipped_presentations,
              static_cast<unsigned>(audio_rebuffers),
+             static_cast<unsigned>(audio_underrun_samples),
+             static_cast<unsigned>(audio_silence_chunks),
              static_cast<unsigned>(audio_loop_events),
              static_cast<unsigned>(audio_loop_chunks));
     if (!openVideo()) last_retry_ms = millisNow();
