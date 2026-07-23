@@ -120,6 +120,10 @@ active.  Consequently the deterministic operation counts and the interleaved
 per-change A/B results below are the primary optimization evidence.  The final
 HLV and reconstructed Y4M SHA-256 values are still the baseline hashes.
 
+A final direct one-thread A/B on the same prepared Y4M measured 22.441 seconds
+(16.04 fps) for the instrumented baseline and 18.376 seconds (19.59 fps) for
+the current encoder: 18.1% less time and 22.1% higher throughput.
+
 ### Instrumented baseline
 
 Commit `dd7d2fb`, 360 frames, three measured runs after one warm-up:
