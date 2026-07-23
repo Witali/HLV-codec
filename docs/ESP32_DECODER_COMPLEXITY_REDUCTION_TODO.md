@@ -78,7 +78,7 @@ Coefficient distribution:
       remove the temporary residual array and extra pass.
 - [x] Evaluate selective IRAM placement (QEMU-neutral and reverted; physical
       Flash-cache measurement remains pending).
-- [ ] Re-run complete-film hashing, QEMU, ESP-IDF size reporting and document
+- [x] Re-run complete-film hashing, QEMU, ESP-IDF size reporting and document
       the cumulative result.
 - [ ] When the board becomes available, measure key/P frames separately and
       record P50/P95/max decode time. Do not sample at a period divisible by
@@ -110,6 +110,7 @@ Their measurements are retained in
 | Direct compact PALETTE output | 317.74 | 451,876 | `be4876ff1c6b8461` | rejected |
 | Direct zero-residual FILL output | 316.89 | 450,885 | `be4876ff1c6b8461` | accepted |
 | Fused inverse-WHT/add | 319.72 | 447,161 | `be4876ff1c6b8461` | accepted |
+| Final clean validation | 318.79 | 447,161 | `be4876ff1c6b8461` | accepted |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
@@ -177,3 +178,26 @@ Placing refill, slow bit extraction and Exp-Golomb helpers in IRAM moved about
 difference over 120 frames, below the reported per-frame resolution), as
 expected because it does not model the ESP32 Flash cache. The placement was
 reverted rather than consuming IRAM without a physical-board result.
+
+## Final off-board result
+
+The final clean validation produces:
+
+- v12 complete-film hash `bdb0842a1e1a3a72`, 318.79 us/frame natively;
+- v13 complete-film hash `fe31eb325e6cb945`, 328.21 us/frame natively;
+- v12 QEMU hash `be4876ff1c6b8461`, 447,161 cycles/frame;
+- QEMU heap 306,256 bytes free, largest block 172,032 bytes, unchanged;
+- normal player binary `0x443d0` bytes, with 82% of the application partition
+  free;
+- Flash Code 180,992 bytes;
+- static DRAM 54,824 bytes;
+- IRAM 52,379 bytes, with 78,693 bytes remaining.
+
+Relative to the fresh v12 baseline, native time is down 16.4% and QEMU decoder
+cycles are down 26.9%. At the nominal 240 MHz target the QEMU instruction-count
+normalisation rises from 392.5 to 536.7 decoder-only fps. These are
+instruction-count comparisons, not physical playback rates.
+
+No accepted decoder change adds heap or static frame storage. The only
+remaining checklist item is physical-board validation of Flash-cache effects
+and keyframe P50/P95/max timing.
