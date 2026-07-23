@@ -4,6 +4,7 @@
  * committing a partially reconstructed frame as the next reference.
  */
 #include "hlv1.h"
+#include "../src/hlv1_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,8 +31,40 @@ static HLV1Header test_header(void) {
     return h;
 }
 
+static int test_bitwriter_append(void) {
+    for (unsigned prefix = 0; prefix < 8; ++prefix) {
+        for (unsigned length = 0; length <= 129; ++length) {
+            HLV1BitWriter source, bulk, reference;
+            hlv1_bw_init(&source);
+            hlv1_bw_init(&bulk);
+            hlv1_bw_init(&reference);
+            uint32_t prefix_value =
+                prefix ? (0x55U & ((1U << prefix) - 1U)) : 0;
+            CHECK(hlv1_bw_put(&bulk, prefix_value, prefix) == HLV1_OK);
+            CHECK(hlv1_bw_put(&reference, prefix_value, prefix) == HLV1_OK);
+            for (unsigned bit = 0; bit < length; ++bit) {
+                uint32_t value = ((bit * 13U + 7U) >> 2) & 1U;
+                CHECK(hlv1_bw_put(&source, value, 1) == HLV1_OK);
+                CHECK(hlv1_bw_put(&reference, value, 1) == HLV1_OK);
+            }
+            CHECK(hlv1_bw_finish(&source) == HLV1_OK);
+            CHECK(hlv1_bw_append(&bulk, &source) == HLV1_OK);
+            CHECK(hlv1_bw_finish(&bulk) == HLV1_OK);
+            CHECK(hlv1_bw_finish(&reference) == HLV1_OK);
+            CHECK(bulk.bit_count == reference.bit_count);
+            CHECK(bulk.size == reference.size);
+            CHECK(!memcmp(bulk.data, reference.data, bulk.size));
+            hlv1_bw_free(&source);
+            hlv1_bw_free(&bulk);
+            hlv1_bw_free(&reference);
+        }
+    }
+    return 0;
+}
+
 int main(void) {
     HLV1Header h = test_header(), got;
+    CHECK(test_bitwriter_append() == 0);
 
     FILE *f = tmpfile();
     CHECK(f != NULL);

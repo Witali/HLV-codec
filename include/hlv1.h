@@ -169,6 +169,8 @@ typedef struct HLV1EncoderWork {
     uint64_t bitwriter_append_calls;
     uint64_t bitwriter_appended_bits;
     uint64_t bitwriter_byte_copyable_bytes;
+    uint64_t bitwriter_bulk_copy_bytes;
+    uint64_t bitwriter_bulk_shift_bytes;
     uint64_t bitwriter_buffer_grows;
 } HLV1EncoderWork;
 

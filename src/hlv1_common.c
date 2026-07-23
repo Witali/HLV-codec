@@ -482,6 +482,46 @@ int hlv1_bw_append(HLV1BitWriter *dst, const HLV1BitWriter *src) {
         if (!dst->bits)
             dst->encoder_work->bitwriter_byte_copyable_bytes += bits / 8U;
     }
+    /*
+     * Finished writers keep the last partial byte zero-padded in data.  Copy
+     * or shift their complete bytes directly, then use the normative put path
+     * only for the final 0..7 valid bits.
+     */
+    if (!src->bits) {
+        size_t full_bytes = (size_t)(bits / 8U);
+        unsigned tail_bits = (unsigned)(bits & 7U);
+        if (full_bytes) {
+            int r = bw_reserve(dst, full_bytes + (tail_bits != 0));
+            if (r < 0) {
+                dst->error = r;
+                return r;
+            }
+            if (!dst->bits) {
+                memcpy(dst->data + dst->size, src->data, full_bytes);
+                dst->size += full_bytes;
+                if (dst->encoder_work)
+                    dst->encoder_work->bitwriter_bulk_copy_bytes += full_bytes;
+            } else {
+                unsigned pending = dst->bits;
+                uint8_t mask = (uint8_t)((1U << pending) - 1U);
+                for (size_t i = 0; i < full_bytes; ++i) {
+                    uint8_t byte = src->data[i];
+                    dst->data[dst->size++] = (uint8_t)(
+                        (dst->cache << (8U - pending)) |
+                        (byte >> pending));
+                    dst->cache = byte & mask;
+                }
+                if (dst->encoder_work)
+                    dst->encoder_work->bitwriter_bulk_shift_bytes += full_bytes;
+            }
+            dst->bit_count += (uint64_t)full_bytes * 8U;
+        }
+        if (tail_bits) {
+            uint32_t tail = src->data[full_bytes] >> (8U - tail_bits);
+            return hlv1_bw_put(dst, tail, tail_bits);
+        }
+        return HLV1_OK;
+    }
     for (uint64_t pos = 0; pos < bits;) {
         unsigned n = (unsigned)HLV1_MIN((uint64_t)24, bits - pos);
         uint32_t v = 0;

@@ -66,7 +66,7 @@ algorithms; raw counts and wall time remain authoritative.
 - [ ] Add an exact palette-impossibility prefilter before 2/4/8-color
   clustering.
 - [ ] Reuse candidate and residual bit-writer storage.
-- [ ] Add byte-aligned and shifted bulk paths to `hlv1_bw_append`.
+- [x] Add byte-aligned and shifted bulk paths to `hlv1_bw_append`.
 - [ ] Count residual representation lengths first and emit only the selected
   v9 representation.
 - [ ] Use SKIP as an early RDO upper bound while retaining the original
@@ -164,3 +164,26 @@ Two interleaved one-thread A/B pairs averaged 21.411 seconds for the fast path
 and 21.938 seconds for its immediate baseline, a 2.4% time reduction.  A
 four-thread paired run improved from 5.898 to 5.385 seconds.  HLV and
 reconstruction SHA-256 values remain identical to the original baseline.
+
+### Bulk bit-writer append
+
+Finished temporary writers are now appended a byte at a time.  Aligned
+destinations use `memcpy`; unaligned destinations shift one byte at a time and
+leave only the final 0..7 bits for the normative scalar writer.
+
+| Metric | Zero/DC baseline | Bulk append | Change |
+|---|---:|---:|---:|
+| Bit-writer put calls | 683,126,180 | 638,527,925 | -6.53% |
+| Bits sent through `put` | 2,470,174,597 | 1,386,949,485 | -43.85% |
+| Buffer growths | 5,516,655 | 5,502,528 | -0.26% |
+| Primitive operations/frame | 156,022,120 | 151,092,853 | -3.16% |
+
+The 360-frame workload bulk-copied 7,147,571 aligned bytes and bulk-shifted
+128,255,568 unaligned bytes.  Its three-run medians were 17.244 seconds
+(20.88 fps) with one thread and 5.422 seconds (66.40 fps) with four threads.
+A direct paired run improved from 21.349 to 20.153 seconds; reverse-order
+timing was affected by the same host-load variance seen in the baseline, while
+the operation reduction remained deterministic.
+
+The direct regression covers every destination alignment 0..7 and source
+length 0..129 bits.  Full HLV and reconstructed Y4M hashes remain identical.

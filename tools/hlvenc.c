@@ -229,6 +229,8 @@ static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
     ADD_WORK(bitwriter_append_calls);
     ADD_WORK(bitwriter_appended_bits);
     ADD_WORK(bitwriter_byte_copyable_bytes);
+    ADD_WORK(bitwriter_bulk_copy_bytes);
+    ADD_WORK(bitwriter_bulk_shift_bytes);
     ADD_WORK(bitwriter_buffer_grows);
 #undef ADD_WORK
 #undef ADD_STAT
@@ -256,7 +258,11 @@ static double encoder_primitive_operations(const HLV1EncoderWork *w) {
            5.0 * w->quantized_coefficients +
            10.0 * w->palette_distance_evaluations +
            1.0 * w->bitwriter_requested_bits +
-           1.0 * w->bitwriter_appended_bits;
+           1.0 * (w->bitwriter_appended_bits -
+                  8U * (w->bitwriter_bulk_copy_bytes +
+                        w->bitwriter_bulk_shift_bytes)) +
+           1.0 * w->bitwriter_bulk_copy_bytes +
+           3.0 * w->bitwriter_bulk_shift_bytes;
 }
 
 /* Attach exactly one video-frame interval of unsigned 8-bit mono PCM.  The
@@ -1577,10 +1583,13 @@ int main(int argc, char **argv) {
                 " append_calls=%" PRIu64
                 " appended_bits=%" PRIu64
                 " byte_copyable=%" PRIu64
+                " bulk_bytes=%" PRIu64 "/%" PRIu64
                 " buffer_grows=%" PRIu64 "\n",
                 w->bitwriter_put_calls, w->bitwriter_requested_bits,
                 w->bitwriter_append_calls, w->bitwriter_appended_bits,
                 w->bitwriter_byte_copyable_bytes,
+                w->bitwriter_bulk_copy_bytes,
+                w->bitwriter_bulk_shift_bytes,
                 w->bitwriter_buffer_grows);
         fprintf(stderr,
                 "Encoder primitive operation estimate: %.0f total, "

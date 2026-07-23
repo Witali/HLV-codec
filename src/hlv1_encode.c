@@ -2870,6 +2870,8 @@ static void add_encoder_work_delta(HLV1EncoderWork *dst,
     ADD_WORK_DELTA(bitwriter_append_calls);
     ADD_WORK_DELTA(bitwriter_appended_bits);
     ADD_WORK_DELTA(bitwriter_byte_copyable_bytes);
+    ADD_WORK_DELTA(bitwriter_bulk_copy_bytes);
+    ADD_WORK_DELTA(bitwriter_bulk_shift_bytes);
     ADD_WORK_DELTA(bitwriter_buffer_grows);
 #undef ADD_WORK_DELTA
 }
