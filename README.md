@@ -100,6 +100,13 @@ firmware project directory:
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
 
+With the player firmware running normally, an HLV file can be copied to
+`/sdcard/HLV/video.hlv` over the CH340C UART without removing the card:
+
+```powershell
+.\scripts\upload_video_uart.ps1 -Port COM8 -File .\out\video.hlv
+```
+
 See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload
 instructions.
 

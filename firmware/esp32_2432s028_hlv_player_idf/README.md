@@ -33,6 +33,50 @@ All generated dependencies are placed below this directory in `.tools`:
 .\monitor.ps1 -Port COM8
 ```
 
+## Uploading videos to microSD over UART
+
+The normal player listens for a binary upload command on the same UART0/CH340C
+connection used by the monitor. Close the serial monitor, leave the board in
+normal application mode, and run:
+
+```powershell
+.\upload-video.ps1 -Port COM8 -File ..\..\out\video.hlv
+```
+
+The wrapper uses `pyserial` from this project's local ESP-IDF Python
+environment; `setup.ps1` installs it under this project, so no global Python
+package is required. The control handshake uses 460800 baud and block data uses
+921600 baud by default. `-DataBaud 460800` is available for a marginal USB
+connection.
+
+The destination defaults to `/sdcard/HLV/video.hlv`, which is the file opened
+by the player:
+
+```powershell
+.\upload-video.ps1 -Port COM8 -File clip.hlv -Name video.hlv
+.\upload-video.ps1 -Port COM8 -File clip.hlv -Name test-01.hlv
+```
+
+Names are ASCII, end in `.hlv`, and are at most 48 characters. Other names are
+stored in `/HLV`, but `video.hlv` remains the automatic boot file.
+
+The player finishes the current decode operation, stops video and audio, and
+closes both SD file cursors before acknowledging an upload. The screen shows a
+progress bar during the transfer. Each 4 KiB block has its own CRC32 and is
+acknowledged before the PC sends the next block, so hardware flow control is
+not required. The complete file CRC32 is checked before the previous target is
+replaced; an interrupted or corrupt upload leaves the existing video intact.
+After the transfer the player opens `/HLV/video.hlv` again.
+
+Protocol version 1 starts with this ASCII line at the console baud:
+
+```text
+HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
+```
+
+The device replies `HLVREADY 1 4096 <data-baud>`, receives acknowledged `HLVB`
+binary blocks, and finishes with `HLVDONE 1 <size> <crc32> <name>`.
+
 The repository-level wrappers run the same commands:
 
 ```powershell
@@ -129,7 +173,8 @@ display DMA timing.
 
 - Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
   strips.
-- Storage: SDSPI DMA at configurable 40 MHz, a 16 KiB aligned read-ahead
+- Storage: `/sdcard/HLV/video.hlv` on SDSPI DMA at configurable 40 MHz, a
+  16 KiB aligned read-ahead
   buffer and nine reusable 7680-byte packet blocks (67.5 KiB), enough for a
   fully literal 320x180 key frame plus one mono audio interval.
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
