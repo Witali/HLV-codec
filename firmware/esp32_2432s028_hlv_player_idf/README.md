@@ -49,6 +49,23 @@ button presses are required. See
 [`docs/board/CH340C_AUTO_BOOT_MOD.md`](../../docs/board/CH340C_AUTO_BOOT_MOD.md)
 for the measured timing limits and the manual fallback.
 
+## Per-frame timing mode
+
+The current measurement build sets `kLogFrameTimings` in
+`main/player_settings.hpp` and restricts ordinary ESP-IDF output to errors.
+UART0 emits one CSV record for every presented frame:
+
+```text
+#frame,sd_us,decode_us,render_us,work_us,present_us
+F,1,540,18320,26740,45600,108220
+```
+
+`work_us` is the sum of packet read, decode and render work. `present_us`
+measures presentation from entry through A/V-clock waiting and display
+submission; packet read and decode occur earlier and can overlap adjacent
+frames in dual-core mode. All timestamps are captured before the CSV line is
+written, so its own UART transmission is excluded from that frame's values.
+
 The ST7789 and SD-card SPI clocks are available under the `HLV player`
 section of ESP-IDF menuconfig:
 

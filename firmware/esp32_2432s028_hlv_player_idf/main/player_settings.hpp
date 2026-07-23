@@ -36,6 +36,12 @@ constexpr bool kEnableAudio = true;
 // fragment repeat while a slow frame is decoded or transferred to the display.
 constexpr AvSyncMode kAvSyncMode = AvSyncMode::kLoopAudioForLateVideo;
 
+// Emit one compact CSV record per presented frame. Timestamps are captured
+// before UART output so formatting/transmission is excluded from the reported
+// values. Normal ESP-IDF logs are restricted to errors in sdkconfig.defaults
+// while this measurement mode is enabled.
+constexpr bool kLogFrameTimings = true;
+
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
 constexpr int kSdClockKhz =
     CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ * 1000;

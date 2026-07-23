@@ -76,9 +76,6 @@ int64_t next_present_us = 0;
 uint32_t decoded_frames = 0;
 uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
-uint64_t sd_read_us_total = 0;
-uint32_t sd_read_us_max = 0;
-uint32_t sd_packets_read = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
@@ -120,6 +117,7 @@ TaskHandle_t decode_task_handle = nullptr;
 bool decode_in_flight = false;
 HLV1Frame pending_frame{};
 bool pending_frame_valid = false;
+uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
 
@@ -326,7 +324,9 @@ bool mountSdCard() {
     sd_mounted = true;
     ESP_LOGI(kTag, "microSD: SPI3 at %d kHz with DMA",
              player_settings::kSdClockKhz);
-    sdmmc_card_print_info(stdout, sd_card);
+    if (!player_settings::kLogFrameTimings) {
+        sdmmc_card_print_info(stdout, sd_card);
+    }
     return true;
 }
 
@@ -636,6 +636,7 @@ void closeVideo() {
         waitDecode(&ignored);
     }
     pending_frame_valid = false;
+    pending_read_us = 0;
     pending_decode_us = 0;
     stopAudio();
     decoder.end();
@@ -731,9 +732,6 @@ bool openVideo() {
     decoded_frames = 0;
     dropped_deadlines = 0;
     skipped_presentations = 0;
-    sd_read_us_total = 0;
-    sd_read_us_max = 0;
-    sd_packets_read = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
     if (player_settings::kScaleVideoToDisplay) {
@@ -755,6 +753,10 @@ bool openVideo() {
              decoder.compactYuv() ? "packed Y6/U5/V5 4:2:0"
                                   : "8-bit YUV 4:2:0");
     reportHeap("decoder ready");
+    if (player_settings::kLogFrameTimings) {
+        esp_rom_printf(
+            "#frame,sd_us,decode_us,render_us,work_us,present_us\n");
+    }
     return true;
 }
 
@@ -854,7 +856,9 @@ bool waitForAudioTarget(uint64_t target_samples) {
     return false;
 }
 
-bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
+bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
+                  uint32_t decode_us) {
+    const int64_t present_start = microsNow();
     bool render = true;
     if (audio_enabled) {
         if (!audio_started) {
@@ -927,44 +931,23 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
         }
     }
 
-    if ((decoded_frames % 60U) == 0U) {
-        const uint32_t sd_average = sd_packets_read
-                                        ? static_cast<uint32_t>(
-                                              sd_read_us_total /
-                                              sd_packets_read)
-                                        : 0;
-        const size_t audio_queued =
-            audio_stream ? xStreamBufferBytesAvailable(audio_stream) : 0;
-        ESP_LOGI(kTag,
-                 "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
-                 "render=%uus late=%u skip=%u audio=%u/%u "
-                 "rebuffer=%u silence=%u loop=%u/%u hold=%u "
-                 "played=%u heap=%u",
-                 decoded_frames, sd_average, sd_read_us_max, decode_us,
-                 render_us, dropped_deadlines,
-                 skipped_presentations,
-                 static_cast<unsigned>(audio_queued),
-                 static_cast<unsigned>(kAudioStreamBytes),
-                 static_cast<unsigned>(audio_rebuffers),
-                 static_cast<unsigned>(audio_silence_chunks),
-                 static_cast<unsigned>(audio_loop_events),
-                 static_cast<unsigned>(audio_loop_chunks),
-                 static_cast<unsigned>(audio_loop_hold),
-                 static_cast<unsigned>(audio_played_samples),
-                 static_cast<unsigned>(
-                     heap_caps_get_free_size(MALLOC_CAP_8BIT)));
+    const uint32_t present_us =
+        static_cast<uint32_t>(microsNow() - present_start);
+    const uint32_t work_us = read_us + decode_us + render_us;
+    if (player_settings::kLogFrameTimings) {
+        // Capture every value before printing. UART overhead is therefore not
+        // charged to this record, although it can consume slack before the
+        // following frame.
+        esp_rom_printf("F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
+                       decode_us, render_us, work_us, present_us);
     }
     return true;
 }
 
-void readPacket(HLV1Packet *packet, int *result) {
+uint32_t readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
     *result = decoder.readPacket(video_file, packet);
-    const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
-    sd_read_us_total += read_us;
-    sd_read_us_max = std::max(sd_read_us_max, read_us);
-    if (*result == HLV1_OK) ++sd_packets_read;
+    return static_cast<uint32_t>(microsNow() - read_start);
 }
 
 void finishVideoLoop() {
@@ -998,7 +981,7 @@ void finishVideoLoop() {
 void playOneFrameSequential() {
     HLV1Packet packet{};
     int packet_result = HLV1_OK;
-    readPacket(&packet, &packet_result);
+    const uint32_t read_us = readPacket(&packet, &packet_result);
     if (packet_result == HLV1_EOF) {
         finishVideoLoop();
         return;
@@ -1018,7 +1001,7 @@ void playOneFrameSequential() {
         return;
     }
 
-    if (!presentFrame(frame, decode_us)) {
+    if (!presentFrame(frame, read_us, decode_us)) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
     }
 }
@@ -1026,11 +1009,11 @@ void playOneFrameSequential() {
 void playOneFramePipelined() {
     HLV1Packet packet{};
     int packet_result = HLV1_OK;
-    readPacket(&packet, &packet_result);
+    const uint32_t read_us = readPacket(&packet, &packet_result);
     if (packet_result == HLV1_EOF) {
         if (pending_frame_valid) {
-            const bool rendered =
-                presentFrame(&pending_frame, pending_decode_us);
+            const bool rendered = presentFrame(
+                &pending_frame, pending_read_us, pending_decode_us);
             pending_frame_valid = false;
             if (!rendered) {
                 failPlayback("Display DMA error", HLV1_ERR_IO);
@@ -1052,7 +1035,8 @@ void playOneFramePipelined() {
 
     bool rendered = true;
     if (pending_frame_valid) {
-        rendered = presentFrame(&pending_frame, pending_decode_us);
+        rendered = presentFrame(&pending_frame, pending_read_us,
+                                pending_decode_us);
         pending_frame_valid = false;
     }
 
@@ -1072,6 +1056,7 @@ void playOneFramePipelined() {
         return;
     }
     pending_frame = *result.frame;
+    pending_read_us = read_us;
     pending_decode_us = result.decode_us;
     pending_frame_valid = true;
 }
