@@ -87,7 +87,8 @@ display DMA timing.
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
 - Scheduling: one 4 KiB CPU1 decoder task and two one-entry queues; only frame
   descriptors cross cores, so no YUV frame or packet payload is copied.
-- Audio: 4 KiB stream buffer feeding six 256-byte DAC DMA descriptors.
+- Audio: a static 4 KiB stream buffer feeding six 256-byte DAC DMA
+  descriptors.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
@@ -97,6 +98,6 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
-`kEnableAudio` is temporarily `false` in this test build so video playback can
-be checked independently of the DAC DMA fault. The audio track remains in the
-HLV file and is skipped without being copied or queued.
+`kEnableAudio` enables PCM_U8 playback through DAC GPIO26. The current test
+build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
+allocated, and the periodic log reports queued bytes and underruns.

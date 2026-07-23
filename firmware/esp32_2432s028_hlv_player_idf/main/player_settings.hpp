@@ -17,9 +17,8 @@ constexpr bool kUseCompactY6U5V5 = true;
 // display. Predictive decoding itself remains ordered between frames.
 constexpr bool kUseDualCorePipeline = true;
 
-// Keep this false while isolating the playback reset caused by DAC DMA.
-// Audio packets remain in the HLV file but are skipped by the player.
-constexpr bool kEnableAudio = false;
+// Play the HLV PCM_U8 mono track through the ESP32 DAC on GPIO26.
+constexpr bool kEnableAudio = true;
 
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
 constexpr int kSdClockKhz =

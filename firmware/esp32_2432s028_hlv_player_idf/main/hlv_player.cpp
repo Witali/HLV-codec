@@ -34,6 +34,9 @@ constexpr int kRowsPerTransfer = CydDisplay::kRowsPerTransfer;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
+// A FreeRTOS static stream buffer reserves one byte to distinguish full from
+// empty, so the backing array is one byte larger than its useful capacity.
+constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
 constexpr size_t kAudioWriteBytes = 256;
 constexpr uint32_t kAudioReceiveTimeoutMs = 100;
 constexpr int kAudioWriteTimeoutMs = 100;
@@ -76,6 +79,8 @@ sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
 StreamBufferHandle_t audio_stream = nullptr;
+StaticStreamBuffer_t audio_stream_state{};
+alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
 TaskHandle_t audio_task_handle = nullptr;
 dac_continuous_handle_t audio_dac = nullptr;
 volatile bool audio_stop_requested = false;
@@ -368,7 +373,9 @@ bool prepareAudio(const HLV1Header &header) {
         return true;
     }
 
-    audio_stream = xStreamBufferCreate(kAudioStreamBytes, kAudioWriteBytes);
+    audio_stream = xStreamBufferCreateStatic(
+        sizeof audio_stream_storage, kAudioWriteBytes,
+        audio_stream_storage, &audio_stream_state);
     if (!audio_stream) return false;
 
     dac_continuous_config_t config{};
@@ -392,8 +399,10 @@ bool prepareAudio(const HLV1Header &header) {
         return false;
     }
     audio_enabled = true;
-    ESP_LOGI(kTag, "Audio: PCM_U8 mono %u Hz on DAC GPIO%d",
-             header.audio_sample_rate, board::kAudioDac);
+    ESP_LOGI(kTag,
+             "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue",
+             header.audio_sample_rate, board::kAudioDac,
+             static_cast<unsigned>(kAudioStreamBytes));
     return true;
 }
 
@@ -498,12 +507,6 @@ bool openVideo() {
              sequence_header.fps_num, sequence_header.fps_den,
              static_cast<unsigned>(sequence_header.frame_count),
              sequence_header.audio_sample_rate);
-    if (!prepareAudio(sequence_header)) {
-        showStatus("Audio init failed", "DAC GPIO26 could not start");
-        closeVideo();
-        return false;
-    }
-
     reportHeap("before decoder");
     const int decoder_result = decoder.begin(
         sequence_header, player_settings::kUseCompactY6U5V5);
@@ -523,6 +526,14 @@ bool openVideo() {
     if (!startDecodeWorker()) {
         showStatus("Dual-core init failed",
                    "cannot create CPU1 decoder task");
+        closeVideo();
+        return false;
+    }
+    // Allocate the predictive frames, packet pool and decoder task before the
+    // smaller DAC descriptors and audio task stack. This keeps the large
+    // internal-RAM allocations immune to audio heap fragmentation.
+    if (!prepareAudio(sequence_header)) {
+        showStatus("Audio init failed", "DAC GPIO26 could not start");
         closeVideo();
         return false;
     }
@@ -644,11 +655,16 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
                                               sd_read_us_total /
                                               sd_packets_read)
                                         : 0;
+        const size_t audio_queued =
+            audio_stream ? xStreamBufferBytesAvailable(audio_stream) : 0;
         ESP_LOGI(kTag,
                  "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
-                 "render_queue=%uus late=%u heap=%u",
+                 "render_queue=%uus late=%u audio=%u/%u underrun=%u heap=%u",
                  decoded_frames, sd_average, sd_read_us_max, decode_us,
                  render_us, dropped_deadlines,
+                 static_cast<unsigned>(audio_queued),
+                 static_cast<unsigned>(kAudioStreamBytes),
+                 static_cast<unsigned>(audio_underruns),
                  static_cast<unsigned>(
                      heap_caps_get_free_size(MALLOC_CAP_8BIT)));
     }

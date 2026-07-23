@@ -41,10 +41,11 @@ P-frame prediction drift are possible. Set the flag to `false` for the original
 display rows in batches rather than performing a fresh bit lookup per pixel;
 the application and decoder components are compiled with `-O3`.
 
-The current diagnostic build also sets `kEnableAudio = false` in the same
-settings file. This bypasses DAC setup and the FreeRTOS audio queue while
-leaving the audio track in the HLV file untouched, allowing compact video
-playback to be tested independently of the DAC DMA restart fault.
+The current build sets `kEnableAudio = true` in the same settings file. Its
+4 KiB FreeRTOS audio stream is statically allocated, while DAC descriptors and
+the audio task are created only after the large decoder frames and packet pool.
+Periodic logs report queued audio bytes and underruns so starvation can be
+distinguished from a DAC failure or reset.
 
 ## Dual-core playback mode
 
