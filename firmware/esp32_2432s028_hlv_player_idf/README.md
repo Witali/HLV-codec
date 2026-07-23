@@ -97,12 +97,13 @@ The repository-level wrappers run the same commands:
 ```
 
 The upload scripts enter download mode automatically through the CH340C
-control lines. The project supplies `esptool.cfg` with the sequence tested
-after the EN-to-GND capacitor modification: hold reset for 500 ms, switch DTR
-before RTS without an intentional pause, and hold GPIO0 low for 50 ms. No
-button presses are required. See
+control lines. The project supplies `esptool.cfg` with the sequence for the
+EN-to-GND capacitor modification. The profile was verified in four consecutive
+ROM connections: hold reset for 200 ms, switch DTR before RTS without an
+intentional pause, and hold GPIO0 low for 100 ms. No button presses are
+required. See
 [`docs/board/CH340C_AUTO_BOOT_MOD.md`](../../docs/board/CH340C_AUTO_BOOT_MOD.md)
-for the measured timing limits and the manual fallback.
+for the measured timing limits, current profile, and manual fallback.
 
 ## Per-frame timing mode
 

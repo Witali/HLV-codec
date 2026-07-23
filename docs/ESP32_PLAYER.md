@@ -245,7 +245,7 @@ Windows Device Manager, and upload:
 
 Replace `COM8` if the board appears on another port. After the EN-to-GND
 capacitor modification, the uploader uses the tested CH340C DTR/RTS sequence
-and requires no button presses: reset is held for 500 ms and GPIO0 for 50 ms.
+and requires no button presses: reset is held for 200 ms and GPIO0 for 100 ms.
 It writes the bootloader, partition table and application to internal flash.
 The uploader defaults to a conservative 460800 baud. `video.hlv` is not
 flashed; it remains on the removable card.

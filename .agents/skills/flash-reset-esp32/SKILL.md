@@ -76,9 +76,12 @@ Confirm that `build-name/flash_args` exists before running the command.
 
 ## Reset behavior
 
-- Ordinary reset keeps DTR inactive, asserts RTS for 500 ms, then releases RTS.
-- Explicit boot mode applies `D0/R1` for 500 ms, `D1/R0` for 50 ms, and then
+- Ordinary reset keeps DTR inactive, asserts RTS for 200 ms, then releases RTS.
+- Explicit boot mode applies `D0/R1` for 200 ms, `D1/R0` for 100 ms, and then
   returns both lines inactive.
+- Preserve the `200/100 ms` profile unless a new hardware measurement justifies
+  changing it. It passed four consecutive `esptool --before no_reset chip_id`
+  checks on the project board.
 - Use `-WhatIf` when validating the reset script without touching the board.
 - Read `docs/board/CH340C_AUTO_BOOT_MOD.md` only when diagnosing the hardware
   modification. Treat `firmware/esp32_2432s028_hlv_player_idf/esptool.cfg` as

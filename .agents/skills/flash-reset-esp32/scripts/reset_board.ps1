@@ -7,10 +7,10 @@ param(
     [switch]$EnterBootloader,
 
     [ValidateRange(100, 2000)]
-    [int]$ResetMilliseconds = 500,
+    [int]$ResetMilliseconds = 200,
 
     [ValidateRange(40, 500)]
-    [int]$BootMilliseconds = 50
+    [int]$BootMilliseconds = 100
 )
 
 $ErrorActionPreference = "Stop"

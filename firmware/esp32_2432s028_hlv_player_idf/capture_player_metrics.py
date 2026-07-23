@@ -140,11 +140,11 @@ def main() -> int:
     try:
         if args.reset:
             # Normal application reset: keep GPIO0 released (DTR=0), hold EN
-            # low through RTS for 500 ms, then release EN. This is deliberately
+            # low through RTS for 200 ms, then release EN. This is deliberately
             # different from the ROM-download sequence in esptool.cfg.
             port.dtr = False
             port.rts = True
-            time.sleep(0.5)
+            time.sleep(0.2)
             port.rts = False
         while len(frames) < args.frames and time.monotonic() < deadline:
             raw = port.readline()
