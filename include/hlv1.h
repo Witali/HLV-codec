@@ -158,6 +158,8 @@ typedef struct HLV1EncoderWork {
     uint64_t rdo_sse_samples;
     uint64_t forward_wht_blocks;
     uint64_t inverse_wht_blocks;
+    uint64_t zero_residual_fast_blocks;
+    uint64_t dc_only_fast_blocks;
     uint64_t quantized_coefficients;
     uint64_t palette_distance_evaluations;
     uint64_t candidate_initializations;

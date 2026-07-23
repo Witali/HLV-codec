@@ -669,6 +669,41 @@ static int put_coeff_block_v9(HLV1BitWriter *bw,
     return HLV1_OK;
 }
 
+#if defined(_MSC_VER)
+static __forceinline void reconstruct_residual_4x4(
+#else
+static inline __attribute__((always_inline)) void reconstruct_residual_4x4(
+#endif
+    uint8_t *rec, const uint8_t *pred, int stride,
+    int entries, const int runs[16],
+    const int32_t deq[16],
+    HLV1EncoderWork *work) {
+    if (!entries) {
+        if (work) ++work->zero_residual_fast_blocks;
+        for (int y = 0; y < 4; ++y)
+            memcpy(rec + y * stride, pred + y * stride, 4);
+        return;
+    }
+    if (entries == 1 && runs[0] == 0) {
+        if (work) ++work->dc_only_fast_blocks;
+        int value = deq[0];
+        int delta = value >= 0 ? (value + 8) / 16
+                               : -((-value + 8) / 16);
+        for (int y = 0; y < 4; ++y)
+            for (int x = 0; x < 4; ++x)
+                rec[y * stride + x] = hlv1_clip8(
+                    (int)pred[y * stride + x] + delta);
+        return;
+    }
+    int16_t inv[16];
+    if (work) ++work->inverse_wht_blocks;
+    hlv1_wht4_inverse(deq, inv);
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            rec[y * stride + x] = hlv1_clip8(
+                (int)pred[y * stride + x] + inv[y * 4 + x]);
+}
+
 static int encode_plane(HLV1BitWriter *bw,
                         const uint8_t *src, const uint8_t *pred, uint8_t *rec,
                         int w, int h, int qstep, double ac_deadzone,
@@ -710,12 +745,9 @@ static int encode_plane(HLV1BitWriter *bw,
                     if ((r = hlv1_bw_put_se(bw, levels[i])) < 0) return r;
                 }
             }
-            int16_t inv[16];
-            if (bw->encoder_work) ++bw->encoder_work->inverse_wht_blocks;
-            hlv1_wht4_inverse(deq, inv);
-            for (int yy = 0; yy < 4; ++yy)
-                for (int xx = 0; xx < 4; ++xx)
-                    rec[(by + yy) * w + bx + xx] = hlv1_clip8((int)pred[(by + yy) * w + bx + xx] + inv[yy * 4 + xx]);
+            reconstruct_residual_4x4(
+                rec + by * w + bx, pred + by * w + bx, w,
+                entries, runs, deq, bw->encoder_work);
         }
     }
     return HLV1_OK;
@@ -776,15 +808,9 @@ static int encode_plane_masked(HLV1BitWriter *coeff_bits,
                                              entries)) < 0)
                     return r;
             }
-            int16_t inv[16];
-            if (coeff_bits->encoder_work)
-                ++coeff_bits->encoder_work->inverse_wht_blocks;
-            hlv1_wht4_inverse(deq, inv);
-            for (int yy = 0; yy < 4; ++yy)
-                for (int xx = 0; xx < 4; ++xx)
-                    rec[(by + yy) * w + bx + xx] = hlv1_clip8(
-                        (int)pred[(by + yy) * w + bx + xx] +
-                        inv[yy * 4 + xx]);
+            reconstruct_residual_4x4(
+                rec + by * w + bx, pred + by * w + bx, w,
+                entries, runs, deq, coeff_bits->encoder_work);
         }
     }
     return HLV1_OK;
@@ -2833,6 +2859,8 @@ static void add_encoder_work_delta(HLV1EncoderWork *dst,
     ADD_WORK_DELTA(rdo_sse_samples);
     ADD_WORK_DELTA(forward_wht_blocks);
     ADD_WORK_DELTA(inverse_wht_blocks);
+    ADD_WORK_DELTA(zero_residual_fast_blocks);
+    ADD_WORK_DELTA(dc_only_fast_blocks);
     ADD_WORK_DELTA(quantized_coefficients);
     ADD_WORK_DELTA(palette_distance_evaluations);
     ADD_WORK_DELTA(candidate_initializations);

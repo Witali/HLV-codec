@@ -218,6 +218,8 @@ static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
     ADD_WORK(rdo_sse_samples);
     ADD_WORK(forward_wht_blocks);
     ADD_WORK(inverse_wht_blocks);
+    ADD_WORK(zero_residual_fast_blocks);
+    ADD_WORK(dc_only_fast_blocks);
     ADD_WORK(quantized_coefficients);
     ADD_WORK(palette_distance_evaluations);
     ADD_WORK(candidate_initializations);
@@ -249,6 +251,8 @@ static double encoder_primitive_operations(const HLV1EncoderWork *w) {
            3.0 * w->rdo_sse_samples +
            64.0 * w->forward_wht_blocks +
            80.0 * w->inverse_wht_blocks +
+           16.0 * w->zero_residual_fast_blocks +
+           34.0 * w->dc_only_fast_blocks +
            5.0 * w->quantized_coefficients +
            10.0 * w->palette_distance_evaluations +
            1.0 * w->bitwriter_requested_bits +
@@ -1552,6 +1556,7 @@ int main(int argc, char **argv) {
                 " pred_samples=%" PRIu64 "/%" PRIu64 "/%" PRIu64
                 " rdo_sse=%" PRIu64
                 " wht=%" PRIu64 "/%" PRIu64
+                " residual_fast=%" PRIu64 "/%" PRIu64
                 " quant=%" PRIu64
                 " palette_distance=%" PRIu64
                 " candidate_init=%" PRIu64
@@ -1562,6 +1567,7 @@ int main(int argc, char **argv) {
                 w->prediction_copied_samples, w->prediction_hv_samples,
                 w->prediction_bilinear_samples, w->rdo_sse_samples,
                 w->forward_wht_blocks, w->inverse_wht_blocks,
+                w->zero_residual_fast_blocks, w->dc_only_fast_blocks,
                 w->quantized_coefficients,
                 w->palette_distance_evaluations,
                 w->candidate_initializations, w->residual_candidates);

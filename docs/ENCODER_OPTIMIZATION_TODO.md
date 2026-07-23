@@ -43,9 +43,9 @@ Run the standard comparison with:
 The stable primitive-operation estimate uses these weights per sample or
 block: integer/H-V/2-D SAD `3/7/11`, copied/H-V/2-D prediction `1/5/9`,
 RDO squared error `3`, forward/inverse 4x4 WHT `64/80`, quantization `5`,
-palette distance `10`, and one operation per requested or appended bit.  The
-estimate is useful for comparing algorithms; raw counts and wall time remain
-authoritative.
+zero/DC-only reconstruction `16/34`, palette distance `10`, and one operation
+per requested or appended bit.  The estimate is useful for comparing
+algorithms; raw counts and wall time remain authoritative.
 
 ## Work list
 
@@ -60,8 +60,8 @@ authoritative.
   - [x] do not reevaluate the half-pixel refinement center.
 - [ ] Add exact SAD early termination against the current top-N threshold.
 - [ ] Reuse four 8x8 coarse SAD maps to derive 16x16 and rectangular costs.
-- [ ] Add exact zero-residual encoder reconstruction without inverse WHT.
-- [ ] Add exact DC-only encoder reconstruction without the general inverse
+- [x] Add exact zero-residual encoder reconstruction without inverse WHT.
+- [x] Add exact DC-only encoder reconstruction without the general inverse
   WHT.
 - [ ] Add an exact palette-impossibility prefilter before 2/4/8-color
   clustering.
@@ -146,3 +146,21 @@ A broader cache of zero/global SAD values reduced primitive operations by
 0.65%, but branches added to every coarse-search candidate made the measured
 implementation slower.  That form was rejected; a future shared SAD map can
 remove the duplicates without those hot-loop checks.
+
+### Zero and DC-only reconstruction
+
+The encoder now mirrors the decoder's exact zero/DC-only reconstruction paths.
+The small helper must be force-inlined: the first ordinary function form
+reduced operations but was slightly slower and was rejected.
+
+| Metric | SAD baseline | Zero/DC fast path | Change |
+|---|---:|---:|---:|
+| General inverse WHT blocks | 29,962,488 | 21,361,972 | -28.70% |
+| Zero fast blocks | 0 | 4,591,307 | new |
+| DC-only fast blocks | 0 | 4,009,209 | new |
+| Primitive operations/frame | 157,350,640 | 156,022,120 | -0.84% |
+
+Two interleaved one-thread A/B pairs averaged 21.411 seconds for the fast path
+and 21.938 seconds for its immediate baseline, a 2.4% time reduction.  A
+four-thread paired run improved from 5.898 to 5.385 seconds.  HLV and
+reconstruction SHA-256 values remain identical to the original baseline.

@@ -118,6 +118,8 @@ static int test_version(int version) {
          !s->encoder_work.rdo_sse_samples ||
          !s->encoder_work.forward_wht_blocks ||
          !s->encoder_work.inverse_wht_blocks ||
+         !(s->encoder_work.zero_residual_fast_blocks +
+           s->encoder_work.dc_only_fast_blocks) ||
          !s->encoder_work.quantized_coefficients ||
          !s->encoder_work.palette_distance_evaluations ||
          !s->encoder_work.candidate_initializations ||
