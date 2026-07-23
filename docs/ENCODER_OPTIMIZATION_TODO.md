@@ -66,6 +66,8 @@ authoritative.
   WHT.
 - [x] Add an exact palette-impossibility prefilter before 2/4/8-color
   clustering.
+- [x] Reject a clustered palette on the first final sample outside the
+  existing Y/UV error limits.
 - [ ] Reuse candidate and residual bit-writer storage.
 - [x] Add byte-aligned and shifted bulk paths to `hlv1_bw_append`.
 - [ ] Count residual representation lengths first and emit only the selected
@@ -211,3 +213,17 @@ three-run candidate medians were 18.778 seconds (19.17 fps) and 5.304 seconds
 
 The palette-2/palette-8 round-trip tests, threaded regression, HLV SHA-256, and
 reconstructed Y4M SHA-256 all remain unchanged.
+
+Once palette centers are fixed, final index assignment now stops at the first
+sample that violates the same Y/UV limit previously checked in a separate
+complete pass:
+
+| Metric | Prefilter only | Early final reject | Change |
+|---|---:|---:|---:|
+| Palette distance evaluations | 2,317,479,040 | 2,247,849,178 | -3.00% |
+| Primitive operations/frame | 133,721,351 | 131,787,188 | -1.45% |
+
+Two interleaved one-thread pairs averaged 19.171 seconds before and 16.908
+seconds after the early reject, an 11.8% reduction.  The four-thread pair
+improved from 5.051 to 4.691 seconds.  Output hashes and mode decisions remain
+identical.

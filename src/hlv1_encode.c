@@ -1202,10 +1202,10 @@ static int palette_nearest(int y, int u, int v,
     return index;
 }
 
-static void palette_build(const MB *src, int count,
-                          PaletteColor colors[8],
-                          uint8_t y_index[256], uint8_t c_index[64],
-                          MB *rec, HLV1EncoderWork *work) {
+static int palette_build(const MB *src, int count,
+                         PaletteColor colors[8],
+                         uint8_t y_index[256], uint8_t c_index[64],
+                         MB *rec, HLV1EncoderWork *work) {
     int min_i = 0, max_i = 0;
     for (int i = 1; i < 256; ++i) {
         if (src->y[i] < src->y[min_i]) min_i = i;
@@ -1268,6 +1268,8 @@ static void palette_build(const MB *src, int count,
         int u = src->u[(y >> 1) * 8 + (x >> 1)];
         int v = src->v[(y >> 1) * 8 + (x >> 1)];
         int index = palette_nearest(src->y[i], u, v, colors, count, work);
+        if (abs((int)src->y[i] - colors[index].y) > 10)
+            return 0;
         y_index[i] = (uint8_t)index;
         rec->y[i] = colors[index].y;
     }
@@ -1281,11 +1283,15 @@ static void palette_build(const MB *src, int count,
             int i = cy * 8 + cx;
             int index = palette_nearest(
                 yavg, src->u[i], src->v[i], colors, count, work);
+            if (abs((int)src->u[i] - colors[index].u) > 12 ||
+                abs((int)src->v[i] - colors[index].v) > 12)
+                return 0;
             c_index[i] = (uint8_t)index;
             rec->u[i] = colors[index].u;
             rec->v[i] = colors[index].v;
         }
     }
+    return 1;
 }
 
 static int encode_palette_candidate(const MB *src, unsigned version,
@@ -1297,26 +1303,13 @@ static int encode_palette_candidate(const MB *src, unsigned version,
                                     Candidate *out) {
     PaletteColor colors[8] = {{0}};
     uint8_t y_index[256], c_index[64];
-    palette_build(src, count, colors, y_index, c_index, &out->rec, work);
-    int max_y_error = 0, max_uv_error = 0;
-    for (unsigned i = 0; i < sizeof src->y; ++i) {
-        int error = abs((int)src->y[i] - out->rec.y[i]);
-        if (error > max_y_error) max_y_error = error;
-    }
-    for (unsigned i = 0; i < sizeof src->u; ++i) {
-        int eu = abs((int)src->u[i] - out->rec.u[i]);
-        int ev = abs((int)src->v[i] - out->rec.v[i]);
-        if (eu > max_uv_error) max_uv_error = eu;
-        if (ev > max_uv_error) max_uv_error = ev;
-    }
     /* Palette blocks are visually harsh when a rare color is merged into a
        distant cluster.  Reject those blocks even if the bit-only RDO score
        would accept them.  This is encoder-only and keeps the decoder trivial. */
-    int y_limit = 10;
-    int uv_limit = 12;
     (void)qy;
     (void)quv;
-    if (max_y_error > y_limit || max_uv_error > uv_limit) {
+    if (!palette_build(src, count, colors, y_index, c_index, &out->rec,
+                       work)) {
         out->mode = HLV1_MODE_PALETTE;
         out->score = HUGE_VAL;
         return HLV1_OK;
