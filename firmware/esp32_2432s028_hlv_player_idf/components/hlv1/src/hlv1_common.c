@@ -6,11 +6,20 @@
 
 #include <errno.h>
 
-#if HLV1_IRAM_BITREADER
+#if HLV1_IRAM_BITREADER || HLV1_IRAM_INVERSE_WHT
 #include "esp_attr.h"
+#endif
+
+#if HLV1_IRAM_BITREADER
 #define HLV1_BITREADER_ATTR IRAM_ATTR
 #else
 #define HLV1_BITREADER_ATTR
+#endif
+
+#if HLV1_IRAM_INVERSE_WHT
+#define HLV1_INVERSE_WHT_ATTR IRAM_ATTR
+#else
+#define HLV1_INVERSE_WHT_ATTR
 #endif
 
 /* File and packet magic values deliberately differ so a lost packet boundary
@@ -754,8 +763,9 @@ void hlv1_wht4_inverse(const int32_t in[16], int16_t out[16]) {
     }
 }
 
-void hlv1_wht4_inverse_add(const int32_t in[16], uint8_t *destination,
-                           int stride) {
+void HLV1_INVERSE_WHT_ATTR
+hlv1_wht4_inverse_add(const int32_t in[16], uint8_t *destination,
+                      int stride) {
     int32_t tmp[16];
     for (int r = 0; r < 4; ++r)
         wht1d(&in[r * 4], &tmp[r * 4]);
