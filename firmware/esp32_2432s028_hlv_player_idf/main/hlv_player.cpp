@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -40,6 +41,13 @@ constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
 constexpr size_t kAudioDmaSamples = 256;
 constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
 constexpr size_t kAudioDmaDescriptors = 6;
+constexpr size_t kAudioReadAheadBytes = 512;
+constexpr size_t kAudioReadChunkBytes = 512;
+constexpr size_t kAudioPrerollBytes = 3072;
+constexpr uint32_t kAudioReaderStackBytes = 3072;
+constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
+constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
+constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
@@ -60,6 +68,7 @@ struct DecodeResult {
 
 CydDisplay display;
 FILE *video_file = nullptr;
+FILE *audio_file = nullptr;
 HlvEsp32Decoder decoder;
 HLV1Header sequence_header{};
 int64_t frame_period_us = 0;
@@ -77,6 +86,8 @@ uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
 alignas(4) uint8_t video_read_ahead[kVideoReadAheadBytes];
+alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
+alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
@@ -85,11 +96,21 @@ StaticStreamBuffer_t audio_stream_state{};
 alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
 alignas(4) uint8_t audio_dma_samples[kAudioDmaSamples];
 dac_continuous_handle_t audio_dac = nullptr;
+TaskHandle_t audio_reader_task_handle = nullptr;
+void *audio_dma_buffer_keys[kAudioDmaDescriptors]{};
+uint16_t audio_dma_valid_samples[kAudioDmaDescriptors]{};
 bool audio_enabled = false;
 volatile bool audio_started = false;
 bool audio_async_started = false;
+volatile bool audio_reader_stop_requested = false;
+volatile bool audio_prefetch_eof = false;
+volatile bool audio_rebuffering = false;
 volatile bool audio_output_failed = false;
-volatile uint32_t audio_underruns = 0;
+volatile int audio_reader_result = HLV1_OK;
+volatile uint32_t audio_played_samples = 0;
+volatile uint32_t audio_pending_samples = 0;
+volatile uint32_t audio_rebuffers = 0;
+volatile uint32_t audio_silence_chunks = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
 TaskHandle_t decode_task_handle = nullptr;
@@ -97,6 +118,7 @@ bool decode_in_flight = false;
 HLV1Frame pending_frame{};
 bool pending_frame_valid = false;
 uint32_t pending_decode_us = 0;
+uint32_t skipped_presentations = 0;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
@@ -286,7 +308,7 @@ bool mountSdCard() {
 
     esp_vfs_fat_mount_config_t mount{};
     mount.format_if_mount_failed = false;
-    mount.max_files = 1;
+    mount.max_files = 2;
     mount.allocation_unit_size = 16 * 1024;
     mount.disk_status_check_enable = false;
     mount.use_one_fat = false;
@@ -305,19 +327,118 @@ bool mountSdCard() {
     return true;
 }
 
+uint32_t readLe32(const uint8_t *bytes) {
+    return static_cast<uint32_t>(bytes[0]) |
+           (static_cast<uint32_t>(bytes[1]) << 8) |
+           (static_cast<uint32_t>(bytes[2]) << 16) |
+           (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+int prefetchAudioPacket() {
+    uint8_t header[HLV1_FRAME_HEADER_SIZE];
+    const size_t header_bytes = std::fread(header, 1, sizeof header, audio_file);
+    if (!header_bytes && std::feof(audio_file)) return HLV1_EOF;
+    if (header_bytes != sizeof header) return HLV1_ERR_IO;
+    if (std::memcmp(header, "FRM1", 4)) return HLV1_ERR_FORMAT;
+
+    const uint8_t frame_type = header[4];
+    const uint8_t q_y = header[5];
+    const uint8_t q_uv = header[6];
+    const uint8_t q_shift = header[7];
+    const uint32_t bit_length = readLe32(header + 8);
+    const uint32_t payload_size = readLe32(header + 12);
+    if (frame_type > HLV1_FRAME_P || !q_y || !q_uv || q_shift > 3 ||
+        bit_length > static_cast<uint64_t>(payload_size) * 8U) {
+        return HLV1_ERR_FORMAT;
+    }
+
+    const uint32_t video_bytes = static_cast<uint32_t>(
+        (static_cast<uint64_t>(bit_length) + 7U) / 8U);
+    if (video_bytes > payload_size || video_bytes > LONG_MAX ||
+        std::fseek(audio_file, static_cast<long>(video_bytes), SEEK_CUR)) {
+        return HLV1_ERR_IO;
+    }
+
+    size_t remaining = payload_size - video_bytes;
+    while (remaining && !audio_reader_stop_requested) {
+        const size_t chunk = std::min(remaining, sizeof audio_read_chunk);
+        if (std::fread(audio_read_chunk, 1, chunk, audio_file) != chunk) {
+            return HLV1_ERR_IO;
+        }
+        size_t sent = 0;
+        while (sent < chunk && !audio_reader_stop_requested) {
+            sent += xStreamBufferSend(
+                audio_stream, audio_read_chunk + sent, chunk - sent,
+                pdMS_TO_TICKS(20));
+            if (audio_rebuffering &&
+                xStreamBufferBytesAvailable(audio_stream) >=
+                    kAudioPrerollBytes) {
+                audio_rebuffering = false;
+            }
+        }
+        remaining -= chunk;
+    }
+    return HLV1_OK;
+}
+
+void audioReaderTask(void *) {
+    int result = HLV1_OK;
+    while (!audio_reader_stop_requested) {
+        result = prefetchAudioPacket();
+        if (result != HLV1_OK) break;
+    }
+    audio_reader_result = result;
+    audio_prefetch_eof = result == HLV1_EOF;
+    audio_reader_task_handle = nullptr;
+    vTaskDelete(nullptr);
+}
+
 bool onAudioConvertDone(dac_continuous_handle_t handle,
                         const dac_event_data_t *event, void *) {
+    size_t dma_slot = kAudioDmaDescriptors;
+    for (size_t slot = 0; slot < kAudioDmaDescriptors; ++slot) {
+        if (audio_dma_buffer_keys[slot] == event->buf) {
+            dma_slot = slot;
+            break;
+        }
+        if (!audio_dma_buffer_keys[slot] &&
+            dma_slot == kAudioDmaDescriptors) {
+            dma_slot = slot;
+        }
+    }
+    if (dma_slot < kAudioDmaDescriptors &&
+        !audio_dma_buffer_keys[dma_slot]) {
+        audio_dma_buffer_keys[dma_slot] = event->buf;
+    }
+
+    if (dma_slot < kAudioDmaDescriptors) {
+        const uint32_t completed = audio_dma_valid_samples[dma_slot];
+        audio_played_samples = audio_played_samples + completed;
+        audio_pending_samples =
+            completed <= audio_pending_samples
+                ? audio_pending_samples - completed
+                : 0;
+        audio_dma_valid_samples[dma_slot] = 0;
+    }
+
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
-    if (audio_started && audio_stream) {
+    if (audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
             audio_stream, audio_dma_samples, sizeof audio_dma_samples,
             &task_woken);
+        if (!received && !audio_prefetch_eof &&
+            audio_reader_result >= HLV1_OK) {
+            audio_rebuffering = true;
+            audio_rebuffers = audio_rebuffers + 1;
+        }
     }
     if (received < sizeof audio_dma_samples) {
         std::memset(audio_dma_samples + received, 128,
                     sizeof audio_dma_samples - received);
-        if (audio_started) audio_underruns = audio_underruns + 1;
+        if (audio_started) {
+            audio_silence_chunks = audio_silence_chunks + 1;
+        }
     }
 
     size_t loaded = 0;
@@ -327,11 +448,30 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
     if (result != ESP_OK || loaded != sizeof audio_dma_samples) {
         audio_output_failed = true;
     }
+    if (dma_slot < kAudioDmaDescriptors) {
+        audio_dma_valid_samples[dma_slot] =
+            static_cast<uint16_t>(received);
+        audio_pending_samples =
+            audio_pending_samples + static_cast<uint32_t>(received);
+    }
     return task_woken == pdTRUE;
 }
 
 void stopAudio() {
     audio_started = false;
+    if (audio_reader_task_handle) {
+        audio_reader_stop_requested = true;
+        const int64_t deadline =
+            millisNow() + kAudioReaderStopTimeoutMs;
+        while (audio_reader_task_handle && millisNow() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        if (audio_reader_task_handle) {
+            ESP_LOGW(kTag, "Audio reader did not stop; deleting it");
+            vTaskDelete(audio_reader_task_handle);
+            audio_reader_task_handle = nullptr;
+        }
+    }
     if (audio_dac) {
         if (audio_async_started) {
             dac_continuous_stop_async_writing(audio_dac);
@@ -341,20 +481,38 @@ void stopAudio() {
         dac_continuous_del_channels(audio_dac);
         audio_dac = nullptr;
     }
+    if (audio_file) {
+        std::fclose(audio_file);
+        audio_file = nullptr;
+    }
     if (audio_stream) {
         vStreamBufferDelete(audio_stream);
         audio_stream = nullptr;
     }
     audio_enabled = false;
+    audio_reader_stop_requested = false;
+    audio_prefetch_eof = false;
+    audio_rebuffering = false;
     audio_output_failed = false;
-    audio_underruns = 0;
+    audio_reader_result = HLV1_OK;
+    audio_played_samples = 0;
+    audio_pending_samples = 0;
+    audio_rebuffers = 0;
+    audio_silence_chunks = 0;
+    std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
+    std::memset(audio_dma_valid_samples, 0,
+                sizeof audio_dma_valid_samples);
 }
 
 bool prepareAudio(const HLV1Header &header) {
     stopAudio();
-    if (!(header.flags & HLV1_FLAG_AUDIO)) return true;
+    if (!(header.flags & HLV1_FLAG_AUDIO)) {
+        ESP_LOGI(kTag, "Audio clock unavailable: video has no audio track");
+        return true;
+    }
     if (!player_settings::kEnableAudio) {
-        ESP_LOGW(kTag, "Audio output disabled in player settings");
+        ESP_LOGI(kTag,
+                 "Audio output disabled; using the ESP timer video clock");
         return true;
     }
 
@@ -362,6 +520,28 @@ bool prepareAudio(const HLV1Header &header) {
         sizeof audio_stream_storage, kAudioDmaSamples,
         audio_stream_storage, &audio_stream_state);
     if (!audio_stream) return false;
+
+    audio_file = std::fopen(player_settings::kVideoPath, "rb");
+    if (!audio_file ||
+        std::setvbuf(audio_file,
+                     reinterpret_cast<char *>(audio_read_ahead),
+                     _IOFBF, sizeof audio_read_ahead)) {
+        stopAudio();
+        return false;
+    }
+    HLV1Header audio_header{};
+    if (hlv1_header_read(audio_file, &audio_header) != HLV1_OK ||
+        audio_header.width != header.width ||
+        audio_header.height != header.height ||
+        audio_header.fps_num != header.fps_num ||
+        audio_header.fps_den != header.fps_den ||
+        audio_header.frame_count != header.frame_count ||
+        audio_header.audio_sample_rate != header.audio_sample_rate ||
+        audio_header.audio_codec != HLV1_AUDIO_PCM_U8 ||
+        audio_header.audio_channels != 1) {
+        stopAudio();
+        return false;
+    }
 
     dac_continuous_config_t config{};
     config.chan_mask = DAC_CHANNEL_MASK_CH1;
@@ -387,52 +567,47 @@ bool prepareAudio(const HLV1Header &header) {
     }
     audio_async_started = true;
     audio_enabled = true;
+
+    audio_reader_stop_requested = false;
+    audio_prefetch_eof = false;
+    audio_reader_result = HLV1_OK;
+    if (xTaskCreatePinnedToCore(
+            audioReaderTask, "hlv-audio-read", kAudioReaderStackBytes,
+            nullptr, 3, &audio_reader_task_handle, 0) != pdPASS) {
+        stopAudio();
+        return false;
+    }
+
+    const int64_t preroll_deadline =
+        millisNow() + kAudioPrerollTimeoutMs;
+    while (xStreamBufferBytesAvailable(audio_stream) <
+               kAudioPrerollBytes &&
+           !audio_prefetch_eof && audio_reader_result == HLV1_OK &&
+           millisNow() < preroll_deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    const size_t prefetched =
+        xStreamBufferBytesAvailable(audio_stream);
+    if (audio_reader_result < HLV1_OK || !prefetched ||
+        (!audio_prefetch_eof && prefetched < kAudioPrerollBytes)) {
+        stopAudio();
+        return false;
+    }
+
     ESP_LOGI(kTag,
              "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue, "
-             "%u x %u-sample DMA ring",
+             "%u x %u-sample DMA ring, %u-byte preroll",
              header.audio_sample_rate, board::kAudioDac,
              static_cast<unsigned>(kAudioStreamBytes),
              static_cast<unsigned>(kAudioDmaDescriptors),
-             static_cast<unsigned>(kAudioDmaSamples));
+             static_cast<unsigned>(kAudioDmaSamples),
+             static_cast<unsigned>(prefetched));
     return true;
-}
-
-bool queueAudio(const HLV1Packet &packet) {
-    if (!audio_enabled) return true;
-    if (audio_output_failed) return false;
-    size_t offset = hlv1_packet_video_payload_size(&packet);
-    while (offset < packet.payload_size) {
-        const uint8_t *data = nullptr;
-        const size_t span =
-            hlv1_packet_payload_span(&packet, offset, &data);
-        if (!span || !data) return false;
-        size_t sent_from_span = 0;
-        while (sent_from_span < span) {
-            if (audio_output_failed) return false;
-            const size_t sent = xStreamBufferSend(
-                audio_stream, data + sent_from_span, span - sent_from_span,
-                pdMS_TO_TICKS(1000));
-            if (!sent) return false;
-            sent_from_span += sent;
-        }
-        offset += span;
-    }
-    return true;
-}
-
-void finishAudio() {
-    if (!audio_enabled) return;
-    uint8_t silence[kAudioDmaSamples];
-    std::memset(silence, 128, sizeof silence);
-    const size_t sent = xStreamBufferSend(
-        audio_stream, silence, sizeof silence, pdMS_TO_TICKS(1000));
-    if (sent != sizeof silence) {
-        ESP_LOGW(kTag, "Could not flush the final audio samples");
-    }
 }
 
 void startAudio() {
     if (!audio_enabled || audio_started) return;
+    audio_rebuffering = false;
     audio_started = true;
 }
 
@@ -525,9 +700,9 @@ bool openVideo() {
     // smaller DAC descriptors and audio task stack. This keeps the large
     // internal-RAM allocations immune to audio heap fragmentation.
     if (!prepareAudio(sequence_header)) {
-        showStatus("Audio init failed", "DAC GPIO26 could not start");
-        closeVideo();
-        return false;
+        ESP_LOGW(kTag,
+                 "Audio initialization failed; continuing with timer clock");
+        stopAudio();
     }
 
     frame_period_us = static_cast<int64_t>(
@@ -536,6 +711,7 @@ bool openVideo() {
     next_present_us = microsNow();
     decoded_frames = 0;
     dropped_deadlines = 0;
+    skipped_presentations = 0;
     sd_read_us_total = 0;
     sd_read_us_max = 0;
     sd_packets_read = 0;
@@ -625,20 +801,87 @@ void failPlayback(const char *title, int result) {
     last_retry_ms = millisNow();
 }
 
+void fallBackToTimerClock(const char *reason) {
+    ESP_LOGW(kTag, "%s; switching to the ESP timer video clock", reason);
+    stopAudio();
+    next_present_us = microsNow();
+}
+
+uint64_t frameAudioTarget(uint32_t frame_index) {
+    return (static_cast<uint64_t>(frame_index) *
+            sequence_header.audio_sample_rate *
+            sequence_header.fps_den) /
+           sequence_header.fps_num;
+}
+
+bool waitForAudioTarget(uint64_t target_samples) {
+    const int64_t deadline = millisNow() + kAudioClockWaitTimeoutMs;
+    while (audio_enabled) {
+        if (audio_output_failed || audio_reader_result < HLV1_OK) {
+            return false;
+        }
+        const uint64_t estimated_position =
+            static_cast<uint64_t>(audio_played_samples) +
+            kAudioDmaSamples;
+        if (estimated_position >= target_samples) return true;
+        if (audio_prefetch_eof &&
+            !xStreamBufferBytesAvailable(audio_stream) &&
+            !audio_pending_samples) {
+            return false;
+        }
+        if (millisNow() >= deadline) return false;
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return false;
+}
+
 bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
-    waitUntil(next_present_us);
-    if (!decoded_frames) startAudio();
-    const int64_t render_start = microsNow();
-    if (!renderFrame(frame)) return false;
-    const uint32_t render_us =
-        static_cast<uint32_t>(microsNow() - render_start);
+    bool render = true;
+    if (audio_enabled) {
+        if (!audio_started) {
+            startAudio();
+            const uint64_t lead_us =
+                (static_cast<uint64_t>(kAudioDmaDescriptors - 1) *
+                 kAudioDmaSamples * 1000000ULL) /
+                sequence_header.audio_sample_rate;
+            waitUntil(microsNow() + static_cast<int64_t>(lead_us));
+        }
+
+        const uint64_t target_samples = frameAudioTarget(decoded_frames);
+        if (!waitForAudioTarget(target_samples)) {
+            fallBackToTimerClock("Audio clock stopped");
+        } else {
+            const uint64_t frame_samples =
+                (static_cast<uint64_t>(sequence_header.audio_sample_rate) *
+                     sequence_header.fps_den +
+                 sequence_header.fps_num - 1U) /
+                sequence_header.fps_num;
+            const uint64_t estimated_position =
+                static_cast<uint64_t>(audio_played_samples) +
+                kAudioDmaSamples;
+            if (estimated_position > target_samples + frame_samples) {
+                render = false;
+                ++skipped_presentations;
+            }
+        }
+    }
+
+    if (!audio_enabled) waitUntil(next_present_us);
+    uint32_t render_us = 0;
+    if (render) {
+        const int64_t render_start = microsNow();
+        if (!renderFrame(frame)) return false;
+        render_us = static_cast<uint32_t>(microsNow() - render_start);
+    }
     ++decoded_frames;
 
-    next_present_us += frame_period_us;
-    const int64_t lateness = microsNow() - next_present_us;
-    if (lateness > frame_period_us) {
-        ++dropped_deadlines;
-        next_present_us = microsNow();
+    if (!audio_enabled) {
+        next_present_us += frame_period_us;
+        const int64_t lateness = microsNow() - next_present_us;
+        if (lateness > frame_period_us) {
+            ++dropped_deadlines;
+            next_present_us = microsNow();
+        }
     }
 
     if ((decoded_frames % 60U) == 0U) {
@@ -651,12 +894,16 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
             audio_stream ? xStreamBufferBytesAvailable(audio_stream) : 0;
         ESP_LOGI(kTag,
                  "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
-                 "render_queue=%uus late=%u audio=%u/%u underrun=%u heap=%u",
+                 "render=%uus late=%u skip=%u audio=%u/%u "
+                 "rebuffer=%u silence=%u played=%u heap=%u",
                  decoded_frames, sd_average, sd_read_us_max, decode_us,
                  render_us, dropped_deadlines,
+                 skipped_presentations,
                  static_cast<unsigned>(audio_queued),
                  static_cast<unsigned>(kAudioStreamBytes),
-                 static_cast<unsigned>(audio_underruns),
+                 static_cast<unsigned>(audio_rebuffers),
+                 static_cast<unsigned>(audio_silence_chunks),
+                 static_cast<unsigned>(audio_played_samples),
                  static_cast<unsigned>(
                      heap_caps_get_free_size(MALLOC_CAP_8BIT)));
     }
@@ -674,11 +921,24 @@ void readPacket(HLV1Packet *packet, int *result) {
 }
 
 void finishVideoLoop() {
-    finishAudio();
-    waitUntil(next_present_us);
-    ESP_LOGI(kTag, "Loop: %u frames, %u late, %u audio underruns",
-             decoded_frames, dropped_deadlines,
-             static_cast<unsigned>(audio_underruns));
+    if (audio_enabled) {
+        const int64_t deadline =
+            millisNow() + kAudioClockWaitTimeoutMs;
+        while (!audio_output_failed &&
+               audio_reader_result >= HLV1_OK &&
+               (!audio_prefetch_eof ||
+                xStreamBufferBytesAvailable(audio_stream) ||
+                audio_pending_samples) &&
+               millisNow() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    } else {
+        waitUntil(next_present_us);
+    }
+    ESP_LOGI(kTag,
+             "Loop: %u frames, %u late, %u skipped, %u rebuffers",
+             decoded_frames, dropped_deadlines, skipped_presentations,
+             static_cast<unsigned>(audio_rebuffers));
     if (!openVideo()) last_retry_ms = millisNow();
 }
 
@@ -694,12 +954,6 @@ void playOneFrameSequential() {
         failPlayback("Packet read error", packet_result);
         return;
     }
-    if (!queueAudio(packet)) {
-        hlv1_packet_free(&packet);
-        failPlayback("Audio queue error", HLV1_ERR_IO);
-        return;
-    }
-
     const HLV1Frame *frame = nullptr;
     const int64_t decode_start = microsNow();
     const int decode_result = decoder.decode(&packet, &frame);
@@ -735,11 +989,6 @@ void playOneFramePipelined() {
     }
     if (packet_result != HLV1_OK) {
         failPlayback("Packet read error", packet_result);
-        return;
-    }
-    if (!queueAudio(packet)) {
-        hlv1_packet_free(&packet);
-        failPlayback("Audio queue error", HLV1_ERR_IO);
         return;
     }
     if (!submitDecode(&packet)) {

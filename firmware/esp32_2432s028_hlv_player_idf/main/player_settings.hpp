@@ -17,7 +17,9 @@ constexpr bool kUseCompactY6U5V5 = true;
 // display. Predictive decoding itself remains ordered between frames.
 constexpr bool kUseDualCorePipeline = true;
 
-// Play the HLV PCM_U8 mono track through the ESP32 DAC on GPIO26.
+// Play the HLV PCM_U8 mono track through the ESP32 DAC on GPIO26 and use its
+// sample counter as the video clock. false (and files without audio) use the
+// monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;
 
 constexpr char kVideoPath[] = "/sdcard/video.hlv";

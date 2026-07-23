@@ -85,11 +85,14 @@ display DMA timing.
   buffer and eight reusable 7680-byte packet blocks (60 KiB).
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
-- Scheduling: one 4 KiB CPU1 decoder task and two one-entry queues; only frame
-  descriptors cross cores, so no YUV frame or packet payload is copied.
+- Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
+  reader and two one-entry decode queues. Only frame descriptors cross cores,
+  so no YUV frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
-  256-sample DAC DMA descriptors directly from the completion ISR. The ring
-  keeps DMA running across brief CPU stalls without a separate audio task.
+  256-sample DAC DMA descriptors directly from the completion ISR. A second
+  sequential file cursor skips compressed video and prefetches only PCM packet
+  tails. The DAC sample count is the master video clock; late frames remain in
+  the predictive decode chain but their display transfer is skipped.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
@@ -101,4 +104,7 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 changing the HLV file.
 `kEnableAudio` enables PCM_U8 playback through DAC GPIO26. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
-allocated, and the periodic log reports queued bytes and underruns.
+allocated and starts with a 3 KiB preroll. Files without audio, an explicitly
+disabled output, or a failed audio reader/DAC automatically use the monotonic
+ESP timer as the video clock. The periodic log reports queued bytes, controlled
+rebuffer events, silence DMA chunks and display frames skipped to follow audio.
