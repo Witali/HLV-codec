@@ -214,6 +214,12 @@ int main(int argc, char **argv) {
                (double)stats.split_inter / stats.frames,
                (double)stats.coefficient_symbols / stats.frames,
                (double)stats.inverse_wht_blocks / stats.frames);
+        printf("Residual blocks: %" PRIu64 ", zero %" PRIu64
+               ", DC-only %" PRIu64 ", single %" PRIu64
+               ", two %" PRIu64 ", WHT %" PRIu64 "\n",
+               stats.residual_blocks, stats.zero_residual_blocks,
+               stats.dc_only_blocks, stats.single_coefficient_blocks,
+               stats.two_coefficient_blocks, stats.inverse_wht_blocks);
     }
     if (guard == UINT64_MAX) fputc(0, stderr);
     packet_list_free(&list);
