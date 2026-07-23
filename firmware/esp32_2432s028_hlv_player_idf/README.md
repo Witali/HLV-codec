@@ -13,7 +13,7 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 `sdkconfig.defaults` profile also disables coredumps, the task watchdog,
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
-UART0 at 115200 remains enabled for diagnostics. The default dual-core
+UART0 at 460800 remains enabled for compact per-frame diagnostics. The default dual-core
 pipeline pins ordered HLV decoding to APP CPU (CPU1), while the main task on
 PRO CPU (CPU0) converts the preceding frame to RGB565 and queues its SPI DMA
 strips. Predictive P-frames are never decoded out of order. Dual-core mode

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Port,
-    [ValidateSet(115200, 230400, 460800, 921600)][int]$Baud = 115200
+    [ValidateSet(115200, 230400, 460800, 921600)][int]$Baud = 460800
 )
 
 $ErrorActionPreference = "Stop"

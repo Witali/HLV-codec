@@ -21,7 +21,7 @@ DAC GPIO26.
 - feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
   buffer, so display transfers do not directly clock the sound;
 - repeats the file continuously;
-- prints decode/render timing, audio underruns and free heap to the 115200-baud
+- prints decode/render timing, audio underruns and free heap to the 460800-baud
   serial console.
 
 The test build enables packed Y6/U5/V5 4:2:0 frame storage. At 320x180 the two
