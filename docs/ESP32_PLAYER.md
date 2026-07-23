@@ -198,9 +198,9 @@ compiler/debug tools into the firmware's own `.tools` directory:
 ```
 
 FFmpeg used by the desktop converter remains in the repository's
-`tools\ffmpeg` directory. Firmware dependencies are ignored by Git because
-they are generated and large. No global ESP-IDF, Arduino package or Python
-installation is used by the firmware build.
+`local_tools\ffmpeg` directory. Firmware dependencies are ignored by Git
+because they are generated and large. No global ESP-IDF, Arduino package or
+Python installation is used by the firmware build.
 
 Build the SD-player firmware:
 

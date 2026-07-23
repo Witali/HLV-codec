@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
-$cli = Join-Path $repo "tools\arduino-cli\arduino-cli.exe"
+$cli = Join-Path $repo "local_tools\arduino-cli\arduino-cli.exe"
 $config = Join-Path $repo "arduino-cli.yaml"
 
 if (-not (Test-Path -LiteralPath $cli)) {

@@ -8,7 +8,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 $version = "8.1.1"
 $archiveSha256 = `
     "49B28C5F16ADDD40239A66949973458769B7056FB7752C30AC0D53389D09A552"
-$toolDirectory = Join-Path $repo "tools\ffmpeg"
+$toolDirectory = Join-Path $repo "local_tools\ffmpeg"
 $ffmpegDirectory = Join-Path $toolDirectory "bin"
 $ffmpeg = Join-Path $ffmpegDirectory "ffmpeg.exe"
 $archive = Join-Path ([IO.Path]::GetTempPath()) "ffmpeg-$version-full_build.zip"

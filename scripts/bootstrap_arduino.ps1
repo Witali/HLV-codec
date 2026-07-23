@@ -10,7 +10,7 @@ $esp32Version = "3.3.8"
 $lovyanGfxVersion = "1.2.21"
 $cliArchiveSha256 = `
     "FABE42E0EB04D00E776A66178299FF95A46C623DBC260F997E58FD514853DD40"
-$cliDirectory = Join-Path $repo "tools\arduino-cli"
+$cliDirectory = Join-Path $repo "local_tools\arduino-cli"
 $cli = Join-Path $cliDirectory "arduino-cli.exe"
 $config = Join-Path $repo "arduino-cli.yaml"
 $archive = Join-Path ([IO.Path]::GetTempPath()) `

@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $encoder = Join-Path $repo "build\msvc\hlvenc.exe"
-$ffmpeg = Join-Path $repo "tools\ffmpeg\bin\ffmpeg.exe"
+$ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 $videoWidth = $Width
 $videoHeight = $Height
 

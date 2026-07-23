@@ -76,7 +76,7 @@ Extract video and raw audio:
 
 ```powershell
 .\build\msvc\hlvdec.exe output.hlv output.y4m --audio-out output.u8
-.\tools\ffmpeg\bin\ffmpeg.exe -f u8 -ar 16000 -ac 1 `
+.\local_tools\ffmpeg\bin\ffmpeg.exe -f u8 -ar 16000 -ac 1 `
     -i output.u8 output.wav
 ```
 
