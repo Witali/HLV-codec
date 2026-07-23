@@ -6,7 +6,9 @@ param(
     [ValidateRange(1, 32)]
     [int]$Windows = 4,
     [ValidateSet(32, 64)]
-    [int]$BitReaderBits = 32
+    [int]$BitReaderBits = 32,
+    [ValidateSet("O2", "O3", "Os")]
+    [string]$Optimization = "O3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,7 @@ $buildDirectory = "build-qemu-br$BitReaderBits"
     "-B", $buildDirectory,
     "-D", "HLV_QEMU_BENCHMARK=ON",
     "-D", "HLV1_BITREADER_BITS=$BitReaderBits",
+    "-D", "HLV1_OPTIMIZATION=$Optimization",
     "qemu",
     "--qemu-extra-args=-no-reboot -icount shift=0,sleep=off"
 )

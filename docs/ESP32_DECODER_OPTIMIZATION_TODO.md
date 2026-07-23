@@ -22,7 +22,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Evaluate packed zero-residual INTER/GLOBAL copies (rejected: +0.04%
       QEMU throughput for substantial extra code).
 - [x] Optimise sparse residual and WHT paths without runtime lookup buffers.
-- [ ] Compare compiler/code-layout variants and retain the fastest no-RAM option.
+- [x] Compare compiler/code-layout variants and retain the fastest no-RAM option.
 - [ ] Remove repeated address calculations from macroblock hot paths.
 - [ ] Rebuild ESP-IDF and compare DRAM, heap allocations and binary size.
 
@@ -65,6 +65,9 @@ representative four-GOP sample is the baseline for subsequent work:
 | Direct-copy experiment control | 638,192 | 376.062 FPS | `be4876ff1c6b8461` | control |
 | Direct packed INTER/GLOBAL trial | 637,933 | 376.214 FPS | `be4876ff1c6b8461` | rejected |
 | Sparse one/two-coefficient WHT | 627,184 | 382.662 FPS | `be4876ff1c6b8461` | accepted |
+| Decoder `-O2` | 706,220 | 339.837 FPS | `be4876ff1c6b8461` | rejected |
+| Decoder `-Os` | 752,074 | 319.117 FPS | `be4876ff1c6b8461` | rejected |
+| Decoder `-O3` repeat | 627,183 | 382.662 FPS | `be4876ff1c6b8461` | retained |
 
 The direct-copy trial read the macroblock residual flag before prediction and
 bit-shifted eligible integer-motion Y6/U5/V5 blocks directly between packed
@@ -79,6 +82,14 @@ sign masks in Flash, adds no static DRAM or heap, and reuses `qcoeff` for
 dequantisation in the general path. This removes a 64-byte coefficient array
 from the peak decoder call stack. QEMU guest cycles fall from 638,131 to
 627,184 per frame (1.75%); Flash Code rises from 164,472 to 165,812 bytes.
+
+The decoder component's optimisation level is selectable through the
+`HLV1_OPTIMIZATION` CMake cache variable. On the representative Xtensa sample,
+`-O2` is 11.2% slower and `-Os` is 16.6% slower than `-O3`. The size-oriented
+build saves only about 3 KiB in the complete QEMU application image, while
+giving up substantially more decoder throughput. The production default
+therefore remains `-O3`; the alternatives stay available for repeatable
+experiments without source edits.
 
 ## Physical ESP32 baseline
 
@@ -136,6 +147,8 @@ Run the default and control variants from the ESP-IDF project directory:
 ```powershell
 .\qemu-benchmark.ps1 -BitReaderBits 32
 .\qemu-benchmark.ps1 -BitReaderBits 64
+.\qemu-benchmark.ps1 -BitReaderBits 32 -Optimization O2
+.\qemu-benchmark.ps1 -BitReaderBits 32 -Optimization Os
 ```
 
 `setup-qemu.ps1` installs the Espressif QEMU package below the project's

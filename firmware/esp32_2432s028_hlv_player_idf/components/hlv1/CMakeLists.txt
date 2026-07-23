@@ -7,8 +7,14 @@ idf_component_register(
     REQUIRES newlib
 )
 
+set(HLV1_OPTIMIZATION "O3" CACHE STRING
+    "HLV decoder optimization level (O2, O3 or Os)")
+if(NOT "${HLV1_OPTIMIZATION}" MATCHES "^(O2|O3|Os)$")
+    message(FATAL_ERROR "HLV1_OPTIMIZATION must be O2, O3 or Os")
+endif()
+
 target_compile_options(${COMPONENT_LIB} PRIVATE
-    -O3
+    -${HLV1_OPTIMIZATION}
     -ffunction-sections
     -fdata-sections
     -Wall
