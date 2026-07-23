@@ -28,7 +28,8 @@ must remain provisional until they are measured on the ESP32.
 - Complete-film compact hash: `bdb0842a1e1a3a72`.
 - Representative QEMU sample: four complete 30-frame GOP windows.
 - QEMU hash: `be4876ff1c6b8461`.
-- QEMU decoder cost: 610,566 guest cycles per frame.
+- Native compact simulator: 381.49 us per frame over three complete passes.
+- QEMU decoder cost: 611,435 guest cycles per frame.
 - Last physical reference: about 5,488,760 cycles per frame on the
   representative sample.
 - Observed difficult keyframes: 96-99 ms at 240 MHz, versus the 66.7 ms budget
@@ -55,7 +56,7 @@ Coefficient distribution:
 
 ## Checklist
 
-- [ ] Establish a fresh simulator and QEMU baseline before modifying code.
+- [x] Establish a fresh simulator and QEMU baseline before modifying code.
 - [ ] Optimise the bitreader fast path:
   - inline the common cached extraction;
   - defer refill until data is actually required;
