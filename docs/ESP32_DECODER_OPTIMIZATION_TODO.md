@@ -69,6 +69,9 @@ representative four-GOP sample is the baseline for subsequent work:
 | Decoder `-Os` | 752,074 | 319.117 FPS | `be4876ff1c6b8461` | rejected |
 | Decoder `-O3` repeat | 627,183 | 382.662 FPS | `be4876ff1c6b8461` | retained |
 | Incremental packed-plane pointers | 610,566 | 393.077 FPS | `be4876ff1c6b8461` | accepted |
+| Destructive residual-mask shift | 610,700 | 392.991 FPS | `be4876ff1c6b8461` | rejected |
+| Branchless WHT rounding | 616,472 | 389.312 FPS | `be4876ff1c6b8461` | rejected |
+| Branchless compact quantize | 628,708 | 381.734 FPS | `be4876ff1c6b8461` | rejected |
 
 The direct-copy trial read the macroblock residual flag before prediction and
 bit-shifted eligible integer-motion Y6/U5/V5 blocks directly between packed
@@ -100,6 +103,14 @@ two masks for its guaranteed non-negative coordinates. Guest cycles fall from
 627,183 to 610,566 per frame (2.72%), the full-film reconstruction hash remains
 `bdb0842a1e1a3a72`, and the QEMU application image shrinks by 256 bytes.
 Heap and static data are unchanged.
+
+Three further arithmetic simplifications were measured and removed. Walking a
+residual mask destructively is 0.02% slower and grows the image; branchless
+signed WHT rounding is 0.97% slower; and replacing compact-pixel saturation
+with two unconditional shifts is 2.97% slower. All three preserve the hashes,
+but their Xtensa instruction sequences lose to the compiler's existing
+conditional code. These results intentionally remain documented rather than
+kept behind runtime flags.
 
 ## Physical ESP32 baseline
 
