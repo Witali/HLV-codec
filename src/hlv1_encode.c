@@ -1661,11 +1661,12 @@ static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
     return sad;
 }
 
-static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
-                              int x, int y, int size, int radius,
-                              int denominator, int legacy_even,
-                              int use_simd, HLV1EncoderWork *work,
-                              int *best_mvx, int *best_mvy) {
+static uint64_t find_motion_block(const HLV1Frame *src,
+                                  const HLV1Frame *ref,
+                                  int x, int y, int size, int radius,
+                                  int denominator, int legacy_even,
+                                  int use_simd, HLV1EncoderWork *work,
+                                  int *best_mvx, int *best_mvy) {
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
     int coarse_step = legacy_even ? 2 : denominator;
@@ -1689,6 +1690,7 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
         int center_x = *best_mvx, center_y = *best_mvy;
         for (int oy = -1; oy <= 1; ++oy) {
             for (int ox = -1; ox <= 1; ++ox) {
+                if (!ox && !oy) continue;
                 int mvx = center_x + ox, mvy = center_y + oy;
                 if (abs(mvx) > limit || abs(mvy) > limit) continue;
                 if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
@@ -1703,6 +1705,7 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
             }
         }
     }
+    return best;
 }
 
 
@@ -1800,6 +1803,7 @@ static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
         int center_x = *best_mvx, center_y = *best_mvy;
         for (int oy = -1; oy <= 1; ++oy)
             for (int ox = -1; ox <= 1; ++ox) {
+                if (!ox && !oy) continue;
                 int mvx = center_x + ox, mvy = center_y + oy;
                 if (abs(mvx) > limit || abs(mvy) > limit ||
                     !motion_valid_rect(ref, x, y, w, h, mvx, mvy, denominator))
@@ -1836,6 +1840,17 @@ static void insert_motion_choice(MotionChoice *choices, int *count, int cap,
     *count = new_count;
 }
 
+static int find_motion_choice(const MotionChoice *choices, int count,
+                              int mvx, int mvy, uint64_t *sad) {
+    for (int i = 0; i < count; ++i) {
+        if (choices[i].mvx == mvx && choices[i].mvy == mvy) {
+            if (sad) *sad = choices[i].sad;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                                   int x, int y, int size, int radius,
                                   int denominator, int legacy_even,
@@ -1845,12 +1860,10 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                                   MotionChoice *choices, int capacity) {
     if (requested <= 1) {
         int mvx, mvy;
-        find_motion_block(src, ref, x, y, size, radius,
-                          denominator, legacy_even, use_simd, work,
-                          &mvx, &mvy);
-        choices[0] = (MotionChoice){mvx, mvy,
-            motion_sad_luma(src, ref, x, y, size, mvx, mvy, denominator,
-                            use_simd, work)};
+        uint64_t sad = find_motion_block(
+            src, ref, x, y, size, radius, denominator, legacy_even,
+            use_simd, work, &mvx, &mvy);
+        choices[0] = (MotionChoice){mvx, mvy, sad};
         return 1;
     }
     int count = 0;
@@ -1870,6 +1883,7 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
         int cx = choices[0].mvx, cy = choices[0].mvy;
         for (int oy = -1; oy <= 1; ++oy)
             for (int ox = -1; ox <= 1; ++ox) {
+                if (!ox && !oy) continue;
                 int mvx = cx + ox, mvy = cy + oy;
                 if (abs(mvx) > limit || abs(mvy) > limit ||
                     !motion_valid(ref, x, y, size, mvx, mvy, denominator))
@@ -1895,7 +1909,9 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
     if (denominator == 2 && count < capacity) {
         int mvx = choices[0].mvx & ~1;
         int mvy = choices[0].mvy & ~1;
-        if (motion_valid(ref, x, y, size, mvx, mvy, denominator))
+        uint64_t sad = 0;
+        if (motion_valid(ref, x, y, size, mvx, mvy, denominator) &&
+            !find_motion_choice(choices, count, mvx, mvy, &sad))
             insert_motion_choice(choices, &count, capacity, mvx, mvy,
                 motion_sad_luma(src, ref, x, y, size,
                                 mvx, mvy, denominator, use_simd, work));
@@ -1955,13 +1971,14 @@ static uint64_t find_global_motion(const HLV1Frame *src, const HLV1Frame *ref,
     int limit = radius * denominator;
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
-    if (zero_sad)
-        *zero_sad = global_motion_sad(
-            src, ref, 0, 0, denominator, radius, work);
+    uint64_t zero = global_motion_sad(
+        src, ref, 0, 0, denominator, radius, work);
+    if (zero_sad) *zero_sad = zero;
     for (int mvy = -limit; mvy <= limit; mvy += denominator) {
         for (int mvx = -limit; mvx <= limit; mvx += denominator) {
-            uint64_t sad = global_motion_sad(src, ref, mvx, mvy,
-                                             denominator, radius, work);
+            uint64_t sad = !mvx && !mvy ? zero :
+                global_motion_sad(src, ref, mvx, mvy,
+                                  denominator, radius, work);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1973,6 +1990,7 @@ static uint64_t find_global_motion(const HLV1Frame *src, const HLV1Frame *ref,
         int cx = *best_mvx, cy = *best_mvy;
         for (int oy = -1; oy <= 1; ++oy)
             for (int ox = -1; ox <= 1; ++ox) {
+                if (!ox && !oy) continue;
                 int mvx = cx + ox, mvy = cy + oy;
                 if (abs(mvx) > limit || abs(mvy) > limit) continue;
                 uint64_t sad = global_motion_sad(src, ref, mvx, mvy,

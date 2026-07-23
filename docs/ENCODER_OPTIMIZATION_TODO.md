@@ -52,9 +52,12 @@ authoritative.
 - [x] Add encoder work counters and a repeatable benchmark report.
 - [x] Record the instrumented SIMD baseline.
 - [ ] Remove duplicate motion SAD calculations.
-  - return the winning SAD from single-candidate searches;
-  - do not recompute zero/global/rounded motion vectors already in the list;
-  - do not evaluate the coarse global `(0, 0)` position twice.
+  - [x] return the winning SAD from single-candidate searches;
+  - [ ] avoid recomputing zero/global vectors without adding hot-loop
+    branches;
+  - [x] do not recompute a rounded motion vector already in the retained list;
+  - [x] do not evaluate the coarse global `(0, 0)` position twice;
+  - [x] do not reevaluate the half-pixel refinement center.
 - [ ] Add exact SAD early termination against the current top-N threshold.
 - [ ] Reuse four 8x8 coarse SAD maps to derive 16x16 and rectangular costs.
 - [ ] Add exact zero-residual encoder reconstruction without inverse WHT.
@@ -121,3 +124,25 @@ Selected raw totals for the 360 frames:
 | Palette distance evaluations | 2,952,806,400 |
 | Candidate initializations/residual candidates | 1,742,679 / 2,355,659 |
 | Bit-writer put calls/buffer grows | 683,126,180 / 5,516,655 |
+
+### Duplicate SAD removal
+
+The retained branch-free subset removes 756,052 SAD evaluations and
+79,987,138 integer SAD samples over 360 frames:
+
+| Metric | Baseline | Retained | Change |
+|---|---:|---:|---:|
+| SAD evaluations | 35,476,479 | 34,720,427 | -2.13% |
+| Integer SAD samples | 3,362,114,355 | 3,282,127,217 | -2.38% |
+| Primitive operations/frame | 158,017,199 | 157,350,640 | -0.42% |
+
+The HLV and reconstruction hashes remain identical to the baseline.
+Interleaved one-thread A/B pairs measured `18.288/18.435` seconds in favor of
+the retained version and `22.041/21.759` seconds in favor of the baseline, so
+the wall-time effect is below current system noise.  The deterministic
+operation reduction is retained.
+
+A broader cache of zero/global SAD values reduced primitive operations by
+0.65%, but branches added to every coarse-search candidate made the measured
+implementation slower.  That form was rejected; a future shared SAD map can
+remove the duplicates without those hot-loop checks.
