@@ -71,8 +71,9 @@ Coefficient distribution:
   - zero-residual INTRA DC (evaluated and rejected: native v12 2.4% slower);
   - aligned LITERAL payloads through span copies instead of one call per byte
     (accepted for v13).
-- [ ] Evaluate stream-version-specialised v12/v13 decode loops while retaining
-      the portable generic fallback.
+- [x] Evaluate stream-version specialisation (rejected: the narrow v12 mode
+      parser is 3.1% slower natively; duplicating the complete loop would add
+      substantially more code).
 - [ ] Fuse general inverse WHT, rounding, prediction addition and clipping to
       remove the temporary residual array and extra pass.
 - [ ] Evaluate selective IRAM placement for only the final small hot paths.
@@ -156,3 +157,9 @@ A direct compact zero-residual INTRA DC path preserved both v12 and v13 hashes,
 but slowed the native v12 test from 316.89 to 324.44 us/frame. It was removed
 before QEMU; vertical and horizontal variants were not added because they
 would enlarge the same already-regressed branch.
+
+A v12-specialised mode parser removed the generic version tests but added a
+dispatch and another copy of the prefix tree. Native v12 time regressed from
+316.89 to 326.84 us/frame, so it was removed before QEMU. Duplicating the
+complete decode loop would multiply the much larger prediction/residual switch
+and is not supported by this result.
