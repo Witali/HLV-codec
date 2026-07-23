@@ -91,8 +91,9 @@ display DMA timing.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet
-  tails. The DAC sample count is the master video clock; late frames remain in
-  the predictive decode chain but their display transfer is skipped.
+  tails. The DAC sample count is the master video clock. The current
+  frame-preserving mode cyclically replays the existing 96 ms DMA ring without
+  consuming queued PCM while video is late.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
@@ -107,4 +108,9 @@ build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated and starts with a 3 KiB preroll. Files without audio, an explicitly
 disabled output, or a failed audio reader/DAC automatically use the monotonic
 ESP timer as the video clock. The periodic log reports queued bytes, controlled
-rebuffer events, silence DMA chunks and display frames skipped to follow audio.
+rebuffer events, silence DMA chunks and cyclic-repeat activity.
+`kAvSyncMode` selects between `kDropLateVideoFrames`, which keeps audio
+continuous and omits late display transfers, and `kLoopAudioForLateVideo`,
+which presents every frame and repeats the six already allocated DMA
+descriptors while video catches up. The latter is enabled in the current test
+build and does not allocate additional frame or audio buffers.

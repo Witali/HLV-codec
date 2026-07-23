@@ -111,6 +111,9 @@ volatile uint32_t audio_played_samples = 0;
 volatile uint32_t audio_pending_samples = 0;
 volatile uint32_t audio_rebuffers = 0;
 volatile uint32_t audio_silence_chunks = 0;
+volatile bool audio_loop_hold = false;
+volatile uint32_t audio_loop_events = 0;
+volatile uint32_t audio_loop_chunks = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
 TaskHandle_t decode_task_handle = nullptr;
@@ -423,7 +426,20 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
 
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
-    if (audio_started && !audio_rebuffering && audio_stream) {
+    const bool repeat_dma_ring = audio_started && audio_loop_hold;
+    if (repeat_dma_ring) {
+        // AUTO_16BIT_ALIGN stores each unsigned 8-bit DAC sample in the high
+        // byte of a 16-bit DMA word. Restore the just-played descriptor into
+        // the driver's 8-bit input buffer and arm that same descriptor again.
+        // No stream bytes are consumed and repeated samples do not advance the
+        // media clock.
+        const auto *completed_dma =
+            static_cast<const uint8_t *>(event->buf);
+        for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
+            audio_dma_samples[sample] = completed_dma[sample * 2U + 1U];
+        }
+        audio_loop_chunks = audio_loop_chunks + 1;
+    } else if (audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
             audio_stream, audio_dma_samples, sizeof audio_dma_samples,
             &task_woken);
@@ -433,7 +449,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
             audio_rebuffers = audio_rebuffers + 1;
         }
     }
-    if (received < sizeof audio_dma_samples) {
+    if (!repeat_dma_ring && received < sizeof audio_dma_samples) {
         std::memset(audio_dma_samples + received, 128,
                     sizeof audio_dma_samples - received);
         if (audio_started) {
@@ -450,7 +466,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
     }
     if (dma_slot < kAudioDmaDescriptors) {
         audio_dma_valid_samples[dma_slot] =
-            static_cast<uint16_t>(received);
+            repeat_dma_ring ? 0 : static_cast<uint16_t>(received);
         audio_pending_samples =
             audio_pending_samples + static_cast<uint32_t>(received);
     }
@@ -499,6 +515,9 @@ void stopAudio() {
     audio_pending_samples = 0;
     audio_rebuffers = 0;
     audio_silence_chunks = 0;
+    audio_loop_hold = false;
+    audio_loop_events = 0;
+    audio_loop_chunks = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     std::memset(audio_dma_valid_samples, 0,
                 sizeof audio_dma_valid_samples);
@@ -848,14 +867,38 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
         }
 
         const uint64_t target_samples = frameAudioTarget(decoded_frames);
-        if (!waitForAudioTarget(target_samples)) {
+        const uint64_t frame_samples =
+            (static_cast<uint64_t>(sequence_header.audio_sample_rate) *
+                 sequence_header.fps_den +
+             sequence_header.fps_num - 1U) /
+            sequence_header.fps_num;
+        if (player_settings::kAvSyncMode ==
+            player_settings::AvSyncMode::kLoopAudioForLateVideo) {
+            if (audio_output_failed || audio_reader_result < HLV1_OK) {
+                fallBackToTimerClock("Audio clock stopped");
+            } else {
+                const uint64_t estimated_position =
+                    static_cast<uint64_t>(audio_played_samples) +
+                    kAudioDmaSamples;
+                if (audio_loop_hold) {
+                    if (estimated_position <=
+                        target_samples + frame_samples) {
+                        audio_loop_hold = false;
+                    }
+                } else if (estimated_position >
+                           target_samples + frame_samples) {
+                    audio_loop_hold = true;
+                    audio_loop_events = audio_loop_events + 1;
+                }
+
+                if (!audio_loop_hold &&
+                    !waitForAudioTarget(target_samples)) {
+                    fallBackToTimerClock("Audio clock stopped");
+                }
+            }
+        } else if (!waitForAudioTarget(target_samples)) {
             fallBackToTimerClock("Audio clock stopped");
         } else {
-            const uint64_t frame_samples =
-                (static_cast<uint64_t>(sequence_header.audio_sample_rate) *
-                     sequence_header.fps_den +
-                 sequence_header.fps_num - 1U) /
-                sequence_header.fps_num;
             const uint64_t estimated_position =
                 static_cast<uint64_t>(audio_played_samples) +
                 kAudioDmaSamples;
@@ -895,7 +938,8 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
         ESP_LOGI(kTag,
                  "frame=%u sd_avg=%uus sd_max=%uus decode=%uus "
                  "render=%uus late=%u skip=%u audio=%u/%u "
-                 "rebuffer=%u silence=%u played=%u heap=%u",
+                 "rebuffer=%u silence=%u loop=%u/%u hold=%u "
+                 "played=%u heap=%u",
                  decoded_frames, sd_average, sd_read_us_max, decode_us,
                  render_us, dropped_deadlines,
                  skipped_presentations,
@@ -903,6 +947,9 @@ bool presentFrame(const HLV1Frame *frame, uint32_t decode_us) {
                  static_cast<unsigned>(kAudioStreamBytes),
                  static_cast<unsigned>(audio_rebuffers),
                  static_cast<unsigned>(audio_silence_chunks),
+                 static_cast<unsigned>(audio_loop_events),
+                 static_cast<unsigned>(audio_loop_chunks),
+                 static_cast<unsigned>(audio_loop_hold),
                  static_cast<unsigned>(audio_played_samples),
                  static_cast<unsigned>(
                      heap_caps_get_free_size(MALLOC_CAP_8BIT)));
@@ -922,6 +969,9 @@ void readPacket(HLV1Packet *packet, int *result) {
 
 void finishVideoLoop() {
     if (audio_enabled) {
+        // A held DMA ring never drains by itself. Release it so the remaining
+        // queued PCM can finish before the file is reopened.
+        audio_loop_hold = false;
         const int64_t deadline =
             millisNow() + kAudioClockWaitTimeoutMs;
         while (!audio_output_failed &&
@@ -936,9 +986,12 @@ void finishVideoLoop() {
         waitUntil(next_present_us);
     }
     ESP_LOGI(kTag,
-             "Loop: %u frames, %u late, %u skipped, %u rebuffers",
+             "Loop: %u frames, %u late, %u skipped, %u rebuffers, "
+             "%u audio loops (%u DMA chunks)",
              decoded_frames, dropped_deadlines, skipped_presentations,
-             static_cast<unsigned>(audio_rebuffers));
+             static_cast<unsigned>(audio_rebuffers),
+             static_cast<unsigned>(audio_loop_events),
+             static_cast<unsigned>(audio_loop_chunks));
     if (!openVideo()) last_retry_ms = millisNow();
 }
 

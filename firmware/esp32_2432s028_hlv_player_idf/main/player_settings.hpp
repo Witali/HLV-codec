@@ -4,6 +4,16 @@
 
 namespace player_settings {
 
+enum class AvSyncMode {
+    // Keep audio continuous and omit only the display transfer of video frames
+    // that arrive more than one frame late. Predictive decoding still runs.
+    kDropLateVideoFrames,
+
+    // Present every video frame. When video falls behind, stop consuming new
+    // PCM and cyclically replay the six DAC DMA descriptors until it catches up.
+    kLoopAudioForLateVideo,
+};
+
 // false: draw at native resolution in the centre with black borders.
 // true: stretch every frame to the complete 320x240 display.
 constexpr bool kScaleVideoToDisplay = false;
@@ -21,6 +31,10 @@ constexpr bool kUseDualCorePipeline = true;
 // sample counter as the video clock. false (and files without audio) use the
 // monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;
+
+// Preserve every frame in the current test build. This may make a short audio
+// fragment repeat while a slow frame is decoded or transferred to the display.
+constexpr AvSyncMode kAvSyncMode = AvSyncMode::kLoopAudioForLateVideo;
 
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
 constexpr int kSdClockKhz =
