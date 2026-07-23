@@ -25,7 +25,7 @@ encoder work counters:
 - forward and inverse 4x4 WHT blocks;
 - quantized coefficients;
 - palette distance evaluations;
-- complete macroblock and residual candidates;
+- candidate-slot initializations and complete residual candidates;
 - bit-writer calls, appended bits, and byte-copyable appended bytes.
 
 The counters describe algorithmic work, not exact processor instructions.
@@ -33,9 +33,23 @@ They remain comparable across scalar, SSE2, AVX2, compiler, and host CPU
 implementations.  A separate weighted operation estimate may be reported, but
 the raw counters are the acceptance evidence.
 
+Run the standard comparison with:
+
+```powershell
+.\scripts\python.ps1 .\scripts\benchmark_encoder.py `
+    --json .\out\benchmarks\encoder.json
+```
+
+The stable primitive-operation estimate uses these weights per sample or
+block: integer/H-V/2-D SAD `3/7/11`, copied/H-V/2-D prediction `1/5/9`,
+RDO squared error `3`, forward/inverse 4x4 WHT `64/80`, quantization `5`,
+palette distance `10`, and one operation per requested or appended bit.  The
+estimate is useful for comparing algorithms; raw counts and wall time remain
+authoritative.
+
 ## Work list
 
-- [ ] Add encoder work counters and a repeatable benchmark report.
+- [x] Add encoder work counters and a repeatable benchmark report.
 - [ ] Record the unmodified SIMD baseline.
 - [ ] Remove duplicate motion SAD calculations.
   - return the winning SAD from single-candidate searches;

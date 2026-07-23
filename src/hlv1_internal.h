@@ -51,6 +51,7 @@ typedef struct HLV1BitWriter {
     unsigned bits;
     uint64_t bit_count;
     int error;
+    HLV1EncoderWork *encoder_work;
 } HLV1BitWriter;
 
 void hlv1_bw_init(HLV1BitWriter *bw);

@@ -140,11 +140,42 @@ typedef struct HLV1Frame {
 } HLV1Frame;
 
 /**
- * Syntax statistics and architecture-independent decoder work counters.
+ * Architecture-neutral host-encoder work counters.
  *
- * Work counters intentionally measure operations rather than wall-clock time.
- * They are used to reject compression tools that would violate the project's
- * 320x240 at 25 fps target on a scalar 100 MHz processor.
+ * These are algorithmic counts, not retired CPU instructions.  They make
+ * scalar and vector implementations comparable even when wall-clock timing is
+ * noisy or the host CPU changes.
+ */
+typedef struct HLV1EncoderWork {
+    uint64_t motion_sad_evaluations;
+    uint64_t global_sad_evaluations;
+    uint64_t sad_integer_samples;
+    uint64_t sad_hv_samples;
+    uint64_t sad_bilinear_samples;
+    uint64_t prediction_copied_samples;
+    uint64_t prediction_hv_samples;
+    uint64_t prediction_bilinear_samples;
+    uint64_t rdo_sse_samples;
+    uint64_t forward_wht_blocks;
+    uint64_t inverse_wht_blocks;
+    uint64_t quantized_coefficients;
+    uint64_t palette_distance_evaluations;
+    uint64_t candidate_initializations;
+    uint64_t residual_candidates;
+    uint64_t bitwriter_put_calls;
+    uint64_t bitwriter_requested_bits;
+    uint64_t bitwriter_append_calls;
+    uint64_t bitwriter_appended_bits;
+    uint64_t bitwriter_byte_copyable_bytes;
+    uint64_t bitwriter_buffer_grows;
+} HLV1EncoderWork;
+
+/**
+ * Syntax statistics and architecture-independent work counters.
+ *
+ * Decoder work counters are used to reject compression tools that would
+ * violate the project's 320x240 at 25 fps target on a scalar 100 MHz
+ * processor.  encoder_work measures host encoding effort separately.
  */
 typedef struct HLV1Stats {
     uint64_t frames;
@@ -187,6 +218,7 @@ typedef struct HLV1Stats {
     uint64_t decoded_bits;
     uint64_t motion_predictor_blocks;
     uint64_t estimated_decode_cycles;
+    HLV1EncoderWork encoder_work;
 } HLV1Stats;
 
 typedef struct HLV1Encoder HLV1Encoder;

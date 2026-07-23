@@ -303,11 +303,21 @@ static void predict_plane_fractional(uint8_t *dst, int dst_stride,
                                      int w, int h,
                                      const uint8_t *src, int src_stride,
                                      int origin_x_num, int origin_y_num,
-                                     int denominator) {
+                                     int denominator,
+                                     HLV1EncoderWork *work) {
     int bx = floor_div(origin_x_num, denominator);
     int by = floor_div(origin_y_num, denominator);
     int fx = origin_x_num - bx * denominator;
     int fy = origin_y_num - by * denominator;
+    uint64_t samples = (uint64_t)w * (uint64_t)h;
+    if (work) {
+        if (!fx && !fy)
+            work->prediction_copied_samples += samples;
+        else if (!fx || !fy)
+            work->prediction_hv_samples += samples;
+        else
+            work->prediction_bilinear_samples += samples;
+    }
     if (!fx && !fy) {
         for (int yy = 0; yy < h; ++yy)
             memcpy(dst + yy * dst_stride,
@@ -356,17 +366,18 @@ static void predict_plane_fractional(uint8_t *dst, int dst_stride,
 }
 
 static void motion_predict_sb8(const HLV1Frame *ref, int x, int y,
-                               int mvx, int mvy, int denominator, SB8 *sb) {
+                               int mvx, int mvy, int denominator, SB8 *sb,
+                               HLV1EncoderWork *work) {
     predict_plane_fractional(sb->y, 8, 8, 8, ref->y, ref->stride_y,
                              x * denominator + mvx,
-                             y * denominator + mvy, denominator);
+                             y * denominator + mvy, denominator, work);
     int cden = denominator * 2;
     predict_plane_fractional(sb->u, 4, 4, 4, ref->u, ref->stride_u,
                              (x / 2) * cden + mvx,
-                             (y / 2) * cden + mvy, cden);
+                             (y / 2) * cden + mvy, cden, work);
     predict_plane_fractional(sb->v, 4, 4, 4, ref->v, ref->stride_v,
                              (x / 2) * cden + mvx,
-                             (y / 2) * cden + mvy, cden);
+                             (y / 2) * cden + mvy, cden, work);
 }
 
 static void store_sb8_to_mb(MB *mb, int sx, int sy, const SB8 *sb) {
@@ -392,37 +403,38 @@ static void store_mb(HLV1Frame *f, int x, int y, const MB *mb) {
 }
 
 static void motion_predict(const HLV1Frame *ref, int x, int y,
-                           int mvx, int mvy, int denominator, MB *mb) {
+                           int mvx, int mvy, int denominator, MB *mb,
+                           HLV1EncoderWork *work) {
     predict_plane_fractional(mb->y, 16, 16, 16, ref->y, ref->stride_y,
                              x * denominator + mvx,
-                             y * denominator + mvy, denominator);
+                             y * denominator + mvy, denominator, work);
     int cden = denominator * 2;
     predict_plane_fractional(mb->u, 8, 8, 8, ref->u, ref->stride_u,
                              (x / 2) * cden + mvx,
-                             (y / 2) * cden + mvy, cden);
+                             (y / 2) * cden + mvy, cden, work);
     predict_plane_fractional(mb->v, 8, 8, 8, ref->v, ref->stride_v,
                              (x / 2) * cden + mvx,
-                             (y / 2) * cden + mvy, cden);
+                             (y / 2) * cden + mvy, cden, work);
 }
 
 static void motion_predict_rect_to_mb(const HLV1Frame *ref, int x, int y,
                                       int sx, int sy, int w, int h,
                                       int mvx, int mvy, int denominator,
-                                      MB *mb) {
+                                      MB *mb, HLV1EncoderWork *work) {
     predict_plane_fractional(mb->y + sy * 16 + sx, 16, w, h,
                              ref->y, ref->stride_y,
                              (x + sx) * denominator + mvx,
-                             (y + sy) * denominator + mvy, denominator);
+                             (y + sy) * denominator + mvy, denominator, work);
     int cden = denominator * 2;
     int csx = sx / 2, csy = sy / 2, cw = w / 2, ch = h / 2;
     predict_plane_fractional(mb->u + csy * 8 + csx, 8, cw, ch,
                              ref->u, ref->stride_u,
                              (x / 2 + csx) * cden + mvx,
-                             (y / 2 + csy) * cden + mvy, cden);
+                             (y / 2 + csy) * cden + mvy, cden, work);
     predict_plane_fractional(mb->v + csy * 8 + csx, 8, cw, ch,
                              ref->v, ref->stride_v,
                              (x / 2 + csx) * cden + mvx,
-                             (y / 2 + csy) * cden + mvy, cden);
+                             (y / 2 + csy) * cden + mvy, cden, work);
 }
 
 /* --- Intra and simple spatial predictors ------------------------------- */
@@ -500,7 +512,8 @@ static void fill_predict(const MB *src, MB *pred, uint8_t means[3]) {
 /* Distortion metric used by macroblock RDO.  Luma receives an explicit weight
  * so encoder tuning can favor visible edge/detail preservation. */
 static uint64_t weighted_sse(const MB *a, const MB *b, int luma_weight,
-                             int use_simd) {
+                             int use_simd, HLV1EncoderWork *work) {
+    if (work) work->rdo_sse_samples += 384;
     uint64_t y = squared_error_u8(a->y, b->y, sizeof a->y, use_simd);
     uint64_t u = squared_error_u8(a->u, b->u, sizeof a->u, use_simd);
     uint64_t v = squared_error_u8(a->v, b->v, sizeof a->v, use_simd);
@@ -508,7 +521,9 @@ static uint64_t weighted_sse(const MB *a, const MB *b, int luma_weight,
 }
 
 static uint64_t weighted_sse_sb8(const SB8 *a, const SB8 *b,
-                                 int luma_weight, int use_simd) {
+                                 int luma_weight, int use_simd,
+                                 HLV1EncoderWork *work) {
+    if (work) work->rdo_sse_samples += 96;
     uint64_t y = squared_error_u8(a->y, b->y, sizeof a->y, use_simd);
     uint64_t u = squared_error_u8(a->u, b->u, sizeof a->u, use_simd);
     uint64_t v = squared_error_u8(a->v, b->v, sizeof a->v, use_simd);
@@ -572,13 +587,14 @@ static uint64_t estimate_candidate_decode_cycles(const Candidate *candidate) {
     return 100U + input_cycles + predictor_cycles + residual_cycles;
 }
 
-static double score_candidate(const HLV1Encoder *encoder, const MB *source,
+static double score_candidate(HLV1Encoder *encoder, const MB *source,
                               Candidate *candidate, double lambda_bits) {
     candidate->estimated_decode_cycles =
         estimate_candidate_decode_cycles(candidate);
     return (double)weighted_sse(source, &candidate->rec,
                                 encoder->luma_weight,
-                                encoder->use_simd) +
+                                encoder->use_simd,
+                                &encoder->stats.encoder_work) +
            lambda_bits *
                ((double)candidate->bits.bit_count +
                 encoder->decode_cycle_weight *
@@ -594,6 +610,16 @@ static int qround_ac(int x, int step, double deadzone) {
     int magnitude = x < 0 ? -x : x;
     if ((double)magnitude < deadzone * step) return 0;
     return qround(x, step);
+}
+
+static void encoder_bw_init(HLV1BitWriter *bw, HLV1EncoderWork *work) {
+    hlv1_bw_init(bw);
+    bw->encoder_work = work;
+}
+
+static void encoder_bw_init_like(HLV1BitWriter *bw,
+                                 const HLV1BitWriter *parent) {
+    encoder_bw_init(bw, parent ? parent->encoder_work : NULL);
 }
 
 /* v9 coefficient levels.  The overwhelmingly common +/-1 value gets a
@@ -655,7 +681,10 @@ static int encode_plane(HLV1BitWriter *bw,
                 for (int xx = 0; xx < 4; ++xx)
                     residual[yy * 4 + xx] = (int16_t)((int)src[(by + yy) * w + bx + xx] - pred[(by + yy) * w + bx + xx]);
             int32_t coeff[16], qcoeff[16], deq[16];
+            if (bw->encoder_work) ++bw->encoder_work->forward_wht_blocks;
             hlv1_wht4_forward(residual, coeff);
+            if (bw->encoder_work)
+                bw->encoder_work->quantized_coefficients += 16;
             for (int i = 0; i < 16; ++i) {
                 int step = i == 0 ? dc_step : qstep;
                 qcoeff[i] = i == 0 ? qround(coeff[i], step)
@@ -682,6 +711,7 @@ static int encode_plane(HLV1BitWriter *bw,
                 }
             }
             int16_t inv[16];
+            if (bw->encoder_work) ++bw->encoder_work->inverse_wht_blocks;
             hlv1_wht4_inverse(deq, inv);
             for (int yy = 0; yy < 4; ++yy)
                 for (int xx = 0; xx < 4; ++xx)
@@ -708,7 +738,11 @@ static int encode_plane_masked(HLV1BitWriter *coeff_bits,
                         (int)src[(by + yy) * w + bx + xx] -
                         pred[(by + yy) * w + bx + xx]);
             int32_t coeff[16], qcoeff[16], deq[16];
+            if (coeff_bits->encoder_work)
+                ++coeff_bits->encoder_work->forward_wht_blocks;
             hlv1_wht4_forward(residual, coeff);
+            if (coeff_bits->encoder_work)
+                coeff_bits->encoder_work->quantized_coefficients += 16;
             for (int i = 0; i < 16; ++i) {
                 int step = i == 0 ? dc_step : qstep;
                 qcoeff[i] = i == 0 ? qround(coeff[i], step)
@@ -743,6 +777,8 @@ static int encode_plane_masked(HLV1BitWriter *coeff_bits,
                     return r;
             }
             int16_t inv[16];
+            if (coeff_bits->encoder_work)
+                ++coeff_bits->encoder_work->inverse_wht_blocks;
             hlv1_wht4_inverse(deq, inv);
             for (int yy = 0; yy < 4; ++yy)
                 for (int xx = 0; xx < 4; ++xx)
@@ -765,8 +801,8 @@ static int put_residual_mask(HLV1BitWriter *dst, uint32_t mask,
        v8 effectively free on the common pivot-zero path while still allowing
        large savings for sparse residuals. */
     HLV1BitWriter raw, sparse;
-    hlv1_bw_init(&raw);
-    hlv1_bw_init(&sparse);
+    encoder_bw_init_like(&raw, dst);
+    encoder_bw_init_like(&sparse, dst);
     int pivot = block_count - 1;
     uint32_t lower_mask = pivot == 32 ? UINT32_MAX
                                       : ((UINT32_C(1) << pivot) - 1U);
@@ -824,9 +860,9 @@ static int put_residual_group_v9(HLV1BitWriter *dst, uint32_t mask,
                                  const HLV1BitWriter *legacy_coeff,
                                  const HLV1BitWriter *v9_coeff) {
     HLV1BitWriter raw, sparse_legacy, sparse_v9;
-    hlv1_bw_init(&raw);
-    hlv1_bw_init(&sparse_legacy);
-    hlv1_bw_init(&sparse_v9);
+    encoder_bw_init_like(&raw, dst);
+    encoder_bw_init_like(&sparse_legacy, dst);
+    encoder_bw_init_like(&sparse_v9, dst);
 
     int pivot = block_count - 1;
     uint32_t lower_mask = (UINT32_C(1) << pivot) - 1U;
@@ -870,7 +906,7 @@ static int encode_residual_masked(HLV1BitWriter *bw,
                                   int qy, int quv, double ac_deadzone,
                                   int *nonzero_blocks) {
     HLV1BitWriter coeff_bits;
-    hlv1_bw_init(&coeff_bits);
+    encoder_bw_init_like(&coeff_bits, bw);
     uint32_t mask = 0;
     int index = 0, nz = 0;
     int r = encode_plane_masked(&coeff_bits, NULL,
@@ -901,7 +937,7 @@ static int encode_residual_sb8_masked(HLV1BitWriter *bw,
                                       double ac_deadzone,
                                       int *nonzero_blocks) {
     HLV1BitWriter coeff_bits;
-    hlv1_bw_init(&coeff_bits);
+    encoder_bw_init_like(&coeff_bits, bw);
     uint32_t mask = 0;
     int index = 0, nz = 0;
     int r = encode_plane_masked(&coeff_bits, NULL,
@@ -931,8 +967,8 @@ static int encode_residual_v9(HLV1BitWriter *bw,
                               int qy, int quv, double ac_deadzone,
                               int *nonzero_blocks) {
     HLV1BitWriter legacy, vlc;
-    hlv1_bw_init(&legacy);
-    hlv1_bw_init(&vlc);
+    encoder_bw_init_like(&legacy, bw);
+    encoder_bw_init_like(&vlc, bw);
     uint32_t mask = 0;
     int index = 0, nz = 0;
     int r = encode_plane_masked(&legacy, &vlc,
@@ -964,8 +1000,8 @@ static int encode_residual_sb8_v9(HLV1BitWriter *bw,
                                   int qy, int quv, double ac_deadzone,
                                   int *nonzero_blocks) {
     HLV1BitWriter legacy, vlc;
-    hlv1_bw_init(&legacy);
-    hlv1_bw_init(&vlc);
+    encoder_bw_init_like(&legacy, bw);
+    encoder_bw_init_like(&vlc, bw);
     uint32_t mask = 0;
     int index = 0, nz = 0;
     int r = encode_plane_masked(&legacy, &vlc,
@@ -1078,7 +1114,9 @@ static int encode_literal_candidate(const MB *source, unsigned version,
 
 /* --- Screen-content and low-complexity block models -------------------- */
 static unsigned palette_distance(int y, int u, int v,
-                                 const PaletteColor *color) {
+                                 const PaletteColor *color,
+                                 HLV1EncoderWork *work) {
+    if (work) ++work->palette_distance_evaluations;
     int dy = y - color->y;
     int du = u - color->u;
     int dv = v - color->v;
@@ -1086,11 +1124,12 @@ static unsigned palette_distance(int y, int u, int v,
 }
 
 static int palette_nearest(int y, int u, int v,
-                           const PaletteColor *colors, int count) {
+                           const PaletteColor *colors, int count,
+                           HLV1EncoderWork *work) {
     unsigned best = UINT_MAX;
     int index = 0;
     for (int i = 0; i < count; ++i) {
-        unsigned distance = palette_distance(y, u, v, &colors[i]);
+        unsigned distance = palette_distance(y, u, v, &colors[i], work);
         if (distance < best) {
             best = distance;
             index = i;
@@ -1102,7 +1141,7 @@ static int palette_nearest(int y, int u, int v,
 static void palette_build(const MB *src, int count,
                           PaletteColor colors[8],
                           uint8_t y_index[256], uint8_t c_index[64],
-                          MB *rec) {
+                          MB *rec, HLV1EncoderWork *work) {
     int min_i = 0, max_i = 0;
     for (int i = 1; i < 256; ++i) {
         if (src->y[i] < src->y[min_i]) min_i = i;
@@ -1125,7 +1164,8 @@ static void palette_build(const MB *src, int count,
             int v = src->v[(y >> 1) * 8 + (x >> 1)];
             unsigned nearest = UINT_MAX;
             for (int j = 0; j < k; ++j) {
-                unsigned distance = palette_distance(src->y[i], u, v, &colors[j]);
+                unsigned distance = palette_distance(
+                    src->y[i], u, v, &colors[j], work);
                 if (distance < nearest) nearest = distance;
             }
             if (nearest > farthest) {
@@ -1145,7 +1185,8 @@ static void palette_build(const MB *src, int count,
             int x = i & 15, y = i >> 4;
             int u = src->u[(y >> 1) * 8 + (x >> 1)];
             int v = src->v[(y >> 1) * 8 + (x >> 1)];
-            int index = palette_nearest(src->y[i], u, v, colors, count);
+            int index = palette_nearest(
+                src->y[i], u, v, colors, count, work);
             sy[index] += src->y[i];
             su[index] += (unsigned)u;
             sv[index] += (unsigned)v;
@@ -1162,7 +1203,7 @@ static void palette_build(const MB *src, int count,
         int x = i & 15, y = i >> 4;
         int u = src->u[(y >> 1) * 8 + (x >> 1)];
         int v = src->v[(y >> 1) * 8 + (x >> 1)];
-        int index = palette_nearest(src->y[i], u, v, colors, count);
+        int index = palette_nearest(src->y[i], u, v, colors, count, work);
         y_index[i] = (uint8_t)index;
         rec->y[i] = colors[index].y;
     }
@@ -1174,7 +1215,8 @@ static void palette_build(const MB *src, int count,
                     ysum += src->y[(cy * 2 + yy) * 16 + cx * 2 + xx];
             int yavg = (ysum + 2) >> 2;
             int i = cy * 8 + cx;
-            int index = palette_nearest(yavg, src->u[i], src->v[i], colors, count);
+            int index = palette_nearest(
+                yavg, src->u[i], src->v[i], colors, count, work);
             c_index[i] = (uint8_t)index;
             rec->u[i] = colors[index].u;
             rec->v[i] = colors[index].v;
@@ -1187,10 +1229,11 @@ static int encode_palette_candidate(const MB *src, unsigned version,
                                     int count, int qy, int quv,
                                     double lambda_bits,
                                     int luma_weight, int use_simd,
+                                    HLV1EncoderWork *work,
                                     Candidate *out) {
     PaletteColor colors[8] = {{0}};
     uint8_t y_index[256], c_index[64];
-    palette_build(src, count, colors, y_index, c_index, &out->rec);
+    palette_build(src, count, colors, y_index, c_index, &out->rec, work);
     int max_y_error = 0, max_uv_error = 0;
     for (unsigned i = 0; i < sizeof src->y; ++i) {
         int error = abs((int)src->y[i] - out->rec.y[i]);
@@ -1240,7 +1283,7 @@ static int encode_palette_candidate(const MB *src, unsigned version,
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
     out->score = (double)weighted_sse(src, &out->rec, luma_weight,
-                                      use_simd) +
+                                      use_simd, work) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -1382,7 +1425,8 @@ static int encode_gradient_candidate(HLV1Encoder *e, const MB *src,
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
     out->score = (double)weighted_sse(src, &out->rec, e->luma_weight,
-                                      e->use_simd) +
+                                      e->use_simd,
+                                      &e->stats.encoder_work) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -1492,7 +1536,8 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
                         const MB *src, const MB *pred, MB *rec,
                         int qy, int quv, double ac_deadzone, int *had_residual) {
     HLV1BitWriter residual;
-    hlv1_bw_init(&residual);
+    encoder_bw_init_like(&residual, dst);
+    if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
                 ? encode_residual_v9(&residual, src, pred, rec,
@@ -1516,7 +1561,8 @@ static int put_residual_sb8(HLV1BitWriter *dst, unsigned version,
                             const SB8 *src, const SB8 *pred, SB8 *rec,
                             int qy, int quv, double ac_deadzone, int *had_residual) {
     HLV1BitWriter residual;
-    hlv1_bw_init(&residual);
+    encoder_bw_init_like(&residual, dst);
+    if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
                 ? encode_residual_sb8_v9(&residual, src, pred, rec,
@@ -1549,10 +1595,21 @@ static int motion_valid(const HLV1Frame *ref, int x, int y, int size,
            max_y <= (ref->padded_height - 1) * denominator;
 }
 
+static void count_sad_samples(HLV1EncoderWork *work, int fx, int fy,
+                              uint64_t samples) {
+    if (!work) return;
+    if (!fx && !fy)
+        work->sad_integer_samples += samples;
+    else if (!fx || !fy)
+        work->sad_hv_samples += samples;
+    else
+        work->sad_bilinear_samples += samples;
+}
+
 static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
                                 int x, int y, int size,
                                 int mvx, int mvy, int denominator,
-                                int use_simd) {
+                                int use_simd, HLV1EncoderWork *work) {
     int bx = floor_div(x * denominator + mvx, denominator);
     int by = floor_div(y * denominator + mvy, denominator);
     int fx = x * denominator + mvx - bx * denominator;
@@ -1560,6 +1617,8 @@ static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
     int inv_x = denominator - fx;
     int inv_y = denominator - fy;
     int round = denominator * denominator / 2;
+    if (work) ++work->motion_sad_evaluations;
+    count_sad_samples(work, fx, fy, (uint64_t)size * (uint64_t)size);
 #if HLV1_ENCODER_SSE2
     if (use_simd && !fx && !fy) {
         const uint8_t *a = src->y + y * src->stride_y + x;
@@ -1605,7 +1664,7 @@ static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
 static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
                               int x, int y, int size, int radius,
                               int denominator, int legacy_even,
-                              int use_simd,
+                              int use_simd, HLV1EncoderWork *work,
                               int *best_mvx, int *best_mvy) {
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
@@ -1617,7 +1676,7 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
             if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
             uint64_t sad = motion_sad_luma(src, ref, x, y, size,
                                            mvx, mvy, denominator,
-                                           use_simd);
+                                           use_simd, work);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1635,7 +1694,7 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
                 if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
                 uint64_t sad = motion_sad_luma(src, ref, x, y, size,
                                                mvx, mvy, denominator,
-                                               use_simd);
+                                               use_simd, work);
                 if (sad < best) {
                     best = sad;
                     *best_mvx = mvx;
@@ -1663,13 +1722,15 @@ static uint64_t motion_sad_luma_rect(const HLV1Frame *src,
                                      const HLV1Frame *ref,
                                      int x, int y, int w, int h,
                                      int mvx, int mvy, int denominator,
-                                     int use_simd) {
+                                     int use_simd, HLV1EncoderWork *work) {
     int bx = floor_div(x * denominator + mvx, denominator);
     int by = floor_div(y * denominator + mvy, denominator);
     int fx = x * denominator + mvx - bx * denominator;
     int fy = y * denominator + mvy - by * denominator;
     int inv_x = denominator - fx, inv_y = denominator - fy;
     int round = denominator * denominator / 2;
+    if (work) ++work->motion_sad_evaluations;
+    count_sad_samples(work, fx, fy, (uint64_t)w * (uint64_t)h);
 #if HLV1_ENCODER_SSE2
     if (use_simd && !fx && !fy) {
         const uint8_t *a = src->y + y * src->stride_y + x;
@@ -1715,7 +1776,7 @@ static uint64_t motion_sad_luma_rect(const HLV1Frame *src,
 static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
                              int x, int y, int w, int h, int radius,
                              int denominator, int legacy_even,
-                             int use_simd,
+                             int use_simd, HLV1EncoderWork *work,
                              int *best_mvx, int *best_mvy) {
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
@@ -1728,7 +1789,7 @@ static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
                 continue;
             uint64_t sad = motion_sad_luma_rect(src, ref, x, y, w, h,
                                                 mvx, mvy, denominator,
-                                                use_simd);
+                                                use_simd, work);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1745,7 +1806,7 @@ static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
                     continue;
                 uint64_t sad = motion_sad_luma_rect(src, ref, x, y, w, h,
                                                     mvx, mvy, denominator,
-                                                    use_simd);
+                                                    use_simd, work);
                 if (sad < best) {
                     best = sad;
                     *best_mvx = mvx;
@@ -1780,15 +1841,16 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                                   int denominator, int legacy_even,
                                   int requested, int global_mvx,
                                   int global_mvy, int use_global,
-                                  int use_simd,
+                                  int use_simd, HLV1EncoderWork *work,
                                   MotionChoice *choices, int capacity) {
     if (requested <= 1) {
         int mvx, mvy;
         find_motion_block(src, ref, x, y, size, radius,
-                          denominator, legacy_even, use_simd, &mvx, &mvy);
+                          denominator, legacy_even, use_simd, work,
+                          &mvx, &mvy);
         choices[0] = (MotionChoice){mvx, mvy,
             motion_sad_luma(src, ref, x, y, size, mvx, mvy, denominator,
-                            use_simd)};
+                            use_simd, work)};
         return 1;
     }
     int count = 0;
@@ -1801,7 +1863,7 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
             if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
             uint64_t sad = motion_sad_luma(src, ref, x, y, size,
                                            mvx, mvy, denominator,
-                                           use_simd);
+                                           use_simd, work);
             insert_motion_choice(choices, &count, keep, mvx, mvy, sad);
         }
     if (denominator == 2 && count) {
@@ -1814,7 +1876,7 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                     continue;
                 uint64_t sad = motion_sad_luma(src, ref, x, y, size,
                                                mvx, mvy, denominator,
-                                               use_simd);
+                                               use_simd, work);
                 insert_motion_choice(choices, &count, keep, mvx, mvy, sad);
             }
     }
@@ -1823,19 +1885,20 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
     if (count < capacity && motion_valid(ref, x, y, size, 0, 0, denominator))
         insert_motion_choice(choices, &count, capacity, 0, 0,
             motion_sad_luma(src, ref, x, y, size, 0, 0, denominator,
-                            use_simd));
+                            use_simd, work));
     if (use_global && count < capacity &&
         motion_valid(ref, x, y, size, global_mvx, global_mvy, denominator))
         insert_motion_choice(choices, &count, capacity, global_mvx, global_mvy,
             motion_sad_luma(src, ref, x, y, size,
-                            global_mvx, global_mvy, denominator, use_simd));
+                            global_mvx, global_mvy, denominator, use_simd,
+                            work));
     if (denominator == 2 && count < capacity) {
         int mvx = choices[0].mvx & ~1;
         int mvy = choices[0].mvy & ~1;
         if (motion_valid(ref, x, y, size, mvx, mvy, denominator))
             insert_motion_choice(choices, &count, capacity, mvx, mvy,
                 motion_sad_luma(src, ref, x, y, size,
-                                mvx, mvy, denominator, use_simd));
+                                mvx, mvy, denominator, use_simd, work));
     }
     return count;
 }
@@ -1862,9 +1925,11 @@ static int sample_fractional(const uint8_t *src, int stride,
 
 static uint64_t global_motion_sad(const HLV1Frame *src, const HLV1Frame *ref,
                                   int mvx, int mvy, int denominator,
-                                  int radius) {
+                                  int radius, HLV1EncoderWork *work) {
     int margin = radius + 2;
     uint64_t sad = 0;
+    uint64_t samples = 0;
+    if (work) ++work->global_sad_evaluations;
     for (int y = margin; y < src->padded_height - margin; y += 4) {
         const uint8_t *row = src->y + y * src->stride_y;
         for (int x = margin; x < src->padded_width - margin; x += 4) {
@@ -1872,24 +1937,31 @@ static uint64_t global_motion_sad(const HLV1Frame *src, const HLV1Frame *ref,
                                       x * denominator + mvx,
                                       y * denominator + mvy, denominator);
             sad += (unsigned)abs((int)row[x] - p);
+            ++samples;
         }
     }
+    int base_x = floor_div(mvx, denominator);
+    int base_y = floor_div(mvy, denominator);
+    count_sad_samples(work, mvx - base_x * denominator,
+                      mvy - base_y * denominator, samples);
     return sad;
 }
 
 static uint64_t find_global_motion(const HLV1Frame *src, const HLV1Frame *ref,
                                    int radius, int denominator,
                                    int *best_mvx, int *best_mvy,
-                                   uint64_t *zero_sad) {
+                                   uint64_t *zero_sad,
+                                   HLV1EncoderWork *work) {
     int limit = radius * denominator;
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
     if (zero_sad)
-        *zero_sad = global_motion_sad(src, ref, 0, 0, denominator, radius);
+        *zero_sad = global_motion_sad(
+            src, ref, 0, 0, denominator, radius, work);
     for (int mvy = -limit; mvy <= limit; mvy += denominator) {
         for (int mvx = -limit; mvx <= limit; mvx += denominator) {
             uint64_t sad = global_motion_sad(src, ref, mvx, mvy,
-                                             denominator, radius);
+                                             denominator, radius, work);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1904,7 +1976,7 @@ static uint64_t find_global_motion(const HLV1Frame *src, const HLV1Frame *ref,
                 int mvx = cx + ox, mvy = cy + oy;
                 if (abs(mvx) > limit || abs(mvy) > limit) continue;
                 uint64_t sad = global_motion_sad(src, ref, mvx, mvy,
-                                                 denominator, radius);
+                                                 denominator, radius, work);
                 if (sad < best) {
                     best = sad;
                     *best_mvx = mvx;
@@ -1925,8 +1997,13 @@ static double mean_luma_difference(const HLV1Frame *a, const HLV1Frame *b) {
     return (double)sum / (double)n;
 }
 
-static int candidate_init(Candidate *c, int mode) {
-    memset(c, 0, sizeof *c); c->mode = mode; c->score = HUGE_VAL; hlv1_bw_init(&c->bits); return HLV1_OK;
+static int candidate_init(Candidate *c, int mode, HLV1EncoderWork *work) {
+    memset(c, 0, sizeof *c);
+    c->mode = mode;
+    c->score = HUGE_VAL;
+    encoder_bw_init(&c->bits, work);
+    if (work) ++work->candidate_initializations;
+    return HLV1_OK;
 }
 static void candidate_free(Candidate *c) { hlv1_bw_free(&c->bits); }
 
@@ -2135,7 +2212,8 @@ static int encode_inter_mb_candidate(HLV1Encoder *e,
                                      int predictor_mvx, int predictor_mvy,
                                      int use_global, Candidate *out) {
     MB pred;
-    motion_predict(&e->previous, x, y, mvx, mvy, denominator, &pred);
+    motion_predict(&e->previous, x, y, mvx, mvy, denominator, &pred,
+                   &e->stats.encoder_work);
     out->mode = HLV1_MODE_INTER;
     out->mvx = mvx;
     out->mvy = mvy;
@@ -2184,17 +2262,18 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
             memset(&inter_rec, 0, sizeof inter_rec);
             extract_sb8(input, gx, gy, &src);
             motion_predict_sb8(&e->previous, gx, gy, 0, 0, denominator,
-                               &skip_rec);
+                               &skip_rec, &e->stats.encoder_work);
 
             HLV1BitWriter skip_bits, inter_bits;
-            hlv1_bw_init(&skip_bits);
-            hlv1_bw_init(&inter_bits);
+            encoder_bw_init(&skip_bits, &e->stats.encoder_work);
+            encoder_bw_init(&inter_bits, &e->stats.encoder_work);
             r = hlv1_bw_put(&skip_bits, 0, 1);
             if (r >= 0) r = hlv1_bw_finish(&skip_bits);
             if (r < 0) { hlv1_bw_free(&skip_bits); hlv1_bw_free(&inter_bits); return r; }
             double skip_score = (double)weighted_sse_sb8(
                                     &src, &skip_rec, e->luma_weight,
-                                    e->use_simd) +
+                                    e->use_simd,
+                                    &e->stats.encoder_work) +
                                 lambda_bits * skip_bits.bit_count;
 
             MotionChoice choices[12];
@@ -2202,16 +2281,18 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                 input, &e->previous, gx, gy, 8, e->header.search_radius,
                 denominator, legacy_even, e->motion_candidates,
                 global_mvx, global_mvy, use_global, e->use_simd,
+                &e->stats.encoder_work,
                 choices, 12);
             double inter_score = HUGE_VAL;
             for (int choice = 0; choice < choice_count; ++choice) {
                 HLV1BitWriter trial_bits;
                 SB8 trial_pred, trial_rec;
-                hlv1_bw_init(&trial_bits);
+                encoder_bw_init(&trial_bits, &e->stats.encoder_work);
                 int mvx = choices[choice].mvx;
                 int mvy = choices[choice].mvy;
                 motion_predict_sb8(&e->previous, gx, gy, mvx, mvy,
-                                   denominator, &trial_pred);
+                                   denominator, &trial_pred,
+                                   &e->stats.encoder_work);
                 int tr = hlv1_bw_put(&trial_bits, 1, 1);
                 int coded_mvx = mvx, coded_mvy = mvy;
                 if (use_global) {
@@ -2234,7 +2315,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                 }
                 double trial_score =
                     (double)weighted_sse_sb8(
-                        &src, &trial_rec, e->luma_weight, e->use_simd) +
+                        &src, &trial_rec, e->luma_weight, e->use_simd,
+                        &e->stats.encoder_work) +
                     lambda_bits * trial_bits.bit_count;
                 if (trial_score < inter_score) {
                     hlv1_bw_free(&inter_bits);
@@ -2266,7 +2348,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
     out->score = (double)weighted_sse(src_mb, &out->rec, e->luma_weight,
-                                      e->use_simd) +
+                                      e->use_simd,
+                                      &e->stats.encoder_work) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -2288,7 +2371,8 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
         int h = vertical ? 16 : 8;
         find_motion_rect(input, &e->previous, x + sx, y + sy, w, h,
                          e->header.search_radius, denominator, legacy_even,
-                         e->use_simd, &best_mvx[i], &best_mvy[i]);
+                         e->use_simd, &e->stats.encoder_work,
+                         &best_mvx[i], &best_mvy[i]);
     }
 
     out->score = HUGE_VAL;
@@ -2299,7 +2383,8 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
        residual headers as in the 8x8 partition. */
     for (int combination = 0; combination < 4; ++combination) {
         Candidate trial;
-        candidate_init(&trial, HLV1_MODE_SPLIT_INTER);
+        candidate_init(&trial, HLV1_MODE_SPLIT_INTER,
+                       &e->stats.encoder_work);
         trial.partition = out->partition;
         int r = put_mode(&trial.bits, version, HLV1_FRAME_P,
                          HLV1_MODE_SPLIT_INTER, use_global);
@@ -2326,7 +2411,8 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
             }
             if (r >= 0)
                 motion_predict_rect_to_mb(&e->previous, x, y, sx, sy, w, h,
-                                          mvx, mvy, denominator, &trial.rec);
+                                          mvx, mvy, denominator, &trial.rec,
+                                          &e->stats.encoder_work);
         }
         if (r >= 0)
             r = put_residual(&trial.bits, version, src_mb, &trial.rec,
@@ -2369,7 +2455,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
     }
     int frame_type = key ? HLV1_FRAME_KEY : HLV1_FRAME_P;
     unsigned version = hlv1_stream_version(&e->header);
-    HLV1BitWriter frame_bits; hlv1_bw_init(&frame_bits);
+    HLV1BitWriter frame_bits;
+    encoder_bw_init(&frame_bits, &e->stats.encoder_work);
     double lambda_bits = e->lambda_scale *
                          HLV1_MAX(0.5, 0.12 * e->q_y * e->q_y);
     int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
@@ -2383,7 +2470,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                e->header.search_radius,
                                                denominator,
                                                &global_mvx, &global_mvy,
-                                               &zero_sad);
+                                               &zero_sad,
+                                               &e->stats.encoder_work);
         use_global = (global_mvx || global_mvy) &&
                      zero_sad && best_sad < zero_sad - zero_sad / 20;
         if ((r = hlv1_bw_put(&frame_bits, (uint32_t)use_global, 1)) < 0 ||
@@ -2427,7 +2515,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                         &predictor_mvx, &predictor_mvy);
             MB src; extract_mb(input, x, y, &src);
             Candidate c[16];
-            for (int i = 0; i < 16; ++i) candidate_init(&c[i], i);
+            for (int i = 0; i < 16; ++i)
+                candidate_init(&c[i], i, &e->stats.encoder_work);
             int count = 0;
 
             MB pred;
@@ -2451,7 +2540,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                 hlv1_bw_finish(&ci->bits);
                 ci->score = (double)weighted_sse(
                                 &src, &ci->rec, e->luma_weight,
-                                e->use_simd) +
+                                e->use_simd,
+                                &e->stats.encoder_work) +
                             lambda_bits * ci->bits.bit_count;
             }
 
@@ -2463,7 +2553,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             if ((r = put_residual(&cf->bits, version, &src, &pred, &cf->rec, e->q_y, e->q_uv, e->ac_deadzone, NULL)) < 0) goto fail_mb;
             hlv1_bw_finish(&cf->bits);
             cf->score = (double)weighted_sse(
-                            &src, &cf->rec, e->luma_weight, e->use_simd) +
+                            &src, &cf->rec, e->luma_weight, e->use_simd,
+                            &e->stats.encoder_work) +
                         lambda_bits * cf->bits.bit_count;
 
             if (version >= HLV1_STREAM_VERSION_12) {
@@ -2478,6 +2569,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                       e->q_y, e->q_uv,
                                                       lambda_bits, e->luma_weight,
                                                       e->use_simd,
+                                                      &e->stats.encoder_work,
                                                       cp)) < 0)
                         goto fail_mb;
                 }
@@ -2496,13 +2588,14 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             if (!key) {
                 Candidate *cs = &c[count++]; cs->mode = HLV1_MODE_SKIP;
                 motion_predict(&e->previous, x, y, 0, 0, denominator,
-                               &cs->rec);
+                               &cs->rec, &e->stats.encoder_work);
                 if ((r = put_mode(&cs->bits, version, frame_type,
                                   HLV1_MODE_SKIP, use_global)) < 0) goto fail_mb;
                 hlv1_bw_finish(&cs->bits);
                 cs->score = (double)weighted_sse(
                                 &src, &cs->rec, e->luma_weight,
-                                e->use_simd) +
+                                e->use_simd,
+                                &e->stats.encoder_work) +
                             lambda_bits * cs->bits.bit_count;
 
                 if (use_global &&
@@ -2513,7 +2606,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                     cg->mvx = global_mvx;
                     cg->mvy = global_mvy;
                     motion_predict(&e->previous, x, y, global_mvx, global_mvy,
-                                   denominator, &pred);
+                                   denominator, &pred,
+                                   &e->stats.encoder_work);
                     if ((r = put_mode(&cg->bits, version, frame_type,
                                       HLV1_MODE_GLOBAL, use_global)) < 0) goto fail_mb;
                     if ((r = put_residual(&cg->bits, version, &src, &pred,
@@ -2522,7 +2616,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                     hlv1_bw_finish(&cg->bits);
                     cg->score = (double)weighted_sse(
                                     &src, &cg->rec, e->luma_weight,
-                                    e->use_simd) +
+                                    e->use_simd,
+                                    &e->stats.encoder_work) +
                                 lambda_bits * cg->bits.bit_count;
                 }
 
@@ -2531,11 +2626,13 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                     input, &e->previous, x, y, 16, e->header.search_radius,
                     denominator, legacy_even, e->motion_candidates,
                     global_mvx, global_mvy, use_global, e->use_simd,
+                    &e->stats.encoder_work,
                     choices, 12);
                 Candidate *cm = &c[count++];
                 for (int choice = 0; choice < choice_count; ++choice) {
                     Candidate trial;
-                    candidate_init(&trial, HLV1_MODE_INTER);
+                    candidate_init(&trial, HLV1_MODE_INTER,
+                                   &e->stats.encoder_work);
                     r = encode_inter_mb_candidate(
                         e, &src, x, y, version, lambda_bits, denominator,
                         choices[choice].mvx, choices[choice].mvy,
@@ -2668,7 +2765,14 @@ fail_mb:
 
 
 static uint64_t frame_weighted_sse(const HLV1Frame *a, const HLV1Frame *b,
-                                   int luma_weight, int use_simd) {
+                                   int luma_weight, int use_simd,
+                                   HLV1EncoderWork *work) {
+    if (work) {
+        uint64_t luma = (uint64_t)a->width * (uint64_t)a->height;
+        uint64_t chroma = (uint64_t)((a->width + 1) / 2) *
+                          (uint64_t)((a->height + 1) / 2);
+        work->rdo_sse_samples += luma + 2U * chroma;
+    }
     uint64_t sse = 0;
     for (int y = 0; y < a->height; ++y)
         sse += squared_error_u8(a->y + y * a->stride_y,
@@ -2694,6 +2798,34 @@ static void encoder_swap_state(HLV1Encoder *a, HLV1Encoder *b) {
     HLV1Encoder temp = *a;
     *a = *b;
     *b = temp;
+}
+
+static void add_encoder_work_delta(HLV1EncoderWork *dst,
+                                   const HLV1EncoderWork *src,
+                                   const HLV1EncoderWork *baseline) {
+#define ADD_WORK_DELTA(name) dst->name += src->name - baseline->name
+    ADD_WORK_DELTA(motion_sad_evaluations);
+    ADD_WORK_DELTA(global_sad_evaluations);
+    ADD_WORK_DELTA(sad_integer_samples);
+    ADD_WORK_DELTA(sad_hv_samples);
+    ADD_WORK_DELTA(sad_bilinear_samples);
+    ADD_WORK_DELTA(prediction_copied_samples);
+    ADD_WORK_DELTA(prediction_hv_samples);
+    ADD_WORK_DELTA(prediction_bilinear_samples);
+    ADD_WORK_DELTA(rdo_sse_samples);
+    ADD_WORK_DELTA(forward_wht_blocks);
+    ADD_WORK_DELTA(inverse_wht_blocks);
+    ADD_WORK_DELTA(quantized_coefficients);
+    ADD_WORK_DELTA(palette_distance_evaluations);
+    ADD_WORK_DELTA(candidate_initializations);
+    ADD_WORK_DELTA(residual_candidates);
+    ADD_WORK_DELTA(bitwriter_put_calls);
+    ADD_WORK_DELTA(bitwriter_requested_bits);
+    ADD_WORK_DELTA(bitwriter_append_calls);
+    ADD_WORK_DELTA(bitwriter_appended_bits);
+    ADD_WORK_DELTA(bitwriter_byte_copyable_bytes);
+    ADD_WORK_DELTA(bitwriter_buffer_grows);
+#undef ADD_WORK_DELTA
 }
 
 int hlv1_encoder_encode(HLV1Encoder *e, const HLV1Frame *input,
@@ -2744,13 +2876,15 @@ int hlv1_encoder_encode(HLV1Encoder *e, const HLV1Frame *input,
         k_encoder->estimated_decode_cycles - e->estimated_decode_cycles;
     double p_score = (double)frame_weighted_sse(input, p_rec,
                                                 e->luma_weight,
-                                                e->use_simd) +
+                                                e->use_simd,
+                                                &p_encoder->stats.encoder_work) +
                      lambda_bits *
                          ((double)p_packet.bit_length +
                           e->decode_cycle_weight * (double)p_decode_cycles);
     double k_score = (double)frame_weighted_sse(input, k_rec,
                                                 e->luma_weight,
-                                                e->use_simd) +
+                                                e->use_simd,
+                                                &k_encoder->stats.encoder_work) +
                      lambda_bits *
                          ((double)k_packet.bit_length +
                           e->decode_cycle_weight * (double)k_decode_cycles);
@@ -2760,6 +2894,9 @@ int hlv1_encoder_encode(HLV1Encoder *e, const HLV1Frame *input,
     HLV1Encoder *rejected = choose_key ? p_encoder : k_encoder;
     HLV1Packet *chosen_packet = choose_key ? &k_packet : &p_packet;
     HLV1Packet *rejected_packet = choose_key ? &p_packet : &k_packet;
+    add_encoder_work_delta(&chosen->stats.encoder_work,
+                           &rejected->stats.encoder_work,
+                           &e->stats.encoder_work);
 
     *packet = *chosen_packet;
     memset(chosen_packet, 0, sizeof *chosen_packet);

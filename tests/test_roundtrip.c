@@ -106,6 +106,28 @@ static int test_version(int version) {
         make_motion_frame(&input, i - 2);
         if (roundtrip_one(e, d, &input, version, i)) return 1;
     }
+    s = hlv1_encoder_stats(e);
+    if (version == HLV1_STREAM_VERSION_13 &&
+        (!s->encoder_work.motion_sad_evaluations ||
+         !(s->encoder_work.sad_integer_samples +
+           s->encoder_work.sad_hv_samples +
+           s->encoder_work.sad_bilinear_samples) ||
+         !(s->encoder_work.prediction_copied_samples +
+           s->encoder_work.prediction_hv_samples +
+           s->encoder_work.prediction_bilinear_samples) ||
+         !s->encoder_work.rdo_sse_samples ||
+         !s->encoder_work.forward_wht_blocks ||
+         !s->encoder_work.inverse_wht_blocks ||
+         !s->encoder_work.quantized_coefficients ||
+         !s->encoder_work.palette_distance_evaluations ||
+         !s->encoder_work.candidate_initializations ||
+         !s->encoder_work.residual_candidates ||
+         !s->encoder_work.bitwriter_put_calls ||
+         !s->encoder_work.bitwriter_append_calls ||
+         !s->encoder_work.bitwriter_buffer_grows)) {
+        fprintf(stderr, "encoder work counters not exercised in v13\n");
+        return 1;
+    }
 
     hlv1_frame_free(&input);
     hlv1_encoder_destroy(e);

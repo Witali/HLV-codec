@@ -420,6 +420,7 @@ static int bw_reserve(HLV1BitWriter *bw, size_t add) {
     if (!p) return HLV1_ERR_MEMORY;
     bw->data = p;
     bw->capacity = cap;
+    if (bw->encoder_work) ++bw->encoder_work->bitwriter_buffer_grows;
     return HLV1_OK;
 }
 
@@ -429,6 +430,10 @@ void hlv1_bw_free(HLV1BitWriter *bw) { if (bw) { free(bw->data); memset(bw, 0, s
 int hlv1_bw_put(HLV1BitWriter *bw, uint32_t value, unsigned count) {
     if (!bw || count > 32 || (count < 32 && value >= (1U << count))) return HLV1_ERR_ARGUMENT;
     if (!count) return HLV1_OK;
+    if (bw->encoder_work) {
+        ++bw->encoder_work->bitwriter_put_calls;
+        bw->encoder_work->bitwriter_requested_bits += count;
+    }
     bw->bit_count += count;
     while (count) {
         unsigned take = HLV1_MIN(count, 8U - bw->bits);
@@ -471,6 +476,12 @@ int hlv1_bw_put_se(HLV1BitWriter *bw, int32_t value) {
 int hlv1_bw_append(HLV1BitWriter *dst, const HLV1BitWriter *src) {
     if (!dst || !src) return HLV1_ERR_ARGUMENT;
     uint64_t bits = src->bit_count;
+    if (dst->encoder_work) {
+        ++dst->encoder_work->bitwriter_append_calls;
+        dst->encoder_work->bitwriter_appended_bits += bits;
+        if (!dst->bits)
+            dst->encoder_work->bitwriter_byte_copyable_bytes += bits / 8U;
+    }
     for (uint64_t pos = 0; pos < bits;) {
         unsigned n = (unsigned)HLV1_MIN((uint64_t)24, bits - pos);
         uint32_t v = 0;

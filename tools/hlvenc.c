@@ -8,6 +8,7 @@
 #include "hlv1.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,7 +205,54 @@ static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
     ADD_STAT(decoded_bits);
     ADD_STAT(motion_predictor_blocks);
     ADD_STAT(estimated_decode_cycles);
+#define ADD_WORK(name) \
+    dst->encoder_work.name += src->encoder_work.name
+    ADD_WORK(motion_sad_evaluations);
+    ADD_WORK(global_sad_evaluations);
+    ADD_WORK(sad_integer_samples);
+    ADD_WORK(sad_hv_samples);
+    ADD_WORK(sad_bilinear_samples);
+    ADD_WORK(prediction_copied_samples);
+    ADD_WORK(prediction_hv_samples);
+    ADD_WORK(prediction_bilinear_samples);
+    ADD_WORK(rdo_sse_samples);
+    ADD_WORK(forward_wht_blocks);
+    ADD_WORK(inverse_wht_blocks);
+    ADD_WORK(quantized_coefficients);
+    ADD_WORK(palette_distance_evaluations);
+    ADD_WORK(candidate_initializations);
+    ADD_WORK(residual_candidates);
+    ADD_WORK(bitwriter_put_calls);
+    ADD_WORK(bitwriter_requested_bits);
+    ADD_WORK(bitwriter_append_calls);
+    ADD_WORK(bitwriter_appended_bits);
+    ADD_WORK(bitwriter_byte_copyable_bytes);
+    ADD_WORK(bitwriter_buffer_grows);
+#undef ADD_WORK
 #undef ADD_STAT
+}
+
+static double encoder_primitive_operations(const HLV1EncoderWork *w) {
+    if (!w) return 0.0;
+    /*
+     * Stable algorithmic weights, not CPU instruction counts:
+     * SAD covers difference/interpolation plus accumulation; prediction covers
+     * sample construction; WHT counts its exact butterfly arithmetic; the
+     * remaining terms count scalar coefficient, palette, and bit work.
+     */
+    return 3.0 * w->sad_integer_samples +
+           7.0 * w->sad_hv_samples +
+           11.0 * w->sad_bilinear_samples +
+           1.0 * w->prediction_copied_samples +
+           5.0 * w->prediction_hv_samples +
+           9.0 * w->prediction_bilinear_samples +
+           3.0 * w->rdo_sse_samples +
+           64.0 * w->forward_wht_blocks +
+           80.0 * w->inverse_wht_blocks +
+           5.0 * w->quantized_coefficients +
+           10.0 * w->palette_distance_evaluations +
+           1.0 * w->bitwriter_requested_bits +
+           1.0 * w->bitwriter_appended_bits;
 }
 
 /* Attach exactly one video-frame interval of unsigned 8-bit mono PCM.  The
@@ -1494,6 +1542,45 @@ int main(int argc, char **argv) {
     if (s && encoded_frames > 0)
         fprintf(stderr, "Estimated decoder work: %.0f cycles/frame (architecture-independent RDO model)\n",
                 (double)s->estimated_decode_cycles / encoded_frames);
+    if (s && encoded_frames > 0) {
+        const HLV1EncoderWork *w = &s->encoder_work;
+        double primitive_ops = encoder_primitive_operations(w);
+        fprintf(stderr,
+                "Encoder work: sad_eval=%" PRIu64
+                " global_sad_eval=%" PRIu64
+                " sad_samples=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                " pred_samples=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+                " rdo_sse=%" PRIu64
+                " wht=%" PRIu64 "/%" PRIu64
+                " quant=%" PRIu64
+                " palette_distance=%" PRIu64
+                " candidate_init=%" PRIu64
+                " residual_candidates=%" PRIu64 "\n",
+                w->motion_sad_evaluations, w->global_sad_evaluations,
+                w->sad_integer_samples, w->sad_hv_samples,
+                w->sad_bilinear_samples,
+                w->prediction_copied_samples, w->prediction_hv_samples,
+                w->prediction_bilinear_samples, w->rdo_sse_samples,
+                w->forward_wht_blocks, w->inverse_wht_blocks,
+                w->quantized_coefficients,
+                w->palette_distance_evaluations,
+                w->candidate_initializations, w->residual_candidates);
+        fprintf(stderr,
+                "Encoder bit work: put_calls=%" PRIu64
+                " requested_bits=%" PRIu64
+                " append_calls=%" PRIu64
+                " appended_bits=%" PRIu64
+                " byte_copyable=%" PRIu64
+                " buffer_grows=%" PRIu64 "\n",
+                w->bitwriter_put_calls, w->bitwriter_requested_bits,
+                w->bitwriter_append_calls, w->bitwriter_appended_bits,
+                w->bitwriter_byte_copyable_bytes,
+                w->bitwriter_buffer_grows);
+        fprintf(stderr,
+                "Encoder primitive operation estimate: %.0f total, "
+                "%.0f/frame (stable weighted model)\n",
+                primitive_ops, primitive_ops / encoded_frames);
+    }
 
     hlv1_frame_free(&input);
     hlv1_frame_free(&previous_input);
