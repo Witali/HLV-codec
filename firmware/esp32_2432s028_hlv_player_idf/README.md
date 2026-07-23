@@ -234,13 +234,18 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 changing the HLV file.
 `kEnableAudio` enables PCM_U8 playback through DAC GPIO26. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
-allocated and starts with a 3 KiB preroll. Files without audio, an explicitly
-disabled output, or a failed audio reader/DAC automatically use the monotonic
-ESP timer as the video clock. The periodic log reports queued bytes, controlled
-rebuffer events, silence DMA chunks and cyclic-repeat activity.
+allocated. Preroll is calculated from `kAudioPrerollFrames` and the rational
+frame rate stored in the file; the current four-frame target covers about
+167 ms at 24 fps. Files without audio, an explicitly disabled output, or a
+failed audio reader/DAC automatically use the monotonic ESP timer as the video
+clock. The periodic log reports queued bytes, controlled rebuffer events,
+silence DMA chunks and cyclic-repeat activity.
 `kAvSyncMode` selects between `kDropLateVideoFrames`, which keeps audio
-continuous and omits late display transfers, and `kLoopAudioForLateVideo`,
-which presents every frame and repeats the six already allocated DMA
-descriptors while video catches up. The former is enabled so playback duration
-and presentation cadence follow the rational frame rate stored in the HLV
-header. Neither mode allocates additional frame or audio buffers.
+continuous and omits late display transfers; `kLoopAudioForLateVideo`, which
+presents every frame and repeats the six already allocated DMA descriptors
+while video catches up; and `kDropThenLoopAudio`, which omits at most
+`kMaxConsecutiveVideoSkips` display transfers before switching to the same DMA
+repeat. The hybrid mode is enabled with a two-frame skip limit. Predictive
+decoding always continues, repeated samples do not advance the media clock,
+and queued source samples resume without being discarded. No mode allocates
+additional frame or audio buffers.

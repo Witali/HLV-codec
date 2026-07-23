@@ -53,15 +53,20 @@ audio, the exact rational frame index is converted to a target PCM sample
 position and the DAC sample counter is the master clock. Without audio, the
 ESP timer advances by the quotient and remainder of
 `1,000,000 * fps_den / fps_num`, so fractional rates do not accumulate
-microsecond-rounding drift. The current `kDropLateVideoFrames` mode preserves
-that media time: every predictive frame is decoded, but a frame that is already
-more than one file-defined interval late is not sent to the display. Audio
-samples are never dropped.
+microsecond-rounding drift. The current `kDropThenLoopAudio` mode preserves
+that media time: every predictive frame is decoded, up to two consecutive late
+frames omit only their display transfer, then the existing DAC DMA ring is
+repeated until video catches up. Repeated samples do not advance the media
+clock, and the queued source audio resumes without dropped samples. The static
+4 KiB audio queue uses a four-frame preroll target calculated from the file's
+sample rate and rational frame rate.
 
-This was verified on the physical ESP32 with the same firmware binary. A
-`24/1` HLV test measured 23.985 decoded frames/s over 200 frames; the normal
-`15/1` file measured 14.984 frames/s. Both runs had zero decode-sequence gaps,
-audio rebuffers, missing samples and silence chunks.
+The hybrid mode was verified on the physical ESP32 with the `320x180`, `24/1`
+v13 test file. Two 900-frame runs measured 23.894 and 23.953 decoded frames/s.
+The runs omitted 2 and 6 display transfers respectively and each entered one
+short audio hold (9 and 4 DMA chunks), instead of allowing an unbounded visual
+freeze. Both runs had zero decode-sequence gaps, audio rebuffers, missing
+samples and silence chunks.
 
 For a strict hardware check, the firmware emits a `V,...` record containing
 the file dimensions and rational frame rate, plus an `A,...` audio record every
@@ -72,9 +77,8 @@ and rejects decode-sequence gaps, rebuffers and missing samples:
 .\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120
 ```
 
-The retained build completed this test with 900 consecutive frames,
-927,232 played samples and zero rebuffers, underrun samples or silence DMA
-chunks.
+The current hybrid build completed two consecutive invocations with 900 frame
+records each and zero rebuffers, underrun samples or silence DMA chunks.
 
 ## Dual-core playback mode
 

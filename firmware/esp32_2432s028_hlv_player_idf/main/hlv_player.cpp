@@ -46,7 +46,6 @@ constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
 constexpr size_t kAudioDmaDescriptors = 6;
 constexpr size_t kAudioReadAheadBytes = 512;
 constexpr size_t kAudioReadChunkBytes = 512;
-constexpr size_t kAudioPrerollBytes = 3072;
 constexpr uint32_t kAudioReaderStackBytes = 3072;
 constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
@@ -66,6 +65,10 @@ static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
               "Dual-core playback requires a two-core FreeRTOS build");
 static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
               "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
+static_assert(player_settings::kAudioPrerollFrames > 0,
+              "Audio preroll must cover at least one video frame");
+static_assert(player_settings::kMaxConsecutiveVideoSkips > 0,
+              "Hybrid A/V sync must permit at least one video skip");
 
 struct DecodeRequest {
     const HLV1Packet *packet;
@@ -126,6 +129,7 @@ volatile uint32_t audio_underrun_samples = 0;
 volatile bool audio_loop_hold = false;
 volatile uint32_t audio_loop_events = 0;
 volatile uint32_t audio_loop_chunks = 0;
+size_t audio_preroll_bytes = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
 TaskHandle_t decode_task_handle = nullptr;
@@ -135,6 +139,7 @@ bool pending_frame_valid = false;
 uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
+uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
 
 int64_t microsNow() { return esp_timer_get_time(); }
@@ -443,7 +448,7 @@ int prefetchAudioPacket() {
                 pdMS_TO_TICKS(20));
             if (audio_rebuffering &&
                 xStreamBufferBytesAvailable(audio_stream) >=
-                    kAudioPrerollBytes) {
+                    audio_preroll_bytes) {
                 audio_rebuffering = false;
             }
         }
@@ -593,6 +598,8 @@ void stopAudio() {
     audio_loop_hold = false;
     audio_loop_events = 0;
     audio_loop_chunks = 0;
+    audio_preroll_bytes = 0;
+    consecutive_skipped_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     std::memset(audio_dma_valid_samples, 0,
                 sizeof audio_dma_valid_samples);
@@ -662,6 +669,16 @@ bool prepareAudio(const HLV1Header &header) {
     audio_async_started = true;
     audio_enabled = true;
 
+    const uint64_t audio_samples_per_frame =
+        (static_cast<uint64_t>(header.audio_sample_rate) *
+             header.fps_den +
+         header.fps_num - 1U) /
+        header.fps_num;
+    audio_preroll_bytes = static_cast<size_t>(std::min<uint64_t>(
+        kAudioStreamBytes,
+        audio_samples_per_frame *
+            player_settings::kAudioPrerollFrames));
+
     audio_reader_stop_requested = false;
     audio_prefetch_eof = false;
     audio_reader_result = HLV1_OK;
@@ -675,7 +692,7 @@ bool prepareAudio(const HLV1Header &header) {
     const int64_t preroll_deadline =
         millisNow() + kAudioPrerollTimeoutMs;
     while (xStreamBufferBytesAvailable(audio_stream) <
-               kAudioPrerollBytes &&
+               audio_preroll_bytes &&
            !audio_prefetch_eof && audio_reader_result == HLV1_OK &&
            millisNow() < preroll_deadline) {
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -683,7 +700,7 @@ bool prepareAudio(const HLV1Header &header) {
     const size_t prefetched =
         xStreamBufferBytesAvailable(audio_stream);
     if (audio_reader_result < HLV1_OK || !prefetched ||
-        (!audio_prefetch_eof && prefetched < kAudioPrerollBytes)) {
+        (!audio_prefetch_eof && prefetched < audio_preroll_bytes)) {
         stopAudio();
         return false;
     }
@@ -811,6 +828,7 @@ bool openVideo() {
     decoded_frames = 0;
     dropped_deadlines = 0;
     skipped_presentations = 0;
+    consecutive_skipped_presentations = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
     if (player_settings::kScaleVideoToDisplay) {
@@ -971,39 +989,52 @@ bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
                  sequence_header.fps_den +
              sequence_header.fps_num - 1U) /
             sequence_header.fps_num;
-        if (player_settings::kAvSyncMode ==
-            player_settings::AvSyncMode::kLoopAudioForLateVideo) {
-            if (audio_output_failed || audio_reader_result < HLV1_OK) {
-                fallBackToTimerClock("Audio clock stopped");
-            } else {
-                const uint64_t estimated_position =
-                    static_cast<uint64_t>(audio_played_samples) +
-                    kAudioDmaSamples;
-                if (audio_loop_hold) {
-                    if (estimated_position <=
-                        target_samples + frame_samples) {
-                        audio_loop_hold = false;
-                    }
-                } else if (estimated_position >
-                           target_samples + frame_samples) {
-                    audio_loop_hold = true;
-                    audio_loop_events = audio_loop_events + 1;
-                }
-
-                if (!audio_loop_hold &&
-                    !waitForAudioTarget(target_samples)) {
-                    fallBackToTimerClock("Audio clock stopped");
-                }
-            }
-        } else if (!waitForAudioTarget(target_samples)) {
+        const auto av_sync_mode = player_settings::kAvSyncMode;
+        const bool loop_every_late_frame =
+            av_sync_mode ==
+            player_settings::AvSyncMode::kLoopAudioForLateVideo;
+        const bool hybrid_sync =
+            av_sync_mode ==
+            player_settings::AvSyncMode::kDropThenLoopAudio;
+        if (audio_output_failed || audio_reader_result < HLV1_OK) {
             fallBackToTimerClock("Audio clock stopped");
         } else {
-            const uint64_t estimated_position =
+            uint64_t estimated_position =
                 static_cast<uint64_t>(audio_played_samples) +
                 kAudioDmaSamples;
-            if (estimated_position > target_samples + frame_samples) {
-                render = false;
-                ++skipped_presentations;
+            const uint64_t latest_on_time_sample =
+                target_samples + frame_samples;
+
+            if (audio_loop_hold &&
+                estimated_position <= latest_on_time_sample) {
+                audio_loop_hold = false;
+                consecutive_skipped_presentations = 0;
+            }
+
+            if (!audio_loop_hold &&
+                !waitForAudioTarget(target_samples)) {
+                fallBackToTimerClock("Audio clock stopped");
+            } else if (audio_enabled && !audio_loop_hold) {
+                estimated_position =
+                    static_cast<uint64_t>(audio_played_samples) +
+                    kAudioDmaSamples;
+                if (estimated_position > latest_on_time_sample) {
+                    if (loop_every_late_frame ||
+                        (hybrid_sync &&
+                         consecutive_skipped_presentations >=
+                             player_settings::
+                                 kMaxConsecutiveVideoSkips)) {
+                        audio_loop_hold = true;
+                        audio_loop_events = audio_loop_events + 1;
+                        consecutive_skipped_presentations = 0;
+                    } else {
+                        render = false;
+                        ++skipped_presentations;
+                        ++consecutive_skipped_presentations;
+                    }
+                } else {
+                    consecutive_skipped_presentations = 0;
+                }
             }
         }
     }

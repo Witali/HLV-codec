@@ -12,6 +12,11 @@ enum class AvSyncMode {
     // Present every video frame. When video falls behind, stop consuming new
     // PCM and cyclically replay the six DAC DMA descriptors until it catches up.
     kLoopAudioForLateVideo,
+
+    // Keep audio continuous for a short delay by omitting at most
+    // kMaxConsecutiveVideoSkips display transfers. If video is still late,
+    // cyclically replay the DAC DMA ring until the decoded picture catches up.
+    kDropThenLoopAudio,
 };
 
 // false: draw at native resolution in the centre with black borders.
@@ -32,10 +37,18 @@ constexpr bool kUseDualCorePipeline = true;
 // monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;
 
-// Keep playback tied to fps_num/fps_den from the HLV header. Audio remains
-// continuous; a late predictive frame is still decoded but is not transferred
-// to the display.
-constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropLateVideoFrames;
+// Retain the 4 KiB static queue, but wait for this many file-defined frame
+// intervals of PCM before playback and after an underrun. Four intervals cover
+// the 139 ms SD stall measured with the current 24 fps test file.
+constexpr unsigned kAudioPrerollFrames = 4;
+
+// In hybrid mode every predictive frame remains decoded, but at most this many
+// consecutive late frames omit their display transfer before audio is held.
+constexpr unsigned kMaxConsecutiveVideoSkips = 2;
+
+// Keep playback tied to fps_num/fps_den from the HLV header. The hybrid mode
+// bounds visible frame skips while preserving every source audio sample.
+constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropThenLoopAudio;
 
 // Emit one compact CSV record per decoded frame. Timestamps are captured
 // before UART output so formatting/transmission is excluded from the reported
