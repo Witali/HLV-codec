@@ -162,6 +162,9 @@ typedef struct HLV1EncoderWork {
     uint64_t dc_only_fast_blocks;
     uint64_t quantized_coefficients;
     uint64_t palette_distance_evaluations;
+    uint64_t palette_prefilter_samples;
+    uint64_t palette_prefilter_bins;
+    uint64_t palette_prefilter_rejections;
     uint64_t candidate_initializations;
     uint64_t residual_candidates;
     uint64_t bitwriter_put_calls;

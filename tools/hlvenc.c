@@ -222,6 +222,9 @@ static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
     ADD_WORK(dc_only_fast_blocks);
     ADD_WORK(quantized_coefficients);
     ADD_WORK(palette_distance_evaluations);
+    ADD_WORK(palette_prefilter_samples);
+    ADD_WORK(palette_prefilter_bins);
+    ADD_WORK(palette_prefilter_rejections);
     ADD_WORK(candidate_initializations);
     ADD_WORK(residual_candidates);
     ADD_WORK(bitwriter_put_calls);
@@ -257,6 +260,8 @@ static double encoder_primitive_operations(const HLV1EncoderWork *w) {
            34.0 * w->dc_only_fast_blocks +
            5.0 * w->quantized_coefficients +
            10.0 * w->palette_distance_evaluations +
+           1.0 * w->palette_prefilter_samples +
+           1.0 * w->palette_prefilter_bins +
            1.0 * w->bitwriter_requested_bits +
            1.0 * (w->bitwriter_appended_bits -
                   8U * (w->bitwriter_bulk_copy_bytes +
@@ -1565,6 +1570,7 @@ int main(int argc, char **argv) {
                 " residual_fast=%" PRIu64 "/%" PRIu64
                 " quant=%" PRIu64
                 " palette_distance=%" PRIu64
+                " palette_prefilter=%" PRIu64 "/%" PRIu64 "/%" PRIu64
                 " candidate_init=%" PRIu64
                 " residual_candidates=%" PRIu64 "\n",
                 w->motion_sad_evaluations, w->global_sad_evaluations,
@@ -1576,6 +1582,9 @@ int main(int argc, char **argv) {
                 w->zero_residual_fast_blocks, w->dc_only_fast_blocks,
                 w->quantized_coefficients,
                 w->palette_distance_evaluations,
+                w->palette_prefilter_samples,
+                w->palette_prefilter_bins,
+                w->palette_prefilter_rejections,
                 w->candidate_initializations, w->residual_candidates);
         fprintf(stderr,
                 "Encoder bit work: put_calls=%" PRIu64

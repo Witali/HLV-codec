@@ -44,8 +44,9 @@ The stable primitive-operation estimate uses these weights per sample or
 block: integer/H-V/2-D SAD `3/7/11`, copied/H-V/2-D prediction `1/5/9`,
 RDO squared error `3`, forward/inverse 4x4 WHT `64/80`, quantization `5`,
 zero/DC-only reconstruction `16/34`, palette distance `10`, and one operation
-per requested or appended bit.  The estimate is useful for comparing
-algorithms; raw counts and wall time remain authoritative.
+per palette-prefilter sample/bin and per requested or appended bit.  The
+estimate is useful for comparing algorithms; raw counts and wall time remain
+authoritative.
 
 ## Work list
 
@@ -63,7 +64,7 @@ algorithms; raw counts and wall time remain authoritative.
 - [x] Add exact zero-residual encoder reconstruction without inverse WHT.
 - [x] Add exact DC-only encoder reconstruction without the general inverse
   WHT.
-- [ ] Add an exact palette-impossibility prefilter before 2/4/8-color
+- [x] Add an exact palette-impossibility prefilter before 2/4/8-color
   clustering.
 - [ ] Reuse candidate and residual bit-writer storage.
 - [x] Add byte-aligned and shifted bulk paths to `hlv1_bw_append`.
@@ -187,3 +188,26 @@ the operation reduction remained deterministic.
 
 The direct regression covers every destination alignment 0..7 and source
 length 0..129 bits.  Full HLV and reconstructed Y4M hashes remain identical.
+
+### Exact palette-impossibility prefilter
+
+Before k-means, each Y/U/V axis is reduced to the minimum number of intervals
+needed to cover all samples within the normative maximum errors (Y +/-10,
+U/V +/-12).  If any axis needs more than 2/4/8 colors, that palette candidate
+cannot pass the existing post-clustering check and is rejected exactly.
+
+| Metric | Bulk-append baseline | Palette prefilter | Change |
+|---|---:|---:|---:|
+| Palette distance evaluations | 2,952,806,400 | 2,317,479,040 | -21.51% |
+| Prefilter samples/bins | 0 / 0 | 33,177,600 / 66,355,200 | new |
+| Proven-impossible candidates | 0 | 111,728 | new |
+| Primitive operations/frame | 151,092,853 | 133,721,351 | -11.49% |
+
+Two interleaved one-thread A/B pairs averaged 21.281 seconds for the immediate
+baseline and 15.930 seconds with the prefilter, a 25.1% time reduction.  A
+four-thread paired run improved from 6.070 to 4.986 seconds.  The separate
+three-run candidate medians were 18.778 seconds (19.17 fps) and 5.304 seconds
+(67.87 fps) under higher concurrent host load.
+
+The palette-2/palette-8 round-trip tests, threaded regression, HLV SHA-256, and
+reconstructed Y4M SHA-256 all remain unchanged.

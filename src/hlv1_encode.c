@@ -1139,6 +1139,44 @@ static int encode_literal_candidate(const MB *source, unsigned version,
 }
 
 /* --- Screen-content and low-complexity block models -------------------- */
+static int palette_axis_minimum_colors(const uint8_t *samples, size_t count,
+                                       int error_limit,
+                                       HLV1EncoderWork *work) {
+    uint8_t present[256] = {0};
+    for (size_t i = 0; i < count; ++i)
+        present[samples[i]] = 1;
+    if (work) work->palette_prefilter_samples += count;
+
+    int colors = 0;
+    int value = 0;
+    uint64_t scanned = 0;
+    while (value < 256) {
+        while (value < 256 && !present[value]) {
+            ++value;
+            ++scanned;
+        }
+        if (value >= 256) break;
+        ++colors;
+        int covered = value + 2 * error_limit;
+        do {
+            ++value;
+            ++scanned;
+        } while (value < 256 && value <= covered);
+    }
+    if (work) work->palette_prefilter_bins += scanned;
+    return colors;
+}
+
+static int palette_minimum_colors(const MB *src, HLV1EncoderWork *work) {
+    int y = palette_axis_minimum_colors(
+        src->y, sizeof src->y, 10, work);
+    int u = palette_axis_minimum_colors(
+        src->u, sizeof src->u, 12, work);
+    int v = palette_axis_minimum_colors(
+        src->v, sizeof src->v, 12, work);
+    return HLV1_MAX(y, HLV1_MAX(u, v));
+}
+
 static unsigned palette_distance(int y, int u, int v,
                                  const PaletteColor *color,
                                  HLV1EncoderWork *work) {
@@ -2604,10 +2642,18 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             if (version >= HLV1_STREAM_VERSION_12) {
                 int maximum_palette =
                     version >= HLV1_STREAM_VERSION_13 ? 8 : 4;
+                int minimum_palette = palette_minimum_colors(
+                    &src, &e->stats.encoder_work);
                 for (int palette_size = 2;
                      palette_size <= maximum_palette;
                      palette_size *= 2) {
                     Candidate *cp = &c[count++];
+                    if (palette_size < minimum_palette) {
+                        cp->mode = HLV1_MODE_PALETTE;
+                        cp->score = HUGE_VAL;
+                        ++e->stats.encoder_work.palette_prefilter_rejections;
+                        continue;
+                    }
                     if ((r = encode_palette_candidate(&src, version, frame_type,
                                                       use_global, palette_size,
                                                       e->q_y, e->q_uv,
@@ -2863,6 +2909,9 @@ static void add_encoder_work_delta(HLV1EncoderWork *dst,
     ADD_WORK_DELTA(dc_only_fast_blocks);
     ADD_WORK_DELTA(quantized_coefficients);
     ADD_WORK_DELTA(palette_distance_evaluations);
+    ADD_WORK_DELTA(palette_prefilter_samples);
+    ADD_WORK_DELTA(palette_prefilter_bins);
+    ADD_WORK_DELTA(palette_prefilter_rejections);
     ADD_WORK_DELTA(candidate_initializations);
     ADD_WORK_DELTA(residual_candidates);
     ADD_WORK_DELTA(bitwriter_put_calls);
