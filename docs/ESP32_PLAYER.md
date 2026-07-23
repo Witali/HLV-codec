@@ -80,6 +80,14 @@ and rejects decode-sequence gaps, rebuffers and missing samples:
 The current hybrid build completed two consecutive invocations with 900 frame
 records each and zero rebuffers, underrun samples or silence DMA chunks.
 
+The same board, card and v13 file were also measured in two 900-frame runs at
+each SD SPI clock. At 40 MHz, SD reads averaged 4.10 and 4.17 ms with p95 of
+10.27 and 10.73 ms; at 20 MHz they averaged 5.58 and 5.65 ms with p95 of 12.81
+and 12.96 ms. The 20 MHz runs also caused 13 total display skips and 4 audio
+holds, versus 8 skips and 2 holds at 40 MHz. Neither clock lost audio samples,
+but lowering the clock consistently reduced throughput without eliminating
+latency spikes, so the retained default remains 40 MHz.
+
 ## Dual-core playback mode
 
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
