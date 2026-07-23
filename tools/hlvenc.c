@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <threads.h>
 #include <time.h>
 
 #ifdef _WIN32
@@ -50,6 +51,161 @@ typedef struct AudioInput {
     uint64_t phase;
     uint64_t bytes;
 } AudioInput;
+
+typedef struct ParallelGopJob {
+    HLV1Encoder *encoder;
+    HLV1Frame *frames;
+    HLV1Frame *reconstructed;
+    HLV1Packet *packets;
+    int frame_count;
+    int result;
+    HLV1Stats stats;
+} ParallelGopJob;
+
+static void parallel_gop_free(ParallelGopJob *job) {
+    if (!job) return;
+    if (job->frames) {
+        for (int i = 0; i < job->frame_count; ++i)
+            hlv1_frame_free(&job->frames[i]);
+    }
+    if (job->reconstructed) {
+        for (int i = 0; i < job->frame_count; ++i)
+            hlv1_frame_free(&job->reconstructed[i]);
+    }
+    if (job->packets) {
+        for (int i = 0; i < job->frame_count; ++i)
+            hlv1_packet_free(&job->packets[i]);
+    }
+    hlv1_encoder_destroy(job->encoder);
+    free(job->frames);
+    free(job->reconstructed);
+    free(job->packets);
+    memset(job, 0, sizeof *job);
+}
+
+static int parallel_gop_prepare(ParallelGopJob *job,
+                                const HLV1Encoder *template_encoder,
+                                HLV1Y4M *y4m, int maximum_frames,
+                                int keep_reconstruction) {
+    memset(job, 0, sizeof *job);
+    job->frames = (HLV1Frame *)calloc((size_t)maximum_frames,
+                                      sizeof *job->frames);
+    job->packets = (HLV1Packet *)calloc((size_t)maximum_frames,
+                                        sizeof *job->packets);
+    if (keep_reconstruction)
+        job->reconstructed = (HLV1Frame *)calloc(
+            (size_t)maximum_frames, sizeof *job->reconstructed);
+    if (!job->frames || !job->packets ||
+        (keep_reconstruction && !job->reconstructed)) {
+        parallel_gop_free(job);
+        return HLV1_ERR_MEMORY;
+    }
+
+    for (int i = 0; i < maximum_frames; ++i) {
+        int result = hlv1_frame_alloc(&job->frames[i],
+                                      y4m->width, y4m->height);
+        if (result < 0) {
+            parallel_gop_free(job);
+            return result;
+        }
+        result = hlv1_y4m_read_frame(y4m, &job->frames[i]);
+        if (result == HLV1_EOF) {
+            hlv1_frame_free(&job->frames[i]);
+            break;
+        }
+        if (result < 0) {
+            hlv1_frame_free(&job->frames[i]);
+            parallel_gop_free(job);
+            return result;
+        }
+        ++job->frame_count;
+        if (keep_reconstruction) {
+            result = hlv1_frame_alloc(&job->reconstructed[i],
+                                      y4m->width, y4m->height);
+            if (result < 0) {
+                parallel_gop_free(job);
+                return result;
+            }
+        }
+    }
+    if (!job->frame_count) {
+        parallel_gop_free(job);
+        return HLV1_EOF;
+    }
+    job->encoder = hlv1_encoder_clone(template_encoder);
+    if (!job->encoder) {
+        parallel_gop_free(job);
+        return HLV1_ERR_MEMORY;
+    }
+    return HLV1_OK;
+}
+
+static int parallel_gop_worker(void *opaque) {
+    ParallelGopJob *job = (ParallelGopJob *)opaque;
+    job->result = HLV1_OK;
+    for (int i = 0; i < job->frame_count; ++i) {
+        const HLV1Frame *reconstructed = NULL;
+        job->result = hlv1_encoder_encode(job->encoder, &job->frames[i],
+                                          &job->packets[i],
+                                          &reconstructed);
+        if (job->result < 0) break;
+        if (job->reconstructed) {
+            job->result = hlv1_frame_copy_visible(
+                &job->reconstructed[i], reconstructed);
+            if (job->result < 0) break;
+        }
+    }
+    const HLV1Stats *stats = hlv1_encoder_stats(job->encoder);
+    if (stats) job->stats = *stats;
+    hlv1_encoder_destroy(job->encoder);
+    job->encoder = NULL;
+    return 0;
+}
+
+static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
+#define ADD_STAT(name) dst->name += src->name
+    ADD_STAT(frames);
+    ADD_STAT(keyframes);
+    ADD_STAT(macroblocks);
+    ADD_STAT(skipped);
+    ADD_STAT(inter);
+    ADD_STAT(global);
+    ADD_STAT(split_inter);
+    ADD_STAT(fill);
+    ADD_STAT(palette);
+    ADD_STAT(palette_2);
+    ADD_STAT(palette_4);
+    ADD_STAT(palette_8);
+    ADD_STAT(gradient);
+    ADD_STAT(literal);
+    ADD_STAT(intra_dc);
+    ADD_STAT(intra_vertical);
+    ADD_STAT(intra_horizontal);
+    ADD_STAT(intra_plane);
+    ADD_STAT(residual_blocks);
+    ADD_STAT(zero_residual_blocks);
+    ADD_STAT(dc_only_blocks);
+    ADD_STAT(zero_residual_macroblocks);
+    ADD_STAT(payload_bytes);
+    ADD_STAT(copied_samples);
+    ADD_STAT(interpolated_hv_samples);
+    ADD_STAT(interpolated_bilinear_samples);
+    ADD_STAT(intra_samples);
+    ADD_STAT(fill_samples);
+    ADD_STAT(palette_samples);
+    ADD_STAT(gradient_samples);
+    ADD_STAT(literal_samples);
+    ADD_STAT(coefficient_symbols);
+    ADD_STAT(single_coefficient_blocks);
+    ADD_STAT(two_coefficient_blocks);
+    ADD_STAT(run_zero_symbols);
+    ADD_STAT(unit_level_symbols);
+    ADD_STAT(inverse_wht_blocks);
+    ADD_STAT(decoded_bits);
+    ADD_STAT(motion_predictor_blocks);
+    ADD_STAT(estimated_decode_cycles);
+#undef ADD_STAT
+}
 
 /* Attach exactly one video-frame interval of unsigned 8-bit mono PCM.  The
  * rational accumulator alternates sample counts without long-term A/V drift. */
@@ -112,6 +268,7 @@ static void usage(const char *p) {
         "  --decode-cycle-weight X estimated decoder cycles as equivalent bits (default 0)\n"
         "  --ac-deadzone X   AC zero threshold 0.5..2.0 (default 0.5)\n"
         "  --motion-candidates N fully RDO-test 1..8 motion candidates (default by preset)\n"
+        "  --threads N       parallel GOP encoders 1..8 (default 4)\n"
         "  --max-frames N    stop after N frames\n"
         "  --recon FILE.y4m  write encoder reconstruction\n"
         "  --audio-u8 FILE   mux unsigned 8-bit mono raw PCM\n"
@@ -123,7 +280,12 @@ static void usage(const char *p) {
         "  %s input.y4m - | %s - output.y4m\n", p, p, p, "hlvdec");
 }
 
-static double now_sec(void) { return (double)clock() / CLOCKS_PER_SEC; }
+static double now_sec(void) {
+    struct timespec value;
+    if (timespec_get(&value, TIME_UTC) != TIME_UTC)
+        return (double)clock() / CLOCKS_PER_SEC;
+    return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
+}
 
 static double clamp_double(double value, double low, double high) {
     return value < low ? low : value > high ? high : value;
@@ -578,7 +740,8 @@ int main(int argc, char **argv) {
     int adaptive_quality = 0, adaptive_gop = 0;
     int cq_trials = 5, two_pass_trials = 5, min_key_interval = 8;
     double target_psnr = 0.0, psnr_min = 30.0, psnr_max = 35.0;
-    int gop = 30, search = 4, max_frames = 0, syntax = HLV1_VERSION, motion_candidates = 1;
+    int gop = 30, search = 4, max_frames = 0, syntax = HLV1_VERSION;
+    int motion_candidates = 1, threads = 4;
     int gop_set = 0, search_set = 0, motion_candidates_set = 0;
     double scene_cut = 38.0, keyframe_bias = 1.00;
     double chroma_scale = 1.35, rd_lambda_scale = 1.0;
@@ -618,6 +781,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--decode-cycle-weight") && i + 1 < argc) decode_cycle_weight = atof(argv[++i]);
         else if (!strcmp(argv[i], "--ac-deadzone") && i + 1 < argc) ac_deadzone = atof(argv[++i]);
         else if (!strcmp(argv[i], "--motion-candidates") && i + 1 < argc) { motion_candidates = atoi(argv[++i]); motion_candidates_set = 1; }
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max-frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--recon") && i + 1 < argc) recon_path = argv[++i];
         else if (!strcmp(argv[i], "--audio-u8") && i + 1 < argc) audio_path = argv[++i];
@@ -647,6 +811,7 @@ int main(int argc, char **argv) {
         decode_cycle_weight < 0.0 || decode_cycle_weight > 4.0 ||
         ac_deadzone < 0.5 || ac_deadzone > 2.0 ||
         motion_candidates < 1 || motion_candidates > 8 ||
+        threads < 1 || threads > 8 ||
         target_psnr < 0.0 || target_psnr > 70.0 ||
         psnr_min < 20.0 || psnr_min > 60.0 ||
         psnr_max < 20.0 || psnr_max > 60.0 || psnr_min > psnr_max ||
@@ -796,8 +961,114 @@ int main(int argc, char **argv) {
     int have_smoothed_target = 0;
     double sum_target_psnr = 0.0, sum_actual_psnr = 0.0;
     double sum_motion = 0.0, sum_detail = 0.0;
+    HLV1Stats parallel_stats = {0};
+    int parallel_gop_mode = threads > 1 && !bitrate_kbps && !cq_mode &&
+                            two_pass_window_seconds <= 0.0;
+    if (threads > 1 && !parallel_gop_mode)
+        fprintf(stderr,
+                "Sequential rate/quality feedback requires one encoder thread; "
+                "using --threads 1 for this mode\n");
     double start = now_sec();
-    if (two_pass_window_seconds > 0.0) {
+    if (parallel_gop_mode) {
+        int input_eof = 0;
+        while ((!max_frames || (int)encoded_frames < max_frames) &&
+               !input_eof) {
+            ParallelGopJob jobs[8] = {0};
+            thrd_t workers[8];
+            int worker_active[8] = {0};
+            int job_count = 0;
+            int scheduled_frames = 0;
+
+            while (job_count < threads && !input_eof &&
+                   (!max_frames ||
+                    (int)encoded_frames + scheduled_frames < max_frames)) {
+                int job_frames = gop;
+                if (max_frames) {
+                    int remaining = max_frames - (int)encoded_frames -
+                                    scheduled_frames;
+                    if (job_frames > remaining) job_frames = remaining;
+                }
+                r = parallel_gop_prepare(&jobs[job_count], enc, &y4m,
+                                         job_frames, recon != NULL);
+                if (r == HLV1_EOF) {
+                    input_eof = 1;
+                    break;
+                }
+                if (r < 0) {
+                    fprintf(stderr, "Parallel GOP input: %s\n",
+                            hlv1_strerror(r));
+                    for (int i = 0; i <= job_count; ++i)
+                        parallel_gop_free(&jobs[i]);
+                    return 1;
+                }
+                scheduled_frames += jobs[job_count].frame_count;
+                if (jobs[job_count].frame_count < job_frames)
+                    input_eof = 1;
+                ++job_count;
+            }
+
+            for (int i = 0; i < job_count; ++i) {
+                if (thrd_create(&workers[i], parallel_gop_worker,
+                                &jobs[i]) == thrd_success) {
+                    worker_active[i] = 1;
+                } else {
+                    /* Resource pressure should reduce parallelism, not abort
+                       a valid encode.  The main thread performs this GOP. */
+                    parallel_gop_worker(&jobs[i]);
+                }
+            }
+            for (int i = 0; i < job_count; ++i) {
+                if (worker_active[i]) {
+                    int worker_result = 0;
+                    thrd_join(workers[i], &worker_result);
+                }
+            }
+
+            for (int i = 0; i < job_count; ++i) {
+                if (jobs[i].result < 0) {
+                    fprintf(stderr, "Parallel GOP encode: %s\n",
+                            hlv1_strerror(jobs[i].result));
+                    for (int j = 0; j < job_count; ++j)
+                        parallel_gop_free(&jobs[j]);
+                    return 1;
+                }
+                add_stats(&parallel_stats, &jobs[i].stats);
+                for (int j = 0; j < jobs[i].frame_count; ++j) {
+                    r = append_audio_interval(&audio, y4m.fps_num,
+                                              y4m.fps_den,
+                                              &jobs[i].packets[j]);
+                    if (r < 0) {
+                        fprintf(stderr, "Audio: %s\n", hlv1_strerror(r));
+                        for (int k = 0; k < job_count; ++k)
+                            parallel_gop_free(&jobs[k]);
+                        return 1;
+                    }
+                    r = hlv1_packet_write(out, &jobs[i].packets[j]);
+                    if (r < 0) {
+                        fprintf(stderr, "Write: %s\n", hlv1_strerror(r));
+                        for (int k = 0; k < job_count; ++k)
+                            parallel_gop_free(&jobs[k]);
+                        return 1;
+                    }
+                    if (recon &&
+                        (r = hlv1_y4m_write_frame(
+                             &ry4m, &jobs[i].reconstructed[j])) < 0) {
+                        fprintf(stderr, "Recon write: %s\n",
+                                hlv1_strerror(r));
+                        for (int k = 0; k < job_count; ++k)
+                            parallel_gop_free(&jobs[k]);
+                        return 1;
+                    }
+                    ++encoded_frames;
+                    if ((encoded_frames % 100) == 0)
+                        fprintf(stderr, "\rEncoded %u frames",
+                                encoded_frames);
+                }
+            }
+            for (int i = 0; i < job_count; ++i)
+                parallel_gop_free(&jobs[i]);
+        }
+    } else if (two_pass_window_seconds > 0.0) {
         int frames_per_window = (int)llround(two_pass_window_seconds *
                                                  y4m.fps_num / y4m.fps_den);
         if (frames_per_window < 1) frames_per_window = 1;
@@ -1154,10 +1425,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    const HLV1Stats *s = hlv1_encoder_stats(enc);
-    fprintf(stderr, "\rEncoded %u frames in %.3f s (%.2f fps), payload %.3f MiB, preset %s\n",
+    const HLV1Stats *s = parallel_gop_mode
+        ? &parallel_stats : hlv1_encoder_stats(enc);
+    fprintf(stderr, "\rEncoded %u frames in %.3f s (%.2f fps), "
+            "payload %.3f MiB, preset %s, threads %d\n",
             encoded_frames, elapsed, elapsed > 0 ? encoded_frames / elapsed : 0,
-            s ? s->payload_bytes / 1048576.0 : 0.0, preset);
+            s ? s->payload_bytes / 1048576.0 : 0.0, preset,
+            parallel_gop_mode ? threads : 1);
     if (audio.file)
         fprintf(stderr, "Audio: PCM_U8 mono %u Hz, %.3f MiB\n",
                 audio.sample_rate, audio.bytes / 1048576.0);

@@ -1,8 +1,10 @@
 CC ?= cc
 AR ?= ar
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic
+THREADFLAGS ?= -pthread
+CFLAGS += $(THREADFLAGS)
 CPPFLAGS += -Iinclude
-LDLIBS += -lm
+LDLIBS += -lm $(THREADFLAGS)
 
 LIBSRC = src/hlv1_common.c src/hlv1_y4m.c src/hlv1_encode.c src/hlv1_decode.c
 LIBOBJ = $(LIBSRC:.c=.o)
@@ -41,6 +43,9 @@ test: test_roundtrip test_errors
 test-windowed-rate: all
 	python3 scripts/test_windowed_two_pass.py --project .
 
+test-threaded: all
+	python3 scripts/test_threaded_encode.py --encoder ./hlvenc
+
 sanitize:
 	$(CC) -O1 -g -std=c11 -Wall -Wextra -Wpedantic -fsanitize=address,undefined \
 		-Iinclude -o test_roundtrip_san tests/test_roundtrip.c $(LIBSRC) $(LDLIBS)
@@ -52,4 +57,4 @@ sanitize:
 clean:
 	rm -f $(LIBOBJ) tools/*.o tests/*.o libhlv1.a $(TOOLS) test_roundtrip test_errors test_roundtrip_san test_errors_san
 
-.PHONY: all test test-windowed-rate sanitize clean
+.PHONY: all test test-windowed-rate test-threaded sanitize clean

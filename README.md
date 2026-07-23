@@ -123,7 +123,15 @@ Presets:
 - `balanced`: motion radius 4 pixels, GOP 30;
 - `slow`: motion radius 8 pixels, GOP 45.
 
-Use older `--syntax N` values only for legacy comparisons. The default is `--syntax 12`.
+Ordinary fixed-quality encoding runs four independent GOP workers by default.
+Use `--threads 1..8` to change the worker count. Packets, reconstructed frames
+and audio are joined in presentation order, so `--threads 1` and
+`--threads 4` produce byte-identical output. Adaptive-quality and bitrate
+controllers retain one worker because their per-frame feedback is sequential.
+Run `make test-threaded` to check the one/four/default equivalence.
+
+Use older `--syntax N` values only for legacy comparisons. The default is
+`--syntax 13`.
 
 ## Constant and adaptive quality
 
