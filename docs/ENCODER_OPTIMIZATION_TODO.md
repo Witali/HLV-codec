@@ -96,6 +96,30 @@ Results are added here one focused change at a time.  Retained changes include
 the output hashes, raw operation counts, median time, and relative throughput.
 Rejected changes remain documented with the reason for rejection.
 
+### Current cumulative result
+
+After commits `84f38d1` through `b89ca41`:
+
+| Metric | Instrumented baseline | Current | Change |
+|---|---:|---:|---:|
+| Primitive operations/frame | 158,017,199 | 131,787,188 | -16.60% |
+| SAD evaluations | 35,476,479 | 34,720,427 | -2.13% |
+| General inverse WHT blocks | 29,962,488 | 21,361,972 | -28.70% |
+| Bits sent through scalar `put` | 2,470,174,597 | 1,386,949,485 | -43.85% |
+| Palette distance evaluations | 2,952,806,400 | 2,247,849,178 | -23.88% |
+
+Final three-run medians under the current host load are:
+
+| Pipeline | Threads | Median | Throughput |
+|---|---:|---:|---:|
+| SSE2 | 1 | 18.563 s | 19.39 fps |
+| SSE2 | 4 | 5.091 s | 70.71 fps |
+
+Host timing varied substantially when the Windows player and other work were
+active.  Consequently the deterministic operation counts and the interleaved
+per-change A/B results below are the primary optimization evidence.  The final
+HLV and reconstructed Y4M SHA-256 values are still the baseline hashes.
+
 ### Instrumented baseline
 
 Commit `dd7d2fb`, 360 frames, three measured runs after one warm-up:
