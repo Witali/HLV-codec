@@ -37,8 +37,10 @@ typedef struct PaletteColor {
  * a second reconstruction after the winning mode has been selected. */
 typedef struct Candidate {
     double score;
+    uint64_t estimated_decode_cycles;
     int mode;
     int intra_mode;
+    int palette_size;
     int partition;
     int mvx;
     int mvy;
@@ -62,6 +64,7 @@ struct HLV1Encoder {
     unsigned q_shift;
     double chroma_scale;
     double lambda_scale;
+    double decode_cycle_weight;
     double ac_deadzone;
     int luma_weight;
     int motion_candidates;
@@ -69,6 +72,7 @@ struct HLV1Encoder {
     double adaptive_keyframe_bias;
     uint32_t frames_since_key;
     uint32_t frame_index;
+    uint64_t estimated_decode_cycles;
     HLV1Frame previous;
     HLV1Frame current;
     int have_previous;
@@ -358,6 +362,75 @@ static uint64_t weighted_sse_sb8(const SB8 *a, const SB8 *b, int luma_weight) {
     for (unsigned i = 0; i < sizeof a->u; ++i) { int d = (int)a->u[i] - b->u[i]; u += (uint64_t)(d * d); }
     for (unsigned i = 0; i < sizeof a->v; ++i) { int d = (int)a->v[i] - b->v[i]; v += (uint64_t)(d * d); }
     return (uint64_t)luma_weight * y + u + v;
+}
+
+/*
+ * Conservative architecture-independent decoder estimate used by RDO.
+ *
+ * Payload traversal is charged separately from predictor/reconstruction work.
+ * Transform candidates also pay a residual syntax surcharge proportional to
+ * their coded bits; this approximates coefficient VLC parsing and inverse WHT
+ * without running a decoder for every encoder trial.
+ */
+static uint64_t estimate_candidate_decode_cycles(const Candidate *candidate) {
+    uint64_t bits = candidate->bits.bit_count;
+    uint64_t input_cycles = ((bits + 7U) / 8U) * 8U;
+    uint64_t predictor_cycles = 0;
+    uint64_t residual_cycles = 0;
+
+    switch (candidate->mode) {
+    case HLV1_MODE_SKIP:
+        predictor_cycles = 384U * 2U;
+        break;
+    case HLV1_MODE_INTER:
+    case HLV1_MODE_GLOBAL: {
+        int fx = candidate->mvx & 1;
+        int fy = candidate->mvy & 1;
+        predictor_cycles = 384U * (!fx && !fy ? 2U : fx && fy ? 14U : 8U);
+        residual_cycles = bits * 5U;
+        break;
+    }
+    case HLV1_MODE_SPLIT_INTER:
+        predictor_cycles = 384U * 14U;
+        residual_cycles = bits * 5U;
+        break;
+    case HLV1_MODE_FILL:
+        predictor_cycles = 384U * 2U;
+        residual_cycles = bits > 32U ? (bits - 32U) * 5U : 0U;
+        break;
+    case HLV1_MODE_INTRA_DC:
+        predictor_cycles = 384U * 4U;
+        residual_cycles = bits > 8U ? (bits - 8U) * 5U : 0U;
+        break;
+    case HLV1_MODE_GRADIENT:
+        predictor_cycles = 384U * 4U;
+        residual_cycles = bits > 80U ? (bits - 80U) * 5U : 0U;
+        break;
+    case HLV1_MODE_PALETTE:
+        predictor_cycles = 384U * 3U;
+        break;
+    case HLV1_MODE_LITERAL:
+        /* The v13 literal payload is already byte-aligned and packed in the
+           ESP32 frame layout, so it is copied instead of parsed bit by bit. */
+        input_cycles = 272U * 2U;
+        break;
+    default:
+        residual_cycles = bits * 5U;
+        break;
+    }
+    return 100U + input_cycles + predictor_cycles + residual_cycles;
+}
+
+static double score_candidate(const HLV1Encoder *encoder, const MB *source,
+                              Candidate *candidate, double lambda_bits) {
+    candidate->estimated_decode_cycles =
+        estimate_candidate_decode_cycles(candidate);
+    return (double)weighted_sse(source, &candidate->rec,
+                                encoder->luma_weight) +
+           lambda_bits *
+               ((double)candidate->bits.bit_count +
+                encoder->decode_cycle_weight *
+                    (double)candidate->estimated_decode_cycles);
 }
 
 /* --- Quantization and residual syntax --------------------------------- */
@@ -801,6 +874,56 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
                         int qy, int quv, double ac_deadzone,
                         int *had_residual);
 
+/* v13 literal rows use the same little-endian Y6/U5/V5 packing as the ESP32
+ * compact reference frame.  Reconstruct the quantized samples here so future
+ * P-frames see exactly the values produced by every decoder. */
+static int put_literal_row(HLV1BitWriter *bw, const uint8_t *source,
+                           uint8_t *reconstructed, int samples,
+                           unsigned sample_bits) {
+    uint8_t packed[12] = {0};
+    unsigned output_shift = 8U - sample_bits;
+    unsigned maximum = (1U << sample_bits) - 1U;
+    unsigned bit = 0;
+    for (int i = 0; i < samples; ++i) {
+        unsigned code =
+            ((unsigned)source[i] + (1U << (output_shift - 1U))) >>
+            output_shift;
+        if (code > maximum) code = maximum;
+        reconstructed[i] = (uint8_t)(code << output_shift);
+        for (unsigned b = 0; b < sample_bits; ++b, ++bit)
+            packed[bit >> 3] |=
+                (uint8_t)(((code >> b) & 1U) << (bit & 7U));
+    }
+    size_t bytes = ((size_t)samples * sample_bits + 7U) / 8U;
+    for (size_t i = 0; i < bytes; ++i) {
+        int r = hlv1_bw_put(bw, packed[i], 8);
+        if (r < 0) return r;
+    }
+    return HLV1_OK;
+}
+
+static int encode_literal_candidate(const MB *source, unsigned version,
+                                    int frame_type, int use_global,
+                                    Candidate *out) {
+    out->mode = HLV1_MODE_LITERAL;
+    int r = put_mode(&out->bits, version, frame_type,
+                     HLV1_MODE_LITERAL, use_global);
+    /* All v13 macroblocks begin on a byte boundary.  The fixed four-bit mode
+       therefore needs exactly four zero bits before the byte-copy payload. */
+    if (r >= 0) r = hlv1_bw_put(&out->bits, 0, 4);
+    for (int y = 0; r >= 0 && y < 16; ++y)
+        r = put_literal_row(&out->bits, source->y + y * 16,
+                            out->rec.y + y * 16, 16, 6);
+    for (int y = 0; r >= 0 && y < 8; ++y)
+        r = put_literal_row(&out->bits, source->u + y * 8,
+                            out->rec.u + y * 8, 8, 5);
+    for (int y = 0; r >= 0 && y < 8; ++y)
+        r = put_literal_row(&out->bits, source->v + y * 8,
+                            out->rec.v + y * 8, 8, 5);
+    if (r >= 0) r = hlv1_bw_finish(&out->bits);
+    return r;
+}
+
 /* --- Screen-content and low-complexity block models -------------------- */
 static unsigned palette_distance(int y, int u, int v,
                                  const PaletteColor *color) {
@@ -825,7 +948,7 @@ static int palette_nearest(int y, int u, int v,
 }
 
 static void palette_build(const MB *src, int count,
-                          PaletteColor colors[4],
+                          PaletteColor colors[8],
                           uint8_t y_index[256], uint8_t c_index[64],
                           MB *rec) {
     int min_i = 0, max_i = 0;
@@ -865,7 +988,7 @@ static void palette_build(const MB *src, int count,
     }
 
     for (int iteration = 0; iteration < 6; ++iteration) {
-        uint32_t sy[4] = {0}, su[4] = {0}, sv[4] = {0}, n[4] = {0};
+        uint32_t sy[8] = {0}, su[8] = {0}, sv[8] = {0}, n[8] = {0};
         for (int i = 0; i < 256; ++i) {
             int x = i & 15, y = i >> 4;
             int u = src->u[(y >> 1) * 8 + (x >> 1)];
@@ -912,7 +1035,7 @@ static int encode_palette_candidate(const MB *src, unsigned version,
                                     int count, int qy, int quv,
                                     double lambda_bits,
                                     int luma_weight, Candidate *out) {
-    PaletteColor colors[4] = {{0}};
+    PaletteColor colors[8] = {{0}};
     uint8_t y_index[256], c_index[64];
     palette_build(src, count, colors, y_index, c_index, &out->rec);
     int max_y_error = 0, max_uv_error = 0;
@@ -939,15 +1062,24 @@ static int encode_palette_candidate(const MB *src, unsigned version,
         return HLV1_OK;
     }
     out->mode = HLV1_MODE_PALETTE;
+    out->palette_size = count;
     int r = put_mode(&out->bits, version, frame_type,
                      HLV1_MODE_PALETTE, use_global);
-    if (r >= 0) r = hlv1_bw_put(&out->bits, count == 4, 1);
+    if (r >= 0) {
+        if (version >= HLV1_STREAM_VERSION_13) {
+            uint32_t count_code =
+                count == 2 ? 0U : count == 4 ? 1U : 2U;
+            r = hlv1_bw_put(&out->bits, count_code, 2);
+        } else {
+            r = hlv1_bw_put(&out->bits, count == 4, 1);
+        }
+    }
     for (int i = 0; r >= 0 && i < count; ++i) {
         r = hlv1_bw_put(&out->bits, colors[i].y, 8);
         if (r >= 0) r = hlv1_bw_put(&out->bits, colors[i].u, 8);
         if (r >= 0) r = hlv1_bw_put(&out->bits, colors[i].v, 8);
     }
-    unsigned index_bits = count == 4 ? 2U : 1U;
+    unsigned index_bits = count == 2 ? 1U : count == 4 ? 2U : 3U;
     for (int i = 0; r >= 0 && i < 256; ++i)
         r = hlv1_bw_put(&out->bits, y_index[i], index_bits);
     for (int i = 0; r >= 0 && i < 64; ++i)
@@ -1084,10 +1216,7 @@ static int encode_gradient_candidate(HLV1Encoder *e, const MB *src,
     gradient_fit_mb(src, &pred, base, dx, dy);
     out->mode = HLV1_MODE_GRADIENT;
     int r = put_mode(&out->bits, version, frame_type,
-                     HLV1_MODE_FILL, use_global);
-    /* v13 reserves the otherwise valid but extremely uncommon YUV 0,0,0
-       fill triplet as a no-overhead escape to the direct gradient model. */
-    if (r >= 0) r = hlv1_bw_put(&out->bits, 0, 24);
+                     HLV1_MODE_GRADIENT, use_global);
     for (int i = 0; r >= 0 && i < 3; ++i) {
         r = hlv1_bw_put(&out->bits, base[i], 8);
         if (r >= 0) r = hlv1_bw_put(&out->bits, (uint8_t)dx[i], 8);
@@ -1105,6 +1234,11 @@ static int encode_gradient_candidate(HLV1Encoder *e, const MB *src,
 
 static int put_mode(HLV1BitWriter *bw, unsigned version, int frame_type,
                     int mode, int use_global) {
+    if (version >= HLV1_STREAM_VERSION_13) {
+        if (mode < HLV1_MODE_SKIP || mode > HLV1_MODE_LITERAL)
+            return HLV1_ERR_ARGUMENT;
+        return hlv1_bw_put(bw, (uint32_t)mode, 4);
+    }
     if (version < HLV1_STREAM_VERSION_2)
         return hlv1_bw_put(bw, (uint32_t)mode, 2);
     if (frame_type == HLV1_FRAME_KEY) {
@@ -1169,6 +1303,11 @@ static int put_mode(HLV1BitWriter *bw, unsigned version, int frame_type,
     case HLV1_MODE_FILL:        return hlv1_bw_put(bw, 15, 4);     /* 1111 */
     default:                    return HLV1_ERR_ARGUMENT;
     }
+}
+
+static int align_writer_zero(HLV1BitWriter *bw) {
+    unsigned padding = (unsigned)((8U - (bw->bit_count & 7U)) & 7U);
+    return padding ? hlv1_bw_put(bw, 0, padding) : HLV1_OK;
 }
 
 static int put_motion_vector(HLV1BitWriter *bw, unsigned version,
@@ -1599,6 +1738,7 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
     e->scene_cut = scene_cut;
     e->chroma_scale = 1.35;
     e->lambda_scale = 1.0;
+    e->decode_cycle_weight = 0.0;
     e->ac_deadzone = 0.5;
     e->luma_weight = 4;
     e->motion_candidates = 1;
@@ -1634,6 +1774,7 @@ HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
     dst->q_shift = src->q_shift;
     dst->chroma_scale = src->chroma_scale;
     dst->lambda_scale = src->lambda_scale;
+    dst->decode_cycle_weight = src->decode_cycle_weight;
     dst->ac_deadzone = src->ac_deadzone;
     dst->luma_weight = src->luma_weight;
     dst->motion_candidates = src->motion_candidates;
@@ -1641,6 +1782,7 @@ HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
     dst->adaptive_keyframe_bias = src->adaptive_keyframe_bias;
     dst->frames_since_key = src->frames_since_key;
     dst->frame_index = src->frame_index;
+    dst->estimated_decode_cycles = src->estimated_decode_cycles;
     dst->have_previous = src->have_previous;
     dst->stats = src->stats;
     dst->mv_cols = src->mv_cols;
@@ -1726,6 +1868,15 @@ int hlv1_encoder_set_rd_parameters(HLV1Encoder *e,
     return HLV1_OK;
 }
 
+int hlv1_encoder_set_decode_cycle_weight(HLV1Encoder *e,
+                                         double bits_per_cycle) {
+    if (!e || !isfinite(bits_per_cycle) ||
+        bits_per_cycle < 0.0 || bits_per_cycle > 4.0)
+        return HLV1_ERR_ARGUMENT;
+    e->decode_cycle_weight = bits_per_cycle;
+    return HLV1_OK;
+}
+
 int hlv1_encoder_set_ac_deadzone(HLV1Encoder *e, double deadzone) {
     if (!e || !isfinite(deadzone) || deadzone < 0.5 || deadzone > 2.0)
         return HLV1_ERR_ARGUMENT;
@@ -1761,7 +1912,8 @@ void hlv1_encoder_destroy(HLV1Encoder *e) {
 
 /* --- Macroblock RDO -----------------------------------------------------
  * Each legal predictor is encoded into a private bit writer and reconstructed.
- * The lowest distortion + lambda*rate candidate is appended to the frame. */
+ * The lowest distortion + lambda*(rate + decode work) candidate is appended
+ * to the frame. */
 static int encode_inter_mb_candidate(HLV1Encoder *e,
                                      const MB *src, int x, int y,
                                      unsigned version, double lambda_bits,
@@ -1791,8 +1943,7 @@ static int encode_inter_mb_candidate(HLV1Encoder *e,
                          e->q_y, e->q_uv, e->ac_deadzone, NULL);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = (double)weighted_sse(src, &out->rec, e->luma_weight) +
-                 lambda_bits * out->bits.bit_count;
+    out->score = score_candidate(e, src, out, lambda_bits);
     return HLV1_OK;
 }
 
@@ -1967,9 +2118,7 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
             candidate_free(&trial);
             return r;
         }
-        trial.score = (double)weighted_sse(src_mb, &trial.rec,
-                                           e->luma_weight) +
-                      lambda_bits * trial.bits.bit_count;
+        trial.score = score_candidate(e, src_mb, &trial, lambda_bits);
         if (trial.score < out->score) {
             candidate_free(out);
             *out = trial;
@@ -2044,6 +2193,11 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             }
         }
         for (int x = 0; x < e->current.padded_width; x += 16) {
+            if (version >= HLV1_STREAM_VERSION_13 &&
+                (r = align_writer_zero(&frame_bits)) < 0) {
+                hlv1_bw_free(&frame_bits);
+                return r;
+            }
             int predictor_mvx = fallback_mvx, predictor_mvy = fallback_mvy;
             int mv_column = x / 16;
             if (!key && version >= HLV1_STREAM_VERSION_11)
@@ -2082,9 +2236,6 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             }
 
             uint8_t means[3]; fill_predict(&src, &pred, means);
-            if (version >= HLV1_STREAM_VERSION_13 &&
-                means[0] == 0 && means[1] == 0 && means[2] == 0)
-                means[2] = 1;
             Candidate *cf = &c[count++]; cf->mode = HLV1_MODE_FILL;
             if ((r = put_mode(&cf->bits, version, frame_type,
                               HLV1_MODE_FILL, use_global)) < 0) goto fail_mb;
@@ -2094,7 +2245,11 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             cf->score = (double)weighted_sse(&src, &cf->rec, e->luma_weight) + lambda_bits * cf->bits.bit_count;
 
             if (version >= HLV1_STREAM_VERSION_12) {
-                for (int palette_size = 2; palette_size <= 4; palette_size += 2) {
+                int maximum_palette =
+                    version >= HLV1_STREAM_VERSION_13 ? 8 : 4;
+                for (int palette_size = 2;
+                     palette_size <= maximum_palette;
+                     palette_size *= 2) {
                     Candidate *cp = &c[count++];
                     if ((r = encode_palette_candidate(&src, version, frame_type,
                                                       use_global, palette_size,
@@ -2108,6 +2263,10 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                 Candidate *cg = &c[count++];
                 if ((r = encode_gradient_candidate(e, &src, version, frame_type,
                                                    use_global, lambda_bits, cg)) < 0)
+                    goto fail_mb;
+                Candidate *cl = &c[count++];
+                if ((r = encode_literal_candidate(&src, version, frame_type,
+                                                  use_global, cl)) < 0)
                     goto fail_mb;
             }
 
@@ -2124,6 +2283,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                  global_mvx, global_mvy, denominator)) {
                     Candidate *cg = &c[count++];
                     cg->mode = HLV1_MODE_GLOBAL;
+                    cg->mvx = global_mvx;
+                    cg->mvy = global_mvy;
                     motion_predict(&e->previous, x, y, global_mvx, global_mvy,
                                    denominator, &pred);
                     if ((r = put_mode(&cg->bits, version, frame_type,
@@ -2189,9 +2350,16 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             }
 
             Candidate *best = &c[0];
-            for (int i = 1; i < count; ++i) if (c[i].score < best->score) best = &c[i];
+            for (int i = 0; i < count; ++i) {
+                if (c[i].bits.bit_count)
+                    c[i].score = score_candidate(e, &src, &c[i],
+                                                 lambda_bits);
+                if (c[i].score < best->score) best = &c[i];
+            }
             if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0) goto fail_mb;
             store_mb(&e->current, x, y, &best->rec);
+            e->estimated_decode_cycles += best->estimated_decode_cycles;
+            e->stats.estimated_decode_cycles += best->estimated_decode_cycles;
             if (!key && version >= HLV1_STREAM_VERSION_11) {
                 int selected_mvx = fallback_mvx;
                 int selected_mvy = fallback_mvy;
@@ -2213,8 +2381,14 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             else if (best->mode == HLV1_MODE_GLOBAL) e->stats.global++;
             else if (best->mode == HLV1_MODE_SPLIT_INTER) e->stats.split_inter++;
             else if (best->mode == HLV1_MODE_FILL) e->stats.fill++;
-            else if (best->mode == HLV1_MODE_PALETTE) e->stats.palette++;
+            else if (best->mode == HLV1_MODE_PALETTE) {
+                e->stats.palette++;
+                if (best->palette_size == 2) e->stats.palette_2++;
+                else if (best->palette_size == 4) e->stats.palette_4++;
+                else if (best->palette_size == 8) e->stats.palette_8++;
+            }
             else if (best->mode == HLV1_MODE_GRADIENT) e->stats.gradient++;
+            else if (best->mode == HLV1_MODE_LITERAL) e->stats.literal++;
             else if (best->intra_mode == HLV1_INTRA_VERTICAL)
                 e->stats.intra_vertical++;
             else if (best->intra_mode == HLV1_INTRA_HORIZONTAL)
@@ -2336,12 +2510,20 @@ int hlv1_encoder_encode(HLV1Encoder *e, const HLV1Frame *input,
 
     double lambda_bits = e->lambda_scale *
                          HLV1_MAX(0.5, 0.12 * e->q_y * e->q_y);
+    uint64_t p_decode_cycles =
+        p_encoder->estimated_decode_cycles - e->estimated_decode_cycles;
+    uint64_t k_decode_cycles =
+        k_encoder->estimated_decode_cycles - e->estimated_decode_cycles;
     double p_score = (double)frame_weighted_sse(input, p_rec,
                                                 e->luma_weight) +
-                     lambda_bits * p_packet.bit_length;
+                     lambda_bits *
+                         ((double)p_packet.bit_length +
+                          e->decode_cycle_weight * (double)p_decode_cycles);
     double k_score = (double)frame_weighted_sse(input, k_rec,
                                                 e->luma_weight) +
-                     lambda_bits * k_packet.bit_length;
+                     lambda_bits *
+                         ((double)k_packet.bit_length +
+                          e->decode_cycle_weight * (double)k_decode_cycles);
     int choose_key = k_score <= p_score * e->adaptive_keyframe_bias;
 
     HLV1Encoder *chosen = choose_key ? k_encoder : p_encoder;

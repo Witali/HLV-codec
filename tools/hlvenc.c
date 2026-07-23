@@ -99,7 +99,7 @@ static void usage(const char *p) {
         "  --two-pass-window X local first-pass window in seconds (e.g. 10)\n"
         "  --two-pass-trials N whole-window q probes 2..10 (default 5)\n"
         "  --two-pass-log FILE write per-window analysis as CSV\n"
-        "  --syntax N        stream syntax 1..12 (default latest)\n"
+        "  --syntax N        stream syntax 1..13 (default latest)\n"
         "  --gop N           maximum keyframe interval (default by preset)\n"
         "  --adaptive-gop    compare K/P frames with encoder-only RDO\n"
         "  --min-key-interval N minimum frames between adaptive K frames (default 8)\n"
@@ -109,6 +109,7 @@ static void usage(const char *p) {
         "  --chroma-scale X  chroma/luma qstep ratio (default 1.35)\n"
         "  --rd-luma-weight N distortion weight 1..16 (default 4)\n"
         "  --rd-lambda-scale X RDO lambda multiplier (default 1.0)\n"
+        "  --decode-cycle-weight X estimated decoder cycles as equivalent bits (default 0)\n"
         "  --ac-deadzone X   AC zero threshold 0.5..2.0 (default 0.5)\n"
         "  --motion-candidates N fully RDO-test 1..8 motion candidates (default by preset)\n"
         "  --max-frames N    stop after N frames\n"
@@ -580,7 +581,8 @@ int main(int argc, char **argv) {
     int gop = 30, search = 4, max_frames = 0, syntax = HLV1_VERSION, motion_candidates = 1;
     int gop_set = 0, search_set = 0, motion_candidates_set = 0;
     double scene_cut = 38.0, keyframe_bias = 1.00;
-    double chroma_scale = 1.35, rd_lambda_scale = 1.0, ac_deadzone = 0.5;
+    double chroma_scale = 1.35, rd_lambda_scale = 1.0;
+    double decode_cycle_weight = 0.0, ac_deadzone = 0.5;
     int rd_luma_weight = 4;
     const char *preset = "balanced";
     const char *recon_path = NULL;
@@ -613,6 +615,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--chroma-scale") && i + 1 < argc) chroma_scale = atof(argv[++i]);
         else if (!strcmp(argv[i], "--rd-luma-weight") && i + 1 < argc) rd_luma_weight = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rd-lambda-scale") && i + 1 < argc) rd_lambda_scale = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--decode-cycle-weight") && i + 1 < argc) decode_cycle_weight = atof(argv[++i]);
         else if (!strcmp(argv[i], "--ac-deadzone") && i + 1 < argc) ac_deadzone = atof(argv[++i]);
         else if (!strcmp(argv[i], "--motion-candidates") && i + 1 < argc) { motion_candidates = atoi(argv[++i]); motion_candidates_set = 1; }
         else if (!strcmp(argv[i], "--max-frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
@@ -641,6 +644,7 @@ int main(int argc, char **argv) {
         chroma_scale < 0.25 || chroma_scale > 4.0 ||
         rd_luma_weight < 1 || rd_luma_weight > 16 ||
         rd_lambda_scale <= 0.0 || rd_lambda_scale > 16.0 ||
+        decode_cycle_weight < 0.0 || decode_cycle_weight > 4.0 ||
         ac_deadzone < 0.5 || ac_deadzone > 2.0 ||
         motion_candidates < 1 || motion_candidates > 8 ||
         target_psnr < 0.0 || target_psnr > 70.0 ||
@@ -753,6 +757,8 @@ int main(int argc, char **argv) {
                 ((qstep_y || bitrate_kbps || cq_mode) &&
                  hlv1_encoder_set_quantization(enc, rate_q_y, rate_q_uv) < 0) ||
                 hlv1_encoder_set_rd_parameters(enc, rd_lambda_scale, rd_luma_weight) < 0 ||
+                hlv1_encoder_set_decode_cycle_weight(enc,
+                                                     decode_cycle_weight) < 0 ||
                 hlv1_encoder_set_ac_deadzone(enc, ac_deadzone) < 0 ||
                 hlv1_encoder_set_motion_candidates(enc, motion_candidates) < 0 ||
                 (adaptive_gop &&
@@ -1155,8 +1161,9 @@ int main(int argc, char **argv) {
     if (audio.file)
         fprintf(stderr, "Audio: PCM_U8 mono %u Hz, %.3f MiB\n",
                 audio.sample_rate, audio.bytes / 1048576.0);
-    fprintf(stderr, "RDO: chroma-scale %.3f, luma-weight %d, lambda-scale %.3f, AC-deadzone %.3f, motion-candidates %d",
-            chroma_scale, rd_luma_weight, rd_lambda_scale, ac_deadzone,
+    fprintf(stderr, "RDO: chroma-scale %.3f, luma-weight %d, lambda-scale %.3f, decode-cycle-weight %.3f, AC-deadzone %.3f, motion-candidates %d",
+            chroma_scale, rd_luma_weight, rd_lambda_scale,
+            decode_cycle_weight, ac_deadzone,
             motion_candidates);
     if (qstep_y && !bitrate_kbps && !cq_mode)
         fprintf(stderr, ", exact qsteps Y=%d UV=%d", qstep_y, configured_q_uv);
@@ -1190,13 +1197,20 @@ int main(int argc, char **argv) {
     }
     fputc('\n', stderr);
     if (s && s->macroblocks) fprintf(stderr,
-        "Modes: skip %.1f%%, global %.1f%%, inter %.1f%%, split8 %.1f%%, fill %.1f%%, palette %.1f%%, gradient %.1f%%, intra %.1f%%; syntax v%d\n",
+        "Modes: skip %.1f%%, global %.1f%%, inter %.1f%%, split8 %.1f%%, fill %.1f%%, palette %.1f%% (2/4/8 %.1f/%.1f/%.1f%%), gradient %.1f%%, literal %.1f%%, intra %.1f%%; syntax v%d\n",
         100.0*s->skipped/s->macroblocks, 100.0*s->global/s->macroblocks,
         100.0*s->inter/s->macroblocks, 100.0*s->split_inter/s->macroblocks,
         100.0*s->fill/s->macroblocks, 100.0*s->palette/s->macroblocks,
+        100.0*s->palette_2/s->macroblocks,
+        100.0*s->palette_4/s->macroblocks,
+        100.0*s->palette_8/s->macroblocks,
         100.0*s->gradient/s->macroblocks,
+        100.0*s->literal/s->macroblocks,
         100.0*(s->intra_dc+s->intra_vertical+s->intra_horizontal+s->intra_plane)/s->macroblocks,
         syntax);
+    if (s && encoded_frames > 0)
+        fprintf(stderr, "Estimated decoder work: %.0f cycles/frame (architecture-independent RDO model)\n",
+                (double)s->estimated_decode_cycles / encoded_frames);
 
     hlv1_frame_free(&input);
     hlv1_frame_free(&previous_input);

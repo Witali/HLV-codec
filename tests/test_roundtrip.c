@@ -335,6 +335,66 @@ static int test_palette_v12(void) {
     return 0;
 }
 
+static void make_palette8_frame(HLV1Frame *frame) {
+    static const uint8_t colors[8][3] = {
+        {20, 40, 220}, {50, 210, 45}, {80, 75, 180}, {110, 180, 90},
+        {145, 95, 150}, {175, 155, 115}, {210, 120, 70}, {240, 200, 25}
+    };
+    for (int y = 0; y < frame->padded_height; ++y)
+        for (int x = 0; x < frame->padded_width; ++x) {
+            int index = ((x / 2) + (y / 2) * 3) & 7;
+            frame->y[y * frame->stride_y + x] = colors[index][0];
+        }
+    for (int y = 0; y < frame->padded_height / 2; ++y)
+        for (int x = 0; x < frame->padded_width / 2; ++x) {
+            int index = (x + y * 3) & 7;
+            frame->u[y * frame->stride_u + x] = colors[index][1];
+            frame->v[y * frame->stride_v + x] = colors[index][2];
+        }
+}
+
+static int test_palette8_v13(void) {
+    HLV1Header h = {32,32,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_13};
+    HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
+    HLV1Decoder *decoder = hlv1_decoder_create(&h);
+    HLV1Frame input;
+    if (!encoder || !decoder || hlv1_frame_alloc(&input,32,32) < 0) return 2;
+    if (hlv1_encoder_set_quantization(encoder, 1, 1) < 0) return 2;
+    make_palette8_frame(&input);
+    if (roundtrip_one(encoder, decoder, &input, 13, 0)) return 1;
+    const HLV1Stats *stats = hlv1_encoder_stats(encoder);
+    if (!stats || !stats->palette_8) {
+        fprintf(stderr, "8-color PALETTE not exercised in v13\n");
+        return 1;
+    }
+    hlv1_frame_free(&input);
+    hlv1_encoder_destroy(encoder);
+    hlv1_decoder_destroy(decoder);
+    return 0;
+}
+
+static int test_literal_v13(void) {
+    HLV1Header h = {32,32,25,1,0,100,75,4,0,HLV1_STREAM_VERSION_13};
+    HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
+    HLV1Decoder *decoder = hlv1_decoder_create(&h);
+    HLV1Frame input;
+    if (!encoder || !decoder || hlv1_frame_alloc(&input,32,32) < 0) return 2;
+    if (hlv1_encoder_set_quantization(encoder, 8, 12) < 0 ||
+        hlv1_encoder_set_decode_cycle_weight(encoder, 4.0) < 0)
+        return 2;
+    make_texture_frame(&input);
+    if (roundtrip_one(encoder, decoder, &input, 13, 0)) return 1;
+    const HLV1Stats *stats = hlv1_encoder_stats(encoder);
+    if (!stats || !stats->literal || !stats->estimated_decode_cycles) {
+        fprintf(stderr, "LITERAL not exercised in v13\n");
+        return 1;
+    }
+    hlv1_frame_free(&input);
+    hlv1_encoder_destroy(encoder);
+    hlv1_decoder_destroy(decoder);
+    return 0;
+}
+
 
 static int test_adaptive_gop_v12(void) {
     HLV1Header h = {64,48,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_12};
@@ -475,10 +535,12 @@ int main(void) {
         test_version(HLV1_STREAM_VERSION_10) ||
         test_version(HLV1_STREAM_VERSION_11) ||
         test_version(HLV1_STREAM_VERSION_12) ||
+        test_version(HLV1_STREAM_VERSION_13) ||
         test_split_v3() || test_extended_quant_v4() || test_odd_motion_v5() ||
         test_half_motion_v6() || test_palette_v12() ||
+        test_palette8_v13() || test_literal_v13() ||
         test_adaptive_gop_v12() || test_encoder_clone() ||
         test_segmented_decode()) return 1;
-    puts("HLV-1 C round-trip v1-v12 including FILL/SKIP/SPLIT/half-pixel/global/VLC: PASS");
+    puts("HLV-1 C round-trip v1-v13 including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
     return 0;
 }

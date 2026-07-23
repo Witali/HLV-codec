@@ -33,7 +33,7 @@ extern "C" {
 #define HLV1_STREAM_VERSION_11 11
 #define HLV1_STREAM_VERSION_12 12
 #define HLV1_STREAM_VERSION_13 13
-#define HLV1_VERSION HLV1_STREAM_VERSION_12
+#define HLV1_VERSION HLV1_STREAM_VERSION_13
 
 /* Effective quantizer steps are represented as an 8-bit mantissa and a small
  * left shift.  2040 is therefore the largest stable v4+ step. */
@@ -63,6 +63,7 @@ extern "C" {
 #define HLV1_MODE_GLOBAL      5
 #define HLV1_MODE_PALETTE     6
 #define HLV1_MODE_GRADIENT    7
+#define HLV1_MODE_LITERAL     8
 
 /* Intra predictors.  Plane prediction uses already reconstructed top/left
  * samples, so encoder and decoder must process macroblocks in raster order. */
@@ -155,7 +156,11 @@ typedef struct HLV1Stats {
     uint64_t split_inter;
     uint64_t fill;
     uint64_t palette;
+    uint64_t palette_2;
+    uint64_t palette_4;
+    uint64_t palette_8;
     uint64_t gradient;
+    uint64_t literal;
     uint64_t intra_dc;
     uint64_t intra_vertical;
     uint64_t intra_horizontal;
@@ -172,6 +177,7 @@ typedef struct HLV1Stats {
     uint64_t fill_samples;
     uint64_t palette_samples;
     uint64_t gradient_samples;
+    uint64_t literal_samples;
     uint64_t coefficient_symbols;
     uint64_t single_coefficient_blocks;
     uint64_t two_coefficient_blocks;
@@ -180,6 +186,7 @@ typedef struct HLV1Stats {
     uint64_t inverse_wht_blocks;
     uint64_t decoded_bits;
     uint64_t motion_predictor_blocks;
+    uint64_t estimated_decode_cycles;
 } HLV1Stats;
 
 typedef struct HLV1Encoder HLV1Encoder;
@@ -242,6 +249,16 @@ int hlv1_encoder_set_quantization(HLV1Encoder *encoder, int q_y, int q_uv);
 /** Configure RDO lambda and relative luma distortion weight. */
 int hlv1_encoder_set_rd_parameters(HLV1Encoder *encoder,
                                    double lambda_scale, int luma_weight);
+
+/**
+ * Add estimated decoder cycles to RDO as equivalent payload bits.
+ *
+ * The default value of zero preserves distortion/rate-only mode selection.
+ * For example, 0.05 makes 100 estimated decoder cycles cost the same as five
+ * payload bits and favours low-complexity modes over dense transform residuals.
+ */
+int hlv1_encoder_set_decode_cycle_weight(HLV1Encoder *encoder,
+                                         double bits_per_cycle);
 
 /** AC zero threshold in quantizer-step units; 0.5 is ordinary rounding. */
 int hlv1_encoder_set_ac_deadzone(HLV1Encoder *encoder, double deadzone);

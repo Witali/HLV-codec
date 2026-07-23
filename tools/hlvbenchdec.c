@@ -61,6 +61,8 @@ static uint64_t conservative_cycles(const HLV1Stats *s) {
     cycles += s->intra_samples * 4;
     cycles += s->fill_samples * 2;
     cycles += s->palette_samples * 3;
+    cycles += s->gradient_samples * 4;
+    cycles += s->literal_samples * 2;
     cycles += s->coefficient_symbols * 25;
     cycles += s->dc_only_blocks * 45;
     cycles += s->inverse_wht_blocks * 180;
@@ -155,12 +157,13 @@ int main(int argc, char **argv) {
            packets.count, loops);
     printf("Native scalar decode: %.3f s, %.1f fps\n", elapsed, fps);
     printf("Work/frame: copy %.0f, interp-H/V %.0f, interp-2D %.0f, "
-           "intra %.0f, palette %.0f, coeff %.1f, WHT %.1f\n",
+           "intra %.0f, palette %.0f, literal %.0f, coeff %.1f, WHT %.1f\n",
            (double)one_pass.copied_samples / one_pass.frames,
            (double)one_pass.interpolated_hv_samples / one_pass.frames,
            (double)one_pass.interpolated_bilinear_samples / one_pass.frames,
            (double)one_pass.intra_samples / one_pass.frames,
            (double)one_pass.palette_samples / one_pass.frames,
+           (double)one_pass.literal_samples / one_pass.frames,
            (double)one_pass.coefficient_symbols / one_pass.frames,
            (double)one_pass.inverse_wht_blocks / one_pass.frames);
     printf("Coefficient structure: single %.1f%%, two %.1f%%, run=0 %.1f%%, |level|=1 %.1f%%\n",
