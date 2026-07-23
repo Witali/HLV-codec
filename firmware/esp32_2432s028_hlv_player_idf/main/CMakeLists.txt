@@ -6,6 +6,7 @@ if(HLV_QEMU_BENCHMARK)
         INCLUDE_DIRS "."
         REQUIRES
             hlv1
+            esp_rom
             esp_system
             freertos
             heap
