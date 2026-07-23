@@ -125,14 +125,20 @@ ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
 ```
 
 The checked-in Big Buck Bunny v13 profile uses only the project-approved
-1080p MOV source, normalized source audio, 24 fps and four GOP workers:
+1080p MOV source, its native frame rate and four GOP workers. The previous
+audio-filter chain is replaced by one smooth, peak-detected level curve
+(`-20 dB` threshold, `1.6:1` ratio and a wide soft knee). Quiet levels are
+raised relative to loud ones. A measurement pass calibrates the curve's
+built-in makeup so the actual source peak lands at -0.1 dBFS without a
+separate volume filter or limiter.
 
 ```powershell
 .\scripts\encode_big_buck_bunny_v13.ps1
 ```
 
-Use `-Fps`, `-Threads`, or `-OutputFile` to override those three output
-parameters. `-MaxFrames` is available for a short smoke test, and
+Use `-Fps 1..30`, `-Threads`, or `-OutputFile` to override those three output
+parameters. `-Fps 0` (the default) preserves the source frame rate without an
+FPS conversion filter. `-MaxFrames` is available for a short smoke test, and
 `-DisableSimd` forces the scalar encoder fallback.
 
 Presets:
