@@ -9,8 +9,20 @@ idf_component_register(
 
 set(HLV1_OPTIMIZATION "O3" CACHE STRING
     "HLV decoder optimization level (O2, O3 or Os)")
+set(HLV1_IRAM_BITREADER ON CACHE BOOL
+    "Place the out-of-line ESP32 bitreader helpers in IRAM")
 if(NOT "${HLV1_OPTIMIZATION}" MATCHES "^(O2|O3|Os)$")
     message(FATAL_ERROR "HLV1_OPTIMIZATION must be O2, O3 or Os")
+endif()
+
+if(HLV1_IRAM_BITREADER)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV1_IRAM_BITREADER=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV1_IRAM_BITREADER=0
+    )
 endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

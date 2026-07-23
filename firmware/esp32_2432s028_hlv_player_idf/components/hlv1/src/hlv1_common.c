@@ -6,6 +6,13 @@
 
 #include <errno.h>
 
+#if HLV1_IRAM_BITREADER
+#include "esp_attr.h"
+#define HLV1_BITREADER_ATTR IRAM_ATTR
+#else
+#define HLV1_BITREADER_ATTR
+#endif
+
 /* File and packet magic values deliberately differ so a lost packet boundary
  * cannot be mistaken for a sequence header. */
 static const uint8_t HLV1_MAGIC[4] = {'H','L','V','1'};
@@ -505,7 +512,7 @@ int hlv1_bw_finish(HLV1BitWriter *bw) {
 #define HLV1_BR_CACHE_BITS 64U
 #endif
 
-static void br_refill(HLV1BitReader *br) {
+static void HLV1_BITREADER_ATTR br_refill(HLV1BitReader *br) {
     while (br->bits <= HLV1_BR_CACHE_BITS - 8U) {
         if (br->ptr == br->end) {
             if (!br->packet || br->next_offset >= br->byte_limit) break;
@@ -541,9 +548,11 @@ void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *p) {
 }
 
 #if HLV1_FAST_32BIT_BITREADER
-uint32_t hlv1_br_get_slow(HLV1BitReader *br, unsigned count) {
+uint32_t HLV1_BITREADER_ATTR hlv1_br_get_slow(HLV1BitReader *br,
+                                              unsigned count) {
 #else
-uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
+uint32_t HLV1_BITREADER_ATTR hlv1_br_get(HLV1BitReader *br,
+                                        unsigned count) {
 #endif
     if (!br || count > 32 || count > br->bits_left) {
         if (br) br->error = HLV1_ERR_BITSTREAM;
@@ -584,7 +593,7 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
     return v;
 }
 
-uint32_t hlv1_br_get_ue(HLV1BitReader *br) {
+uint32_t HLV1_BITREADER_ATTR hlv1_br_get_ue(HLV1BitReader *br) {
     if (!br || !br->bits_left) { if (br) br->error = HLV1_ERR_BITSTREAM; return 0; }
 #if HLV1_FAST_32BIT_BITREADER
 #if defined(__GNUC__) || defined(__clang__)
@@ -650,7 +659,7 @@ uint32_t hlv1_br_get_ue(HLV1BitReader *br) {
     return ((1U << leading) | suffix) - 1U;
 }
 
-int32_t hlv1_br_get_se(HLV1BitReader *br) {
+int32_t HLV1_BITREADER_ATTR hlv1_br_get_se(HLV1BitReader *br) {
     uint32_t mapped = hlv1_br_get_ue(br);
     if (br->error) return 0;
     return (mapped & 1U) ? (int32_t)((mapped + 1U) / 2U)
