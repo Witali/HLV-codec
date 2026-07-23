@@ -665,9 +665,7 @@ static int decode_palette(HLV1Decoder *d, HLV1BitReader *br,
 
 static int read_literal_bytes(HLV1BitReader *br, uint8_t *destination,
                               size_t bytes) {
-    for (size_t i = 0; i < bytes; ++i)
-        destination[i] = (uint8_t)hlv1_br_get(br, 8);
-    return br->error ? br->error : HLV1_OK;
+    return hlv1_br_read_bytes(br, destination, bytes);
 }
 
 static int read_literal_unpacked_row(HLV1BitReader *br, uint8_t *destination,

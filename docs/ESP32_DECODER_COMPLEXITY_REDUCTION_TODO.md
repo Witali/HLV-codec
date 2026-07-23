@@ -69,7 +69,8 @@ Coefficient distribution:
   - FILL without residual (accepted);
   - PALETTE (evaluated and rejected: only 0.10% faster in QEMU);
   - zero-residual INTRA DC/vertical/horizontal where profitable;
-  - aligned LITERAL payloads through span copies instead of one call per byte.
+  - aligned LITERAL payloads through span copies instead of one call per byte
+    (accepted for v13).
 - [ ] Evaluate stream-version-specialised v12/v13 decode loops while retaining
       the portable generic fallback.
 - [ ] Fuse general inverse WHT, rounding, prediction addition and clipping to
@@ -136,3 +137,17 @@ Direct output for zero-residual FILL macroblocks removes 0.32% of QEMU cycles
 and 0.28% of native time. It reuses the existing packed frame and adds no heap
 or static DRAM. Unlike the PALETTE trial, the compact fill helper is small and
 is retained for difficult intra frames.
+
+The LITERAL path is measured separately with
+`BigBuckBunny_1080p_video-settings_v13_normalized.hlv`, because the v12
+acceptance stream contains no literal macroblocks:
+
+| v13 variant | Native us/frame | QEMU cycles/frame | QEMU hash |
+| --- | ---: | ---: | --- |
+| Byte-at-a-time LITERAL baseline | 341.17 | 472,383 | `6ca4210fb3a1edb7` |
+| Packet-span LITERAL copy | 333.36 | 472,219 | `6ca4210fb3a1edb7` |
+
+The complete v13 reconstruction remains `fe31eb325e6cb945`. Span copies improve
+the complete native run by 2.3%, while the representative QEMU sample improves
+by only 0.03% because it averages very few LITERAL blocks. The helper is
+retained to bound literal-heavy keyframes and adds no packet or frame buffers.

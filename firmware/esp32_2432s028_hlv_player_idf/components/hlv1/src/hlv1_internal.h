@@ -117,6 +117,8 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count);
 #endif
 uint32_t hlv1_br_get_ue(HLV1BitReader *br);
 int32_t hlv1_br_get_se(HLV1BitReader *br);
+int hlv1_br_read_bytes(HLV1BitReader *br, uint8_t *destination,
+                       size_t bytes);
 
 /* Reversible integer transform used for every coded 4x4 residual block. */
 void hlv1_wht4_forward(const int16_t in[16], int32_t out[16]);

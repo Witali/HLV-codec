@@ -657,6 +657,55 @@ int32_t hlv1_br_get_se(HLV1BitReader *br) {
                          : -(int32_t)((mapped + 1U) / 2U);
 }
 
+int hlv1_br_read_bytes(HLV1BitReader *br, uint8_t *destination,
+                       size_t bytes) {
+    if (!br || (!destination && bytes) ||
+        bytes > (size_t)(br->bits_left / 8U)) {
+        if (br) br->error = HLV1_ERR_BITSTREAM;
+        return HLV1_ERR_BITSTREAM;
+    }
+
+    /* A byte-aligned syntax position leaves a whole number of bytes in the
+     * MSB-first cache. Drain those bytes before copying untouched packet spans
+     * directly. Keep a general fallback for defensive callers. */
+    if (br->bits & 7U) {
+        for (size_t i = 0; i < bytes; ++i)
+            destination[i] = (uint8_t)hlv1_br_get(br, 8);
+        return br->error ? br->error : HLV1_OK;
+    }
+    while (bytes && br->bits >= 8U) {
+        *destination++ = (uint8_t)hlv1_br_get(br, 8);
+        --bytes;
+    }
+    while (bytes) {
+        if (br->ptr == br->end) {
+            if (!br->packet || br->next_offset >= br->byte_limit) {
+                br->error = HLV1_ERR_BITSTREAM;
+                return br->error;
+            }
+            const uint8_t *data;
+            size_t span = hlv1_packet_payload_span(
+                br->packet, br->next_offset, &data);
+            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
+            if (!span) {
+                br->error = HLV1_ERR_BITSTREAM;
+                return br->error;
+            }
+            br->ptr = data;
+            br->end = data + span;
+            br->next_offset += span;
+        }
+        size_t available = (size_t)(br->end - br->ptr);
+        size_t count = HLV1_MIN(bytes, available);
+        memcpy(destination, br->ptr, count);
+        destination += count;
+        br->ptr += count;
+        br->bits_left -= (uint32_t)(count * 8U);
+        bytes -= count;
+    }
+    return HLV1_OK;
+}
+
 /* --- Integer 4x4 Walsh-Hadamard transform ------------------------------ */
 static void wht1d(const int32_t x[4], int32_t y[4]) {
     int32_t a = x[0] + x[1];
