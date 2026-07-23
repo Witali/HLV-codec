@@ -65,7 +65,7 @@ Coefficient distribution:
 - [x] Add a combined fast path for the frequent `run=0, level=+/-1`
       coefficient representation, with an exact fallback for every other
       value.
-- [ ] Write simple compact macroblocks directly:
+- [x] Write simple compact macroblocks directly:
   - FILL without residual (accepted);
   - PALETTE (evaluated and rejected: only 0.10% faster in QEMU);
   - zero-residual INTRA DC (evaluated and rejected: native v12 2.4% slower);
@@ -76,7 +76,8 @@ Coefficient distribution:
       substantially more code).
 - [x] Fuse general inverse WHT, rounding, prediction addition and clipping to
       remove the temporary residual array and extra pass.
-- [ ] Evaluate selective IRAM placement for only the final small hot paths.
+- [x] Evaluate selective IRAM placement (QEMU-neutral and reverted; physical
+      Flash-cache measurement remains pending).
 - [ ] Re-run complete-film hashing, QEMU, ESP-IDF size reporting and document
       the cumulative result.
 - [ ] When the board becomes available, measure key/P frames separately and
@@ -170,3 +171,9 @@ x64 native filter but 0.8% faster in Xtensa QEMU. The target result is
 accepted. It removes the 64-byte `raw` array inside the transform and the
 32-byte caller-side `residual` array, reducing the deepest general residual
 path by 96 bytes without changing heap or reconstructed frames.
+
+Placing refill, slow bit extraction and Exp-Golomb helpers in IRAM moved about
+4 KiB from Flash to IRAM. QEMU remained 447,161 cycles/frame (a 12-cycle total
+difference over 120 frames, below the reported per-frame resolution), as
+expected because it does not model the ESP32 Flash cache. The placement was
+reverted rather than consuming IRAM without a physical-board result.
