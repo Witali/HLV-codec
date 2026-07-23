@@ -24,7 +24,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Optimise sparse residual and WHT paths without runtime lookup buffers.
 - [x] Compare compiler/code-layout variants and retain the fastest no-RAM option.
 - [x] Remove repeated address calculations from macroblock hot paths.
-- [ ] Rebuild ESP-IDF and compare DRAM, heap allocations and binary size.
+- [x] Rebuild ESP-IDF and compare DRAM, heap allocations and binary size.
 
 ## Results
 
@@ -111,6 +111,15 @@ with two unconditional shifts is 2.97% slower. All three preserve the hashes,
 but their Xtensa instruction sequences lose to the compiler's existing
 conditional code. These results intentionally remain documented rather than
 kept behind runtime flags.
+
+The final clean validation decodes all 8,947 frames three times with full-film
+hash `bdb0842a1e1a3a72`, then reproduces 610,566 cycles/frame and hash
+`be4876ff1c6b8461` in Xtensa QEMU. The normal SD/ST7789 player build uses
+49,328 bytes of static DRAM, 165,560 bytes of Flash Code, 50,231 bytes of IRAM
+and a 259,200-byte application binary (`0x3f480`). The application partition
+remains 84% free. Relative to the preceding sparse-WHT build, the pointer
+change adds no static RAM and reduces both Flash Code and the binary by about
+256 bytes.
 
 ## Physical ESP32 baseline
 
