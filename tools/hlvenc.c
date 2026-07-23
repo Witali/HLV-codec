@@ -268,6 +268,7 @@ static void usage(const char *p) {
         "  --decode-cycle-weight X estimated decoder cycles as equivalent bits (default 0)\n"
         "  --ac-deadzone X   AC zero threshold 0.5..2.0 (default 0.5)\n"
         "  --motion-candidates N fully RDO-test 1..8 motion candidates (default by preset)\n"
+        "  --simd MODE       auto|off (default auto; off uses scalar fallback)\n"
         "  --threads N       parallel GOP encoders 1..8 (default 4)\n"
         "  --max-frames N    stop after N frames\n"
         "  --recon FILE.y4m  write encoder reconstruction\n"
@@ -741,7 +742,7 @@ int main(int argc, char **argv) {
     int cq_trials = 5, two_pass_trials = 5, min_key_interval = 8;
     double target_psnr = 0.0, psnr_min = 30.0, psnr_max = 35.0;
     int gop = 30, search = 4, max_frames = 0, syntax = HLV1_VERSION;
-    int motion_candidates = 1, threads = 4;
+    int motion_candidates = 1, threads = 4, simd_enabled = 1;
     int gop_set = 0, search_set = 0, motion_candidates_set = 0;
     double scene_cut = 38.0, keyframe_bias = 1.00;
     double chroma_scale = 1.35, rd_lambda_scale = 1.0;
@@ -781,6 +782,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--decode-cycle-weight") && i + 1 < argc) decode_cycle_weight = atof(argv[++i]);
         else if (!strcmp(argv[i], "--ac-deadzone") && i + 1 < argc) ac_deadzone = atof(argv[++i]);
         else if (!strcmp(argv[i], "--motion-candidates") && i + 1 < argc) { motion_candidates = atoi(argv[++i]); motion_candidates_set = 1; }
+        else if (!strcmp(argv[i], "--simd") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (!strcmp(mode, "auto")) simd_enabled = 1;
+            else if (!strcmp(mode, "off")) simd_enabled = 0;
+            else { usage(argv[0]); return 2; }
+        }
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max-frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--recon") && i + 1 < argc) recon_path = argv[++i];
@@ -926,6 +933,7 @@ int main(int argc, char **argv) {
                                                      decode_cycle_weight) < 0 ||
                 hlv1_encoder_set_ac_deadzone(enc, ac_deadzone) < 0 ||
                 hlv1_encoder_set_motion_candidates(enc, motion_candidates) < 0 ||
+                hlv1_encoder_set_simd(enc, simd_enabled) < 0 ||
                 (adaptive_gop &&
                  hlv1_encoder_set_adaptive_gop(enc,
                                                (unsigned)min_key_interval,
@@ -1428,10 +1436,11 @@ int main(int argc, char **argv) {
     const HLV1Stats *s = parallel_gop_mode
         ? &parallel_stats : hlv1_encoder_stats(enc);
     fprintf(stderr, "\rEncoded %u frames in %.3f s (%.2f fps), "
-            "payload %.3f MiB, preset %s, threads %d\n",
+            "payload %.3f MiB, preset %s, threads %d, SIMD %s\n",
             encoded_frames, elapsed, elapsed > 0 ? encoded_frames / elapsed : 0,
             s ? s->payload_bytes / 1048576.0 : 0.0, preset,
-            parallel_gop_mode ? threads : 1);
+            parallel_gop_mode ? threads : 1,
+            hlv1_encoder_simd_enabled(enc) ? "SSE2" : "scalar");
     if (audio.file)
         fprintf(stderr, "Audio: PCM_U8 mono %u Hz, %.3f MiB\n",
                 audio.sample_rate, audio.bytes / 1048576.0);

@@ -9,6 +9,17 @@
  */
 #include "hlv1_internal.h"
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <emmintrin.h>
+#include <intrin.h>
+#define HLV1_ENCODER_SSE2 1
+#elif defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
+#include <emmintrin.h>
+#define HLV1_ENCODER_SSE2 1
+#else
+#define HLV1_ENCODER_SSE2 0
+#endif
+
 /* Low-frequency-first scan for 4x4 transform coefficients. */
 static const uint8_t scan4[16] = {
     0, 1, 4, 5, 2, 8, 3, 12, 6, 9, 7, 13, 10, 11, 14, 15
@@ -68,6 +79,7 @@ struct HLV1Encoder {
     double ac_deadzone;
     int luma_weight;
     int motion_candidates;
+    int use_simd;
     unsigned adaptive_min_key_interval;
     double adaptive_keyframe_bias;
     uint32_t frames_since_key;
@@ -83,6 +95,145 @@ struct HLV1Encoder {
     int16_t *mv_cur_x;
     int16_t *mv_cur_y;
 };
+
+static int encoder_sse2_available(void) {
+#if HLV1_ENCODER_SSE2 && defined(_MSC_VER)
+    int registers[4];
+    __cpuid(registers, 1);
+    return (registers[3] & (1 << 26)) != 0;
+#elif HLV1_ENCODER_SSE2 && (defined(__GNUC__) || defined(__clang__))
+    return __builtin_cpu_supports("sse2") != 0;
+#else
+    return 0;
+#endif
+}
+
+static uint64_t squared_error_u8_scalar(const uint8_t *a, const uint8_t *b,
+                                        size_t count) {
+    uint64_t sum = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int difference = (int)a[i] - b[i];
+        sum += (uint64_t)(difference * difference);
+    }
+    return sum;
+}
+
+#if HLV1_ENCODER_SSE2
+static uint64_t squared_error_u8_sse2(const uint8_t *a, const uint8_t *b,
+                                      size_t count) {
+    const __m128i zero = _mm_setzero_si128();
+    __m128i sum = zero;
+    size_t i = 0;
+    for (; i + 16 <= count; i += 16) {
+        __m128i av = _mm_loadu_si128((const __m128i *)(a + i));
+        __m128i bv = _mm_loadu_si128((const __m128i *)(b + i));
+        __m128i difference_low = _mm_sub_epi16(
+            _mm_unpacklo_epi8(av, zero), _mm_unpacklo_epi8(bv, zero));
+        __m128i difference_high = _mm_sub_epi16(
+            _mm_unpackhi_epi8(av, zero), _mm_unpackhi_epi8(bv, zero));
+        sum = _mm_add_epi32(
+            sum, _mm_madd_epi16(difference_low, difference_low));
+        sum = _mm_add_epi32(
+            sum, _mm_madd_epi16(difference_high, difference_high));
+    }
+    uint32_t lanes[4];
+    _mm_storeu_si128((__m128i *)lanes, sum);
+    uint64_t result = (uint64_t)lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    return result + squared_error_u8_scalar(a + i, b + i, count - i);
+}
+
+static uint64_t sad_rows_u8_sse2(const uint8_t *a, int a_stride,
+                                 const uint8_t *b, int b_stride,
+                                 int width, int height) {
+    __m128i sum = _mm_setzero_si128();
+    uint64_t tail = 0;
+    for (int y = 0; y < height; ++y) {
+        int x = 0;
+        for (; x + 16 <= width; x += 16) {
+            __m128i av = _mm_loadu_si128((const __m128i *)(a + x));
+            __m128i bv = _mm_loadu_si128((const __m128i *)(b + x));
+            sum = _mm_add_epi64(sum, _mm_sad_epu8(av, bv));
+        }
+        if (x + 8 <= width) {
+            __m128i av = _mm_loadl_epi64((const __m128i *)(a + x));
+            __m128i bv = _mm_loadl_epi64((const __m128i *)(b + x));
+            sum = _mm_add_epi64(sum, _mm_sad_epu8(av, bv));
+            x += 8;
+        }
+        for (; x < width; ++x)
+            tail += (unsigned)abs((int)a[x] - b[x]);
+        a += a_stride;
+        b += b_stride;
+    }
+    uint64_t lanes[2];
+    _mm_storeu_si128((__m128i *)lanes, sum);
+    return lanes[0] + lanes[1] + tail;
+}
+
+static __m128i load_motion_row_sse2(const uint8_t *row, int width) {
+    return width >= 16
+        ? _mm_loadu_si128((const __m128i *)row)
+        : _mm_loadl_epi64((const __m128i *)row);
+}
+
+static uint64_t sad_rows_half_pixel_sse2(
+    const uint8_t *a, int a_stride,
+    const uint8_t *reference, int reference_stride,
+    int width, int height, int fx, int fy) {
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i round = _mm_set1_epi16(2);
+    __m128i sum = zero;
+    for (int y = 0; y < height; ++y) {
+        __m128i av = load_motion_row_sse2(a, width);
+        __m128i top_left = load_motion_row_sse2(reference, width);
+        __m128i prediction;
+        if (!fy) {
+            __m128i top_right = load_motion_row_sse2(reference + 1, width);
+            prediction = _mm_avg_epu8(top_left, top_right);
+        } else if (!fx) {
+            __m128i bottom_left =
+                load_motion_row_sse2(reference + reference_stride, width);
+            prediction = _mm_avg_epu8(top_left, bottom_left);
+        } else {
+            __m128i top_right = load_motion_row_sse2(reference + 1, width);
+            __m128i bottom_left =
+                load_motion_row_sse2(reference + reference_stride, width);
+            __m128i bottom_right =
+                load_motion_row_sse2(reference + reference_stride + 1,
+                                     width);
+            __m128i low = _mm_add_epi16(
+                _mm_add_epi16(_mm_unpacklo_epi8(top_left, zero),
+                              _mm_unpacklo_epi8(top_right, zero)),
+                _mm_add_epi16(_mm_unpacklo_epi8(bottom_left, zero),
+                              _mm_unpacklo_epi8(bottom_right, zero)));
+            __m128i high = _mm_add_epi16(
+                _mm_add_epi16(_mm_unpackhi_epi8(top_left, zero),
+                              _mm_unpackhi_epi8(top_right, zero)),
+                _mm_add_epi16(_mm_unpackhi_epi8(bottom_left, zero),
+                              _mm_unpackhi_epi8(bottom_right, zero)));
+            low = _mm_srli_epi16(_mm_add_epi16(low, round), 2);
+            high = _mm_srli_epi16(_mm_add_epi16(high, round), 2);
+            prediction = _mm_packus_epi16(low, high);
+        }
+        sum = _mm_add_epi64(sum, _mm_sad_epu8(av, prediction));
+        a += a_stride;
+        reference += reference_stride;
+    }
+    uint64_t lanes[2];
+    _mm_storeu_si128((__m128i *)lanes, sum);
+    return lanes[0] + lanes[1];
+}
+#endif
+
+static uint64_t squared_error_u8(const uint8_t *a, const uint8_t *b,
+                                 size_t count, int use_simd) {
+#if HLV1_ENCODER_SSE2
+    if (use_simd) return squared_error_u8_sse2(a, b, count);
+#else
+    (void)use_simd;
+#endif
+    return squared_error_u8_scalar(a, b, count);
+}
 
 /* --- Shared predictor arithmetic --------------------------------------- */
 static int median3(int a, int b, int c) {
@@ -348,19 +499,19 @@ static void fill_predict(const MB *src, MB *pred, uint8_t means[3]) {
 
 /* Distortion metric used by macroblock RDO.  Luma receives an explicit weight
  * so encoder tuning can favor visible edge/detail preservation. */
-static uint64_t weighted_sse(const MB *a, const MB *b, int luma_weight) {
-    uint64_t y = 0, u = 0, v = 0;
-    for (unsigned i = 0; i < sizeof a->y; ++i) { int d = (int)a->y[i] - b->y[i]; y += (uint64_t)(d * d); }
-    for (unsigned i = 0; i < sizeof a->u; ++i) { int d = (int)a->u[i] - b->u[i]; u += (uint64_t)(d * d); }
-    for (unsigned i = 0; i < sizeof a->v; ++i) { int d = (int)a->v[i] - b->v[i]; v += (uint64_t)(d * d); }
+static uint64_t weighted_sse(const MB *a, const MB *b, int luma_weight,
+                             int use_simd) {
+    uint64_t y = squared_error_u8(a->y, b->y, sizeof a->y, use_simd);
+    uint64_t u = squared_error_u8(a->u, b->u, sizeof a->u, use_simd);
+    uint64_t v = squared_error_u8(a->v, b->v, sizeof a->v, use_simd);
     return (uint64_t)luma_weight * y + u + v;
 }
 
-static uint64_t weighted_sse_sb8(const SB8 *a, const SB8 *b, int luma_weight) {
-    uint64_t y = 0, u = 0, v = 0;
-    for (unsigned i = 0; i < sizeof a->y; ++i) { int d = (int)a->y[i] - b->y[i]; y += (uint64_t)(d * d); }
-    for (unsigned i = 0; i < sizeof a->u; ++i) { int d = (int)a->u[i] - b->u[i]; u += (uint64_t)(d * d); }
-    for (unsigned i = 0; i < sizeof a->v; ++i) { int d = (int)a->v[i] - b->v[i]; v += (uint64_t)(d * d); }
+static uint64_t weighted_sse_sb8(const SB8 *a, const SB8 *b,
+                                 int luma_weight, int use_simd) {
+    uint64_t y = squared_error_u8(a->y, b->y, sizeof a->y, use_simd);
+    uint64_t u = squared_error_u8(a->u, b->u, sizeof a->u, use_simd);
+    uint64_t v = squared_error_u8(a->v, b->v, sizeof a->v, use_simd);
     return (uint64_t)luma_weight * y + u + v;
 }
 
@@ -426,7 +577,8 @@ static double score_candidate(const HLV1Encoder *encoder, const MB *source,
     candidate->estimated_decode_cycles =
         estimate_candidate_decode_cycles(candidate);
     return (double)weighted_sse(source, &candidate->rec,
-                                encoder->luma_weight) +
+                                encoder->luma_weight,
+                                encoder->use_simd) +
            lambda_bits *
                ((double)candidate->bits.bit_count +
                 encoder->decode_cycle_weight *
@@ -1034,7 +1186,8 @@ static int encode_palette_candidate(const MB *src, unsigned version,
                                     int frame_type, int use_global,
                                     int count, int qy, int quv,
                                     double lambda_bits,
-                                    int luma_weight, Candidate *out) {
+                                    int luma_weight, int use_simd,
+                                    Candidate *out) {
     PaletteColor colors[8] = {{0}};
     uint8_t y_index[256], c_index[64];
     palette_build(src, count, colors, y_index, c_index, &out->rec);
@@ -1086,7 +1239,8 @@ static int encode_palette_candidate(const MB *src, unsigned version,
         r = hlv1_bw_put(&out->bits, c_index[i], index_bits);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = (double)weighted_sse(src, &out->rec, luma_weight) +
+    out->score = (double)weighted_sse(src, &out->rec, luma_weight,
+                                      use_simd) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -1227,7 +1381,8 @@ static int encode_gradient_candidate(HLV1Encoder *e, const MB *src,
                          e->q_y, e->q_uv, e->ac_deadzone, NULL);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = (double)weighted_sse(src, &out->rec, e->luma_weight) +
+    out->score = (double)weighted_sse(src, &out->rec, e->luma_weight,
+                                      e->use_simd) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -1396,7 +1551,8 @@ static int motion_valid(const HLV1Frame *ref, int x, int y, int size,
 
 static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
                                 int x, int y, int size,
-                                int mvx, int mvy, int denominator) {
+                                int mvx, int mvy, int denominator,
+                                int use_simd) {
     int bx = floor_div(x * denominator + mvx, denominator);
     int by = floor_div(y * denominator + mvy, denominator);
     int fx = x * denominator + mvx - bx * denominator;
@@ -1404,6 +1560,22 @@ static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
     int inv_x = denominator - fx;
     int inv_y = denominator - fy;
     int round = denominator * denominator / 2;
+#if HLV1_ENCODER_SSE2
+    if (use_simd && !fx && !fy) {
+        const uint8_t *a = src->y + y * src->stride_y + x;
+        const uint8_t *b = ref->y + by * ref->stride_y + bx;
+        return sad_rows_u8_sse2(a, src->stride_y, b, ref->stride_y,
+                                size, size);
+    }
+    if (use_simd && denominator == 2) {
+        const uint8_t *a = src->y + y * src->stride_y + x;
+        const uint8_t *b = ref->y + by * ref->stride_y + bx;
+        return sad_rows_half_pixel_sse2(
+            a, src->stride_y, b, ref->stride_y, size, size, fx, fy);
+    }
+#else
+    (void)use_simd;
+#endif
     uint64_t sad = 0;
     for (int yy = 0; yy < size; ++yy) {
         const uint8_t *a = src->y + (y + yy) * src->stride_y + x;
@@ -1433,6 +1605,7 @@ static uint64_t motion_sad_luma(const HLV1Frame *src, const HLV1Frame *ref,
 static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
                               int x, int y, int size, int radius,
                               int denominator, int legacy_even,
+                              int use_simd,
                               int *best_mvx, int *best_mvy) {
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
@@ -1443,7 +1616,8 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
         for (int mvx = -limit; mvx <= limit; mvx += coarse_step) {
             if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
             uint64_t sad = motion_sad_luma(src, ref, x, y, size,
-                                           mvx, mvy, denominator);
+                                           mvx, mvy, denominator,
+                                           use_simd);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1460,7 +1634,8 @@ static void find_motion_block(const HLV1Frame *src, const HLV1Frame *ref,
                 if (abs(mvx) > limit || abs(mvy) > limit) continue;
                 if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
                 uint64_t sad = motion_sad_luma(src, ref, x, y, size,
-                                               mvx, mvy, denominator);
+                                               mvx, mvy, denominator,
+                                               use_simd);
                 if (sad < best) {
                     best = sad;
                     *best_mvx = mvx;
@@ -1487,13 +1662,30 @@ static int motion_valid_rect(const HLV1Frame *ref, int x, int y,
 static uint64_t motion_sad_luma_rect(const HLV1Frame *src,
                                      const HLV1Frame *ref,
                                      int x, int y, int w, int h,
-                                     int mvx, int mvy, int denominator) {
+                                     int mvx, int mvy, int denominator,
+                                     int use_simd) {
     int bx = floor_div(x * denominator + mvx, denominator);
     int by = floor_div(y * denominator + mvy, denominator);
     int fx = x * denominator + mvx - bx * denominator;
     int fy = y * denominator + mvy - by * denominator;
     int inv_x = denominator - fx, inv_y = denominator - fy;
     int round = denominator * denominator / 2;
+#if HLV1_ENCODER_SSE2
+    if (use_simd && !fx && !fy) {
+        const uint8_t *a = src->y + y * src->stride_y + x;
+        const uint8_t *b = ref->y + by * ref->stride_y + bx;
+        return sad_rows_u8_sse2(a, src->stride_y, b, ref->stride_y,
+                                w, h);
+    }
+    if (use_simd && denominator == 2) {
+        const uint8_t *a = src->y + y * src->stride_y + x;
+        const uint8_t *b = ref->y + by * ref->stride_y + bx;
+        return sad_rows_half_pixel_sse2(
+            a, src->stride_y, b, ref->stride_y, w, h, fx, fy);
+    }
+#else
+    (void)use_simd;
+#endif
     uint64_t sad = 0;
     for (int yy = 0; yy < h; ++yy) {
         const uint8_t *a = src->y + (y + yy) * src->stride_y + x;
@@ -1523,6 +1715,7 @@ static uint64_t motion_sad_luma_rect(const HLV1Frame *src,
 static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
                              int x, int y, int w, int h, int radius,
                              int denominator, int legacy_even,
+                             int use_simd,
                              int *best_mvx, int *best_mvy) {
     uint64_t best = UINT64_MAX;
     *best_mvx = *best_mvy = 0;
@@ -1534,7 +1727,8 @@ static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
             if (!motion_valid_rect(ref, x, y, w, h, mvx, mvy, denominator))
                 continue;
             uint64_t sad = motion_sad_luma_rect(src, ref, x, y, w, h,
-                                                mvx, mvy, denominator);
+                                                mvx, mvy, denominator,
+                                                use_simd);
             if (sad < best) {
                 best = sad;
                 *best_mvx = mvx;
@@ -1550,7 +1744,8 @@ static void find_motion_rect(const HLV1Frame *src, const HLV1Frame *ref,
                     !motion_valid_rect(ref, x, y, w, h, mvx, mvy, denominator))
                     continue;
                 uint64_t sad = motion_sad_luma_rect(src, ref, x, y, w, h,
-                                                    mvx, mvy, denominator);
+                                                    mvx, mvy, denominator,
+                                                    use_simd);
                 if (sad < best) {
                     best = sad;
                     *best_mvx = mvx;
@@ -1585,13 +1780,15 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                                   int denominator, int legacy_even,
                                   int requested, int global_mvx,
                                   int global_mvy, int use_global,
+                                  int use_simd,
                                   MotionChoice *choices, int capacity) {
     if (requested <= 1) {
         int mvx, mvy;
         find_motion_block(src, ref, x, y, size, radius,
-                          denominator, legacy_even, &mvx, &mvy);
+                          denominator, legacy_even, use_simd, &mvx, &mvy);
         choices[0] = (MotionChoice){mvx, mvy,
-            motion_sad_luma(src, ref, x, y, size, mvx, mvy, denominator)};
+            motion_sad_luma(src, ref, x, y, size, mvx, mvy, denominator,
+                            use_simd)};
         return 1;
     }
     int count = 0;
@@ -1603,7 +1800,8 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
         for (int mvx = -limit; mvx <= limit; mvx += coarse_step) {
             if (!motion_valid(ref, x, y, size, mvx, mvy, denominator)) continue;
             uint64_t sad = motion_sad_luma(src, ref, x, y, size,
-                                           mvx, mvy, denominator);
+                                           mvx, mvy, denominator,
+                                           use_simd);
             insert_motion_choice(choices, &count, keep, mvx, mvy, sad);
         }
     if (denominator == 2 && count) {
@@ -1615,7 +1813,8 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
                     !motion_valid(ref, x, y, size, mvx, mvy, denominator))
                     continue;
                 uint64_t sad = motion_sad_luma(src, ref, x, y, size,
-                                               mvx, mvy, denominator);
+                                               mvx, mvy, denominator,
+                                               use_simd);
                 insert_motion_choice(choices, &count, keep, mvx, mvy, sad);
             }
     }
@@ -1623,19 +1822,20 @@ static int collect_motion_choices(const HLV1Frame *src, const HLV1Frame *ref,
        positions, because their motion-vector syntax is much shorter. */
     if (count < capacity && motion_valid(ref, x, y, size, 0, 0, denominator))
         insert_motion_choice(choices, &count, capacity, 0, 0,
-            motion_sad_luma(src, ref, x, y, size, 0, 0, denominator));
+            motion_sad_luma(src, ref, x, y, size, 0, 0, denominator,
+                            use_simd));
     if (use_global && count < capacity &&
         motion_valid(ref, x, y, size, global_mvx, global_mvy, denominator))
         insert_motion_choice(choices, &count, capacity, global_mvx, global_mvy,
             motion_sad_luma(src, ref, x, y, size,
-                            global_mvx, global_mvy, denominator));
+                            global_mvx, global_mvy, denominator, use_simd));
     if (denominator == 2 && count < capacity) {
         int mvx = choices[0].mvx & ~1;
         int mvy = choices[0].mvy & ~1;
         if (motion_valid(ref, x, y, size, mvx, mvy, denominator))
             insert_motion_choice(choices, &count, capacity, mvx, mvy,
                 motion_sad_luma(src, ref, x, y, size,
-                                mvx, mvy, denominator));
+                                mvx, mvy, denominator, use_simd));
     }
     return count;
 }
@@ -1742,6 +1942,7 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
     e->ac_deadzone = 0.5;
     e->luma_weight = 4;
     e->motion_candidates = 1;
+    e->use_simd = encoder_sse2_available();
     e->adaptive_keyframe_bias = 1.0;
     hlv1_quality_to_qsteps(header->quality, &e->q_y, &e->q_uv);
     if (hlv1_frame_alloc(&e->previous, header->width, header->height) < 0 ||
@@ -1778,6 +1979,7 @@ HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
     dst->ac_deadzone = src->ac_deadzone;
     dst->luma_weight = src->luma_weight;
     dst->motion_candidates = src->motion_candidates;
+    dst->use_simd = src->use_simd;
     dst->adaptive_min_key_interval = src->adaptive_min_key_interval;
     dst->adaptive_keyframe_bias = src->adaptive_keyframe_bias;
     dst->frames_since_key = src->frames_since_key;
@@ -1890,6 +2092,17 @@ int hlv1_encoder_set_motion_candidates(HLV1Encoder *e, int candidates) {
     return HLV1_OK;
 }
 
+int hlv1_encoder_set_simd(HLV1Encoder *e, int enabled) {
+    if (!e || (enabled != 0 && enabled != 1))
+        return HLV1_ERR_ARGUMENT;
+    e->use_simd = enabled && encoder_sse2_available();
+    return HLV1_OK;
+}
+
+int hlv1_encoder_simd_enabled(const HLV1Encoder *e) {
+    return e ? e->use_simd : 0;
+}
+
 int hlv1_encoder_set_adaptive_gop(HLV1Encoder *e,
                                   unsigned minimum_key_interval,
                                   double keyframe_bias) {
@@ -1970,7 +2183,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
             SB8 src, skip_rec, inter_rec;
             memset(&inter_rec, 0, sizeof inter_rec);
             extract_sb8(input, gx, gy, &src);
-            motion_predict_sb8(&e->previous, gx, gy, 0, 0, denominator, &skip_rec);
+            motion_predict_sb8(&e->previous, gx, gy, 0, 0, denominator,
+                               &skip_rec);
 
             HLV1BitWriter skip_bits, inter_bits;
             hlv1_bw_init(&skip_bits);
@@ -1978,14 +2192,17 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
             r = hlv1_bw_put(&skip_bits, 0, 1);
             if (r >= 0) r = hlv1_bw_finish(&skip_bits);
             if (r < 0) { hlv1_bw_free(&skip_bits); hlv1_bw_free(&inter_bits); return r; }
-            double skip_score = (double)weighted_sse_sb8(&src, &skip_rec, e->luma_weight) +
+            double skip_score = (double)weighted_sse_sb8(
+                                    &src, &skip_rec, e->luma_weight,
+                                    e->use_simd) +
                                 lambda_bits * skip_bits.bit_count;
 
             MotionChoice choices[12];
             int choice_count = collect_motion_choices(
                 input, &e->previous, gx, gy, 8, e->header.search_radius,
                 denominator, legacy_even, e->motion_candidates,
-                global_mvx, global_mvy, use_global, choices, 12);
+                global_mvx, global_mvy, use_global, e->use_simd,
+                choices, 12);
             double inter_score = HUGE_VAL;
             for (int choice = 0; choice < choice_count; ++choice) {
                 HLV1BitWriter trial_bits;
@@ -2016,7 +2233,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                     return tr;
                 }
                 double trial_score =
-                    (double)weighted_sse_sb8(&src, &trial_rec, e->luma_weight) +
+                    (double)weighted_sse_sb8(
+                        &src, &trial_rec, e->luma_weight, e->use_simd) +
                     lambda_bits * trial_bits.bit_count;
                 if (trial_score < inter_score) {
                     hlv1_bw_free(&inter_bits);
@@ -2047,7 +2265,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     }
     r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = (double)weighted_sse(src_mb, &out->rec, e->luma_weight) +
+    out->score = (double)weighted_sse(src_mb, &out->rec, e->luma_weight,
+                                      e->use_simd) +
                  lambda_bits * out->bits.bit_count;
     return HLV1_OK;
 }
@@ -2069,7 +2288,7 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
         int h = vertical ? 16 : 8;
         find_motion_rect(input, &e->previous, x + sx, y + sy, w, h,
                          e->header.search_radius, denominator, legacy_even,
-                         &best_mvx[i], &best_mvy[i]);
+                         e->use_simd, &best_mvx[i], &best_mvy[i]);
     }
 
     out->score = HUGE_VAL;
@@ -2230,8 +2449,9 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                       e->ac_deadzone, NULL)) < 0)
                     goto fail_mb;
                 hlv1_bw_finish(&ci->bits);
-                ci->score = (double)weighted_sse(&src, &ci->rec,
-                                                 e->luma_weight) +
+                ci->score = (double)weighted_sse(
+                                &src, &ci->rec, e->luma_weight,
+                                e->use_simd) +
                             lambda_bits * ci->bits.bit_count;
             }
 
@@ -2242,7 +2462,9 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             for (int i = 0; i < 3; ++i) hlv1_bw_put(&cf->bits, means[i], 8);
             if ((r = put_residual(&cf->bits, version, &src, &pred, &cf->rec, e->q_y, e->q_uv, e->ac_deadzone, NULL)) < 0) goto fail_mb;
             hlv1_bw_finish(&cf->bits);
-            cf->score = (double)weighted_sse(&src, &cf->rec, e->luma_weight) + lambda_bits * cf->bits.bit_count;
+            cf->score = (double)weighted_sse(
+                            &src, &cf->rec, e->luma_weight, e->use_simd) +
+                        lambda_bits * cf->bits.bit_count;
 
             if (version >= HLV1_STREAM_VERSION_12) {
                 int maximum_palette =
@@ -2255,6 +2477,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                       use_global, palette_size,
                                                       e->q_y, e->q_uv,
                                                       lambda_bits, e->luma_weight,
+                                                      e->use_simd,
                                                       cp)) < 0)
                         goto fail_mb;
                 }
@@ -2272,11 +2495,15 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
 
             if (!key) {
                 Candidate *cs = &c[count++]; cs->mode = HLV1_MODE_SKIP;
-                motion_predict(&e->previous, x, y, 0, 0, denominator, &cs->rec);
+                motion_predict(&e->previous, x, y, 0, 0, denominator,
+                               &cs->rec);
                 if ((r = put_mode(&cs->bits, version, frame_type,
                                   HLV1_MODE_SKIP, use_global)) < 0) goto fail_mb;
                 hlv1_bw_finish(&cs->bits);
-                cs->score = (double)weighted_sse(&src, &cs->rec, e->luma_weight) + lambda_bits * cs->bits.bit_count;
+                cs->score = (double)weighted_sse(
+                                &src, &cs->rec, e->luma_weight,
+                                e->use_simd) +
+                            lambda_bits * cs->bits.bit_count;
 
                 if (use_global &&
                     motion_valid(&e->previous, x, y, 16,
@@ -2293,8 +2520,9 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                           &cg->rec, e->q_y, e->q_uv,
                                           e->ac_deadzone, NULL)) < 0) goto fail_mb;
                     hlv1_bw_finish(&cg->bits);
-                    cg->score = (double)weighted_sse(&src, &cg->rec,
-                                                     e->luma_weight) +
+                    cg->score = (double)weighted_sse(
+                                    &src, &cg->rec, e->luma_weight,
+                                    e->use_simd) +
                                 lambda_bits * cg->bits.bit_count;
                 }
 
@@ -2302,7 +2530,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                 int choice_count = collect_motion_choices(
                     input, &e->previous, x, y, 16, e->header.search_radius,
                     denominator, legacy_even, e->motion_candidates,
-                    global_mvx, global_mvy, use_global, choices, 12);
+                    global_mvx, global_mvy, use_global, e->use_simd,
+                    choices, 12);
                 Candidate *cm = &c[count++];
                 for (int choice = 0; choice < choice_count; ++choice) {
                     Candidate trial;
@@ -2439,24 +2668,23 @@ fail_mb:
 
 
 static uint64_t frame_weighted_sse(const HLV1Frame *a, const HLV1Frame *b,
-                                   int luma_weight) {
+                                   int luma_weight, int use_simd) {
     uint64_t sse = 0;
     for (int y = 0; y < a->height; ++y)
-        for (int x = 0; x < a->width; ++x) {
-            int d = (int)a->y[y * a->stride_y + x] -
-                    (int)b->y[y * b->stride_y + x];
-            sse += (uint64_t)(d * d) * (unsigned)luma_weight;
-        }
+        sse += squared_error_u8(a->y + y * a->stride_y,
+                                b->y + y * b->stride_y,
+                                (size_t)a->width, use_simd) *
+               (unsigned)luma_weight;
     int cw = (a->width + 1) / 2;
     int ch = (a->height + 1) / 2;
-    for (int y = 0; y < ch; ++y)
-        for (int x = 0; x < cw; ++x) {
-            int du = (int)a->u[y * a->stride_u + x] -
-                     (int)b->u[y * b->stride_u + x];
-            int dv = (int)a->v[y * a->stride_v + x] -
-                     (int)b->v[y * b->stride_v + x];
-            sse += (uint64_t)(du * du + dv * dv);
-        }
+    for (int y = 0; y < ch; ++y) {
+        sse += squared_error_u8(a->u + y * a->stride_u,
+                                b->u + y * b->stride_u,
+                                (size_t)cw, use_simd);
+        sse += squared_error_u8(a->v + y * a->stride_v,
+                                b->v + y * b->stride_v,
+                                (size_t)cw, use_simd);
+    }
     return sse;
 }
 
@@ -2515,12 +2743,14 @@ int hlv1_encoder_encode(HLV1Encoder *e, const HLV1Frame *input,
     uint64_t k_decode_cycles =
         k_encoder->estimated_decode_cycles - e->estimated_decode_cycles;
     double p_score = (double)frame_weighted_sse(input, p_rec,
-                                                e->luma_weight) +
+                                                e->luma_weight,
+                                                e->use_simd) +
                      lambda_bits *
                          ((double)p_packet.bit_length +
                           e->decode_cycle_weight * (double)p_decode_cycles);
     double k_score = (double)frame_weighted_sse(input, k_rec,
-                                                e->luma_weight) +
+                                                e->luma_weight,
+                                                e->use_simd) +
                      lambda_bits *
                          ((double)k_packet.bit_length +
                           e->decode_cycle_weight * (double)k_decode_cycles);

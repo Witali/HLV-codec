@@ -45,7 +45,8 @@ def write_fixture(video: Path, audio: Path) -> None:
 
 
 def encode(encoder: Path, video: Path, audio: Path, output: Path,
-           reconstruction: Path, threads: int | None) -> None:
+           reconstruction: Path, threads: int | None,
+           simd: str | None = None) -> None:
     command = [
         str(encoder),
         str(video),
@@ -61,6 +62,8 @@ def encode(encoder: Path, video: Path, audio: Path, output: Path,
     ]
     if threads is not None:
         command.extend(["--threads", str(threads)])
+    if simd is not None:
+        command.extend(["--simd", simd])
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(
@@ -84,13 +87,19 @@ def main() -> int:
         write_fixture(video, audio)
 
         outputs: dict[str, tuple[Path, Path]] = {}
-        for name, threads in (("one", 1), ("four", 4), ("default", None)):
+        variants = (
+            ("one", 1, "auto"),
+            ("four", 4, "auto"),
+            ("default", None, None),
+            ("scalar", 4, "off"),
+        )
+        for name, threads, simd in variants:
             hlv, recon = root / f"{name}.hlv", root / f"{name}.y4m"
-            encode(encoder, video, audio, hlv, recon, threads)
+            encode(encoder, video, audio, hlv, recon, threads, simd)
             outputs[name] = hlv, recon
 
         one_hlv, one_recon = outputs["one"]
-        for name in ("four", "default"):
+        for name in ("four", "default", "scalar"):
             hlv, recon = outputs[name]
             if hlv.read_bytes() != one_hlv.read_bytes():
                 raise AssertionError(
@@ -104,7 +113,7 @@ def main() -> int:
 
         print(
             "Threaded encoder: PASS "
-            f"(SHA-256 {digest(one_hlv)}, default=4 threads)"
+            f"(SHA-256 {digest(one_hlv)}, default=4 threads, scalar fallback)"
         )
     return 0
 

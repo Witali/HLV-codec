@@ -271,6 +271,15 @@ int hlv1_encoder_set_ac_deadzone(HLV1Encoder *encoder, double deadzone);
 int hlv1_encoder_set_motion_candidates(HLV1Encoder *encoder, int candidates);
 
 /**
+ * Enable or disable host SIMD acceleration for encoder-only searches/RDO.
+ *
+ * Creation enables the best compiled runtime-supported path by default.
+ * Passing zero preserves the scalar reference pipeline as a fallback.
+ */
+int hlv1_encoder_set_simd(HLV1Encoder *encoder, int enabled);
+int hlv1_encoder_simd_enabled(const HLV1Encoder *encoder);
+
+/**
  * Enable encoder-only adaptive keyframe selection.
  *
  * header.gop remains a hard maximum interval.  A zero minimum interval disables

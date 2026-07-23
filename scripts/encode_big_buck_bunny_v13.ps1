@@ -11,6 +11,8 @@ param(
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
+    [switch]$DisableSimd,
+
     [string]$OutputFile
 )
 
@@ -86,6 +88,9 @@ try {
     )
     if ($MaxFrames) {
         $encoderArguments += @("--max-frames", $MaxFrames)
+    }
+    if ($DisableSimd) {
+        $encoderArguments += @("--simd", "off")
     }
 
     $profileMessage = (

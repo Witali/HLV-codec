@@ -125,7 +125,8 @@ The checked-in Big Buck Bunny v13 profile uses only the project-approved
 ```
 
 Use `-Fps`, `-Threads`, or `-OutputFile` to override those three output
-parameters. `-MaxFrames` is available for a short smoke test.
+parameters. `-MaxFrames` is available for a short smoke test, and
+`-DisableSimd` forces the scalar encoder fallback.
 
 Presets:
 
@@ -138,7 +139,10 @@ Use `--threads 1..8` to change the worker count. Packets, reconstructed frames
 and audio are joined in presentation order, so `--threads 1` and
 `--threads 4` produce byte-identical output. Adaptive-quality and bitrate
 controllers retain one worker because their per-frame feedback is sequential.
-Run `make test-threaded` to check the one/four/default equivalence.
+On x86 hosts, exact SSE2 SAD and RDO paths are selected at runtime;
+`--simd off` forces the retained scalar pipeline. Run `make test-threaded` to
+check the one/four/default/SIMD-fallback equivalence. Benchmark details are in
+[`docs/ENCODER_SIMD.md`](docs/ENCODER_SIMD.md).
 
 Use older `--syntax N` values only for legacy comparisons. The default is
 `--syntax 13`.
