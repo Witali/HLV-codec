@@ -1,0 +1,4 @@
+interface:
+  display_name: "ESP32 Board Flash and Reset"
+  short_description: "Flash and reset the HLV ESP32 board safely"
+  default_prompt: "Use $flash-reset-esp32 to build, flash, or reset the HLV ESP32 board on COM8."
