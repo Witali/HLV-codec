@@ -1,0 +1,77 @@
+# Encoder optimization TODO
+
+This checklist tracks host-encoder optimizations that must preserve encoded
+quality.  Unless a format experiment explicitly says otherwise, an accepted
+change must produce byte-identical HLV and reconstructed Y4M output.
+
+## Reference workload
+
+- Source:
+  `out/sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov`
+- Input conversion: 320x180 YUV420, 24 fps, frames 2880 through 3239.
+- Encoder: balanced preset, syntax v13, quality 45, GOP 30.
+- Timing: median of at least three runs after one warm-up run.
+- Correctness: compare SHA-256 of both HLV and reconstructed Y4M against the
+  scalar single-thread reference.
+- Thread coverage: `--threads 1`, `--threads 4`, `--simd off`, and
+  `--simd auto`.
+
+Timing is machine-specific, so every result also records architecture-neutral
+encoder work counters:
+
+- motion-search SAD evaluations and luma samples visited;
+- global-motion SAD evaluations and luma samples visited;
+- RDO squared-error samples;
+- forward and inverse 4x4 WHT blocks;
+- quantized coefficients;
+- palette distance evaluations;
+- complete macroblock and residual candidates;
+- bit-writer calls, appended bits, and byte-copyable appended bytes.
+
+The counters describe algorithmic work, not exact processor instructions.
+They remain comparable across scalar, SSE2, AVX2, compiler, and host CPU
+implementations.  A separate weighted operation estimate may be reported, but
+the raw counters are the acceptance evidence.
+
+## Work list
+
+- [ ] Add encoder work counters and a repeatable benchmark report.
+- [ ] Record the unmodified SIMD baseline.
+- [ ] Remove duplicate motion SAD calculations.
+  - return the winning SAD from single-candidate searches;
+  - do not recompute zero/global/rounded motion vectors already in the list;
+  - do not evaluate the coarse global `(0, 0)` position twice.
+- [ ] Add exact SAD early termination against the current top-N threshold.
+- [ ] Reuse four 8x8 coarse SAD maps to derive 16x16 and rectangular costs.
+- [ ] Add exact zero-residual encoder reconstruction without inverse WHT.
+- [ ] Add exact DC-only encoder reconstruction without the general inverse
+  WHT.
+- [ ] Add an exact palette-impossibility prefilter before 2/4/8-color
+  clustering.
+- [ ] Reuse candidate and residual bit-writer storage.
+- [ ] Add byte-aligned and shifted bulk paths to `hlv1_bw_append`.
+- [ ] Count residual representation lengths first and emit only the selected
+  v9 representation.
+- [ ] Use SKIP as an early RDO upper bound while retaining the original
+  candidate tie priority.
+- [ ] Add monotonic candidate cutoffs using partial distortion and bit cost.
+- [ ] Replace GOP batches with a persistent ordered worker queue.
+- [ ] Evaluate strict-FP MSVC `/GL` + `/LTCG` and profile-guided optimization.
+- [ ] Evaluate batched AVX2 SAD/WHT with runtime dispatch and scalar/SSE2
+  fallbacks.
+
+## Rejected approaches
+
+- Reducing motion search radius or the number of RDO candidates.
+- Approximate quantization or unchecked reciprocal division.
+- `/fp:fast`, `-ffast-math`, or changes to floating-point RDO ordering.
+- Reordering candidates without preserving the existing strict-`<` tie rule.
+- SIMD kernels retained only because they are vectorized: every kernel must
+  improve the measured workload.  The earlier fractional predictor SSE2
+  experiment is the precedent; it was removed after a timing regression.
+
+## Results
+
+Results are added here one focused change at a time.  Retained changes include
+the output hashes, raw operation counts, median time, and relative throughput.
+Rejected changes remain documented with the reason for rejection.
