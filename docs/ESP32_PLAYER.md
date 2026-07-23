@@ -244,4 +244,9 @@ References:
 
 - <https://github.com/espressif/arduino-esp32/tree/master/variants/jczn_2432s028r>
 - <https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display>
+- <https://github.com/rzeldent/platformio-espressif32-sunton>
+- <https://github.com/rzeldent/esp32-smartdisplay>
 - <https://github.com/lovyan03/LovyanGFX>
+
+Local board documentation and the CH340C automatic-BOOT investigation are in
+[`docs/board`](board/README.md).
