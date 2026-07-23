@@ -10,6 +10,9 @@ param(
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
 $repo = (Resolve-Path (Join-Path $project "..\..")).Path
+$packetBlockCount = 9
+$packetBlockBytes = 7680
+$packetPoolBytes = $packetBlockCount * $packetBlockBytes
 if (-not $InputFile) {
     $InputFile = Join-Path $repo "out\video.hlv"
 }
@@ -53,8 +56,8 @@ try {
             throw "Bad frame marker at packet $frame."
         }
         $payloadBytes = [BitConverter]::ToUInt32($packetHeader, 12)
-        if ($payloadBytes -gt 61440) {
-            throw "Packet $frame exceeds the ESP32 61440-byte pool."
+        if ($payloadBytes -gt $packetPoolBytes) {
+            throw "Packet $frame exceeds the ESP32 $packetPoolBytes-byte pool."
         }
         $packetSizes.Add($payloadBytes)
         $packetTypes.Add($packetHeader[4])
