@@ -7,12 +7,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
+$idfScript = Join-Path $project "idf.ps1"
 if (-not $SkipBuild) {
     & (Join-Path $project "build.ps1")
 }
 
-Write-Host "Hold BOOT, tap RST, release BOOT; waiting on $Port..."
+$buildDirectory = Join-Path $project "build"
+$flashArguments = Join-Path $buildDirectory "flash_args"
+if (-not (Test-Path -LiteralPath $flashArguments)) {
+    throw "Firmware is not built: missing $flashArguments"
+}
+
+Write-Host "Entering the ROM downloader automatically on $Port..."
 $env:ESPTOOL_OPEN_PORT_ATTEMPTS = "60"
-& (Join-Path $project "idf.ps1") -IdfArguments @(
-    "-p", $Port, "-b", $Baud.ToString(), "flash"
+& $idfScript -EsptoolWorkingDirectory $buildDirectory -EsptoolArguments @(
+    "--chip", "esp32",
+    "--port", $Port,
+    "--baud", $Baud.ToString(),
+    "--before", "default_reset",
+    "--after", "hard_reset",
+    "write_flash", "@flash_args"
 )

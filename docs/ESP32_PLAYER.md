@@ -215,13 +215,12 @@ Windows Device Manager, and upload:
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
 
-Replace `COM8` if the board appears on another port.  This CYD2USB revision
-does not reliably enter the ROM downloader through the CH340 control lines.
-When the script asks, hold the board's `BOOT` button, briefly press and release
-`RST`, then release `BOOT`.  The script waits for that sequence and directly
-writes the bootloader, partition table and application to internal flash. The
-uploader defaults to a conservative 460800 baud. `video.hlv` is not flashed;
-it remains on the removable card.
+Replace `COM8` if the board appears on another port. After the EN-to-GND
+capacitor modification, the uploader uses the tested CH340C DTR/RTS sequence
+and requires no button presses: reset is held for 500 ms and GPIO0 for 50 ms.
+It writes the bootloader, partition table and application to internal flash.
+The uploader defaults to a conservative 460800 baud. `video.hlv` is not
+flashed; it remains on the removable card.
 
 The IDF driver defaults to a conservative 40 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in

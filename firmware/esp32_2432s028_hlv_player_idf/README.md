@@ -41,9 +41,13 @@ The repository-level wrappers run the same commands:
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
 
-The board normally needs manual download mode: hold `BOOT`, briefly press and
-release `RST`, then release `BOOT`. The project selects esptool's `no_reset`
-connection mode so it does not undo that sequence before connecting.
+The upload scripts enter download mode automatically through the CH340C
+control lines. The project supplies `esptool.cfg` with the sequence tested
+after the EN-to-GND capacitor modification: hold reset for 500 ms, switch DTR
+before RTS without an intentional pause, and hold GPIO0 low for 50 ms. No
+button presses are required. See
+[`docs/board/CH340C_AUTO_BOOT_MOD.md`](../../docs/board/CH340C_AUTO_BOOT_MOD.md)
+for the measured timing limits and the manual fallback.
 
 The ST7789 and SD-card SPI clocks are available under the `HLV player`
 section of ESP-IDF menuconfig:

@@ -67,33 +67,30 @@ USB и внешнем питании.
 - [цепь CH340C и автозагрузки](ESP32-2432S028-schematic-MCU.jpg);
 - [объединённая схема платы](ESP32-2432S028-schematic.pdf).
 
-## 2. Сначала проверить конфигурацию прошивки
+## 2. Конфигурация прошивки
 
-Текущий проект намеренно отключает автоматический reset, потому что во время
-первых прошивок плата переводилась в загрузчик кнопками:
-
-```text
-CONFIG_ESPTOOLPY_BEFORE_NORESET=y
-```
-
-Даже исправная аппаратная цепь при такой настройке не будет проверена.
-Для теста открыть конфигурацию:
-
-```powershell
-cd firmware\esp32_2432s028_hlv_player_idf
-.\idf.ps1 -IdfArguments @("menuconfig")
-```
-
-В `Serial flasher config -> Before flashing` выбрать сброс в загрузчик
-(`default_reset`). Эквивалентная настройка для нового `sdkconfig`:
+Проект использует автоматический reset:
 
 ```text
 CONFIG_ESPTOOLPY_BEFORE_RESET=y
 CONFIG_ESPTOOLPY_AFTER_RESET=y
 ```
 
-После этого подключить именно Micro-USB разъём CH340C и выполнить без нажатия
-кнопок:
+Файл `firmware/esp32_2432s028_hlv_player_idf/esptool.cfg` задаёт проверенную
+последовательность:
+
+```text
+D0|R1|W0.500|D1|R0|W0.050|D0|R0
+```
+
+Обёртка `idf.ps1` передаёт этот файл esptool через `ESPTOOL_CFGFILE`.
+`flash.ps1` запускает esptool с явным `--before default_reset` и использует
+сгенерированный ESP-IDF файл `build/flash_args`, поэтому старый пользовательский
+`sdkconfig` с режимом `no_reset` не может обойти проверенную последовательность.
+Та же конфигурация применяется при прямом запуске `idf.ps1 ... flash`, если
+проект оставлен в поставляемом режиме `CONFIG_ESPTOOLPY_BEFORE_RESET`.
+
+Подключить именно Micro-USB разъём CH340C и выполнить без нажатия кнопок:
 
 ```powershell
 .\idf.ps1 -IdfArguments @("-p", "COM8", "-b", "115200", "flash")
