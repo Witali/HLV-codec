@@ -8,11 +8,11 @@ DAC GPIO26.
 ## What the firmware does
 
 - reads `/sdcard/video.hlv` from a FAT16/FAT32 microSD card;
-- decodes HLV-1 stream versions 1 through 12;
+- decodes HLV-1 stream versions 1 through 13;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in 16-row strips, without a full RGB framebuffer;
-- reads SPI3/VSPI at 20 MHz with DMA into a 16 KiB aligned stdio read-ahead
-  buffer, then fills eight reusable 7680-byte packet blocks (60 KiB total);
+- reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
+  buffer, then fills nine reusable 7680-byte packet blocks (67.5 KiB total);
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
 - decodes frame N on CPU1 while CPU0 converts and queues frame N-1 for the
@@ -32,14 +32,15 @@ black rows above and below the picture.
 
 The compile-time flag `kUseCompactY6U5V5` in
 `firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp` is currently
-`true`. The on-disk HLV stream remains ordinary 8-bit YUV420. The compact
-decoder rounds reconstructed luma to six bits and chroma to five bits after
-each macroblock, then packs both predictive frames by row. This saves 46,080
-bytes at 320x180, but it is intentionally not bit-exact: banding and gradual
-P-frame prediction drift are possible. Set the flag to `false` for the original
-8-bit reference path. The compact path expands consecutive reference spans and
-display rows in batches rather than performing a fresh bit lookup per pixel;
-the application and decoder components are compiled with `-O3`.
+`true`. Ordinary v1-v12 predictors remain 8-bit in the bitstream. A v13
+`LITERAL` macroblock is stored directly as packed Y6/U5/V5, while other modes
+are rounded to that precision when committed to the compact reference. This
+saves 46,080 bytes at 320x180, but the compact treatment of non-literal modes
+is intentionally not bit-exact: banding and gradual P-frame prediction drift
+are possible. Set the flag to `false` for the original 8-bit reference path.
+The compact path expands consecutive reference spans and display rows in
+batches; literal blocks bypass the temporary 8-bit macroblock completely.
+The application and decoder components are compiled with `-O3`.
 
 The current build sets `kEnableAudio = true` in the same settings file. Its
 4 KiB FreeRTOS audio stream is statically allocated, while DAC descriptors and
@@ -67,11 +68,11 @@ framebuffer. Set the flag to `false` to retain the sequential comparison mode.
 ## Segmented ESP32 decoder
 
 The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
-portable predictive decoder first and then allocates an eight-block packet
+portable predictive decoder first and then allocates a nine-block packet
 pool from internal SRAM. Every block preferentially uses DMA-capable memory;
 if decoder fragmentation exhausts that heap, only the remaining blocks fall
-back to ordinary 8-bit internal SRAM. Its 65,536-byte capacity covers the
-60,538-byte maximum packet in the prepared Big Buck Bunny file without
+back to ordinary 8-bit internal SRAM. Its 69,120-byte capacity covers a fully
+literal 320x180 Y6/U5/V5 key frame plus one 16 kHz mono audio interval without
 requiring one equally large contiguous heap region.
 
 Packet data is read sequentially into the blocks and CRC-32 is updated during
@@ -87,11 +88,11 @@ KiB of the RAM saved by compact frame storage, but combines small packet/header
 reads into longer SDSPI transactions. On the reference card it reduced average
 packet-read time from roughly 50--55 ms to 5--6 ms.
 
-The pool capacity is 61,440 bytes, which covers the measured 60,538-byte
-maximum packet in the prepared movie while saving 4 KiB versus 8x8 KiB. The
-ordinary desktop encoder and decoder retain their contiguous packet path.
-The on-disk HLV format is unchanged. A packet larger than 61,440 bytes is
-rejected with an out-of-memory error instead of fragmenting the ESP32 heap.
+The pool capacity is 69,120 bytes. A packet larger than that is rejected with
+an out-of-memory error instead of fragmenting the ESP32 heap. The ninth block
+uses 7,680 additional bytes compared with the v12 player and leaves roughly
+28 KiB free in the current 320x180 compact memory-budget estimate; confirm the
+actual minimum heap from the serial log on physical hardware.
 
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
 ten-second file. The DAC DMA clock uses APLL rather than frame timing, while

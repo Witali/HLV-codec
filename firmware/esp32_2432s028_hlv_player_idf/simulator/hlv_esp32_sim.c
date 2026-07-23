@@ -1,6 +1,6 @@
 /* Host-side performance and correctness harness for the ESP32 compact
  * decoder. It deliberately uses the segmented packet API and the same
- * 8 x 7680-byte view as the firmware, without copying packet data while the
+ * 9 x 7680-byte view as the firmware, without copying packet data while the
  * timed decoder loop is running. */
 #include "hlv1.h"
 
@@ -15,7 +15,7 @@
 #endif
 
 enum {
-    PACKET_BLOCK_COUNT = 8,
+    PACKET_BLOCK_COUNT = 9,
     PACKET_BLOCK_BYTES = 7680
 };
 
@@ -206,12 +206,18 @@ int main(int argc, char **argv) {
     printf("Timed decode: %.3f s, %.1f fps, %.2f us/frame (%d loop%s)\n",
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
     if (stats.frames) {
-        printf("Modes/frame: skip %.2f, inter %.2f, global %.2f, split %.2f; "
+        printf("Modes/frame: skip %.2f, inter %.2f, global %.2f, split %.2f, "
+               "palette %.2f (2/4/8 %.2f/%.2f/%.2f), literal %.2f; "
                "coeff %.1f, WHT %.1f\n",
                (double)stats.skipped / stats.frames,
                (double)stats.inter / stats.frames,
                (double)stats.global / stats.frames,
                (double)stats.split_inter / stats.frames,
+               (double)stats.palette / stats.frames,
+               (double)stats.palette_2 / stats.frames,
+               (double)stats.palette_4 / stats.frames,
+               (double)stats.palette_8 / stats.frames,
+               (double)stats.literal / stats.frames,
                (double)stats.coefficient_symbols / stats.frames,
                (double)stats.inverse_wht_blocks / stats.frames);
         printf("Residual blocks: %" PRIu64 ", zero %" PRIu64

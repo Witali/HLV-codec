@@ -82,9 +82,11 @@ display DMA timing.
 - Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
   strips.
 - Storage: SDSPI DMA at configurable 40 MHz, a 16 KiB aligned read-ahead
-  buffer and eight reusable 7680-byte packet blocks (60 KiB).
+  buffer and nine reusable 7680-byte packet blocks (67.5 KiB), enough for a
+  fully literal 320x180 key frame plus one mono audio interval.
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
+  Stream v13 literal blocks are copied directly into this packed storage.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
   reader and two one-entry decode queues. Only frame descriptors cross cores,
   so no YUV frame or packet payload is copied.

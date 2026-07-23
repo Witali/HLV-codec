@@ -5,8 +5,8 @@ displays and microcontrollers. This build contains a portable C encoder and
 decoder, a static library, Y4M/PCM tools, correctness tests, and a resumable
 benchmark harness.
 
-The decoder accepts stream syntax v1 through v12. New encodes use **stream
-v12** by default.  The stable syntax now includes:
+The decoder accepts stream syntax v1 through v13. New encodes use **stream
+v13** by default.  The stable syntax now includes:
 
 - short `SKIP` and zero-residual paths;
 - 16×16 and optional four-way 8×8 motion prediction;
@@ -14,7 +14,10 @@ v12** by default.  The stable syntax now includes:
 - extended quantizer range;
 - compact residual masks and coefficient VLC;
 - directional intra prediction;
-- strict 2/4-colour palette blocks;
+- strict 2/4/8-colour palette blocks;
+- byte-aligned Y6/U5/V5 literal macroblocks for bounded decode time;
+- complexity-aware RDO that trades a configurable amount of bitrate for
+  lower decoder work;
 - the original simple 4×4 integer WHT reconstruction.
 
 The container can also carry unsigned 8-bit mono PCM in each video frame
@@ -47,7 +50,7 @@ make test
 make sanitize
 ```
 
-`make test` covers v1-v12 round-trip, forced `FILL`/`SKIP`/split/palette
+`make test` covers v1-v13 round-trip, forced `FILL`/`SKIP`/split/palette/literal
 paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.
@@ -81,7 +84,7 @@ independent SPI3/VSPI DMA bus, displays it on the 320x240 ST7789 over SPI2 DMA,
 and plays its mono track through DAC GPIO26 DMA and the onboard amplifier. The
 included Big Buck Bunny profile preserves the official 320x180 resolution and
 centres it without scaling. Its ESP32-specific decoder reads packets into a
-reusable 8 x 7680-byte DMA block pool, so a frame never needs one large
+reusable 9 x 7680-byte DMA block pool, so a frame never needs one large
 contiguous payload allocation. The current test configuration also packs both
 predictive frames as Y6/U5/V5 4:2:0, reducing their storage plus working rows
 from 184,320 to 138,240 bytes. Arduino and LovyanGFX are not part of the build.
@@ -99,6 +102,9 @@ firmware project directory:
 
 See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload
 instructions.
+
+The v13 literal/palette syntax and the decoder-cycle term used by RDO are
+described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).
 
 ## FFmpeg pipe encoding
 
@@ -149,8 +155,8 @@ v12 bitstream.
 ## Optional adaptive K/P and GOP
 
 HLV can compare a forced P-frame and K-frame from the same cloned predictive
-state. This is an encoder-only decision and does not change syntax v12 or
-decoder cost:
+state. This is an encoder-only decision and does not add syntax or decoder
+work:
 
 ```sh
 ./hlvenc input.y4m output.hlv \
