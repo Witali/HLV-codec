@@ -68,7 +68,7 @@ Coefficient distribution:
 - [ ] Write simple compact macroblocks directly:
   - FILL without residual (accepted);
   - PALETTE (evaluated and rejected: only 0.10% faster in QEMU);
-  - zero-residual INTRA DC/vertical/horizontal where profitable;
+  - zero-residual INTRA DC (evaluated and rejected: native v12 2.4% slower);
   - aligned LITERAL payloads through span copies instead of one call per byte
     (accepted for v13).
 - [ ] Evaluate stream-version-specialised v12/v13 decode loops while retaining
@@ -151,3 +151,8 @@ The complete v13 reconstruction remains `fe31eb325e6cb945`. Span copies improve
 the complete native run by 2.3%, while the representative QEMU sample improves
 by only 0.03% because it averages very few LITERAL blocks. The helper is
 retained to bound literal-heavy keyframes and adds no packet or frame buffers.
+
+A direct compact zero-residual INTRA DC path preserved both v12 and v13 hashes,
+but slowed the native v12 test from 316.89 to 324.44 us/frame. It was removed
+before QEMU; vertical and horizontal variants were not added because they
+would enlarge the same already-regressed branch.
