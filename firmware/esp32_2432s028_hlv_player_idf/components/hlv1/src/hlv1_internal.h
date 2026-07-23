@@ -90,7 +90,31 @@ typedef struct HLV1BitReader {
 void hlv1_br_init(HLV1BitReader *br, const uint8_t *data,
                   size_t size, uint32_t valid_bits);
 void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *packet);
+#if HLV1_FAST_32BIT_BITREADER
+uint32_t hlv1_br_get_slow(HLV1BitReader *br, unsigned count);
+
+/* Keep the overwhelmingly common in-cache extraction in the caller.  The
+ * slow helper validates malformed requests, refills an exhausted cache and
+ * handles a value split across packet spans.  Refilling is deliberately lazy:
+ * eagerly topping the cache up after every syntax field used to call the
+ * sizeable refill routine thousands of times per frame. */
+static inline uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
+    if (br && count <= 32U && count <= br->bits &&
+        count <= br->bits_left) {
+        uint32_t value =
+            count ? br->cache >> (32U - count) : 0;
+        if (count) {
+            br->cache = count == 32U ? 0 : br->cache << count;
+            br->bits -= count;
+            br->bits_left -= count;
+        }
+        return value;
+    }
+    return hlv1_br_get_slow(br, count);
+}
+#else
 uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count);
+#endif
 uint32_t hlv1_br_get_ue(HLV1BitReader *br);
 int32_t hlv1_br_get_se(HLV1BitReader *br);
 

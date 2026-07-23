@@ -540,7 +540,11 @@ void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *p) {
     br_refill(br);
 }
 
+#if HLV1_FAST_32BIT_BITREADER
+uint32_t hlv1_br_get_slow(HLV1BitReader *br, unsigned count) {
+#else
 uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
+#endif
     if (!br || count > 32 || count > br->bits_left) {
         if (br) br->error = HLV1_ERR_BITSTREAM;
         return 0;
@@ -577,7 +581,6 @@ uint32_t hlv1_br_get(HLV1BitReader *br, unsigned count) {
     br->bits -= count;
 #endif
     br->bits_left -= count;
-    br_refill(br);
     return v;
 }
 
