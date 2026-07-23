@@ -50,7 +50,7 @@ authoritative.
 ## Work list
 
 - [x] Add encoder work counters and a repeatable benchmark report.
-- [ ] Record the unmodified SIMD baseline.
+- [x] Record the instrumented SIMD baseline.
 - [ ] Remove duplicate motion SAD calculations.
   - return the winning SAD from single-candidate searches;
   - do not recompute zero/global/rounded motion vectors already in the list;
@@ -89,3 +89,35 @@ authoritative.
 Results are added here one focused change at a time.  Retained changes include
 the output hashes, raw operation counts, median time, and relative throughput.
 Rejected changes remain documented with the reason for rejection.
+
+### Instrumented baseline
+
+Commit `dd7d2fb`, 360 frames, three measured runs after one warm-up:
+
+| Pipeline | Threads | Median | Throughput | Primitive ops/frame |
+|---|---:|---:|---:|---:|
+| Scalar | 1 | 23.995 s | 15.00 fps | 158,017,199 |
+| SSE2 | 1 | 18.365 s | 19.60 fps | 158,017,199 |
+| Scalar | 4 | 6.921 s | 52.02 fps | 158,017,199 |
+| SSE2 | 4 | 5.526 s | 65.15 fps | 158,017,199 |
+
+All variants produced identical output:
+
+- HLV SHA-256:
+  `4d36a41966d3c165ee4b4d0de58575cccb9f68a2b9ba8682fd45f2c88150e05d`
+- reconstructed Y4M SHA-256:
+  `ded2a57caca791ecce5342dccc0991cecf35366464c92c71f6aa59e93285e321`
+
+Selected raw totals for the 360 frames:
+
+| Counter | Total |
+|---|---:|
+| Motion/global SAD evaluations | 35,476,479 / 31,395 |
+| Integer/H-V/2-D SAD samples | 3,362,114,355 / 163,839,940 / 153,628,484 |
+| Copied/H-V/2-D prediction samples | 160,658,400 / 141,911,616 / 41,354,592 |
+| RDO squared-error samples | 973,021,824 |
+| Forward/inverse WHT blocks | 29,962,488 / 29,962,488 |
+| Quantized coefficients | 479,399,808 |
+| Palette distance evaluations | 2,952,806,400 |
+| Candidate initializations/residual candidates | 1,742,679 / 2,355,659 |
+| Bit-writer put calls/buffer grows | 683,126,180 / 5,516,655 |
