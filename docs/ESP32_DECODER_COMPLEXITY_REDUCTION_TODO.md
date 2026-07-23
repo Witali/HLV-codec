@@ -67,7 +67,7 @@ Coefficient distribution:
       value.
 - [ ] Write simple compact macroblocks directly:
   - FILL without residual;
-  - PALETTE;
+  - PALETTE (evaluated and rejected: only 0.10% faster in QEMU);
   - zero-residual INTRA DC/vertical/horizontal where profitable;
   - aligned LITERAL payloads through span copies instead of one call per byte.
 - [ ] Evaluate stream-version-specialised v12/v13 decode loops while retaining
@@ -104,6 +104,7 @@ Their measurements are retained in
 | Single-step cached Exp-Golomb | 337.51* | 454,488 | `be4876ff1c6b8461` | accepted |
 | Aligned 32-bit empty-cache refill | 332.62* | 455,205 | `be4876ff1c6b8461` | rejected |
 | Combined zero-run/unit-level VLC | 317.78 | 452,331 | `be4876ff1c6b8461` | accepted |
+| Direct compact PALETTE output | 317.74 | 451,876 | `be4876ff1c6b8461` | rejected |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
@@ -125,3 +126,7 @@ The combined coefficient VLC improves native throughput by 5.6% and removes a
 further 0.47% of QEMU cycles. Its smaller QEMU effect shows that the preceding
 cached Exp-Golomb optimisation already captures much of the same call
 overhead. The cumulative QEMU reduction from the fresh baseline is 26.0%.
+
+Direct compact PALETTE output saves only 455 QEMU cycles per frame (0.10%)
+because v12 averages 1.09 palette macroblocks per frame. The much larger
+mode-specific implementation is not justified by that result and was removed.
