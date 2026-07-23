@@ -2,8 +2,11 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commdlg.h>
+#include <d3d11.h>
+#include <dxgi1_3.h>
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <wrl/client.h>
 
 #include "hlv1.h"
 
@@ -17,12 +20,16 @@
 #include <vector>
 
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "winmm.lib")
 
 namespace {
+
+using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t kWindowClass[] = L"HLV1WindowsPlayer";
 constexpr UINT_PTR kPlaybackTimer = 1;
@@ -63,15 +70,22 @@ struct VideoFrame {
     int width = 0;
     int height = 0;
     std::vector<uint32_t> pixels;
+    std::vector<uint8_t> nv12;
 };
 
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
     destination.width = source->width;
     destination.height = source->height;
     destination.pixels.resize(static_cast<size_t>(source->width) * source->height);
+    const size_t luma_size =
+        static_cast<size_t>(source->width) * source->height;
+    destination.nv12.resize(luma_size + luma_size / 2U);
 
     for (int y = 0; y < source->height; ++y) {
         const uint8_t *luma = source->y + y * source->stride_y;
+        std::memcpy(destination.nv12.data() +
+                        static_cast<size_t>(y) * source->width,
+                    luma, static_cast<size_t>(source->width));
         const uint8_t *urow = source->u + (y >> 1) * source->stride_u;
         const uint8_t *vrow = source->v + (y >> 1) * source->stride_v;
         uint32_t *output = destination.pixels.data() +
@@ -94,7 +108,396 @@ void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
             }
         }
     }
+
+    uint8_t *chroma = destination.nv12.data() + luma_size;
+    for (int y = 0; y < source->height / 2; ++y) {
+        const uint8_t *urow = source->u + y * source->stride_u;
+        const uint8_t *vrow = source->v + y * source->stride_v;
+        uint8_t *output =
+            chroma + static_cast<size_t>(y) * source->width;
+        for (int x = 0; x < source->width / 2; ++x) {
+            output[x * 2] = urow[x];
+            output[x * 2 + 1] = vrow[x];
+        }
+    }
 }
+
+std::wstring hresult_error(const wchar_t *operation, HRESULT result) {
+    wchar_t code[32] = {};
+    swprintf_s(code, L" (HRESULT 0x%08lX)",
+               static_cast<unsigned long>(result));
+    return std::wstring(operation) + code;
+}
+
+class D3DVideoRenderer {
+public:
+    bool open(HWND window, unsigned width, unsigned height,
+              unsigned fps_num, unsigned fps_den, std::wstring &error) {
+        close();
+        window_ = window;
+        source_width_ = width;
+        source_height_ = height;
+        fps_num_ = fps_num;
+        fps_den_ = fps_den;
+
+        const D3D_FEATURE_LEVEL levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0
+        };
+        D3D_FEATURE_LEVEL selected_level = D3D_FEATURE_LEVEL_10_0;
+        UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT |
+                     D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+        HRESULT result = D3D11CreateDevice(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+            levels, static_cast<UINT>(std::size(levels)),
+            D3D11_SDK_VERSION, device_.GetAddressOf(), &selected_level,
+            context_.GetAddressOf());
+        if (result == E_INVALIDARG) {
+            result = D3D11CreateDevice(
+                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+                levels + 1, static_cast<UINT>(std::size(levels) - 1),
+                D3D11_SDK_VERSION, device_.GetAddressOf(), &selected_level,
+                context_.GetAddressOf());
+        }
+        if (FAILED(result)) {
+            error = hresult_error(L"Cannot create the D3D11 video device", result);
+            close();
+            return false;
+        }
+
+        result = device_.As(&video_device_);
+        if (SUCCEEDED(result)) result = context_.As(&video_context_);
+        if (FAILED(result)) {
+            error = hresult_error(
+                L"The D3D11 device has no video-processor interface", result);
+            close();
+            return false;
+        }
+
+        ComPtr<IDXGIDevice1> dxgi_device;
+        ComPtr<IDXGIAdapter> adapter;
+        ComPtr<IDXGIFactory2> factory;
+        result = device_.As(&dxgi_device);
+        if (SUCCEEDED(result)) result = dxgi_device->GetAdapter(&adapter);
+        if (SUCCEEDED(result)) {
+            result = adapter->GetParent(
+                IID_PPV_ARGS(factory.GetAddressOf()));
+        }
+        if (FAILED(result)) {
+            error = hresult_error(L"Cannot obtain the DXGI factory", result);
+            close();
+            return false;
+        }
+        dxgi_device->SetMaximumFrameLatency(1);
+
+        RECT client = {};
+        GetClientRect(window_, &client);
+        const UINT client_width =
+            static_cast<UINT>(std::max<LONG>(1, client.right - client.left));
+        const UINT client_height =
+            static_cast<UINT>(std::max<LONG>(1, client.bottom - client.top));
+
+        DXGI_SWAP_CHAIN_DESC1 swap_desc = {};
+        swap_desc.Width = client_width;
+        swap_desc.Height = client_height;
+        swap_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        swap_desc.SampleDesc.Count = 1;
+        swap_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        swap_desc.BufferCount = 2;
+        swap_desc.Scaling = DXGI_SCALING_STRETCH;
+        swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        swap_desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        result = factory->CreateSwapChainForHwnd(
+            device_.Get(), window_, &swap_desc, nullptr, nullptr,
+            swap_chain_.GetAddressOf());
+        if (FAILED(result)) {
+            swap_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+            result = factory->CreateSwapChainForHwnd(
+                device_.Get(), window_, &swap_desc, nullptr, nullptr,
+                swap_chain_.GetAddressOf());
+        }
+        if (FAILED(result)) {
+            error = hresult_error(
+                L"Cannot create the two-buffer DXGI flip swap chain", result);
+            close();
+            return false;
+        }
+        factory->MakeWindowAssociation(window_, DXGI_MWA_NO_ALT_ENTER);
+
+        detect_overlay_support();
+        result = create_video_resources(client_width, client_height);
+        if (FAILED(result)) {
+            error = hresult_error(
+                L"Cannot initialize NV12 D3D11 video processing", result);
+            close();
+            return false;
+        }
+
+        active_ = true;
+        return true;
+    }
+
+    void close() {
+        active_ = false;
+        overlay_capable_ = false;
+        nv12_overlay_capable_ = false;
+        output_view_.Reset();
+        for (auto &view : input_views_) view.Reset();
+        for (auto &texture : input_textures_) texture.Reset();
+        processor_.Reset();
+        enumerator_.Reset();
+        swap_chain_.Reset();
+        video_context_.Reset();
+        video_device_.Reset();
+        context_.Reset();
+        device_.Reset();
+        client_width_ = 0;
+        client_height_ = 0;
+        source_width_ = 0;
+        source_height_ = 0;
+        input_index_ = 0;
+        window_ = nullptr;
+    }
+
+    bool active() const { return active_; }
+
+    std::wstring label() const {
+        std::wstring result = L"D3D11 NV12 flip";
+        if (overlay_capable_ && nv12_overlay_capable_)
+            result += L", MPO-capable";
+        return result;
+    }
+
+    bool present(const VideoFrame &frame, bool fit_to_window,
+                 std::wstring &error) {
+        if (!active_ || !swap_chain_ || frame.width <= 0 || frame.height <= 0)
+            return false;
+        const size_t expected_size =
+            static_cast<size_t>(frame.width) * frame.height * 3U / 2U;
+        if (frame.nv12.size() != expected_size) {
+            error = L"The decoded frame has an invalid NV12 buffer";
+            close();
+            return false;
+        }
+
+        RECT client = {};
+        GetClientRect(window_, &client);
+        const LONG raw_width = client.right - client.left;
+        const LONG raw_height = client.bottom - client.top;
+        if (raw_width <= 0 || raw_height <= 0) return true;
+        const UINT width = static_cast<UINT>(raw_width);
+        const UINT height = static_cast<UINT>(raw_height);
+        HRESULT result = ensure_size(width, height);
+        if (FAILED(result)) {
+            error = hresult_error(L"Cannot resize the DXGI video buffers", result);
+            close();
+            return false;
+        }
+
+        const size_t slot = input_index_++ % input_textures_.size();
+        context_->UpdateSubresource(
+            input_textures_[slot].Get(), 0, nullptr, frame.nv12.data(),
+            static_cast<UINT>(frame.width),
+            static_cast<UINT>(expected_size));
+
+        RECT source_rect = {0, 0, frame.width, frame.height};
+        RECT target_rect = {0, 0, static_cast<LONG>(width),
+                            static_cast<LONG>(height)};
+        RECT destination_rect = target_rect;
+        int draw_width = frame.width;
+        int draw_height = frame.height;
+        if (fit_to_window) {
+            if (static_cast<int64_t>(width) * frame.height <=
+                static_cast<int64_t>(height) * frame.width) {
+                draw_width = static_cast<int>(width);
+                draw_height = static_cast<int>(
+                    static_cast<int64_t>(width) * frame.height / frame.width);
+            } else {
+                draw_height = static_cast<int>(height);
+                draw_width = static_cast<int>(
+                    static_cast<int64_t>(height) * frame.width / frame.height);
+            }
+        }
+        destination_rect.left =
+            (static_cast<int>(width) - draw_width) / 2;
+        destination_rect.top =
+            (static_cast<int>(height) - draw_height) / 2;
+        destination_rect.right = destination_rect.left + draw_width;
+        destination_rect.bottom = destination_rect.top + draw_height;
+
+        D3D11_VIDEO_COLOR background = {};
+        background.RGBA.A = 1.0f;
+        video_context_->VideoProcessorSetOutputBackgroundColor(
+            processor_.Get(), FALSE, &background);
+        video_context_->VideoProcessorSetOutputTargetRect(
+            processor_.Get(), TRUE, &target_rect);
+        video_context_->VideoProcessorSetStreamSourceRect(
+            processor_.Get(), 0, TRUE, &source_rect);
+        video_context_->VideoProcessorSetStreamDestRect(
+            processor_.Get(), 0, TRUE, &destination_rect);
+
+        D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+        stream.Enable = TRUE;
+        stream.pInputSurface = input_views_[slot].Get();
+        result = video_context_->VideoProcessorBlt(
+            processor_.Get(), output_view_.Get(), 0, 1, &stream);
+        if (SUCCEEDED(result)) result = swap_chain_->Present(1, 0);
+        if (result == DXGI_STATUS_OCCLUDED) return true;
+        if (FAILED(result)) {
+            error = hresult_error(L"D3D11 video presentation failed", result);
+            close();
+            return false;
+        }
+        return true;
+    }
+
+private:
+    void detect_overlay_support() {
+        ComPtr<IDXGIOutput> output;
+        if (FAILED(swap_chain_->GetContainingOutput(&output))) return;
+        ComPtr<IDXGIOutput2> output2;
+        if (SUCCEEDED(output.As(&output2)))
+            overlay_capable_ = output2->SupportsOverlays() != FALSE;
+        ComPtr<IDXGIOutput3> output3;
+        UINT flags = 0;
+        if (SUCCEEDED(output.As(&output3)) &&
+            SUCCEEDED(output3->CheckOverlaySupport(
+                DXGI_FORMAT_NV12, device_.Get(), &flags))) {
+            nv12_overlay_capable_ = flags != 0;
+        }
+    }
+
+    HRESULT ensure_size(UINT width, UINT height) {
+        if (width == client_width_ && height == client_height_)
+            return S_OK;
+        output_view_.Reset();
+        for (auto &view : input_views_) view.Reset();
+        processor_.Reset();
+        enumerator_.Reset();
+        context_->Flush();
+        HRESULT result = swap_chain_->ResizeBuffers(
+            2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+        if (FAILED(result)) return result;
+        return create_video_resources(width, height);
+    }
+
+    HRESULT create_video_resources(UINT output_width, UINT output_height) {
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC content = {};
+        content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        content.InputFrameRate.Numerator = fps_num_;
+        content.InputFrameRate.Denominator = fps_den_;
+        content.InputWidth = source_width_;
+        content.InputHeight = source_height_;
+        content.OutputFrameRate = content.InputFrameRate;
+        content.OutputWidth = output_width;
+        content.OutputHeight = output_height;
+        content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+        HRESULT result = video_device_->CreateVideoProcessorEnumerator(
+            &content, enumerator_.GetAddressOf());
+        UINT format_flags = 0;
+        if (SUCCEEDED(result)) {
+            result = enumerator_->CheckVideoProcessorFormat(
+                DXGI_FORMAT_NV12, &format_flags);
+        }
+        if (SUCCEEDED(result) &&
+            !(format_flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) {
+            result = DXGI_ERROR_UNSUPPORTED;
+        }
+        format_flags = 0;
+        if (SUCCEEDED(result)) {
+            result = enumerator_->CheckVideoProcessorFormat(
+                DXGI_FORMAT_B8G8R8A8_UNORM, &format_flags);
+        }
+        if (SUCCEEDED(result) &&
+            !(format_flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) {
+            result = DXGI_ERROR_UNSUPPORTED;
+        }
+        if (SUCCEEDED(result)) {
+            result = video_device_->CreateVideoProcessor(
+                enumerator_.Get(), 0, processor_.GetAddressOf());
+        }
+        if (FAILED(result)) return result;
+
+        D3D11_TEXTURE2D_DESC texture_desc = {};
+        texture_desc.Width = source_width_;
+        texture_desc.Height = source_height_;
+        texture_desc.MipLevels = 1;
+        texture_desc.ArraySize = 1;
+        texture_desc.Format = DXGI_FORMAT_NV12;
+        texture_desc.SampleDesc.Count = 1;
+        texture_desc.Usage = D3D11_USAGE_DEFAULT;
+        texture_desc.BindFlags = 0;
+
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_desc = {};
+        input_desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        for (size_t index = 0; index < input_textures_.size(); ++index) {
+            if (!input_textures_[index]) {
+                result = device_->CreateTexture2D(
+                    &texture_desc, nullptr,
+                    input_textures_[index].GetAddressOf());
+            }
+            if (SUCCEEDED(result)) {
+                result = video_device_->CreateVideoProcessorInputView(
+                    input_textures_[index].Get(), enumerator_.Get(),
+                    &input_desc, input_views_[index].GetAddressOf());
+            }
+            if (FAILED(result)) return result;
+        }
+
+        ComPtr<ID3D11Texture2D> back_buffer;
+        result = swap_chain_->GetBuffer(
+            0, IID_PPV_ARGS(back_buffer.GetAddressOf()));
+        if (FAILED(result)) return result;
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC output_desc = {};
+        output_desc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        result = video_device_->CreateVideoProcessorOutputView(
+            back_buffer.Get(), enumerator_.Get(), &output_desc,
+            output_view_.GetAddressOf());
+        if (FAILED(result)) return result;
+
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE input_color = {};
+        input_color.YCbCr_Matrix = 0;
+        input_color.Nominal_Range =
+            D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_color = {};
+        output_color.RGB_Range = 0;
+        output_color.Nominal_Range =
+            D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        video_context_->VideoProcessorSetStreamColorSpace(
+            processor_.Get(), 0, &input_color);
+        video_context_->VideoProcessorSetOutputColorSpace(
+            processor_.Get(), &output_color);
+
+        client_width_ = output_width;
+        client_height_ = output_height;
+        return S_OK;
+    }
+
+    HWND window_ = nullptr;
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<ID3D11VideoDevice> video_device_;
+    ComPtr<ID3D11VideoContext> video_context_;
+    ComPtr<IDXGISwapChain1> swap_chain_;
+    ComPtr<ID3D11VideoProcessorEnumerator> enumerator_;
+    ComPtr<ID3D11VideoProcessor> processor_;
+    std::array<ComPtr<ID3D11Texture2D>, 2> input_textures_;
+    std::array<ComPtr<ID3D11VideoProcessorInputView>, 2> input_views_;
+    ComPtr<ID3D11VideoProcessorOutputView> output_view_;
+    UINT source_width_ = 0;
+    UINT source_height_ = 0;
+    UINT fps_num_ = 0;
+    UINT fps_den_ = 1;
+    UINT client_width_ = 0;
+    UINT client_height_ = 0;
+    size_t input_index_ = 0;
+    bool active_ = false;
+    bool overlay_capable_ = false;
+    bool nv12_overlay_capable_ = false;
+};
 
 class AudioOutput {
 public:
@@ -230,6 +633,14 @@ public:
         decoder_ = hlv1_decoder_create(&header_);
         if (!decoder_) return fail(L"Cannot allocate the HLV decoder");
 
+        std::wstring video_error;
+        if (!video_renderer_.open(
+                window_, header_.width, header_.height,
+                header_.fps_num, header_.fps_den, video_error)) {
+            video_warning_ = L"D3D11/NV12 output is unavailable; "
+                             L"using double-buffered GDI: " + video_error;
+        }
+
         if (header_.flags & HLV1_FLAG_AUDIO) {
             std::wstring audio_error;
             if (!audio_.open(header_.audio_sample_rate, audio_error)) {
@@ -253,8 +664,11 @@ public:
         update_title();
         InvalidateRect(window_, nullptr, FALSE);
 
-        if (!audio_warning_.empty()) {
-            MessageBoxW(window_, audio_warning_.c_str(), L"HLV Player",
+        std::wstring warning = video_warning_;
+        if (!warning.empty() && !audio_warning_.empty()) warning += L"\n\n";
+        warning += audio_warning_;
+        if (!warning.empty()) {
+            MessageBoxW(window_, warning.c_str(), L"HLV Player",
                         MB_OK | MB_ICONWARNING);
         }
         return true;
@@ -263,6 +677,7 @@ public:
     void close() {
         if (window_) KillTimer(window_, kPlaybackTimer);
         audio_.close();
+        video_renderer_.close();
         if (decoder_) {
             hlv1_decoder_destroy(decoder_);
             decoder_ = nullptr;
@@ -282,6 +697,7 @@ public:
         paused_ = false;
         finished_ = false;
         audio_warning_.clear();
+        video_warning_.clear();
     }
 
     void tick() {
@@ -343,57 +759,82 @@ public:
         fit_to_window_ = !fit_to_window_;
         CheckMenuItem(GetMenu(window_), ID_VIEW_FIT,
                       MF_BYCOMMAND | (fit_to_window_ ? MF_CHECKED : MF_UNCHECKED));
-        InvalidateRect(window_, nullptr, FALSE);
+        render_current();
     }
 
+    void resize() { render_current(); }
+
     void paint(HDC dc, const RECT &client) const {
+        if (video_renderer_.active()) return;
+
+        const int client_width = client.right - client.left;
+        const int client_height = client.bottom - client.top;
+        HDC memory_dc = nullptr;
+        HBITMAP bitmap = nullptr;
+        HGDIOBJ previous_bitmap = nullptr;
+        HDC target = dc;
+        if (client_width > 0 && client_height > 0) {
+            memory_dc = CreateCompatibleDC(dc);
+            bitmap = CreateCompatibleBitmap(dc, client_width, client_height);
+            if (memory_dc && bitmap) {
+                previous_bitmap = SelectObject(memory_dc, bitmap);
+                target = memory_dc;
+            }
+        }
+
         HBRUSH black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-        FillRect(dc, &client, black);
+        FillRect(target, &client, black);
 
         if (current_.pixels.empty()) {
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(210, 210, 210));
+            SetBkMode(target, TRANSPARENT);
+            SetTextColor(target, RGB(210, 210, 210));
             RECT text_rect = client;
             const wchar_t *message = error_.empty()
                 ? L"Open an .hlv file (Ctrl+O) or drag it into this window"
                 : error_.c_str();
-            DrawTextW(dc, message, -1, &text_rect,
+            DrawTextW(target, message, -1, &text_rect,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            return;
-        }
-
-        const int client_width = client.right - client.left;
-        const int client_height = client.bottom - client.top;
-        int draw_width = current_.width;
-        int draw_height = current_.height;
-        if (fit_to_window_ && client_width > 0 && client_height > 0) {
-            if (static_cast<int64_t>(client_width) * current_.height <=
-                static_cast<int64_t>(client_height) * current_.width) {
-                draw_width = client_width;
-                draw_height = static_cast<int>(
-                    static_cast<int64_t>(client_width) * current_.height /
-                    current_.width);
-            } else {
-                draw_height = client_height;
-                draw_width = static_cast<int>(
-                    static_cast<int64_t>(client_height) * current_.width /
-                    current_.height);
+        } else {
+            int draw_width = current_.width;
+            int draw_height = current_.height;
+            if (fit_to_window_ && client_width > 0 && client_height > 0) {
+                if (static_cast<int64_t>(client_width) * current_.height <=
+                    static_cast<int64_t>(client_height) * current_.width) {
+                    draw_width = client_width;
+                    draw_height = static_cast<int>(
+                        static_cast<int64_t>(client_width) * current_.height /
+                        current_.width);
+                } else {
+                    draw_height = client_height;
+                    draw_width = static_cast<int>(
+                        static_cast<int64_t>(client_height) * current_.width /
+                        current_.height);
+                }
             }
-        }
-        const int draw_x = (client_width - draw_width) / 2;
-        const int draw_y = (client_height - draw_height) / 2;
+            const int draw_x = (client_width - draw_width) / 2;
+            const int draw_y = (client_height - draw_height) / 2;
 
-        BITMAPINFO bitmap = {};
-        bitmap.bmiHeader.biSize = sizeof bitmap.bmiHeader;
-        bitmap.bmiHeader.biWidth = current_.width;
-        bitmap.bmiHeader.biHeight = -current_.height;
-        bitmap.bmiHeader.biPlanes = 1;
-        bitmap.bmiHeader.biBitCount = 32;
-        bitmap.bmiHeader.biCompression = BI_RGB;
-        SetStretchBltMode(dc, COLORONCOLOR);
-        StretchDIBits(dc, draw_x, draw_y, draw_width, draw_height,
-                      0, 0, current_.width, current_.height,
-                      current_.pixels.data(), &bitmap, DIB_RGB_COLORS, SRCCOPY);
+            BITMAPINFO info = {};
+            info.bmiHeader.biSize = sizeof info.bmiHeader;
+            info.bmiHeader.biWidth = current_.width;
+            info.bmiHeader.biHeight = -current_.height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            SetStretchBltMode(target, COLORONCOLOR);
+            StretchDIBits(target, draw_x, draw_y, draw_width, draw_height,
+                          0, 0, current_.width, current_.height,
+                          current_.pixels.data(), &info,
+                          DIB_RGB_COLORS, SRCCOPY);
+        }
+
+        if (target == memory_dc) {
+            BitBlt(dc, 0, 0, client_width, client_height,
+                   memory_dc, 0, 0, SRCCOPY);
+            SelectObject(memory_dc, previous_bitmap);
+        }
+        if (bitmap) DeleteObject(bitmap);
+        if (memory_dc) DeleteDC(memory_dc);
     }
 
     bool paused() const { return paused_; }
@@ -462,6 +903,21 @@ private:
         current_ = std::move(ready_.front());
         ready_.pop_front();
         ++presented_frames_;
+        render_current();
+    }
+
+    void render_current() {
+        if (video_renderer_.active() && !current_.pixels.empty()) {
+            std::wstring render_error;
+            if (video_renderer_.present(
+                    current_, fit_to_window_, render_error)) {
+                return;
+            }
+            video_warning_ =
+                L"D3D11/NV12 output stopped; using double-buffered GDI: " +
+                render_error;
+            update_title();
+        }
         InvalidateRect(window_, nullptr, FALSE);
     }
 
@@ -483,6 +939,13 @@ private:
     void update_title() const {
         std::wstring title = L"HLV Player";
         if (!path_.empty()) title += L" - " + file_name(path_);
+        if (loaded_) {
+            title += L" [";
+            title += video_renderer_.active()
+                ? video_renderer_.label()
+                : L"double-buffered GDI";
+            title += L"]";
+        }
         if (paused_) title += L" [paused]";
         else if (finished_) title += L" [finished]";
         SetWindowTextW(window_, title.c_str());
@@ -493,12 +956,14 @@ private:
     HLV1Decoder *decoder_ = nullptr;
     HLV1Header header_ = {};
     AudioOutput audio_;
+    D3DVideoRenderer video_renderer_;
     std::deque<VideoFrame> ready_;
     std::vector<VideoFrame> recycled_;
     VideoFrame current_;
     std::wstring path_;
     std::wstring error_;
     std::wstring audio_warning_;
+    std::wstring video_warning_;
     LARGE_INTEGER clock_frequency_ = {};
     LARGE_INTEGER clock_start_ = {};
     LARGE_INTEGER pause_started_ = {};
@@ -592,7 +1057,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message,
     case WM_ERASEBKGND:
         return 1;
     case WM_SIZE:
-        InvalidateRect(window, nullptr, FALSE);
+        if (g_player && wparam != SIZE_MINIMIZED) g_player->resize();
+        else InvalidateRect(window, nullptr, FALSE);
         return 0;
     case WM_DESTROY:
         g_player->close();
