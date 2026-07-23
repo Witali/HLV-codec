@@ -32,11 +32,12 @@ constexpr bool kUseDualCorePipeline = true;
 // monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;
 
-// Preserve every frame in the current test build. This may make a short audio
-// fragment repeat while a slow frame is decoded or transferred to the display.
-constexpr AvSyncMode kAvSyncMode = AvSyncMode::kLoopAudioForLateVideo;
+// Keep playback tied to fps_num/fps_den from the HLV header. Audio remains
+// continuous; a late predictive frame is still decoded but is not transferred
+// to the display.
+constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropLateVideoFrames;
 
-// Emit one compact CSV record per presented frame. Timestamps are captured
+// Emit one compact CSV record per decoded frame. Timestamps are captured
 // before UART output so formatting/transmission is excluded from the reported
 // values. Normal ESP-IDF logs are restricted to errors in sdkconfig.defaults
 // while this measurement mode is enabled.

@@ -48,9 +48,25 @@ the audio task are created only after the large decoder frames and packet pool.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
 
-For a strict hardware check, the firmware emits an `A,...` audio record every
-30 frames. The project-local collector rejects frame-sequence gaps, rebuffers
-and missing samples:
+Playback timing comes from `fps_num/fps_den` in the HLV sequence header. With
+audio, the exact rational frame index is converted to a target PCM sample
+position and the DAC sample counter is the master clock. Without audio, the
+ESP timer advances by the quotient and remainder of
+`1,000,000 * fps_den / fps_num`, so fractional rates do not accumulate
+microsecond-rounding drift. The current `kDropLateVideoFrames` mode preserves
+that media time: every predictive frame is decoded, but a frame that is already
+more than one file-defined interval late is not sent to the display. Audio
+samples are never dropped.
+
+This was verified on the physical ESP32 with the same firmware binary. A
+`24/1` HLV test measured 23.985 decoded frames/s over 200 frames; the normal
+`15/1` file measured 14.984 frames/s. Both runs had zero decode-sequence gaps,
+audio rebuffers, missing samples and silence chunks.
+
+For a strict hardware check, the firmware emits a `V,...` record containing
+the file dimensions and rational frame rate, plus an `A,...` audio record every
+30 frames. The project-local collector calculates the frame budget from `V`
+and rejects decode-sequence gaps, rebuffers and missing samples:
 
 ```powershell
 .\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120

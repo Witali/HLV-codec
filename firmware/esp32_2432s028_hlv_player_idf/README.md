@@ -108,12 +108,19 @@ for the measured timing limits and the manual fallback.
 
 The current measurement build sets `kLogFrameTimings` in
 `main/player_settings.hpp` and restricts ordinary ESP-IDF output to errors.
-UART0 emits one CSV record for every presented frame:
+UART0 emits one CSV record for every decoded frame. A zero `render_us` means
+the frame was decoded for prediction but its late display transfer was omitted:
 
 ```text
+V,width,height,fps_num,fps_den,audio_rate,frame_count
 #frame,sd_us,decode_us,render_us,work_us,present_us
 F,1,540,18320,26740,45600,108220
 ```
+
+The `V` record comes directly from the HLV sequence header. The collector uses
+its rational `fps_num/fps_den` value to calculate the work budget instead of
+assuming 15 fps. It also prints the observed decoded-frame cadence and counts
+late display transfers omitted by the real-time mode.
 
 `work_us` is the sum of packet read, decode and render work. `present_us`
 measures presentation from entry through A/V-clock waiting and display
@@ -211,9 +218,10 @@ display DMA timing.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet
-  tails. The DAC sample count is the master video clock. The current
-  frame-preserving mode cyclically replays the existing 96 ms DMA ring without
-  consuming queued PCM while video is late.
+  tails. The DAC sample count is the master video clock. Frame targets are
+  calculated from `fps_num/fps_den` in the HLV header. The current real-time
+  mode keeps audio continuous and omits the display transfer of a late frame;
+  predictive decoding still runs so subsequent P-frames remain valid.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
@@ -232,5 +240,6 @@ rebuffer events, silence DMA chunks and cyclic-repeat activity.
 `kAvSyncMode` selects between `kDropLateVideoFrames`, which keeps audio
 continuous and omits late display transfers, and `kLoopAudioForLateVideo`,
 which presents every frame and repeats the six already allocated DMA
-descriptors while video catches up. The latter is enabled in the current test
-build and does not allocate additional frame or audio buffers.
+descriptors while video catches up. The former is enabled so playback duration
+and presentation cadence follow the rational frame rate stored in the HLV
+header. Neither mode allocates additional frame or audio buffers.

@@ -84,6 +84,8 @@ HlvEsp32Decoder decoder;
 UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 int64_t frame_period_us = 0;
+uint32_t frame_period_remainder = 0;
+uint32_t frame_period_phase = 0;
 int64_t next_present_us = 0;
 uint32_t decoded_frames = 0;
 uint32_t dropped_deadlines = 0;
@@ -798,9 +800,13 @@ bool openVideo() {
         stopAudio();
     }
 
+    const uint64_t frame_period_numerator =
+        1000000ULL * sequence_header.fps_den;
     frame_period_us = static_cast<int64_t>(
-        (1000000ULL * sequence_header.fps_den) / sequence_header.fps_num);
-    if (!frame_period_us) frame_period_us = 1;
+        frame_period_numerator / sequence_header.fps_num);
+    frame_period_remainder = static_cast<uint32_t>(
+        frame_period_numerator % sequence_header.fps_num);
+    frame_period_phase = 0;
     next_present_us = microsNow();
     decoded_frames = 0;
     dropped_deadlines = 0;
@@ -827,6 +833,12 @@ bool openVideo() {
                                   : "8-bit YUV 4:2:0");
     reportHeap("decoder ready");
     if (player_settings::kLogFrameTimings) {
+        esp_rom_printf(
+            "V,%u,%u,%u,%u,%u,%u\n",
+            sequence_header.width, sequence_header.height,
+            sequence_header.fps_num, sequence_header.fps_den,
+            sequence_header.audio_sample_rate,
+            static_cast<unsigned>(sequence_header.frame_count));
         esp_rom_printf(
             "#frame,sd_us,decode_us,render_us,work_us,present_us\n");
     }
@@ -899,6 +911,16 @@ void fallBackToTimerClock(const char *reason) {
     ESP_LOGW(kTag, "%s; switching to the ESP timer video clock", reason);
     stopAudio();
     next_present_us = microsNow();
+    frame_period_phase = 0;
+}
+
+void advanceTimerDeadline() {
+    next_present_us += frame_period_us;
+    frame_period_phase += frame_period_remainder;
+    if (frame_period_phase >= sequence_header.fps_num) {
+        ++next_present_us;
+        frame_period_phase -= sequence_header.fps_num;
+    }
 }
 
 uint64_t frameAudioTarget(uint32_t frame_index) {
@@ -996,11 +1018,12 @@ bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
     ++decoded_frames;
 
     if (!audio_enabled) {
-        next_present_us += frame_period_us;
+        advanceTimerDeadline();
         const int64_t lateness = microsNow() - next_present_us;
         if (lateness > frame_period_us) {
             ++dropped_deadlines;
             next_present_us = microsNow();
+            frame_period_phase = 0;
         }
     }
 
@@ -1161,6 +1184,12 @@ extern "C" void app_main(void) {
                  esp_err_to_name(display_result));
         return;
     }
+    const esp_err_t uart_result =
+        uart_upload.begin(CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+    if (uart_result != ESP_OK) {
+        ESP_LOGE(kTag, "UART upload initialization failed: %s",
+                 esp_err_to_name(uart_result));
+    }
     showStatus("HLV-1 SD player", "mounting microSD");
 
     if (!mountSdCard()) {
@@ -1168,12 +1197,6 @@ extern "C" void app_main(void) {
         last_retry_ms = millisNow();
     } else if (!openVideo()) {
         last_retry_ms = millisNow();
-    }
-    const esp_err_t uart_result =
-        uart_upload.begin(CONFIG_ESP_CONSOLE_UART_BAUDRATE);
-    if (uart_result != ESP_OK) {
-        ESP_LOGE(kTag, "UART upload initialization failed: %s",
-                 esp_err_to_name(uart_result));
     }
 
     for (;;) {

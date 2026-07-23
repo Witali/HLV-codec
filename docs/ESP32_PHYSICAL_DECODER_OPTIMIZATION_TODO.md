@@ -83,10 +83,20 @@ Zbit ZB25VQ32B-family part.  QIO 80 MHz completed 1,194 sequential normal-player
 records over 80 seconds with zero sequence gaps and zero malformed UART lines.
 The separate decoder-only test additionally verifies reconstructed pixels.
 
-The final audio-enabled regression collected frames 1 through 900 with no
-sequence gaps. Average SD, decode, render and total work times were 4,035.3,
-17,673.2, 29,569.2 and 51,277.7 microseconds. Of those frames, 103 exceeded the
-66,667-microsecond work budget, but the selected frame-preserving mode showed
-every frame while its existing audio DMA ring bridged the delay. At frame 870
-the counters reported 927,232 played samples, zero rebuffers, zero missing
-samples, zero silence chunks and zero audio-loop events.
+The 2026-07-23 audio-enabled regression collected frames 1 through 900 with no
+decode-sequence gaps. Average SD, decode, render and total work times were
+4,035.3, 17,673.2, 29,569.2 and 51,277.7 microseconds. Of those frames, 103
+exceeded that file's 66,667-microsecond work budget. This historical run used
+the frame-preserving audio-loop mode. At frame 870 the counters reported
+927,232 played samples, zero rebuffers, zero missing samples, zero silence
+chunks and zero audio-loop events. The current player instead selects the
+real-time mode: the same late frame is decoded for prediction but its display
+transfer is omitted so playback continues at the `fps_num/fps_den` stored in
+the file.
+
+A separate frame-rate regression used the same player binary with two HLV
+headers. Over 200 decoded frames, the `24/1` test measured 23.985 frames/s and
+the normal `15/1` file measured 14.984 frames/s. Both runs reported zero
+decode-sequence gaps, rebuffers, missing audio samples and silence chunks. The
+24-fps test required no display omissions; the 15-fps run likewise required
+none despite isolated frames whose work exceeded one frame interval.

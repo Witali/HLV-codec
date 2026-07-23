@@ -104,7 +104,7 @@ esp_err_t UartFileUpload::begin(uint32_t control_baud) {
     ready_ = true;
     writeResponse("HLVUART 1 READY %u\n",
                   static_cast<unsigned>(control_baud_));
-    return ESP_OK;
+    return uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
 }
 
 bool UartFileUpload::parseRequest(const char *line,
