@@ -23,7 +23,7 @@ matching the firmware's decoder-facing storage model.
       QEMU throughput for substantial extra code).
 - [x] Optimise sparse residual and WHT paths without runtime lookup buffers.
 - [x] Compare compiler/code-layout variants and retain the fastest no-RAM option.
-- [ ] Remove repeated address calculations from macroblock hot paths.
+- [x] Remove repeated address calculations from macroblock hot paths.
 - [ ] Rebuild ESP-IDF and compare DRAM, heap allocations and binary size.
 
 ## Results
@@ -68,6 +68,7 @@ representative four-GOP sample is the baseline for subsequent work:
 | Decoder `-O2` | 706,220 | 339.837 FPS | `be4876ff1c6b8461` | rejected |
 | Decoder `-Os` | 752,074 | 319.117 FPS | `be4876ff1c6b8461` | rejected |
 | Decoder `-O3` repeat | 627,183 | 382.662 FPS | `be4876ff1c6b8461` | retained |
+| Incremental packed-plane pointers | 610,566 | 393.077 FPS | `be4876ff1c6b8461` | accepted |
 
 The direct-copy trial read the macroblock residual flag before prediction and
 bit-shifted eligible integer-motion Y6/U5/V5 blocks directly between packed
@@ -90,6 +91,15 @@ build saves only about 3 KiB in the complete QEMU application image, while
 giving up substantially more decoder throughput. The production default
 therefore remains `-O3`; the alternatives stay available for repeatable
 experiments without source edits.
+
+Compact macroblock storage and packed SKIP copies now calculate the first
+Y/U/V row address once and advance pointers by their strides. This removes
+per-row modulo, multiplication and plane selection from work performed on
+every decoded macroblock. The compact scratch-row selector also uses power-of-
+two masks for its guaranteed non-negative coordinates. Guest cycles fall from
+627,183 to 610,566 per frame (2.72%), the full-film reconstruction hash remains
+`bdb0842a1e1a3a72`, and the QEMU application image shrinks by 256 bytes.
+Heap and static data are unchanged.
 
 ## Physical ESP32 baseline
 

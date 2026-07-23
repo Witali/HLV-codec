@@ -112,7 +112,10 @@ static uint8_t *current_plane_ptr(HLV1Decoder *d, int plane,
         stride = f->stride_v;
         rows = 8;
     }
-    return base + (d->compact_y6_u5_v5 ? y % rows : y) * stride + x;
+    unsigned row = d->compact_y6_u5_v5
+                       ? (unsigned)y & (unsigned)(rows - 1)
+                       : (unsigned)y;
+    return base + row * (unsigned)stride + x;
 }
 
 static uint8_t compact_quantize_code(uint8_t *value, unsigned shift,
@@ -153,26 +156,31 @@ static void compact_store_chroma8(uint8_t *dst, uint8_t *src) {
 }
 
 static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
+    HLV1Frame *unpacked = &d->current;
     HLV1Frame *packed = &d->compact_current;
+    uint8_t *luma_src = unpacked->y + mb_x;
+    uint8_t *luma_dst = packed->y + mb_y * packed->stride_y +
+                        mb_x * 6 / 8;
     for (int y = 0; y < 16; ++y) {
-        uint8_t *src = current_plane_ptr(d, HLV1_PLANE_Y, mb_x, mb_y + y);
-        uint8_t *dst = packed->y + (mb_y + y) * packed->stride_y +
-                       mb_x * 6 / 8;
-        compact_store_luma16(dst, src);
+        compact_store_luma16(luma_dst, luma_src);
+        luma_src += unpacked->stride_y;
+        luma_dst += packed->stride_y;
     }
-    int chroma_x = mb_x / 2;
-    int chroma_y = mb_y / 2;
-    for (int plane = HLV1_PLANE_U; plane <= HLV1_PLANE_V; ++plane) {
-        uint8_t *packed_base = plane == HLV1_PLANE_U ? packed->u : packed->v;
-        int packed_stride = plane == HLV1_PLANE_U
-                                ? packed->stride_u : packed->stride_v;
-        for (int y = 0; y < 8; ++y) {
-            uint8_t *src = current_plane_ptr(d, plane,
-                                             chroma_x, chroma_y + y);
-            uint8_t *dst = packed_base + (chroma_y + y) * packed_stride +
-                           chroma_x * 5 / 8;
-            compact_store_chroma8(dst, src);
-        }
+
+    int chroma_x = mb_x >> 1;
+    int chroma_y = mb_y >> 1;
+    int chroma_byte = chroma_x * 5 / 8;
+    uint8_t *u_src = unpacked->u + chroma_x;
+    uint8_t *v_src = unpacked->v + chroma_x;
+    uint8_t *u_dst = packed->u + chroma_y * packed->stride_u + chroma_byte;
+    uint8_t *v_dst = packed->v + chroma_y * packed->stride_v + chroma_byte;
+    for (int y = 0; y < 8; ++y) {
+        compact_store_chroma8(u_dst, u_src);
+        compact_store_chroma8(v_dst, v_src);
+        u_src += unpacked->stride_u;
+        v_src += unpacked->stride_v;
+        u_dst += packed->stride_u;
+        v_dst += packed->stride_v;
     }
 }
 
@@ -183,19 +191,30 @@ static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     const HLV1Frame *src = &d->previous;
     HLV1Frame *dst = &d->compact_current;
     int y_byte = mb_x * 6 / 8;
+    const uint8_t *y_src = src->y + mb_y * src->stride_y + y_byte;
+    uint8_t *y_dst = dst->y + mb_y * dst->stride_y + y_byte;
     for (int y = 0; y < 16; ++y) {
-        memcpy(dst->y + (mb_y + y) * dst->stride_y + y_byte,
-               src->y + (mb_y + y) * src->stride_y + y_byte, 12);
+        memcpy(y_dst, y_src, 12);
+        y_src += src->stride_y;
+        y_dst += dst->stride_y;
     }
 
-    int chroma_x = mb_x / 2;
-    int chroma_y = mb_y / 2;
+    int chroma_x = mb_x >> 1;
+    int chroma_y = mb_y >> 1;
     int chroma_byte = chroma_x * 5 / 8;
+    const uint8_t *u_src =
+        src->u + chroma_y * src->stride_u + chroma_byte;
+    const uint8_t *v_src =
+        src->v + chroma_y * src->stride_v + chroma_byte;
+    uint8_t *u_dst = dst->u + chroma_y * dst->stride_u + chroma_byte;
+    uint8_t *v_dst = dst->v + chroma_y * dst->stride_v + chroma_byte;
     for (int y = 0; y < 8; ++y) {
-        memcpy(dst->u + (chroma_y + y) * dst->stride_u + chroma_byte,
-               src->u + (chroma_y + y) * src->stride_u + chroma_byte, 5);
-        memcpy(dst->v + (chroma_y + y) * dst->stride_v + chroma_byte,
-               src->v + (chroma_y + y) * src->stride_v + chroma_byte, 5);
+        memcpy(u_dst, u_src, 5);
+        memcpy(v_dst, v_src, 5);
+        u_src += src->stride_u;
+        v_src += src->stride_v;
+        u_dst += dst->stride_u;
+        v_dst += dst->stride_v;
     }
 }
 
