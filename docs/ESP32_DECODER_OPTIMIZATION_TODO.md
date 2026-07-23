@@ -21,7 +21,7 @@ matching the firmware's decoder-facing storage model.
 - [x] Specialise integer, half-pixel and quarter-pixel interpolation.
 - [x] Evaluate packed zero-residual INTER/GLOBAL copies (rejected: +0.04%
       QEMU throughput for substantial extra code).
-- [ ] Optimise sparse residual and WHT paths without new lookup buffers.
+- [x] Optimise sparse residual and WHT paths without runtime lookup buffers.
 - [ ] Compare compiler/code-layout variants and retain the fastest no-RAM option.
 - [ ] Remove repeated address calculations from macroblock hot paths.
 - [ ] Rebuild ESP-IDF and compare DRAM, heap allocations and binary size.
@@ -64,11 +64,30 @@ representative four-GOP sample is the baseline for subsequent work:
 | Final checkpoint decoder | 638,131 | 376.098 FPS | `be4876ff1c6b8461` | baseline |
 | Direct-copy experiment control | 638,192 | 376.062 FPS | `be4876ff1c6b8461` | control |
 | Direct packed INTER/GLOBAL trial | 637,933 | 376.214 FPS | `be4876ff1c6b8461` | rejected |
+| Sparse one/two-coefficient WHT | 627,184 | 382.662 FPS | `be4876ff1c6b8461` | accepted |
 
 The direct-copy trial read the macroblock residual flag before prediction and
 bit-shifted eligible integer-motion Y6/U5/V5 blocks directly between packed
 references. Its 0.04% QEMU improvement did not justify the extra branches and
 code size, so all trial decoder changes were removed.
+
+The full-film syntax profile contains 9,685,858 inverse-WHT blocks. About
+501,600 are non-DC single-coefficient blocks and 1,466,860 have two
+coefficients, so roughly 20% of inverse transforms can be reconstructed from
+the Hadamard sign pattern alone. The accepted sparse path stores its 32-byte
+sign masks in Flash, adds no static DRAM or heap, and reuses `qcoeff` for
+dequantisation in the general path. This removes a 64-byte coefficient array
+from the peak decoder call stack. QEMU guest cycles fall from 638,131 to
+627,184 per frame (1.75%); Flash Code rises from 164,472 to 165,812 bytes.
+
+## Physical ESP32 baseline
+
+The representative four-GOP benchmark also runs unchanged on the ESP32-D0WD-V3
+at 240 MHz. Before the sparse-WHT change, two consecutive physical-board runs
+reported 5,488,697 and 5,488,823 cycles/frame (43.726 and 43.725 CPU-only FPS)
+with hash `be4876ff1c6b8461`. This is the primary absolute decoder baseline.
+Physical measurement of the sparse-WHT build is pending the next successful
+manual entry into ROM download mode.
 
 The FPS column is a CPU-only normalisation of the guest counter, not a promise
 of physical-board frame rate. QEMU does not model Xtensa pipeline stalls,

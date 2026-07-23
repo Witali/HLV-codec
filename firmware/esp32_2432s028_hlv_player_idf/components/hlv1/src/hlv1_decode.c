@@ -747,13 +747,55 @@ static void predict_intra(HLV1Decoder *d, int x, int y, int mode) {
 /* --- Residual decoding fast paths --------------------------------------
  * Zero and DC-only blocks bypass the general inverse WHT.  These paths are
  * important because they dominate ordinary low-bitrate video. */
+static int round_wht_value(int32_t value) {
+    return value >= 0 ? (int)((value + 8) / 16)
+                      : -(int)((-value + 8) / 16);
+}
+
 static int add_dc_only(uint8_t *dst, int stride, int level, int qstep) {
     int dc_step = HLV1_MAX(1, qstep / 2);
-    int v = level * dc_step;
-    int delta = v >= 0 ? (v + 8) / 16 : -((-v + 8) / 16);
+    int delta = round_wht_value(level * dc_step);
     for (int y = 0; y < 4; ++y)
         for (int x = 0; x < 4; ++x)
             dst[y * stride + x] = hlv1_clip8((int)dst[y * stride + x] + delta);
+    return HLV1_OK;
+}
+
+/* For a separable 4x4 Walsh-Hadamard transform each coefficient contributes
+ * the same magnitude to every output, with only its sign changing.  These
+ * 16-bit masks store the negative output positions and live in Flash. */
+static const uint16_t sparse_wht_negative_mask[16] = {
+    0x0000, 0xaaaa, 0xcccc, 0x6666,
+    0xf0f0, 0x5a5a, 0x3c3c, 0x9696,
+    0xff00, 0x55aa, 0x33cc, 0x9966,
+    0x0ff0, 0xa55a, 0xc33c, 0x6996
+};
+
+static int add_sparse_wht(uint8_t *dst, int stride, int qstep,
+                          uint32_t count,
+                          int first_index, int32_t first_level,
+                          int second_index, int32_t second_level) {
+    int dc_step = HLV1_MAX(1, qstep / 2);
+    int32_t first = first_level *
+                    (first_index == 0 ? dc_step : qstep);
+    int32_t second = count == 2
+                         ? second_level *
+                               (second_index == 0 ? dc_step : qstep)
+                         : 0;
+    uint16_t first_mask = sparse_wht_negative_mask[first_index];
+    uint16_t second_mask = count == 2
+                               ? sparse_wht_negative_mask[second_index]
+                               : 0;
+    uint16_t output_bit = 1;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x, output_bit <<= 1) {
+            int32_t value = first_mask & output_bit ? -first : first;
+            if (count == 2)
+                value += second_mask & output_bit ? -second : second;
+            dst[y * stride + x] = hlv1_clip8(
+                (int)dst[y * stride + x] + round_wht_value(value));
+        }
+    }
     return HLV1_OK;
 }
 
@@ -797,7 +839,9 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
     (void)d;
 #endif
     uint32_t count;
-    int32_t qcoeff[16] = {0};
+    int32_t qcoeff[16];
+    int sparse_index[2] = {0, 0};
+    int32_t sparse_level[2] = {0, 0};
     int pos = -1;
     int only_dc = 0;
     if (coeff_mode && !hlv1_br_get(br, 1)) {
@@ -805,7 +849,7 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
         if (br->error || get_level_v9(br, &level) < 0)
             return br->error ? br->error : HLV1_ERR_BITSTREAM;
         count = 1;
-        qcoeff[0] = level;
+        sparse_level[0] = level;
         only_dc = 1;
         HLV1_STAT_ADD(d, run_zero_symbols, 1);
         if (level == 1 || level == -1)
@@ -815,6 +859,7 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
         count = hlv1_br_get_ue(br) + 1U;
         if (br->error || count > 16) return HLV1_ERR_BITSTREAM;
         only_dc = count == 1;
+        if (count > 2) memset(qcoeff, 0, sizeof qcoeff);
         for (uint32_t i = 0; i < count; ++i) {
             uint32_t run = 0;
             int32_t level;
@@ -833,7 +878,12 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
                 HLV1_STAT_ADD(d, unit_level_symbols, 1);
             pos += (int)run + 1;
             int idx = scan4[pos];
-            qcoeff[idx] = level;
+            if (count <= 2) {
+                sparse_index[i] = idx;
+                sparse_level[i] = level;
+            } else {
+                qcoeff[idx] = level;
+            }
             if (idx != 0) only_dc = 0;
         }
     }
@@ -844,16 +894,21 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
 
     if (only_dc) {
         HLV1_STAT_ADD(d, dc_only_blocks, 1);
-        return add_dc_only(dst, stride, qcoeff[0], qstep);
+        return add_dc_only(dst, stride, sparse_level[0], qstep);
     }
 
     HLV1_STAT_ADD(d, inverse_wht_blocks, 1);
+    if (count <= 2) {
+        return add_sparse_wht(dst, stride, qstep, count,
+                              sparse_index[0], sparse_level[0],
+                              sparse_index[1], sparse_level[1]);
+    }
+
     int dc_step = HLV1_MAX(1, qstep / 2);
-    int32_t coeff[16];
     for (int i = 0; i < 16; ++i)
-        coeff[i] = qcoeff[i] * (i == 0 ? dc_step : qstep);
+        qcoeff[i] *= i == 0 ? dc_step : qstep;
     int16_t residual[16];
-    hlv1_wht4_inverse(coeff, residual);
+    hlv1_wht4_inverse(qcoeff, residual);
     for (int y = 0; y < 4; ++y)
         for (int x = 0; x < 4; ++x)
             dst[y * stride + x] = hlv1_clip8(
