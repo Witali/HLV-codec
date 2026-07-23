@@ -48,6 +48,18 @@ the audio task are created only after the large decoder frames and packet pool.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
 
+For a strict hardware check, the firmware emits an `A,...` audio record every
+30 frames. The project-local collector rejects frame-sequence gaps, rebuffers
+and missing samples:
+
+```powershell
+.\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120
+```
+
+The retained build completed this test with 900 consecutive frames,
+927,232 played samples and zero rebuffers, underrun samples or silence DMA
+chunks.
+
 ## Dual-core playback mode
 
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
@@ -222,7 +234,22 @@ It writes the bootloader, partition table and application to internal flash.
 The uploader defaults to a conservative 460800 baud. `video.hlv` is not
 flashed; it remains on the removable card.
 
-The IDF driver defaults to a conservative 40 MHz LCD clock. If the display
+With the normal player running, an HLV file can instead be written into the
+card's `/HLV` directory without removing the card:
+
+```powershell
+.\upload-video.ps1 -Port COM8 -File ..\..\out\video.hlv
+```
+
+The command handshake remains at 460800 baud; the verified data-transfer
+default is 2 Mbaud. The player stops video and audio, allocates one temporary
+60 KiB receive block, shows a progress bar, and verifies per-block and
+whole-file CRC32 before replacing the target. On this CH340C board an 8 MiB
+transfer sustained 111.3 KiB/s. A 2.5 Mbaud experiment timed out, so 2 Mbaud is
+the maximum retained rate; 1.5 Mbaud, 921600 and 460800 are available as
+fallbacks.
+
+The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in
 `main/player_settings.hpp` to 26 MHz.
 

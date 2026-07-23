@@ -46,8 +46,8 @@ normal application mode, and run:
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The control handshake uses 460800 baud and block data uses
-921600 baud by default. `-DataBaud 460800` is available for a marginal USB
-connection.
+2000000 baud by default. The verified fallback values are 1500000, 921600 and
+460800 baud.
 
 The destination defaults to `/sdcard/HLV/video.hlv`, which is the file opened
 by the player:
@@ -62,11 +62,13 @@ stored in `/HLV`, but `video.hlv` remains the automatic boot file.
 
 The player finishes the current decode operation, stops video and audio, and
 closes both SD file cursors before acknowledging an upload. The screen shows a
-progress bar during the transfer. Each 4 KiB block has its own CRC32 and is
+progress bar during the transfer. Each 60 KiB block has its own CRC32 and is
 acknowledged before the PC sends the next block, so hardware flow control is
-not required. The complete file CRC32 is checked before the previous target is
-replaced; an interrupted or corrupt upload leaves the existing video intact.
-After the transfer the player opens `/HLV/video.hlv` again.
+not required. CRC calculation uses the ESP32 ROM table implementation. The
+complete file CRC32 is checked before the previous target is replaced; an
+interrupted or corrupt upload leaves the existing video intact. The 60 KiB
+buffer exists only during an upload, while the decoder and audio buffers are
+released. After the transfer the player opens `/HLV/video.hlv` again.
 
 Protocol version 1 starts with this ASCII line at the console baud:
 
@@ -74,8 +76,17 @@ Protocol version 1 starts with this ASCII line at the console baud:
 HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 1 4096 <data-baud>`, receives acknowledged `HLVB`
-binary blocks, and finishes with `HLVDONE 1 <size> <crc32> <name>`.
+The device replies `HLVREADY 1 61440 <data-baud>`, receives acknowledged
+`HLVB` binary blocks, and finishes with
+`HLVDONE 1 <size> <crc32> <name>`.
+
+The connected CH340C board completed three CRC-verified transfers at every
+supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
+baud delivered 70.4, 91.3 and 101.5 KiB/s. Enlarging the block to 16 KiB raised
+the 2 Mbaud result to 106.6 KiB/s. The retained 60 KiB block and ROM CRC32
+delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. An experimental
+2.5 Mbaud transfer timed out, so 2 Mbaud is the maximum verified setting for
+this board and driver.
 
 The repository-level wrappers run the same commands:
 
@@ -109,6 +120,20 @@ measures presentation from entry through A/V-clock waiting and display
 submission; packet read and decode occur earlier and can overlap adjacent
 frames in dual-core mode. All timestamps are captured before the CSV line is
 written, so its own UART transmission is excluded from that frame's values.
+
+With audio enabled, every 30th frame also emits:
+
+```text
+A,frame,queued,pending,played,rebuffers,underrun_samples,silence_chunks,loop_events,loop_chunks
+```
+
+The local collector resets the application without entering the ROM
+bootloader, rejects frame-sequence gaps, and fails if any rebuffer or missing
+audio sample is reported:
+
+```powershell
+.\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120
+```
 
 The ST7789 and SD-card SPI clocks are available under the `HLV player`
 section of ESP-IDF menuconfig:

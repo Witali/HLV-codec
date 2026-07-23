@@ -17,6 +17,9 @@ result improves and the decoded-frame hash remains unchanged.
 - End-to-end player tests reset the board and collect at least 120 consecutive
   `F,...` records from COM8.  Compare SD, decode, render and presentation
   distributions separately.
+- Audio-enabled acceptance runs collect at least 900 consecutive frames and
+  require zero frame-sequence gaps, rebuffers, missing audio samples and
+  silence DMA chunks.
 - A result below 0.5% is treated as neutral unless repeated runs show a stable
   improvement.  Rejected experiments are reverted but remain documented here.
 
@@ -34,6 +37,10 @@ result improves and the decoded-frame hash remains unchanged.
 - [x] Evaluate whether decoder-cycle RDO samples are needed.  They are deferred:
       the verified QIO/IRAM maximum is 58.38 ms, below the 66.67 ms frame
       interval, so changing the encoded picture is not justified yet.
+- [x] Measure placing the inverse-WHT/add kernel in IRAM, retain it only if the
+      physical decoder hash remains unchanged and the cycle count improves.
+- [x] Verify the retained normal player for 900 frames with audio enabled and
+      no frame-sequence gaps or missing audio samples.
 - [x] Restore and flash the best verified normal-player configuration.
 
 ## Decoder-only results
@@ -45,10 +52,13 @@ Each row below was identical across all three physical runs.
 | Flash bitreader, DIO 40 MHz | 3,764,549 | 2,734,080 | 11,195,450 | 16,609,914 | baseline | `be4876ff1c6b8461` | baseline |
 | IRAM bitreader, DIO 40 MHz | 3,209,621 | 2,362,446 | 9,628,145 | 14,814,544 | -14.74% | `be4876ff1c6b8461` | accepted |
 | IRAM bitreader, QIO 80 MHz | 2,776,047 | 1,995,995 | 8,673,122 | 14,010,337 | -13.51%; -26.25% cumulative | `be4876ff1c6b8461` | accepted |
+| Fresh QIO/IRAM baseline, 2026-07-23 | 2,765,473 | 2,005,460 | 8,643,899 | 13,863,124 | fresh baseline | `be4876ff1c6b8461` | baseline |
+| Inverse WHT/add in IRAM | 2,727,498 | 1,953,391 | 8,598,743 | 13,783,993 | -1.37% | `be4876ff1c6b8461` | accepted |
 
-At 240 MHz the final mean, P95 and maximum are 11.57, 36.14 and 58.38 ms.
-Five keyframes average 34.80 ms; 115 P-frames average 10.56 ms.  The final
-benchmark still leaves 306,440 heap bytes free, with a 172,032-byte largest
+At 240 MHz the retained inverse-WHT build has mean, P95 and maximum times of
+11.36, 35.83 and 57.43 ms. Five keyframes average 34.03 ms; 115 P-frames
+average 10.38 ms. Moving the kernel uses 1,498 additional IRAM bytes and leaves
+the runtime heap unchanged at 306,440 bytes free, with a 172,032-byte largest
 block.
 
 ## Normal-player results
@@ -72,3 +82,11 @@ The installed 4 MiB flash reports JEDEC ID `5e 40 16`, corresponding to a
 Zbit ZB25VQ32B-family part.  QIO 80 MHz completed 1,194 sequential normal-player
 records over 80 seconds with zero sequence gaps and zero malformed UART lines.
 The separate decoder-only test additionally verifies reconstructed pixels.
+
+The final audio-enabled regression collected frames 1 through 900 with no
+sequence gaps. Average SD, decode, render and total work times were 4,035.3,
+17,673.2, 29,569.2 and 51,277.7 microseconds. Of those frames, 103 exceeded the
+66,667-microsecond work budget, but the selected frame-preserving mode showed
+every frame while its existing audio DMA ring bridged the delay. At frame 870
+the counters reported 927,232 played samples, zero rebuffers, zero missing
+samples, zero silence chunks and zero audio-loop events.
