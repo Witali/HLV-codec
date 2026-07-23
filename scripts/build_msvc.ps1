@@ -48,7 +48,9 @@ function Invoke-CBuild {
     }
 }
 
-foreach ($tool in @("hlvenc", "hlvdec", "hlvinfo", "hlvbenchdec")) {
+foreach ($tool in @(
+    "hlvenc", "hlvdec", "hlvinfo", "hlvbenchdec", "hlvpeakdec"
+)) {
     Invoke-CBuild $tool (Join-Path $repo "tools\$tool.c")
 }
 Invoke-CBuild "test_roundtrip" (Join-Path $repo "tests\test_roundtrip.c")

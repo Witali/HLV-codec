@@ -6,7 +6,7 @@ LDLIBS += -lm
 
 LIBSRC = src/hlv1_common.c src/hlv1_y4m.c src/hlv1_encode.c src/hlv1_decode.c
 LIBOBJ = $(LIBSRC:.c=.o)
-TOOLS = hlvenc hlvdec hlvinfo hlvbenchdec
+TOOLS = hlvenc hlvdec hlvinfo hlvbenchdec hlvpeakdec
 
 all: libhlv1.a $(TOOLS)
 
@@ -23,6 +23,9 @@ hlvinfo: tools/hlvinfo.o libhlv1.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 hlvbenchdec: tools/hlvbenchdec.o libhlv1.a
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+hlvpeakdec: tools/hlvpeakdec.o libhlv1.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 test_roundtrip: tests/test_roundtrip.o libhlv1.a

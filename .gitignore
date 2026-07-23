@@ -2,6 +2,7 @@ build/
 /local_tools/
 /out/
 firmware/esp32_2432s028_hlv_player_idf/build-qemu*/
+firmware/esp32_2432s028_hlv_player_idf/build-physical-bench/
 /.tmp/
 
 # Generated and source video files stay outside Git.

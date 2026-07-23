@@ -92,6 +92,33 @@ the benchmark never runs or modifies the encoder.
 .\qemu-benchmark.ps1 -BitReaderBits 64
 ```
 
+For a difficult-GOP test, `hlvpeakdec` ranks every frame with the same
+architecture-independent work model as `hlvbenchdec`. The wrapper selects the
+GOP containing the highest-ranked frame, prepares a contiguous clip beginning
+at its keyframe, and runs that clip through the same Xtensa benchmark:
+
+```powershell
+.\qemu-peak-benchmark.ps1 -InputFile ..\..\out\video.hlv
+.\qemu-peak-benchmark.ps1 -InputFile input.hlv -StartFrame 4500 -Frames 30
+```
+
+Omit `-StartFrame` for automatic selection. An explicit start must name a
+keyframe. `-BitReaderBits` and `-Optimization` accept the same values as the
+representative benchmark.
+
+On success the guest prints one compact record:
+
+```text
+B,frames,avg,p50,p95,max,key_count,key_avg,key_max,p_count,p_avg,p_max,fps_milli,hash,heap,largest
+```
+
+The cycle fields come from the guest ESP32 `CCOUNT` register and cover
+`decode()` only. The hash covers all reconstructed Y/U/V bytes and is the
+bit-exact correctness guard. When the normal firmware profile selects QIO,
+Espressif QEMU reports that its virtual flash cannot set the QE bit and
+continues in DIO; this is expected and does not invalidate decoder instruction
+comparisons.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
