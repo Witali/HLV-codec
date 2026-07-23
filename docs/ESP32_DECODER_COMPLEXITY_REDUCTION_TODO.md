@@ -74,7 +74,7 @@ Coefficient distribution:
 - [x] Evaluate stream-version specialisation (rejected: the narrow v12 mode
       parser is 3.1% slower natively; duplicating the complete loop would add
       substantially more code).
-- [ ] Fuse general inverse WHT, rounding, prediction addition and clipping to
+- [x] Fuse general inverse WHT, rounding, prediction addition and clipping to
       remove the temporary residual array and extra pass.
 - [ ] Evaluate selective IRAM placement for only the final small hot paths.
 - [ ] Re-run complete-film hashing, QEMU, ESP-IDF size reporting and document
@@ -108,6 +108,7 @@ Their measurements are retained in
 | Combined zero-run/unit-level VLC | 317.78 | 452,331 | `be4876ff1c6b8461` | accepted |
 | Direct compact PALETTE output | 317.74 | 451,876 | `be4876ff1c6b8461` | rejected |
 | Direct zero-residual FILL output | 316.89 | 450,885 | `be4876ff1c6b8461` | accepted |
+| Fused inverse-WHT/add | 319.72 | 447,161 | `be4876ff1c6b8461` | accepted |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
@@ -163,3 +164,9 @@ dispatch and another copy of the prefix tree. Native v12 time regressed from
 316.89 to 326.84 us/frame, so it was removed before QEMU. Duplicating the
 complete decode loop would multiply the much larger prediction/residual switch
 and is not supported by this result.
+
+Fusing the general inverse WHT with prediction addition is 0.9% slower on the
+x64 native filter but 0.8% faster in Xtensa QEMU. The target result is
+accepted. It removes the 64-byte `raw` array inside the transform and the
+32-byte caller-side `residual` array, reducing the deepest general residual
+path by 96 bytes without changing heap or reconstructed frames.

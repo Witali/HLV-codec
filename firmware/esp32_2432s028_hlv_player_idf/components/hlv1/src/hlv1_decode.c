@@ -1071,12 +1071,7 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
     int dc_step = HLV1_MAX(1, qstep / 2);
     for (int i = 0; i < 16; ++i)
         qcoeff[i] *= i == 0 ? dc_step : qstep;
-    int16_t residual[16];
-    hlv1_wht4_inverse(qcoeff, residual);
-    for (int y = 0; y < 4; ++y)
-        for (int x = 0; x < 4; ++x)
-            dst[y * stride + x] = hlv1_clip8(
-                (int)dst[y * stride + x] + residual[y * 4 + x]);
+    hlv1_wht4_inverse_add(qcoeff, dst, stride);
     return HLV1_OK;
 }
 

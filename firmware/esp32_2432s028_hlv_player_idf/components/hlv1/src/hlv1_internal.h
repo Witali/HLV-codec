@@ -123,6 +123,8 @@ int hlv1_br_read_bytes(HLV1BitReader *br, uint8_t *destination,
 /* Reversible integer transform used for every coded 4x4 residual block. */
 void hlv1_wht4_forward(const int16_t in[16], int32_t out[16]);
 void hlv1_wht4_inverse(const int32_t in[16], int16_t out[16]);
+void hlv1_wht4_inverse_add(const int32_t in[16], uint8_t *destination,
+                           int stride);
 
 static inline uint8_t hlv1_clip8(int value) {
     if ((unsigned)value <= 255U) return (uint8_t)value;

@@ -744,3 +744,23 @@ void hlv1_wht4_inverse(const int32_t in[16], int16_t out[16]) {
         out[i] = (int16_t)(v >= 0 ? (v + 8) / 16 : -((-v + 8) / 16));
     }
 }
+
+void hlv1_wht4_inverse_add(const int32_t in[16], uint8_t *destination,
+                           int stride) {
+    int32_t tmp[16];
+    for (int r = 0; r < 4; ++r)
+        wht1d(&in[r * 4], &tmp[r * 4]);
+    for (int c = 0; c < 4; ++c) {
+        int32_t x[4] = {tmp[c], tmp[4 + c], tmp[8 + c], tmp[12 + c]};
+        int32_t y[4];
+        wht1d(x, y);
+        for (int r = 0; r < 4; ++r) {
+            int32_t value = y[r];
+            int residual = value >= 0
+                               ? (int)((value + 8) / 16)
+                               : -(int)((-value + 8) / 16);
+            destination[r * stride + c] = hlv1_clip8(
+                (int)destination[r * stride + c] + residual);
+        }
+    }
+}
