@@ -30,10 +30,10 @@ must remain provisional until they are measured on the ESP32.
 - QEMU hash: `be4876ff1c6b8461`.
 - Native compact simulator: 381.49 us per frame over three complete passes.
 - QEMU decoder cost: 611,435 guest cycles per frame.
-- Last physical reference: about 5,488,760 cycles per frame on the
+- Fresh physical DIO-40 baseline: 3,764,549 cycles per frame on the
   representative sample.
-- Observed difficult keyframes: 96-99 ms at 240 MHz, versus the 66.7 ms budget
-  for 15 fps.
+- The final IRAM/QIO-80 physical maximum is 14,010,337 cycles, or 58.38 ms at
+  240 MHz, below the 66.7 ms budget for 15 fps.
 
 Average v12 syntax profile:
 
@@ -76,11 +76,11 @@ Coefficient distribution:
       substantially more code).
 - [x] Fuse general inverse WHT, rounding, prediction addition and clipping to
       remove the temporary residual array and extra pass.
-- [x] Evaluate selective IRAM placement (QEMU-neutral and reverted; physical
-      Flash-cache measurement remains pending).
+- [x] Evaluate selective IRAM placement (QEMU-neutral, but accepted after a
+      14.74% improvement on the physical ESP32).
 - [x] Re-run complete-film hashing, QEMU, ESP-IDF size reporting and document
       the cumulative result.
-- [ ] When the board becomes available, measure key/P frames separately and
+- [x] When the board becomes available, measure key/P frames separately and
       record P50/P95/max decode time. Do not sample at a period divisible by
       GOP 30.
 
@@ -176,10 +176,12 @@ path by 96 bytes without changing heap or reconstructed frames.
 Placing refill, slow bit extraction and Exp-Golomb helpers in IRAM moved about
 4 KiB from Flash to IRAM. QEMU remained 447,161 cycles/frame (a 12-cycle total
 difference over 120 frames, below the reported per-frame resolution), as
-expected because it does not model the ESP32 Flash cache. The placement was
-reverted rather than consuming IRAM without a physical-board result.
+expected because it does not model the ESP32 Flash cache. On the physical
+ESP32, three identical runs improved the mean from 3,764,549 to 3,209,621
+cycles/frame (14.74%) while preserving `be4876ff1c6b8461`, so the placement is
+now retained.
 
-## Final off-board result
+## Final off-board and physical result
 
 The final clean validation produces:
 
@@ -187,17 +189,22 @@ The final clean validation produces:
 - v13 complete-film hash `fe31eb325e6cb945`, 328.21 us/frame natively;
 - v12 QEMU hash `be4876ff1c6b8461`, 447,161 cycles/frame;
 - QEMU heap 306,256 bytes free, largest block 172,032 bytes, unchanged;
-- normal player binary `0x443d0` bytes, with 82% of the application partition
+- normal player binary `0x416f0` bytes, with 83% of the application partition
   free;
-- Flash Code 180,992 bytes;
-- static DRAM 54,824 bytes;
-- IRAM 52,379 bytes, with 78,693 bytes remaining.
+- Flash Code 171,328 bytes;
+- static DRAM 54,788 bytes;
+- IRAM 55,783 bytes, with 75,289 bytes remaining.
+
+The physical decoder-only result with the retained IRAM helpers and QIO flash
+at 80 MHz is 2,776,047 cycles/frame (11.57 ms), P50 1,995,995, P95 8,673,122
+and maximum 14,010,337 cycles (58.38 ms). Five keyframes average 8,350,998
+cycles and 115 P-frames average 2,533,658 cycles. All three runs produce
+`be4876ff1c6b8461`.
 
 Relative to the fresh v12 baseline, native time is down 16.4% and QEMU decoder
 cycles are down 26.9%. At the nominal 240 MHz target the QEMU instruction-count
 normalisation rises from 392.5 to 536.7 decoder-only fps. These are
 instruction-count comparisons, not physical playback rates.
 
-No accepted decoder change adds heap or static frame storage. The only
-remaining checklist item is physical-board validation of Flash-cache effects
-and keyframe P50/P95/max timing.
+No accepted decoder change adds heap or static frame storage. Physical
+Flash-cache effects and key/P-frame distributions have now been validated.

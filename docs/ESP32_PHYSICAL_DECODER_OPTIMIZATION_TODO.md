@@ -22,24 +22,53 @@ result improves and the decoded-frame hash remains unchanged.
 
 ## Checklist
 
-- [ ] Record a fresh decoder-only physical baseline for the current v13-capable
+- [x] Record a fresh decoder-only physical baseline for the current v13-capable
       decoder and the representative v12 stream.
-- [ ] Measure selective IRAM placement for the bitreader refill, slow
+- [x] Measure selective IRAM placement for the bitreader refill, slow
       extraction and Exp-Golomb paths.
-- [ ] Compare the current `9 x 7,680` packet pool with `3 x 23,040` blocks in
+- [x] Compare the current `9 x 7,680` packet pool with `3 x 23,040` blocks in
       normal SD playback.  This changes fragmentation and read spans, not total
       packet capacity.
-- [ ] Compare 40 MHz and 80 MHz DIO flash execution on the physical board.
-- [ ] If code-side experiments leave difficult frames above the desired
-      budget, encode short v13 samples with decoder-cycle RDO weights 0.01,
-      0.02 and 0.05 and measure the quality/size/decode trade-off.
-- [ ] Restore and flash the best verified normal-player configuration.
+- [x] Compare 40 MHz DIO, 80 MHz DIO and 80 MHz QIO flash execution on the
+      physical board.
+- [x] Evaluate whether decoder-cycle RDO samples are needed.  They are deferred:
+      the verified QIO/IRAM maximum is 58.38 ms, below the 66.67 ms frame
+      interval, so changing the encoded picture is not justified yet.
+- [x] Restore and flash the best verified normal-player configuration.
 
-## Results
+## Decoder-only results
 
-| Variant | Runs, cycles/frame | Median | Change | Hash | Decision |
-| --- | --- | ---: | ---: | --- | --- |
-| Current decoder, DIO 40 MHz | pending | pending | baseline | pending | pending |
+Each row below was identical across all three physical runs.
 
-Normal-player packet-pool results will be recorded separately because SD and
-display peripherals are intentionally absent from the decoder-only benchmark.
+| Variant | Mean cycles/frame | P50 | P95 | Max | Change | Hash | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Flash bitreader, DIO 40 MHz | 3,764,549 | 2,734,080 | 11,195,450 | 16,609,914 | baseline | `be4876ff1c6b8461` | baseline |
+| IRAM bitreader, DIO 40 MHz | 3,209,621 | 2,362,446 | 9,628,145 | 14,814,544 | -14.74% | `be4876ff1c6b8461` | accepted |
+| IRAM bitreader, QIO 80 MHz | 2,776,047 | 1,995,995 | 8,673,122 | 14,010,337 | -13.51%; -26.25% cumulative | `be4876ff1c6b8461` | accepted |
+
+At 240 MHz the final mean, P95 and maximum are 11.57, 36.14 and 58.38 ms.
+Five keyframes average 34.80 ms; 115 P-frames average 10.56 ms.  The final
+benchmark still leaves 306,440 heap bytes free, with a 172,032-byte largest
+block.
+
+## Normal-player results
+
+All averages are in microseconds.  Each synchronized run covers frames 1-125
+and discards the first five records.  `Present` is paced to 15 fps, so it is a
+health check rather than decoder work.
+
+| Packet pool / flash | Stable runs | SD | Decode | Render | Work | Present | Work change | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `9 x 7,680`, DIO 40 MHz | 3 | 5,092.1 | 23,342.8 | 27,796.9 | 56,231.8 | 61,452.5 | baseline | baseline |
+| `3 x 23,040`, DIO 40 MHz | 2 | 5,086.1 | 23,342.2 | 27,794.8 | 56,223.1 | 61,460.2 | -0.02% | rejected |
+| `9 x 7,680`, DIO 80 MHz | 3 | 5,053.6 | 21,675.6 | 27,455.3 | 54,184.3 | 61,495.8 | -3.64% | accepted |
+| `9 x 7,680`, QIO 80 MHz | 2 after one warm-up run | 5,022.7 | 20,942.0 | 27,421.4 | 53,386.1 | 61,529.2 | -5.06% | accepted |
+
+The larger packet banks changed SD time by only -0.12% and decoder time by
+less than 0.01%.  They were reverted because the smaller allocations are safer
+under heap fragmentation.
+
+The installed 4 MiB flash reports JEDEC ID `5e 40 16`, corresponding to a
+Zbit ZB25VQ32B-family part.  QIO 80 MHz completed 1,194 sequential normal-player
+records over 80 seconds with zero sequence gaps and zero malformed UART lines.
+The separate decoder-only test additionally verifies reconstructed pixels.
