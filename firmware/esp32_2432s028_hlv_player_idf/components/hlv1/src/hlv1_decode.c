@@ -218,6 +218,52 @@ static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     }
 }
 
+static void compact_fill_macroblock(HLV1Decoder *d, int mb_x, int mb_y,
+                                    const uint8_t means[3]) {
+    HLV1Frame *packed = &d->compact_current;
+    uint8_t values[3] = {means[0], means[1], means[2]};
+    uint8_t y_code = compact_quantize_code(&values[0], 2, 63);
+    uint8_t u_code = compact_quantize_code(&values[1], 3, 31);
+    uint8_t v_code = compact_quantize_code(&values[2], 3, 31);
+    uint8_t y_pattern[3] = {
+        (uint8_t)(y_code | (y_code << 6)),
+        (uint8_t)((y_code >> 2) | (y_code << 4)),
+        (uint8_t)((y_code >> 4) | (y_code << 2))
+    };
+    uint8_t *y_dst =
+        packed->y + mb_y * packed->stride_y + mb_x * 6 / 8;
+    for (int y = 0; y < 16; ++y) {
+        for (int group = 0; group < 4; ++group)
+            memcpy(y_dst + group * 3, y_pattern, sizeof y_pattern);
+        y_dst += packed->stride_y;
+    }
+
+    int chroma_x = mb_x >> 1;
+    int chroma_y = mb_y >> 1;
+    int chroma_byte = chroma_x * 5 / 8;
+    uint8_t codes[2] = {u_code, v_code};
+    uint8_t *dst[2] = {
+        packed->u + chroma_y * packed->stride_u + chroma_byte,
+        packed->v + chroma_y * packed->stride_v + chroma_byte
+    };
+    for (int plane = 0; plane < 2; ++plane) {
+        uint8_t code = codes[plane];
+        uint8_t pattern[5] = {
+            (uint8_t)(code | (code << 5)),
+            (uint8_t)((code >> 3) | (code << 2) | (code << 7)),
+            (uint8_t)((code >> 1) | (code << 4)),
+            (uint8_t)((code >> 4) | (code << 1) | (code << 6)),
+            (uint8_t)((code >> 2) | (code << 3))
+        };
+        uint8_t *row = dst[plane];
+        for (int y = 0; y < 8; ++y) {
+            memcpy(row, pattern, sizeof pattern);
+            row += packed->stride_u;
+        }
+    }
+    HLV1_STAT_ADD(d, fill_samples, 384);
+}
+
 /* --- Small deterministic arithmetic helpers --------------------------- */
 static int median3(int a, int b, int c) {
     if (a > b) { int t = a; a = b; b = t; }
@@ -1289,6 +1335,15 @@ static int get_motion_vector(HLV1BitReader *br, unsigned version,
     return HLV1_OK;
 }
 
+static int decode_present_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
+                                      unsigned version, int x, int y,
+                                      int q_y, int q_uv) {
+    return version >= HLV1_STREAM_VERSION_8 && q_y >= 64
+               ? decode_mb_residual_masked(d, br, version,
+                                            x, y, q_y, q_uv)
+               : decode_mb_residual(d, br, x, y, q_y, q_uv);
+}
+
 static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
                                        unsigned version, int x, int y,
                                        int q_y, int q_uv) {
@@ -1302,10 +1357,7 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
             return HLV1_OK;
         }
     }
-    return version >= HLV1_STREAM_VERSION_8 && q_y >= 64
-               ? decode_mb_residual_masked(d, br, version,
-                                            x, y, q_y, q_uv)
-               : decode_mb_residual(d, br, x, y, q_y, q_uv);
+    return decode_present_mb_residual(d, br, version, x, y, q_y, q_uv);
 }
 
 /* --- Public decoder lifecycle ----------------------------------------- */
@@ -1587,9 +1639,26 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     (uint8_t)hlv1_br_get(&br, 8)
                 };
                 if (br.error) return br.error;
-                predict_fill(d, x, y, means);
-                r = decode_optional_mb_residual(d, &br, version,
-                                                x, y, q_y, q_uv);
+                if (d->compact_y6_u5_v5 &&
+                    version >= HLV1_STREAM_VERSION_2) {
+                    uint32_t has_residual = hlv1_br_get(&br, 1);
+                    if (br.error) return br.error;
+                    if (!has_residual) {
+                        compact_fill_macroblock(d, x, y, means);
+                        compact_output_ready = 1;
+                        HLV1_STAT_ADD(d, residual_blocks, 24);
+                        HLV1_STAT_ADD(d, zero_residual_blocks, 24);
+                        HLV1_STAT_ADD(d, zero_residual_macroblocks, 1);
+                    } else {
+                        predict_fill(d, x, y, means);
+                        r = decode_present_mb_residual(
+                            d, &br, version, x, y, q_y, q_uv);
+                    }
+                } else {
+                    predict_fill(d, x, y, means);
+                    r = decode_optional_mb_residual(
+                        d, &br, version, x, y, q_y, q_uv);
+                }
                 HLV1_STAT_ADD(d, fill, 1);
                 break;
             }

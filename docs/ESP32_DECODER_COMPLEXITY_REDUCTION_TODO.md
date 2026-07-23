@@ -66,7 +66,7 @@ Coefficient distribution:
       coefficient representation, with an exact fallback for every other
       value.
 - [ ] Write simple compact macroblocks directly:
-  - FILL without residual;
+  - FILL without residual (accepted);
   - PALETTE (evaluated and rejected: only 0.10% faster in QEMU);
   - zero-residual INTRA DC/vertical/horizontal where profitable;
   - aligned LITERAL payloads through span copies instead of one call per byte.
@@ -105,6 +105,7 @@ Their measurements are retained in
 | Aligned 32-bit empty-cache refill | 332.62* | 455,205 | `be4876ff1c6b8461` | rejected |
 | Combined zero-run/unit-level VLC | 317.78 | 452,331 | `be4876ff1c6b8461` | accepted |
 | Direct compact PALETTE output | 317.74 | 451,876 | `be4876ff1c6b8461` | rejected |
+| Direct zero-residual FILL output | 316.89 | 450,885 | `be4876ff1c6b8461` | accepted |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
@@ -130,3 +131,8 @@ overhead. The cumulative QEMU reduction from the fresh baseline is 26.0%.
 Direct compact PALETTE output saves only 455 QEMU cycles per frame (0.10%)
 because v12 averages 1.09 palette macroblocks per frame. The much larger
 mode-specific implementation is not justified by that result and was removed.
+
+Direct output for zero-residual FILL macroblocks removes 0.32% of QEMU cycles
+and 0.28% of native time. It reuses the existing packed frame and adds no heap
+or static DRAM. Unlike the PALETTE trial, the compact fill helper is small and
+is retained for difficult intra frames.
