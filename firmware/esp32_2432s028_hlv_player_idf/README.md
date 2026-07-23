@@ -87,8 +87,9 @@ display DMA timing.
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
 - Scheduling: one 4 KiB CPU1 decoder task and two one-entry queues; only frame
   descriptors cross cores, so no YUV frame or packet payload is copied.
-- Audio: a static 4 KiB stream buffer feeding six 256-byte DAC DMA
-  descriptors.
+- Audio: a static 4 KiB stream buffer feeding a permanent ring of six
+  256-sample DAC DMA descriptors directly from the completion ISR. The ring
+  keeps DMA running across brief CPU stalls without a separate audio task.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native

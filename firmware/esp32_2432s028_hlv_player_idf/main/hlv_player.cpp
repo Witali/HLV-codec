@@ -37,14 +37,16 @@ constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
 constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
-constexpr size_t kAudioWriteBytes = 256;
-constexpr uint32_t kAudioReceiveTimeoutMs = 100;
-constexpr int kAudioWriteTimeoutMs = 100;
+constexpr size_t kAudioDmaSamples = 256;
+constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
+constexpr size_t kAudioDmaDescriptors = 6;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
                   !player_settings::kUseDualCorePipeline,
               "Dual-core playback requires a two-core FreeRTOS build");
+static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
+              "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
 
 struct DecodeRequest {
     const HLV1Packet *packet;
@@ -81,11 +83,12 @@ bool sd_mounted = false;
 StreamBufferHandle_t audio_stream = nullptr;
 StaticStreamBuffer_t audio_stream_state{};
 alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
-TaskHandle_t audio_task_handle = nullptr;
+alignas(4) uint8_t audio_dma_samples[kAudioDmaSamples];
 dac_continuous_handle_t audio_dac = nullptr;
-volatile bool audio_stop_requested = false;
 bool audio_enabled = false;
-bool audio_started = false;
+volatile bool audio_started = false;
+bool audio_async_started = false;
+volatile bool audio_output_failed = false;
 volatile uint32_t audio_underruns = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
@@ -302,55 +305,38 @@ bool mountSdCard() {
     return true;
 }
 
-void audioTask(void *) {
-    uint8_t samples[kAudioWriteBytes];
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    while (!audio_stop_requested) {
-        size_t received = xStreamBufferReceive(
-            audio_stream, samples, sizeof samples,
-            pdMS_TO_TICKS(kAudioReceiveTimeoutMs));
-        if (!received) {
-            std::memset(samples, 128, sizeof samples);
-            received = sizeof samples;
-            ++audio_underruns;
-        }
-        size_t offset = 0;
-        while (offset < received && !audio_stop_requested) {
-            size_t loaded = 0;
-            const esp_err_t result = dac_continuous_write(
-                audio_dac, samples + offset, received - offset, &loaded,
-                kAudioWriteTimeoutMs);
-            offset += loaded;
-            if (result == ESP_ERR_TIMEOUT) continue;
-            if (result != ESP_OK) {
-                ESP_LOGE(kTag, "DAC write failed: %s, %u/%u bytes",
-                         esp_err_to_name(result),
-                         static_cast<unsigned>(offset),
-                         static_cast<unsigned>(received));
-                audio_stop_requested = true;
-                break;
-            }
-        }
+bool onAudioConvertDone(dac_continuous_handle_t handle,
+                        const dac_event_data_t *event, void *) {
+    BaseType_t task_woken = pdFALSE;
+    size_t received = 0;
+    if (audio_started && audio_stream) {
+        received = xStreamBufferReceiveFromISR(
+            audio_stream, audio_dma_samples, sizeof audio_dma_samples,
+            &task_woken);
     }
-    audio_task_handle = nullptr;
-    vTaskDelete(nullptr);
+    if (received < sizeof audio_dma_samples) {
+        std::memset(audio_dma_samples + received, 128,
+                    sizeof audio_dma_samples - received);
+        if (audio_started) audio_underruns = audio_underruns + 1;
+    }
+
+    size_t loaded = 0;
+    const esp_err_t result = dac_continuous_write_asynchronously(
+        handle, static_cast<uint8_t *>(event->buf), event->buf_size,
+        audio_dma_samples, sizeof audio_dma_samples, &loaded);
+    if (result != ESP_OK || loaded != sizeof audio_dma_samples) {
+        audio_output_failed = true;
+    }
+    return task_woken == pdTRUE;
 }
 
 void stopAudio() {
-    if (audio_task_handle) {
-        audio_stop_requested = true;
-        xTaskNotifyGive(audio_task_handle);
-        const int64_t deadline = millisNow() + 500;
-        while (audio_task_handle && millisNow() < deadline) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        if (audio_task_handle) {
-            ESP_LOGW(kTag, "DAC task did not stop; deleting it");
-            vTaskDelete(audio_task_handle);
-            audio_task_handle = nullptr;
-        }
-    }
+    audio_started = false;
     if (audio_dac) {
+        if (audio_async_started) {
+            dac_continuous_stop_async_writing(audio_dac);
+            audio_async_started = false;
+        }
         dac_continuous_disable(audio_dac);
         dac_continuous_del_channels(audio_dac);
         audio_dac = nullptr;
@@ -359,9 +345,8 @@ void stopAudio() {
         vStreamBufferDelete(audio_stream);
         audio_stream = nullptr;
     }
-    audio_stop_requested = false;
     audio_enabled = false;
-    audio_started = false;
+    audio_output_failed = false;
     audio_underruns = 0;
 }
 
@@ -374,14 +359,14 @@ bool prepareAudio(const HLV1Header &header) {
     }
 
     audio_stream = xStreamBufferCreateStatic(
-        sizeof audio_stream_storage, kAudioWriteBytes,
+        sizeof audio_stream_storage, kAudioDmaSamples,
         audio_stream_storage, &audio_stream_state);
     if (!audio_stream) return false;
 
     dac_continuous_config_t config{};
     config.chan_mask = DAC_CHANNEL_MASK_CH1;
-    config.desc_num = 6;
-    config.buf_size = kAudioWriteBytes;
+    config.desc_num = kAudioDmaDescriptors;
+    config.buf_size = kAudioDmaBufferBytes;
     config.freq_hz = header.audio_sample_rate;
     config.offset = 0;
     config.clk_src = DAC_DIGI_CLK_SRC_APLL;
@@ -392,22 +377,29 @@ bool prepareAudio(const HLV1Header &header) {
         return false;
     }
 
-    audio_stop_requested = false;
-    if (xTaskCreatePinnedToCore(audioTask, "hlv-audio", 3072, nullptr, 2,
-                                &audio_task_handle, 0) != pdPASS) {
+    dac_event_callbacks_t callbacks{};
+    callbacks.on_convert_done = onAudioConvertDone;
+    if (dac_continuous_register_event_callback(
+            audio_dac, &callbacks, nullptr) != ESP_OK ||
+        dac_continuous_start_async_writing(audio_dac) != ESP_OK) {
         stopAudio();
         return false;
     }
+    audio_async_started = true;
     audio_enabled = true;
     ESP_LOGI(kTag,
-             "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue",
+             "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue, "
+             "%u x %u-sample DMA ring",
              header.audio_sample_rate, board::kAudioDac,
-             static_cast<unsigned>(kAudioStreamBytes));
+             static_cast<unsigned>(kAudioStreamBytes),
+             static_cast<unsigned>(kAudioDmaDescriptors),
+             static_cast<unsigned>(kAudioDmaSamples));
     return true;
 }
 
 bool queueAudio(const HLV1Packet &packet) {
     if (!audio_enabled) return true;
+    if (audio_output_failed) return false;
     size_t offset = hlv1_packet_video_payload_size(&packet);
     while (offset < packet.payload_size) {
         const uint8_t *data = nullptr;
@@ -416,6 +408,7 @@ bool queueAudio(const HLV1Packet &packet) {
         if (!span || !data) return false;
         size_t sent_from_span = 0;
         while (sent_from_span < span) {
+            if (audio_output_failed) return false;
             const size_t sent = xStreamBufferSend(
                 audio_stream, data + sent_from_span, span - sent_from_span,
                 pdMS_TO_TICKS(1000));
@@ -429,7 +422,7 @@ bool queueAudio(const HLV1Packet &packet) {
 
 void finishAudio() {
     if (!audio_enabled) return;
-    uint8_t silence[kAudioWriteBytes];
+    uint8_t silence[kAudioDmaSamples];
     std::memset(silence, 128, sizeof silence);
     const size_t sent = xStreamBufferSend(
         audio_stream, silence, sizeof silence, pdMS_TO_TICKS(1000));
@@ -439,9 +432,8 @@ void finishAudio() {
 }
 
 void startAudio() {
-    if (!audio_enabled || audio_started || !audio_task_handle) return;
+    if (!audio_enabled || audio_started) return;
     audio_started = true;
-    xTaskNotifyGive(audio_task_handle);
 }
 
 void closeVideo() {
