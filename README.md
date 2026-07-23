@@ -117,6 +117,16 @@ ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
 | ./hlvenc - output.hlv --preset balanced --quality 55
 ```
 
+The checked-in Big Buck Bunny v13 profile uses only the project-approved
+1080p MOV source, normalized source audio, 24 fps and four GOP workers:
+
+```powershell
+.\scripts\encode_big_buck_bunny_v13.ps1
+```
+
+Use `-Fps`, `-Threads`, or `-OutputFile` to override those three output
+parameters. `-MaxFrames` is available for a short smoke test.
+
 Presets:
 
 - `fast`: no motion search, GOP 24;
