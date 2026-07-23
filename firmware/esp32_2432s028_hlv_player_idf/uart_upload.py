@@ -15,7 +15,8 @@ import serial
 
 
 CONTROL_BAUD = 460_800
-DEFAULT_DATA_BAUD = 921_600
+DEFAULT_DATA_BAUD = 2_000_000
+SUPPORTED_DATA_BAUDS = (460_800, 921_600, 1_500_000, 2_000_000)
 MAX_FILE_SIZE = 0xFFFFFFFF
 BLOCK_MAGIC = b"HLVB"
 BLOCK_HEADER = struct.Struct("<4sIHI")
@@ -187,7 +188,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--port", required=True, help="serial port, for example COM8")
     parser.add_argument("--name", default="video.hlv",
                         help="destination name in /HLV (default: video.hlv)")
-    parser.add_argument("--data-baud", type=int, choices=(460800, 921600),
+    parser.add_argument("--data-baud", type=int, choices=SUPPORTED_DATA_BAUDS,
                         default=DEFAULT_DATA_BAUD)
     parser.add_argument("--timeout", type=float, default=15.0,
                         help="per-response timeout in seconds")

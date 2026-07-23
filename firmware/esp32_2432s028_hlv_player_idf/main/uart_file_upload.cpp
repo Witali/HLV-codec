@@ -8,6 +8,7 @@
 
 #include "driver/uart.h"
 #include "esp_heap_caps.h"
+#include "esp_rom_crc.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,6 +20,8 @@ constexpr int kUartRxBufferBytes = 2048;
 constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;
+constexpr uint32_t kTransferBaud1500k = 1500000;
+constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr size_t kBlockHeaderBytes = 14;
 
@@ -35,20 +38,8 @@ uint32_t readLe32(const uint8_t *bytes) {
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
-uint32_t updateCrc32(uint32_t state, const uint8_t *bytes, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        state ^= bytes[i];
-        for (unsigned bit = 0; bit < 8; ++bit) {
-            const uint32_t mask =
-                static_cast<uint32_t>(-static_cast<int32_t>(state & 1U));
-            state = (state >> 1) ^ (UINT32_C(0xedb88320) & mask);
-        }
-    }
-    return state;
-}
-
 uint32_t crc32(const uint8_t *bytes, size_t count) {
-    return updateCrc32(UINT32_MAX, bytes, count) ^ UINT32_MAX;
+    return esp_rom_crc32_le(0, bytes, count);
 }
 
 bool validFilename(const char *filename) {
@@ -75,7 +66,8 @@ bool validFilename(const char *filename) {
 }
 
 bool supportedDataBaud(uint32_t baud) {
-    return baud == kTransferBaud460k || baud == kTransferBaud921k;
+    return baud == kTransferBaud460k || baud == kTransferBaud921k ||
+           baud == kTransferBaud1500k || baud == kTransferBaud2000k;
 }
 
 bool buildPath(char *destination, size_t destination_bytes,
@@ -271,7 +263,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
 
     uint32_t received = 0;
     uint32_t sequence = 0;
-    uint32_t crc_state = UINT32_MAX;
+    uint32_t file_crc = 0;
     bool success = true;
     const char *failure = "TRANSFER_FAILED";
     while (received < request.size) {
@@ -307,7 +299,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
             success = false;
             break;
         }
-        crc_state = updateCrc32(crc_state, buffer, block_bytes);
+        file_crc = esp_rom_crc32_le(file_crc, buffer, block_bytes);
         received += block_bytes;
         if (progress) {
             progress(received, request.size, progress_context);
@@ -327,7 +319,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     }
     heap_caps_free(buffer);
 
-    const uint32_t actual_crc = crc_state ^ UINT32_MAX;
+    const uint32_t actual_crc = file_crc;
     if (success && actual_crc != request.crc32) {
         failure = "FILE_CRC";
         success = false;
