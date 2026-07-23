@@ -919,6 +919,40 @@ static int get_level_v9(HLV1BitReader *br, int32_t *level) {
     return HLV1_OK;
 }
 
+/* The most frequent residual symbol is run=0 followed by level +/-1.  Decode
+ * its complete existing VLC in one cache operation and retain the normative
+ * readers as the exact fallback for every other symbol and cache boundary. */
+static int get_run_level(HLV1BitReader *br, int coeff_mode,
+                         uint32_t *run, int32_t *level) {
+#if HLV1_FAST_32BIT_BITREADER
+    if (coeff_mode == 1 && br->bits >= 3U && br->bits_left >= 3U) {
+        uint32_t code = br->cache >> 29;
+        if ((code & 6U) == 4U) {
+            (void)hlv1_br_get(br, 3);
+            *run = 0;
+            *level = code & 1U ? -1 : 1;
+            return HLV1_OK;
+        }
+    } else if (!coeff_mode && br->bits >= 4U && br->bits_left >= 4U) {
+        uint32_t code = br->cache >> 28;
+        if ((code & 14U) == 10U) {
+            (void)hlv1_br_get(br, 4);
+            *run = 0;
+            *level = code & 1U ? -1 : 1;
+            return HLV1_OK;
+        }
+    }
+#endif
+    *run = hlv1_br_get_ue(br);
+    if (coeff_mode == 1) {
+        int result = get_level_v9(br, level);
+        if (result < 0) return result;
+    } else {
+        *level = hlv1_br_get_se(br);
+    }
+    return br->error ? br->error : HLV1_OK;
+}
+
 /* Decode one non-zero 4x4 residual, dequantize it, add prediction, and clip
  * in place.  Sparse one- and two-coefficient cases avoid the general inverse
  * transform when the syntax permits a cheaper reconstruction. */
@@ -952,16 +986,11 @@ static int decode_nonzero_residual_4x4(HLV1Decoder *d,
         only_dc = count == 1;
         if (count > 2) memset(qcoeff, 0, sizeof qcoeff);
         for (uint32_t i = 0; i < count; ++i) {
-            uint32_t run = 0;
+            uint32_t run;
             int32_t level;
-            run = hlv1_br_get_ue(br);
-            if (coeff_mode == 1) {
-                int r = get_level_v9(br, &level);
-                if (r < 0) return r;
-            } else {
-                level = hlv1_br_get_se(br);
-            }
-            if (br->error) return br->error;
+            int symbol_result =
+                get_run_level(br, coeff_mode, &run, &level);
+            if (symbol_result < 0) return symbol_result;
             if (run > 16U || pos + (int)run + 1 >= 16)
                 return HLV1_ERR_BITSTREAM;
             if (run == 0) HLV1_STAT_ADD(d, run_zero_symbols, 1);

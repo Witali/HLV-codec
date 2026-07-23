@@ -62,7 +62,7 @@ Coefficient distribution:
 - [x] Evaluate aligned 32-bit refill (rejected: 0.16% slower in QEMU).
 - [x] Consume a complete in-cache Exp-Golomb code without nested bitreader
       calls.
-- [ ] Add a combined fast path for the frequent `run=0, level=+/-1`
+- [x] Add a combined fast path for the frequent `run=0, level=+/-1`
       coefficient representation, with an exact fallback for every other
       value.
 - [ ] Write simple compact macroblocks directly:
@@ -103,6 +103,7 @@ Their measurements are retained in
 | Inline cached read with lazy refill | 336.81 | 486,412 | `be4876ff1c6b8461` | accepted |
 | Single-step cached Exp-Golomb | 337.51* | 454,488 | `be4876ff1c6b8461` | accepted |
 | Aligned 32-bit empty-cache refill | 332.62* | 455,205 | `be4876ff1c6b8461` | rejected |
+| Combined zero-run/unit-level VLC | 317.78 | 452,331 | `be4876ff1c6b8461` | accepted |
 
 The first bitreader step improves native throughput by 11.7% and reduces QEMU
 guest cycles by 20.4%. Complete-film reconstruction remains
@@ -119,3 +120,8 @@ timing result.
 
 An aligned 32-bit load plus byte swap is 0.16% slower than the existing four
 byte refill iterations in QEMU. The source experiment was removed.
+
+The combined coefficient VLC improves native throughput by 5.6% and removes a
+further 0.47% of QEMU cycles. Its smaller QEMU effect shows that the preceding
+cached Exp-Golomb optimisation already captures much of the same call
+overhead. The cumulative QEMU reduction from the fresh baseline is 26.0%.
