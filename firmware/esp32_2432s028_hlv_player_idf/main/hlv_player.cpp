@@ -994,6 +994,22 @@ bool openVideoCandidate(const char *path) {
     return true;
 }
 
+bool reopenVideoAt(long offset) {
+    if (!active_video_path || offset < 0) return false;
+    if (video_file) std::fclose(video_file);
+    video_file = std::fopen(active_video_path, "rb");
+    if (!video_file) return false;
+    if (std::setvbuf(video_file,
+                     reinterpret_cast<char *>(video_read_ahead),
+                     _IOFBF, sizeof video_read_ahead) ||
+        std::fseek(video_file, offset, SEEK_SET)) {
+        std::fclose(video_file);
+        video_file = nullptr;
+        return false;
+    }
+    return true;
+}
+
 bool openVideo() {
     closeVideo();
     bool selection_present = false;
@@ -1664,8 +1680,25 @@ void playOneFrameSequential() {
 void playOneMjpegFrame() {
     MjpegAviPacket packet{};
     const int64_t read_start = microsNow();
-    const int packet_result =
+    int packet_result =
         mjpeg_decoder.readPacket(video_file, &packet);
+    if (packet_result == MJPEG_AVI_ERR_IO) {
+        const long retry_offset = mjpeg_decoder.lastPacketOffset();
+        for (unsigned attempt = 1; attempt <= 2; ++attempt) {
+            ESP_LOGW(kTag,
+                     "Recovering MJPEG packet at %ld, attempt %u/2",
+                     retry_offset, attempt);
+            if (!reopenVideoAt(retry_offset)) break;
+            packet_result =
+                mjpeg_decoder.readPacket(video_file, &packet);
+            if (packet_result == MJPEG_AVI_OK) {
+                ESP_LOGI(kTag, "MJPEG packet recovered at %ld",
+                         retry_offset);
+                break;
+            }
+            if (packet_result != MJPEG_AVI_ERR_IO) break;
+        }
+    }
     const uint32_t read_us =
         static_cast<uint32_t>(microsNow() - read_start);
     if (packet_result == MJPEG_AVI_EOF) {

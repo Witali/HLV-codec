@@ -6,6 +6,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp32/rom/tjpgd.h"
 
 namespace {
@@ -14,6 +15,8 @@ constexpr char kTag[] = "mjpeg-avi";
 constexpr size_t kJpegWorkBytes = 4096;
 constexpr uint32_t kFallbackFrameBytes = 128 * 1024;
 constexpr uint32_t kMaximumFrameBytes = 1024 * 1024;
+constexpr unsigned kIoAttempts = 3;
+constexpr uint32_t kIoRetryDelayUs = 2000;
 
 constexpr uint32_t fourcc(char a, char b, char c, char d) {
     return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
@@ -35,12 +38,32 @@ uint32_t readLe32(const uint8_t *bytes) {
            (static_cast<uint32_t>(bytes[3]) << 24);
 }
 
+bool seekAbsolute(FILE *file, long position);
+
 bool readExact(FILE *file, void *buffer, size_t size) {
-    return std::fread(buffer, 1, size, file) == size;
+    if (!file || (!buffer && size)) return false;
+    const long start = std::ftell(file);
+    if (start < 0) return false;
+    for (unsigned attempt = 0; attempt < kIoAttempts; ++attempt) {
+        const size_t received = std::fread(buffer, 1, size, file);
+        if (received == size) return true;
+        if (attempt + 1U == kIoAttempts) return false;
+        std::clearerr(file);
+        if (!seekAbsolute(file, start)) return false;
+        esp_rom_delay_us(kIoRetryDelayUs);
+    }
+    return false;
 }
 
 bool seekAbsolute(FILE *file, long position) {
-    return position >= 0 && std::fseek(file, position, SEEK_SET) == 0;
+    if (!file || position < 0) return false;
+    for (unsigned attempt = 0; attempt < kIoAttempts; ++attempt) {
+        std::clearerr(file);
+        if (std::fseek(file, position, SEEK_SET) == 0) return true;
+        if (attempt + 1U < kIoAttempts)
+            esp_rom_delay_us(kIoRetryDelayUs);
+    }
+    return false;
 }
 
 bool skipChunk(FILE *file, long data_start, uint32_t size) {
@@ -419,6 +442,8 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info) {
     if (info) *info = info_;
 
     compressed_capacity_ = info_.max_video_frame_size;
+    packet_index_ = 0;
+    packet_offset_ = -1;
     compressed_ = static_cast<uint8_t *>(
         heap_caps_malloc(compressed_capacity_, MALLOC_CAP_8BIT));
     strip_ = static_cast<uint16_t *>(
@@ -445,26 +470,69 @@ void MjpegAviDecoder::end() {
     strip_ = nullptr;
     work_buffer_ = nullptr;
     compressed_capacity_ = 0;
+    packet_index_ = 0;
+    packet_offset_ = -1;
     info_ = {};
 }
 
 int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
     if (!ready() || !file || !packet) return MJPEG_AVI_ERR_ARGUMENT;
     *packet = {};
+    packet_offset_ = std::ftell(file);
+    if (packet_offset_ < 0) return MJPEG_AVI_ERR_IO;
     uint32_t size = 0;
     const int result = nextPayload(file, info_, true, &size);
-    if (result != MJPEG_AVI_OK) return result;
-    if (size < 4 || size > compressed_capacity_)
+    if (result != MJPEG_AVI_OK) {
+        if (result != MJPEG_AVI_EOF) {
+            ESP_LOGE(kTag, "Packet %u scan failed at %ld: %s",
+                     static_cast<unsigned>(packet_index_),
+                     file ? std::ftell(file) : -1L,
+                     mjpeg_avi_strerror(result));
+        }
+        return result;
+    }
+    const long payload_start = std::ftell(file);
+    if (payload_start < 0) {
+        ESP_LOGE(kTag, "Packet %u has no readable payload position",
+                 static_cast<unsigned>(packet_index_));
+        return MJPEG_AVI_ERR_IO;
+    }
+    if (size < 4 || size > compressed_capacity_) {
+        ESP_LOGE(kTag,
+                 "Packet %u size %u exceeds range 4..%u at %ld",
+                 static_cast<unsigned>(packet_index_),
+                 static_cast<unsigned>(size),
+                 static_cast<unsigned>(compressed_capacity_),
+                 payload_start);
         return MJPEG_AVI_ERR_RANGE;
-    if (!readExact(file, compressed_, size))
+    }
+    if (!readExact(file, compressed_, size)) {
+        ESP_LOGE(kTag, "Packet %u payload read failed at %ld (%u bytes)",
+                 static_cast<unsigned>(packet_index_), payload_start,
+                 static_cast<unsigned>(size));
         return MJPEG_AVI_ERR_IO;
-    if ((size & 1U) && std::fseek(file, 1, SEEK_CUR))
+    }
+    const uint64_t next_position =
+        static_cast<uint64_t>(payload_start) + size + (size & 1U);
+    if (next_position > LONG_MAX ||
+        !seekAbsolute(file, static_cast<long>(next_position))) {
+        ESP_LOGE(kTag, "Packet %u padding seek failed after %ld",
+                 static_cast<unsigned>(packet_index_), payload_start);
         return MJPEG_AVI_ERR_IO;
+    }
     if (compressed_[0] != 0xff || compressed_[1] != 0xd8 ||
-        compressed_[size - 2] != 0xff || compressed_[size - 1] != 0xd9)
+        compressed_[size - 2] != 0xff || compressed_[size - 1] != 0xd9) {
+        ESP_LOGE(kTag,
+                 "Packet %u JPEG markers are invalid at %ld "
+                 "(%02x%02x..%02x%02x)",
+                 static_cast<unsigned>(packet_index_), payload_start,
+                 compressed_[0], compressed_[1],
+                 compressed_[size - 2], compressed_[size - 1]);
         return MJPEG_AVI_ERR_FORMAT;
+    }
     packet->jpeg = compressed_;
     packet->jpeg_size = size;
+    ++packet_index_;
     return MJPEG_AVI_OK;
 }
 

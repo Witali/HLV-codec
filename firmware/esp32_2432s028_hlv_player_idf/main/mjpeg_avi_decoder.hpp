@@ -59,6 +59,7 @@ public:
     }
     const MjpegAviInfo &info() const { return info_; }
     size_t compressedCapacity() const { return compressed_capacity_; }
+    long lastPacketOffset() const { return packet_offset_; }
     size_t stripBufferBytes() const {
         return static_cast<size_t>(info_.width) * kStripRows *
                sizeof(uint16_t);
@@ -76,4 +77,6 @@ private:
     size_t compressed_capacity_ = 0;
     uint16_t *strip_ = nullptr;
     uint8_t *work_buffer_ = nullptr;
+    uint32_t packet_index_ = 0;
+    long packet_offset_ = -1;
 };
