@@ -103,6 +103,21 @@ decoder, but the ESP32 hardware result regressed from 19.23 ms to
 the extra scaling and float-to-integer conversions outweighed the integer
 windowing gain. The production decoder therefore keeps the float MP2 path.
 
+### Mono MP2 synthesis
+
+PL_MPEG used to copy mono subband samples to a second channel and run the full
+IDCT/window synthesis twice. The local decoder now synthesizes a mono frame
+once and duplicates only the final PCM samples, while retaining the original
+two-channel public output layout. Allocation, scale-factor and unused-subband
+work for the second channel is skipped as well.
+
+The old and new decoders produced bit-identical float PCM for both a mono
+120-frame device fixture and a generated stereo fixture. On the physical ESP32,
+two 120-frame mono runs averaged 17.70 and 17.74 ms per MP2 frame, versus
+19.23 ms before the change: a repeatable 7.8% reduction in audio decode CPU
+time without changing the samples. Stereo decoding continues through the
+unchanged two-channel synthesis path.
+
 ## Windows validation
 
 The native player needs no external codec at runtime:

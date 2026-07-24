@@ -4655,9 +4655,6 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->scale_factor_info[ch][sb] = plm_buffer_read(self->buffer, 2);
 			}
 		}
-		if (self->mode == PLM_AUDIO_MODE_MONO) {
-			self->scale_factor_info[1][sb] = self->scale_factor_info[0][sb];
-		}
 	}
 
 	// Read scale factors
@@ -4689,11 +4686,6 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				}
 			}
 		}
-		if (self->mode == PLM_AUDIO_MODE_MONO) {
-			self->scale_factor[1][sb][0] = self->scale_factor[0][sb][0];
-			self->scale_factor[1][sb][1] = self->scale_factor[0][sb][1];
-			self->scale_factor[1][sb][2] = self->scale_factor[0][sb][2];
-		}
 	}
 
 	// Coefficient input and reconstruction
@@ -4708,17 +4700,21 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 			}
 			for (int sb = self->bound; sb < sblimit; sb++) {
 				plm_audio_read_samples(self, 0, sb, part);
-				self->sample[1][sb][0] = self->sample[0][sb][0];
-				self->sample[1][sb][1] = self->sample[0][sb][1];
-				self->sample[1][sb][2] = self->sample[0][sb][2];
+				if (channels == 2) {
+					self->sample[1][sb][0] = self->sample[0][sb][0];
+					self->sample[1][sb][1] = self->sample[0][sb][1];
+					self->sample[1][sb][2] = self->sample[0][sb][2];
+				}
 			}
 			for (int sb = sblimit; sb < 32; sb++) {
 				self->sample[0][sb][0] = 0;
 				self->sample[0][sb][1] = 0;
 				self->sample[0][sb][2] = 0;
-				self->sample[1][sb][0] = 0;
-				self->sample[1][sb][1] = 0;
-				self->sample[1][sb][2] = 0;
+				if (channels == 2) {
+					self->sample[1][sb][0] = 0;
+					self->sample[1][sb][1] = 0;
+					self->sample[1][sb][2] = 0;
+				}
 			}
 
 			// Synthesis loop
@@ -4726,7 +4722,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				// Shifting step
 				self->v_pos = (self->v_pos - 64) & 1023;
 
-				for (int ch = 0; ch < 2; ch++) {
+				for (int ch = 0; ch < channels; ch++) {
 					plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 
 					// Build U, windowing, calculate output
@@ -4760,12 +4756,21 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 							? self->samples.left
 							: self->samples.right;
 						for (int j = 0; j < 32; j++) {
-							out_channel[out_pos + j] = self->U[j] / -1090519040.0f;
+							float sample = self->U[j] / -1090519040.0f;
+							out_channel[out_pos + j] = sample;
+							if (channels == 1) {
+								self->samples.right[out_pos + j] = sample;
+							}
 						}
 					#else
 						for (int j = 0; j < 32; j++) {
-							self->samples.interleaved[((out_pos + j) << 1) + ch] = 
-								self->U[j] / -1090519040.0f;
+							int sample_index = (out_pos + j) << 1;
+							float sample = self->U[j] / -1090519040.0f;
+							self->samples.interleaved[sample_index + ch] = sample;
+							if (channels == 1) {
+								self->samples.interleaved[sample_index + 1] =
+									sample;
+							}
 						}
 					#endif
 				} // End of synthesis channel loop
