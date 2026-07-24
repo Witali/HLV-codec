@@ -1,60 +1,28 @@
-CC ?= cc
-AR ?= ar
-CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic
-THREADFLAGS ?= -pthread
-CFLAGS += $(THREADFLAGS)
-CPPFLAGS += -Iinclude
-LDLIBS += -lm $(THREADFLAGS)
+HLV_DIR := codecs/hlv
+HLV_TARGETS := libhlv1.a hlvenc hlvdec hlvinfo hlvbenchdec hlvpeakdec \
+	test_roundtrip test_errors
 
-LIBSRC = src/hlv1_common.c src/hlv1_y4m.c src/hlv1_encode.c src/hlv1_decode.c
-LIBOBJ = $(LIBSRC:.c=.o)
-TOOLS = hlvenc hlvdec hlvinfo hlvbenchdec hlvpeakdec
+all: hlv
 
-all: libhlv1.a $(TOOLS)
+hlv:
+	$(MAKE) -C $(HLV_DIR) all
 
-libhlv1.a: $(LIBOBJ)
-	$(AR) rcs $@ $^
+$(HLV_TARGETS):
+	$(MAKE) -C $(HLV_DIR) $@
 
-hlvenc: tools/hlvenc.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+test:
+	$(MAKE) -C $(HLV_DIR) test
 
-hlvdec: tools/hlvdec.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+test-windowed-rate:
+	$(MAKE) -C $(HLV_DIR) test-windowed-rate
 
-hlvinfo: tools/hlvinfo.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-hlvbenchdec: tools/hlvbenchdec.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-hlvpeakdec: tools/hlvpeakdec.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-test_roundtrip: tests/test_roundtrip.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-test_errors: tests/test_errors.o libhlv1.a
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
-
-test: test_roundtrip test_errors
-	./test_roundtrip
-	./test_errors
-
-test-windowed-rate: all
-	python3 scripts/test_windowed_two_pass.py --project .
-
-test-threaded: all
-	python3 scripts/test_threaded_encode.py --encoder ./hlvenc
+test-threaded:
+	$(MAKE) -C $(HLV_DIR) test-threaded
 
 sanitize:
-	$(CC) -O1 -g -std=c11 -Wall -Wextra -Wpedantic -fsanitize=address,undefined \
-		-Iinclude -o test_roundtrip_san tests/test_roundtrip.c $(LIBSRC) $(LDLIBS)
-	./test_roundtrip_san
-	$(CC) -O1 -g -std=c11 -Wall -Wextra -Wpedantic -fsanitize=address,undefined \
-		-Iinclude -o test_errors_san tests/test_errors.c $(LIBSRC) $(LDLIBS)
-	./test_errors_san
+	$(MAKE) -C $(HLV_DIR) sanitize
 
 clean:
-	rm -f $(LIBOBJ) tools/*.o tests/*.o libhlv1.a $(TOOLS) test_roundtrip test_errors test_roundtrip_san test_errors_san
+	$(MAKE) -C $(HLV_DIR) clean
 
-.PHONY: all test test-windowed-rate test-threaded sanitize clean
+.PHONY: all hlv $(HLV_TARGETS) test test-windowed-rate test-threaded sanitize clean

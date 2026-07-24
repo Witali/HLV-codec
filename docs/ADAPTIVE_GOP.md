@@ -7,7 +7,7 @@ stream syntax, frame headers, and playback cost are unchanged.
 ## CLI
 
 ```sh
-./hlvenc input.y4m output.hlv \
+./codecs/hlv/hlvenc input.y4m output.hlv \
   --adaptive-gop \
   --gop 100 \
   --min-key-interval 8 \

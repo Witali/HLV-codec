@@ -28,7 +28,7 @@ size model.
 ```sh
 ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
   -f yuv4mpegpipe - \
-| ./hlvenc - output.hlv \
+| ./codecs/hlv/hlvenc - output.hlv \
     --bitrate 400 \
     --two-pass-window 10 \
     --two-pass-trials 5 \

@@ -23,8 +23,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HLVENC = ROOT / "hlvenc"
-HLVDEC = ROOT / "hlvdec"
+HLVENC = ROOT / "codecs" / "hlv" / "hlvenc"
+HLVDEC = ROOT / "codecs" / "hlv" / "hlvdec"
 RESULTS = ROOT / "bench" / "results"
 
 PSNR_RE = re.compile(

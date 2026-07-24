@@ -26,8 +26,8 @@ from pathlib import Path
 from benchmark import make_reference, normalize_filter, psnr, ssim, reference_pipe, run, source_duration
 
 ROOT = Path(__file__).resolve().parents[1]
-HLVENC = ROOT / "hlvenc"
-HLVDEC = ROOT / "hlvdec"
+HLVENC = ROOT / "codecs" / "hlv" / "hlvenc"
+HLVDEC = ROOT / "codecs" / "hlv" / "hlvdec"
 RESULTS = ROOT / "bench" / "results"
 
 

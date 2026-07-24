@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+$hlv = Join-Path $repo "codecs\hlv"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not $SkipCompilerCheck) {
@@ -22,10 +23,10 @@ if (-not $installation) {
 $devcmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
-$include = Join-Path $repo "include"
-$player = Join-Path $repo "tools\hlvplay_win32.cpp"
-$common = Join-Path $repo "src\hlv1_common.c"
-$decoder = Join-Path $repo "src\hlv1_decode.c"
+$include = Join-Path $hlv "include"
+$player = Join-Path $hlv "tools\hlvplay_win32.cpp"
+$common = Join-Path $hlv "src\hlv1_common.c"
+$decoder = Join-Path $hlv "src\hlv1_decode.c"
 $output = Join-Path $OutputDirectory "hlvplay.exe"
 
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +

@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-ENC=ROOT/'hlvenc'
+ENC=ROOT/'codecs'/'hlv'/'hlvenc'
 
 def run(cmd, **kw):
     return subprocess.run(cmd, check=True, **kw)

@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+$hlv = Join-Path $repo "codecs\hlv"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not (Test-Path -LiteralPath $vswhere)) {
@@ -23,10 +24,10 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
 $librarySources = @(
-    (Join-Path $repo "src\hlv1_common.c"),
-    (Join-Path $repo "src\hlv1_y4m.c"),
-    (Join-Path $repo "src\hlv1_encode.c"),
-    (Join-Path $repo "src\hlv1_decode.c")
+    (Join-Path $hlv "src\hlv1_common.c"),
+    (Join-Path $hlv "src\hlv1_y4m.c"),
+    (Join-Path $hlv "src\hlv1_encode.c"),
+    (Join-Path $hlv "src\hlv1_decode.c")
 )
 
 function Invoke-CBuild {
@@ -39,7 +40,7 @@ function Invoke-CBuild {
         'cl /nologo /O2 /W4 /std:c11 /D_CRT_SECURE_NO_WARNINGS ' +
         '/I"{2}" {3} /Fe:"{4}"'
     $command = $commandTemplate -f $devcmd, $OutputDirectory, `
-        (Join-Path $repo "include"), $quotedSources, $output
+        (Join-Path $hlv "include"), $quotedSources, $output
 
     Write-Host "Building $Name..."
     & cmd.exe /d /c $command
@@ -51,10 +52,10 @@ function Invoke-CBuild {
 foreach ($tool in @(
     "hlvenc", "hlvdec", "hlvinfo", "hlvbenchdec", "hlvpeakdec"
 )) {
-    Invoke-CBuild $tool (Join-Path $repo "tools\$tool.c")
+    Invoke-CBuild $tool (Join-Path $hlv "tools\$tool.c")
 }
-Invoke-CBuild "test_roundtrip" (Join-Path $repo "tests\test_roundtrip.c")
-Invoke-CBuild "test_errors" (Join-Path $repo "tests\test_errors.c")
+Invoke-CBuild "test_roundtrip" (Join-Path $hlv "tests\test_roundtrip.c")
+Invoke-CBuild "test_errors" (Join-Path $hlv "tests\test_errors.c")
 
 & (Join-Path $OutputDirectory "test_roundtrip.exe")
 if ($LASTEXITCODE -ne 0) { throw "test_roundtrip failed." }

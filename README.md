@@ -1,9 +1,17 @@
-# HLV-1 v0.3 development build
+# Multi-codec device lab
 
-HLV-1 is an experimental low-complexity audio/video format for QVGA-class
-displays and microcontrollers. This build contains a portable C encoder and
-decoder, a static library, Y4M/PCM tools, correctness tests, and a resumable
-benchmark harness.
+This branch is structured as a shared laboratory for comparing multiple video
+codecs on desktop, QEMU, and real embedded hardware. Codec implementations
+live under [`codecs/`](codecs/); source preparation, benchmark automation,
+firmware, QEMU tests, and reports are shared so measurements stay comparable.
+
+HLV-1 now lives in [`codecs/hlv/`](codecs/hlv/). It is an experimental
+low-complexity audio/video format for QVGA-class displays and
+microcontrollers. Its package contains the portable C encoder and decoder, a
+static library, Y4M/PCM tools, correctness tests, and the native Windows player
+source.
+
+## HLV-1 v0.3 development build
 
 The decoder accepts stream syntax v1 through v13. New encodes use **stream
 v13** by default.  The stable syntax now includes:
@@ -121,7 +129,7 @@ The source aspect ratio can be preserved by scaling and padding:
 ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
   -vf "fps=15,scale=320:240:force_original_aspect_ratio=decrease:flags=lanczos,pad=320:240:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p" \
   -f yuv4mpegpipe - \
-| ./hlvenc - output.hlv --preset balanced --quality 55
+| ./codecs/hlv/hlvenc - output.hlv --preset balanced --quality 55
 ```
 
 The checked-in Big Buck Bunny v13 profile uses only the project-approved
@@ -167,7 +175,7 @@ Fixed minimum frame quality, measured as reconstructed YUV420 PSNR:
 ```sh
 ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
   -f yuv4mpegpipe - \
-| ./hlvenc - output.hlv --target-psnr 35 --cq-trials 5
+| ./codecs/hlv/hlvenc - output.hlv --target-psnr 35 --cq-trials 5
 ```
 
 Perceptually adaptive quality keeps calm/predictable frames near 35 dB and
@@ -176,7 +184,7 @@ allows fast, highly detailed material to fall toward 30 dB:
 ```sh
 ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
   -f yuv4mpegpipe - \
-| ./hlvenc - output.hlv \
+| ./codecs/hlv/hlvenc - output.hlv \
     --adaptive-quality --psnr-min 30 --psnr-max 35 \
     --cq-trials 5 --cq-log quality.csv
 ```
@@ -194,7 +202,7 @@ state. This is an encoder-only decision and does not add syntax or decoder
 work:
 
 ```sh
-./hlvenc input.y4m output.hlv \
+./codecs/hlv/hlvenc input.y4m output.hlv \
   --adaptive-gop --gop 100 \
   --min-key-interval 8 --keyframe-bias 1.00
 ```
@@ -214,7 +222,7 @@ and then immediately encoded and discarded:
 ```sh
 ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
   -f yuv4mpegpipe - \
-| ./hlvenc - output.hlv \
+| ./codecs/hlv/hlvenc - output.hlv \
     --bitrate 400 \
     --two-pass-window 10 \
     --two-pass-trials 5 \
@@ -229,14 +237,14 @@ within-window allocation without sacrificing bitrate accuracy.
 ## Decode through FFmpeg
 
 ```sh
-./hlvdec output.hlv - \
+./codecs/hlv/hlvdec output.hlv - \
 | ffmpeg -hide_banner -loglevel error -f yuv4mpegpipe -i - decoded.mp4
 ```
 
 Direct playback:
 
 ```sh
-./hlvdec output.hlv - | ffplay -f yuv4mpegpipe -i -
+./codecs/hlv/hlvdec output.hlv - | ffplay -f yuv4mpegpipe -i -
 ```
 
 Both tools accept `-` for stdin or stdout. A stream written to stdout has `frame_count=0`; decoders read packets until EOF. Diagnostics are written to stderr only.
