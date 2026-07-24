@@ -8,6 +8,8 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $hlv = Join-Path $repo "codecs\hlv"
 $bpv = Join-Path $repo "codecs\bpv"
+$mpeg = Join-Path $repo "codecs\mpeg1"
+$plMpeg = Join-Path $repo "third_party\pl_mpeg"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not $SkipCompilerCheck) {
@@ -30,15 +32,17 @@ $player = Join-Path $hlv "tools\hlvplay_win32.cpp"
 $common = Join-Path $hlv "src\hlv1_common.c"
 $decoder = Join-Path $hlv "src\hlv1_decode.c"
 $bpvDecoder = Join-Path $bpv "src\bpv1_decode.c"
+$mpegDecoder = Join-Path $mpeg "src\pl_mpeg.c"
 $output = Join-Path $OutputDirectory "hlvplay.exe"
 
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ' +
-    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" "{7}" ' +
-    '/Fe:"{8}" /link /SUBSYSTEM:WINDOWS'
+    '/I"{2}" /I"{3}" /I"{4}" "{5}" "{6}" "{7}" "{8}" "{9}" ' +
+    '/Fe:"{10}" /link /SUBSYSTEM:WINDOWS'
 $command = $commandTemplate -f $devcmd, $OutputDirectory, $include, `
-    $bpvInclude, $player, $common, $decoder, $bpvDecoder, $output
+    $bpvInclude, $plMpeg, $player, $common, $decoder, $bpvDecoder, `
+    $mpegDecoder, $output
 
 Write-Host "Building hlvplay..."
 & cmd.exe /d /c $command
@@ -46,4 +50,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building hlvplay."
 }
 
-Write-Host "Windows HLV/BPV player is ready: $output"
+Write-Host "Windows HLV/BPV/MPEG-1 player is ready: $output"

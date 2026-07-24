@@ -11,9 +11,11 @@
 
 #include "hlv1.h"
 #include "bpv1.h"
+#include "pl_mpeg.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -86,7 +88,8 @@ struct VideoFrame {
 enum class VideoCodec {
     kNone,
     kHlv,
-    kBpv
+    kBpv,
+    kMpeg1
 };
 
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
@@ -136,6 +139,71 @@ void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
             output[x * 2 + 1] = vrow[x];
         }
     }
+}
+
+void convert_mpeg_frame(plm_frame_t *source, VideoFrame &destination) {
+    destination.width = static_cast<int>(source->width);
+    destination.height = static_cast<int>(source->height);
+    const size_t luma_size =
+        static_cast<size_t>(source->width) * source->height;
+    destination.pixels.resize(luma_size);
+    destination.nv12.resize(luma_size + luma_size / 2U);
+    plm_frame_to_bgra(
+        source, reinterpret_cast<uint8_t *>(destination.pixels.data()),
+        static_cast<int>(source->width * sizeof(uint32_t)));
+
+    for (unsigned y = 0; y < source->height; ++y) {
+        std::memcpy(destination.nv12.data() +
+                        static_cast<size_t>(y) * source->width,
+                    source->y.data + static_cast<size_t>(y) * source->y.width,
+                    source->width);
+    }
+    uint8_t *chroma = destination.nv12.data() + luma_size;
+    for (unsigned y = 0; y < source->height / 2U; ++y) {
+        const uint8_t *cb =
+            source->cb.data + static_cast<size_t>(y) * source->cb.width;
+        const uint8_t *cr =
+            source->cr.data + static_cast<size_t>(y) * source->cr.width;
+        uint8_t *output =
+            chroma + static_cast<size_t>(y) * source->width;
+        for (unsigned x = 0; x < source->width / 2U; ++x) {
+            output[x * 2U] = cb[x];
+            output[x * 2U + 1U] = cr[x];
+        }
+    }
+}
+
+bool mpeg_fps_rational(double fps, uint16_t *numerator,
+                       uint16_t *denominator) {
+    struct Rate {
+        double value;
+        uint16_t numerator;
+        uint16_t denominator;
+    };
+    static constexpr Rate rates[] = {
+        {24000.0 / 1001.0, 24000, 1001},
+        {24.0, 24, 1},
+        {25.0, 25, 1},
+        {30000.0 / 1001.0, 30000, 1001},
+        {30.0, 30, 1},
+        {50.0, 50, 1},
+        {60000.0 / 1001.0, 60000, 1001},
+        {60.0, 60, 1},
+    };
+    for (const Rate &rate : rates) {
+        if (std::fabs(fps - rate.value) < 0.01) {
+            *numerator = rate.numerator;
+            *denominator = rate.denominator;
+            return true;
+        }
+    }
+    return false;
+}
+
+uint8_t mpeg_sample_to_u8(float left, float right) {
+    const float mono = std::clamp((left + right) * 0.5f, -1.0f, 1.0f);
+    const long value = std::lround(128.0f + mono * 127.0f);
+    return static_cast<uint8_t>(std::clamp(value, 0L, 255L));
 }
 
 int rgb_to_y(int red, int green, int blue) {
@@ -786,12 +854,49 @@ public:
                 header_.audio_sample_rate = bpv_header_.audio_sample_rate;
                 header_.audio_channels = bpv_header_.audio_channels;
             }
+        } else if (signature[0] == 0x00 && signature[1] == 0x00 &&
+                   signature[2] == 0x01 && signature[3] == 0xba) {
+            codec_ = VideoCodec::kMpeg1;
+            mpeg_ = plm_create_with_file(file_, FALSE);
+            if (!mpeg_) return fail(L"Cannot allocate the MPEG-1 decoder");
+            header_ = {};
+            const int width = plm_get_width(mpeg_);
+            const int height = plm_get_height(mpeg_);
+            const double fps = plm_get_framerate(mpeg_);
+            if (width <= 0 || height <= 0 ||
+                width > UINT16_MAX || height > UINT16_MAX ||
+                !mpeg_fps_rational(
+                    fps, &header_.fps_num, &header_.fps_den)) {
+                return fail(L"Invalid or unsupported MPEG-1 video stream");
+            }
+            header_.width = static_cast<uint16_t>(width);
+            header_.height = static_cast<uint16_t>(height);
+            const double duration = plm_get_duration(mpeg_);
+            if (!(duration > 0.0)) {
+                return fail(L"Cannot determine the MPEG-1 duration");
+            }
+            header_.frame_count = static_cast<uint32_t>(std::max(
+                1.0, std::floor(
+                    duration * header_.fps_num / header_.fps_den + 0.5)));
+            if (plm_get_num_audio_streams(mpeg_) > 0) {
+                const int sample_rate = plm_get_samplerate(mpeg_);
+                if (sample_rate <= 0 || sample_rate > UINT16_MAX) {
+                    return fail(L"Invalid MPEG-1 Layer II audio stream");
+                }
+                header_.flags = HLV1_FLAG_AUDIO;
+                header_.audio_codec = HLV1_AUDIO_PCM_U8;
+                header_.audio_sample_rate =
+                    static_cast<uint16_t>(sample_rate);
+                header_.audio_channels = 1;
+            }
         } else {
-            return fail(L"Unsupported video signature; expected HLV1 or BPV1");
+            return fail(
+                L"Unsupported video signature; expected HLV1, BPV1 or MPEG-PS");
         }
         if (header_.width > 8192 || header_.height > 8192)
             return fail(L"The video dimensions are too large for this player");
-        first_packet_offset_ = _ftelli64(file_);
+        first_packet_offset_ =
+            codec_ == VideoCodec::kMpeg1 ? 0 : _ftelli64(file_);
         if (first_packet_offset_ < 0)
             return fail(L"Cannot determine the first video packet offset");
 
@@ -800,7 +905,7 @@ public:
         if (codec_ == VideoCodec::kHlv) {
             decoder_ = hlv1_decoder_create(&header_);
             if (!decoder_) return fail(L"Cannot allocate the HLV decoder");
-        } else {
+        } else if (codec_ == VideoCodec::kBpv) {
             bpv_decoder_ = bpv1_decoder_create(&bpv_header_);
             if (!bpv_decoder_)
                 return fail(L"Cannot allocate the BPV1 decoder");
@@ -861,6 +966,10 @@ public:
             bpv1_decoder_destroy(bpv_decoder_);
             bpv_decoder_ = nullptr;
         }
+        if (mpeg_) {
+            plm_destroy(mpeg_);
+            mpeg_ = nullptr;
+        }
         if (file_) {
             fclose(file_);
             file_ = nullptr;
@@ -871,6 +980,7 @@ public:
         seek_index_.clear();
         std::memset(&header_, 0, sizeof header_);
         std::memset(&bpv_header_, 0, sizeof bpv_header_);
+        mpeg_audio_samples_ = 0;
         codec_ = VideoCodec::kNone;
         first_packet_offset_ = 0;
         decoded_frames_ = 0;
@@ -1156,6 +1266,16 @@ private:
 
     bool build_seek_index() {
         seek_index_.clear();
+        if (codec_ == VideoCodec::kMpeg1) {
+            for (uint32_t frame = 0; frame < header_.frame_count; ++frame)
+                seek_index_.push_back({0, 0});
+            if (seek_index_.empty()) {
+                error_ = L"The MPEG-1 stream contains no video frames";
+                return false;
+            }
+            plm_rewind(mpeg_);
+            return true;
+        }
         if (_fseeki64(file_, first_packet_offset_, SEEK_SET) != 0) {
             error_ = L"Cannot seek to the first video packet";
             return false;
@@ -1332,7 +1452,23 @@ private:
         audio_.close();
         recycle_queued_frames();
 
-        if (codec_ == VideoCodec::kBpv) {
+        if (codec_ == VideoCodec::kMpeg1) {
+            if (mpeg_) {
+                plm_destroy(mpeg_);
+                mpeg_ = nullptr;
+            }
+            if (_fseeki64(file_, 0, SEEK_SET) != 0) {
+                error_ = L"Cannot rewind the MPEG-1 stream";
+                return false;
+            }
+            mpeg_ = plm_create_with_file(file_, FALSE);
+            if (!mpeg_ || plm_get_width(mpeg_) != header_.width ||
+                plm_get_height(mpeg_) != header_.height) {
+                error_ = L"Cannot reset the MPEG-1 decoder for seeking";
+                return false;
+            }
+            mpeg_audio_samples_ = 0;
+        } else if (codec_ == VideoCodec::kBpv) {
             if (!bpv_decoder_) {
                 error_ = L"The BPV1 decoder is unavailable";
                 return false;
@@ -1348,9 +1484,11 @@ private:
         }
 
         const uint64_t keyframe = seek_index_[target].keyframe_index;
-        if (_fseeki64(file_, seek_index_[keyframe].packet_offset, SEEK_SET) != 0) {
-            error_ = L"Cannot seek to the selected video keyframe";
-            return false;
+        if (codec_ != VideoCodec::kMpeg1 &&
+            _fseeki64(file_, seek_index_[keyframe].packet_offset,
+                      SEEK_SET) != 0) {
+                error_ = L"Cannot seek to the selected video keyframe";
+                return false;
         }
         decoded_frames_ = keyframe;
         presented_frames_ = target;
@@ -1413,6 +1551,52 @@ private:
     }
 
     bool decode_one(bool queue_video = true, bool queue_audio = true) {
+        if (codec_ == VideoCodec::kMpeg1) {
+            plm_frame_t *decoded = plm_decode_video(mpeg_);
+            if (!decoded) {
+                end_of_file_ = true;
+                return true;
+            }
+            if (queue_video) {
+                VideoFrame output;
+                if (!recycled_.empty()) {
+                    output = std::move(recycled_.back());
+                    recycled_.pop_back();
+                }
+                convert_mpeg_frame(decoded, output);
+                ready_.push_back(std::move(output));
+            }
+
+            if (header_.flags & HLV1_FLAG_AUDIO) {
+                const uint64_t target_samples =
+                    ((decoded_frames_ + 1U) *
+                     header_.audio_sample_rate * header_.fps_den) /
+                    header_.fps_num;
+                while (mpeg_audio_samples_ < target_samples) {
+                    plm_samples_t *samples = plm_decode_audio(mpeg_);
+                    if (!samples) break;
+                    std::array<uint8_t, PLM_AUDIO_SAMPLES_PER_FRAME> pcm{};
+                    for (unsigned i = 0; i < samples->count; ++i) {
+                        pcm[i] = mpeg_sample_to_u8(
+                            samples->interleaved[i * 2U],
+                            samples->interleaved[i * 2U + 1U]);
+                    }
+                    mpeg_audio_samples_ += samples->count;
+                    if (queue_audio && audio_.active()) {
+                        std::wstring audio_error;
+                        if (!audio_.submit(
+                                pcm.data(), samples->count, audio_error)) {
+                            audio_warning_ =
+                                L"Audio stopped: " + audio_error;
+                            audio_.close();
+                        }
+                    }
+                }
+            }
+            ++decoded_frames_;
+            return true;
+        }
+
         if (codec_ == VideoCodec::kBpv) {
             BPV1Packet packet = {};
             int result =
@@ -1550,7 +1734,7 @@ private:
     }
 
     void update_title() const {
-        std::wstring title = L"HLV/BPV Player";
+        std::wstring title = L"HLV/BPV/MPEG-1 Player";
         if (!path_.empty()) title += L" - " + file_name(path_);
         if (loaded_) {
             title += L" [";
@@ -1570,6 +1754,7 @@ private:
     FILE *file_ = nullptr;
     HLV1Decoder *decoder_ = nullptr;
     BPV1Decoder *bpv_decoder_ = nullptr;
+    plm_t *mpeg_ = nullptr;
     HLV1Header header_ = {};
     BPV1Header bpv_header_ = {};
     VideoCodec codec_ = VideoCodec::kNone;
@@ -1588,6 +1773,7 @@ private:
     LARGE_INTEGER pause_started_ = {};
     uint64_t decoded_frames_ = 0;
     uint64_t presented_frames_ = 0;
+    uint64_t mpeg_audio_samples_ = 0;
     __int64 first_packet_offset_ = 0;
     int seek_range_max_ = 0;
     bool loaded_ = false;
@@ -1606,9 +1792,11 @@ std::wstring choose_file(HWND owner) {
     dialog.lStructSize = sizeof dialog;
     dialog.hwndOwner = owner;
     dialog.lpstrFilter =
-        L"HLV/BPV video (*.hlv;*.bpv1)\0*.hlv;*.bpv1\0"
+        L"Supported video (*.hlv;*.bpv1;*.mpg;*.mpeg)\0"
+            L"*.hlv;*.bpv1;*.mpg;*.mpeg\0"
         L"HLV video (*.hlv)\0*.hlv\0"
         L"BPV1 video (*.bpv1)\0*.bpv1\0"
+        L"MPEG-1 Program Stream (*.mpg;*.mpeg)\0*.mpg;*.mpeg\0"
         L"All files (*.*)\0*.*\0\0";
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
@@ -1811,6 +1999,42 @@ int check_file(const wchar_t *path) {
         valid = result == BPV1_EOF && frames == header.frame_count;
         label = "BPV1";
         bpv1_decoder_destroy(decoder);
+    } else if (signature[0] == 0x00 && signature[1] == 0x00 &&
+               signature[2] == 0x01 && signature[3] == 0xba) {
+        plm_t *mpeg = plm_create_with_file(file, FALSE);
+        const int width = mpeg ? plm_get_width(mpeg) : 0;
+        const int height = mpeg ? plm_get_height(mpeg) : 0;
+        const double fps = mpeg ? plm_get_framerate(mpeg) : 0.0;
+        const int sample_rate =
+            mpeg && plm_get_num_audio_streams(mpeg) > 0
+                ? plm_get_samplerate(mpeg)
+                : 0;
+        uint64_t decoded_audio_samples = 0;
+        if (mpeg && width > 0 && height > 0 && fps > 0.0) {
+            for (;;) {
+                plm_frame_t *frame = plm_decode_video(mpeg);
+                if (!frame) break;
+                convert_mpeg_frame(frame, converted);
+                for (uint32_t pixel : converted.pixels) {
+                    checksum ^= pixel;
+                    checksum *= UINT64_C(1099511628211);
+                }
+                ++frames;
+                if (sample_rate > 0) {
+                    const uint64_t target = static_cast<uint64_t>(
+                        std::floor(frames * sample_rate / fps));
+                    while (decoded_audio_samples < target) {
+                        plm_samples_t *samples = plm_decode_audio(mpeg);
+                        if (!samples) break;
+                        decoded_audio_samples += samples->count;
+                    }
+                }
+            }
+            audio_bytes = decoded_audio_samples;
+            valid = frames > 0 && plm_has_ended(mpeg);
+        }
+        label = "MPEG-1";
+        if (mpeg) plm_destroy(mpeg);
     }
     fclose(file);
     if (!valid || !label) return 1;
