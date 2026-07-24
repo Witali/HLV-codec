@@ -145,7 +145,9 @@ without removing the card:
 ```
 
 See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload
-instructions.
+instructions. The measured MJPEG decoder backlog and hardware acceptance
+criteria are tracked in
+[`docs/MJPEG_DECODER_OPTIMIZATION_TODO.md`](docs/MJPEG_DECODER_OPTIMIZATION_TODO.md).
 
 The v13 literal/palette syntax and the decoder-cycle term used by RDO are
 described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).
