@@ -239,16 +239,27 @@ static size_t dictionary_memory_bytes(const Dictionary *dictionary) {
            (size_t)dictionary->capacity * sizeof *dictionary->next;
 }
 
+static inline void copy_record(uint8_t *destination,
+                               const uint8_t *source) {
+    destination[0] = source[0];
+    destination[1] = source[1];
+    destination[2] = source[2];
+    destination[3] = source[3];
+    destination[4] = source[4];
+    destination[5] = source[5];
+    destination[6] = source[6];
+    destination[7] = source[7];
+    destination[8] = source[8];
+}
+
 static unsigned read_mode(const uint8_t *modes, uint32_t block_index) {
     const uint32_t bit_offset = block_index * 3U;
-    unsigned value = 0;
-    unsigned bit;
-    for (bit = 0; bit < 3; ++bit) {
-        const uint32_t target = bit_offset + bit;
-        value = (value << 1) |
-                ((modes[target >> 3] >> (7U - (target & 7U))) & 1U);
-    }
-    return value;
+    const uint32_t byte_index = bit_offset >> 3;
+    const unsigned bit_in_byte = bit_offset & 7U;
+    unsigned value = (unsigned)modes[byte_index] << 8;
+    if (bit_in_byte > 5U)
+        value |= modes[byte_index + 1U];
+    return (value >> (13U - bit_in_byte)) & 7U;
 }
 
 static int validate_record(const BPV1Header *header,
@@ -453,10 +464,9 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
         if (mode >= MODE_COUNT) return BPV1_ERR_DECODE;
         if (mode == MODE_SKIP) {
             if (!decoder->has_previous) return BPV1_ERR_DECODE;
-            memcpy(destination,
-                   decoder->previous +
-                       (size_t)block_index * BPV1_RECORD_BYTES,
-                   BPV1_RECORD_BYTES);
+            copy_record(destination,
+                        decoder->previous +
+                            (size_t)block_index * BPV1_RECORD_BYTES);
         } else if (mode == MODE_MOTION) {
             int source_x, source_y;
             const int block_x =
@@ -473,11 +483,11 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                 source_y >= decoder->frame.blocks_y) {
                 return BPV1_ERR_DECODE;
             }
-            memcpy(destination,
-                   decoder->previous +
-                       ((size_t)source_y * decoder->frame.blocks_x +
-                        (size_t)source_x) * BPV1_RECORD_BYTES,
-                   BPV1_RECORD_BYTES);
+            copy_record(
+                destination,
+                decoder->previous +
+                    ((size_t)source_y * decoder->frame.blocks_x +
+                     (size_t)source_x) * BPV1_RECORD_BYTES);
         } else if (mode == MODE_BLOCK_DICTIONARY) {
             uint8_t *source;
             uint16_t dictionary_index;
@@ -486,7 +496,7 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             offset += 2U;
             source = dictionary_entry(&decoder->blocks, dictionary_index);
             if (!source) return BPV1_ERR_DECODE;
-            memcpy(destination, source, BPV1_RECORD_BYTES);
+            copy_record(destination, source);
         } else if (mode == MODE_PATTERN_DICTIONARY) {
             uint8_t *pattern;
             uint16_t dictionary_index;
@@ -506,7 +516,7 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
         } else {
             if (offset + BPV1_RECORD_BYTES > packet->size)
                 return BPV1_ERR_DECODE;
-            memcpy(destination, payload + offset, BPV1_RECORD_BYTES);
+            copy_record(destination, payload + offset);
             offset += BPV1_RECORD_BYTES;
             if (validate_record(&decoder->header, destination))
                 return BPV1_ERR_DECODE;
