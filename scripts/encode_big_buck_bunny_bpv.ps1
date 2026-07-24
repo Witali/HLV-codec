@@ -11,6 +11,8 @@ param(
     [ValidateRange(0, 1000000000)]
     [double]$Lambda = 64,
 
+    [bool]$ActivePalettes = $true,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -25,7 +27,7 @@ $source = Join-Path $repo `
     "out\sources\big_buck_bunny_1080p_h264\big_buck_bunny_1080p_h264.mov"
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
-        "out\BigBuckBunny_1080p_bpv1_v3_lambda64_normalized_native-fps_320x180.bpv1"
+        "out\BigBuckBunny_1080p_bpv1_v4_active_lambda64_normalized_native-fps_320x180.bpv1"
 }
 if (-not $ReportFile) {
     $ReportFile = [IO.Path]::ChangeExtension($OutputFile, ".json")
@@ -43,4 +45,5 @@ if (-not (Test-Path -LiteralPath $source)) {
     -Threads $Threads `
     -Gop $Gop `
     -Lambda $Lambda `
+    -ActivePalettes $ActivePalettes `
     -MaxFrames $MaxFrames

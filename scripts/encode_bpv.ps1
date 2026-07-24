@@ -44,6 +44,8 @@ param(
     [ValidateRange(16, 65536)]
     [int]$ColorsPerCluster = 8192,
 
+    [bool]$ActivePalettes = $true,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -208,9 +210,23 @@ try {
         "--report", $ReportFile,
         "--force"
     )
+    if ($ActivePalettes) {
+        $encoderArguments += "--active-palettes"
+    }
+    else {
+        $encoderArguments += "--fixed-palettes"
+    }
+    $bpvVersion = if ($ActivePalettes) { 4 } else { 3 }
+    $paletteMode = if ($ActivePalettes) {
+        "active GOP palettes"
+    }
+    else {
+        "one fixed palette bank"
+    }
     Write-Host (
-        "Encoding BPV1 v3: ${Width}x${Height}, native FPS, " +
+        "Encoding BPV1 v${bpvVersion}: ${Width}x${Height}, native FPS, " +
         "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $Gop, " +
+        "$paletteMode, " +
         "$CandidatePalettes candidate palettes, $SampleBlocks training " +
         "blocks, $Threads worker threads..."
     )

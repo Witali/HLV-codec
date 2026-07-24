@@ -3,7 +3,7 @@
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, and
-video-only BPV1 v1/v2.
+BPV1 v1 through v4 with PCM_U8 audio and active per-GOP palettes.
 
 The only application components are:
 

@@ -2,11 +2,11 @@
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
 laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
-a portable streaming C decoder, the version 2/3 JavaScript reference
-implementation, automatic 64-palette training, rate-distortion block
+a portable streaming C decoder, the version 2/3/4 JavaScript reference
+implementation, automatic active 64-palette training, rate-distortion block
 selection, strict stream inspection, Y4M command-line adapters, and tests.
 
-The fixed v2 profile uses:
+The common video profile uses:
 
 - 4x4 pixel blocks;
 - 64 shared palettes with 16 RGB888 colors each;
@@ -16,9 +16,11 @@ The fixed v2 profile uses:
 - periodic keyframes that reset prediction and dictionaries;
 - encoder-side selection by `J = RGB SSE + lambda * estimated payload bits`.
 
-BPV1 v3 retains the v2 video syntax and can interleave unsigned 8-bit mono PCM
-with every video frame. The decoder remains compatible with video-only v2 and
-legacy v1 streams containing 16 shared palettes. See
+BPV1 v4 trains and transmits an active 64x16 palette bank in every keyframe.
+Each GOP can therefore replace colors that are no longer useful for the
+current scene. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder
+remains compatible with fixed-palette v3, video-only v2 and legacy v1 streams
+containing 16 shared palettes. See
 [BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level format and
 [RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule.
 
@@ -64,10 +66,11 @@ existing file performs a complete sequential C decode:
 ## Native C encoder
 
 The production encoder uses two bounded-memory passes over a seekable
-8-bit YUV 4:2:0 Y4M file. The first pass trains one shared 64x16 RGB palette
-bank from a reservoir sample. The second pass encodes independent GOPs in
-parallel and writes them in presentation order. Eight worker threads, a
-48-frame GOP and lambda 64 are the defaults.
+8-bit YUV 4:2:0 Y4M file. The first pass counts frames. During the second pass,
+each independent GOP trains its own 64x16 RGB palette bank from a reservoir
+sample, encodes with that bank, and is written in presentation order. GOP
+training and encoding run in parallel. Eight worker threads, a 48-frame GOP,
+active palettes and lambda 64 are the defaults.
 
 ```sh
 ffmpeg -hide_banner -loglevel error -i input.mov -an \
@@ -75,6 +78,7 @@ ffmpeg -hide_banner -loglevel error -i input.mov -an \
   -fps_mode passthrough -f yuv4mpegpipe input.y4m
 ./codecs/bpv/bpv1enc input.y4m output.bpv1 \
   --threads 8 --gop 48 --lambda 64 \
+  --active-palettes \
   --audio-u8 input-mono-16000.u8 --audio-rate 16000 \
   --report output.json
 ```
@@ -105,9 +109,10 @@ the normalized RGBA sequence in host memory. The command-line decoder does
 not retain decoded frames: it keeps compact 9-byte block records and renders
 one frame at a time.
 
-Without `--audio-u8` the encoder writes the compatible video-only v2 stream.
-With audio it writes v3. Short PCM inputs are padded with unsigned silence
-(`128`), and trailing samples beyond the video duration are ignored.
+By default the encoder writes v4 with or without audio. `--fixed-palettes` retains the
+old v2/v3 output mode and one bank for the whole file. Short PCM inputs are
+padded with unsigned silence (`128`), and trailing samples beyond the video
+duration are ignored.
 
 ## Players
 
@@ -121,8 +126,8 @@ On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
 in `/HLV` on the microSD card. The decoder retains two compact 9-byte block
 record frames and renders RGB565 rows directly into the display's existing DMA
 strips. At 320x180 its decoder state, maximum packet buffer and dictionaries
-consume about 106 KiB and no complete RGB framebuffer. BPV v3 uses the same
-PCM_U8 DAC/audio-clock pipeline as HLV; video-only v1/v2 remains timer-clocked.
+consume about 109 KiB and no complete RGB framebuffer. BPV v3/v4 uses the same
+PCM_U8 DAC/audio-clock pipeline as HLV; files without audio remain timer-clocked.
 
 ## Reference measurement
 

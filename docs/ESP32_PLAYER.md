@@ -9,7 +9,7 @@ DAC GPIO26.
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, or BPV1
-  stream versions 1 and 2;
+  v1 through v4, including active per-GOP palettes;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -220,20 +220,20 @@ its aspect ratio and native frame rate preserved:
 ```
 
 For BPV1, the corresponding script uses the same approved 1080p source,
-preserves native 24 fps and writes video-only BPV1 v2:
+preserves native 24 fps and writes BPV1 v4 with active per-GOP palettes:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
-    -InputFile .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
+    -InputFile .\out\BigBuckBunny_1080p_bpv1_v4_active_lambda64_normalized_native-fps_320x180.bpv1
 ```
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
-complete allocation is about 105 KiB. It renders source rows directly into
+complete allocation is about 109 KiB for v4. It renders source rows directly into
 the two existing display DMA strips, so no 115,200-byte RGB565 frame is
-allocated. BPV1 contains no audio, and playback therefore uses the rational
-ESP timer clock.
+allocated. With PCM_U8 audio it uses the DAC clock; video-only streams use the
+rational ESP timer clock.
 
 The MJPEG decoder likewise does not retain a complete RGB565 frame. TJpgDec
 converts one MCU row into a reusable 320x16 RGB565 strip and submits it through
