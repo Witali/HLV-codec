@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <mmsystem.h>
@@ -10,7 +11,9 @@
 
 #include "hlv1.h"
 
+#include <algorithm>
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -20,6 +23,7 @@
 #include <vector>
 
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -35,12 +39,17 @@ constexpr wchar_t kWindowClass[] = L"HLV1WindowsPlayer";
 constexpr UINT_PTR kPlaybackTimer = 1;
 constexpr size_t kVideoLeadFrames = 3;
 constexpr size_t kAudioBufferCount = 8;
+constexpr int kSeekBarHeight = 38;
+constexpr int kSeekMargin = 6;
+constexpr int kTimeLabelWidth = 118;
 
 enum : UINT {
     ID_FILE_OPEN = 1001,
     ID_FILE_EXIT,
     ID_PLAY_PAUSE,
-    ID_VIEW_FIT
+    ID_VIEW_FIT,
+    ID_SEEK_BAR,
+    ID_TIME_LABEL
 };
 
 int clamp8(int value) {
@@ -271,6 +280,7 @@ public:
     }
 
     bool present(const VideoFrame &frame, bool fit_to_window,
+                 int reserved_bottom,
                  std::wstring &error) {
         if (!active_ || !swap_chain_ || frame.width <= 0 || frame.height <= 0)
             return false;
@@ -289,6 +299,8 @@ public:
         if (raw_width <= 0 || raw_height <= 0) return true;
         const UINT width = static_cast<UINT>(raw_width);
         const UINT height = static_cast<UINT>(raw_height);
+        const UINT video_height = static_cast<UINT>(std::max<LONG>(
+            1, raw_height - std::max(0, reserved_bottom)));
         HRESULT result = ensure_size(width, height);
         if (FAILED(result)) {
             error = hresult_error(L"Cannot resize the DXGI video buffers", result);
@@ -310,20 +322,21 @@ public:
         int draw_height = frame.height;
         if (fit_to_window) {
             if (static_cast<int64_t>(width) * frame.height <=
-                static_cast<int64_t>(height) * frame.width) {
+                static_cast<int64_t>(video_height) * frame.width) {
                 draw_width = static_cast<int>(width);
                 draw_height = static_cast<int>(
                     static_cast<int64_t>(width) * frame.height / frame.width);
             } else {
-                draw_height = static_cast<int>(height);
+                draw_height = static_cast<int>(video_height);
                 draw_width = static_cast<int>(
-                    static_cast<int64_t>(height) * frame.width / frame.height);
+                    static_cast<int64_t>(video_height) *
+                    frame.width / frame.height);
             }
         }
         destination_rect.left =
             (static_cast<int>(width) - draw_width) / 2;
         destination_rect.top =
-            (static_cast<int>(height) - draw_height) / 2;
+            (static_cast<int>(video_height) - draw_height) / 2;
         destination_rect.right = destination_rect.left + draw_width;
         destination_rect.bottom = destination_rect.top + draw_height;
 
@@ -608,10 +621,17 @@ private:
     std::array<AudioBuffer, kAudioBufferCount> buffers_ = {};
 };
 
+struct SeekIndexEntry {
+    __int64 packet_offset = 0;
+    uint64_t keyframe_index = 0;
+};
+
 class Player {
 public:
     explicit Player(HWND window) : window_(window) {
         QueryPerformanceFrequency(&clock_frequency_);
+        create_controls();
+        layout_controls();
     }
 
     ~Player() { close(); }
@@ -629,6 +649,8 @@ public:
             return fail(L"Invalid HLV header: " + widen_ascii(hlv1_strerror(result)));
         if (header_.width > 8192 || header_.height > 8192)
             return fail(L"The video dimensions are too large for this player");
+
+        if (!build_seek_index()) return fail(error_);
 
         decoder_ = hlv1_decoder_create(&header_);
         if (!decoder_) return fail(L"Cannot allocate the HLV decoder");
@@ -659,6 +681,7 @@ public:
         loaded_ = true;
         finished_ = false;
         paused_ = false;
+        configure_seek_control();
         if (!SetTimer(window_, kPlaybackTimer, 1, nullptr))
             return fail(L"Cannot create the playback timer");
         update_title();
@@ -689,6 +712,7 @@ public:
         ready_.clear();
         recycled_.clear();
         current_ = {};
+        seek_index_.clear();
         std::memset(&header_, 0, sizeof header_);
         decoded_frames_ = 0;
         presented_frames_ = 0;
@@ -698,6 +722,14 @@ public:
         finished_ = false;
         audio_warning_.clear();
         video_warning_.clear();
+        seek_dragging_ = false;
+        seek_range_max_ = 0;
+        if (seek_bar_ && IsWindow(seek_bar_)) {
+            EnableWindow(seek_bar_, FALSE);
+            SendMessageW(seek_bar_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 0));
+            SendMessageW(seek_bar_, TBM_SETPOS, TRUE, 0);
+        }
+        set_time_label(0);
     }
 
     void tick() {
@@ -762,13 +794,48 @@ public:
         render_current();
     }
 
-    void resize() { render_current(); }
+    void resize() {
+        layout_controls();
+        render_current();
+    }
+
+    void handle_seek_scroll(UINT request) {
+        if (!loaded_ || seek_index_.empty() || !seek_bar_) return;
+        const int position = static_cast<int>(
+            SendMessageW(seek_bar_, TBM_GETPOS, 0, 0));
+        const uint64_t target = frame_from_seek_position(position);
+
+        if (request == TB_THUMBTRACK || request == TB_THUMBPOSITION) {
+            seek_dragging_ = true;
+            set_time_label(target);
+            return;
+        }
+        if (request == TB_ENDTRACK) {
+            if (!seek_dragging_) return;
+            seek_dragging_ = false;
+        } else if (request != TB_LINEUP && request != TB_LINEDOWN &&
+                   request != TB_PAGEUP && request != TB_PAGEDOWN &&
+                   request != TB_TOP && request != TB_BOTTOM) {
+            return;
+        }
+
+        if (!seek_to(target)) playback_failed();
+    }
+
+    HBRUSH control_color(HDC dc, HWND control) const {
+        if (control != time_label_) return nullptr;
+        SetBkColor(dc, RGB(0, 0, 0));
+        SetTextColor(dc, RGB(220, 220, 220));
+        return static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    }
 
     void paint(HDC dc, const RECT &client) const {
         if (video_renderer_.active()) return;
 
         const int client_width = client.right - client.left;
         const int client_height = client.bottom - client.top;
+        const int video_height =
+            std::max(0, client_height - control_bar_height());
         HDC memory_dc = nullptr;
         HBITMAP bitmap = nullptr;
         HGDIOBJ previous_bitmap = nullptr;
@@ -789,6 +856,7 @@ public:
             SetBkMode(target, TRANSPARENT);
             SetTextColor(target, RGB(210, 210, 210));
             RECT text_rect = client;
+            text_rect.bottom = text_rect.top + video_height;
             const wchar_t *message = error_.empty()
                 ? L"Open an .hlv file (Ctrl+O) or drag it into this window"
                 : error_.c_str();
@@ -797,22 +865,22 @@ public:
         } else {
             int draw_width = current_.width;
             int draw_height = current_.height;
-            if (fit_to_window_ && client_width > 0 && client_height > 0) {
+            if (fit_to_window_ && client_width > 0 && video_height > 0) {
                 if (static_cast<int64_t>(client_width) * current_.height <=
-                    static_cast<int64_t>(client_height) * current_.width) {
+                    static_cast<int64_t>(video_height) * current_.width) {
                     draw_width = client_width;
                     draw_height = static_cast<int>(
                         static_cast<int64_t>(client_width) * current_.height /
                         current_.width);
                 } else {
-                    draw_height = client_height;
+                    draw_height = video_height;
                     draw_width = static_cast<int>(
-                        static_cast<int64_t>(client_height) * current_.width /
+                        static_cast<int64_t>(video_height) * current_.width /
                         current_.height);
                 }
             }
             const int draw_x = (client_width - draw_width) / 2;
-            const int draw_y = (client_height - draw_height) / 2;
+            const int draw_y = (video_height - draw_height) / 2;
 
             BITMAPINFO info = {};
             info.bmiHeader.biSize = sizeof info.bmiHeader;
@@ -841,6 +909,277 @@ public:
     bool fit_to_window() const { return fit_to_window_; }
 
 private:
+    int control_bar_height() const {
+        return seek_bar_ && IsWindow(seek_bar_) ? kSeekBarHeight : 0;
+    }
+
+    void create_controls() {
+        const HINSTANCE instance = reinterpret_cast<HINSTANCE>(
+            GetWindowLongPtrW(window_, GWLP_HINSTANCE));
+        seek_bar_ = CreateWindowExW(
+            0, TRACKBAR_CLASSW, L"",
+            WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TOOLTIPS,
+            0, 0, 0, 0, window_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SEEK_BAR)),
+            instance, nullptr);
+        time_label_ = CreateWindowExW(
+            0, L"STATIC", L"0:00 / 0:00",
+            WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
+            0, 0, 0, 0, window_,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_TIME_LABEL)),
+            instance, nullptr);
+        const HFONT font = static_cast<HFONT>(
+            GetStockObject(DEFAULT_GUI_FONT));
+        if (seek_bar_) {
+            SendMessageW(seek_bar_, WM_SETFONT,
+                         reinterpret_cast<WPARAM>(font), TRUE);
+            EnableWindow(seek_bar_, FALSE);
+        }
+        if (time_label_) {
+            SendMessageW(time_label_, WM_SETFONT,
+                         reinterpret_cast<WPARAM>(font), TRUE);
+        }
+    }
+
+    void layout_controls() const {
+        if (!seek_bar_ || !time_label_) return;
+        RECT client = {};
+        GetClientRect(window_, &client);
+        const int width = std::max<LONG>(0, client.right - client.left);
+        const int height = std::max<LONG>(0, client.bottom - client.top);
+        const int top = std::max(0, height - kSeekBarHeight);
+        const int label_width = std::min(
+            kTimeLabelWidth, std::max(0, width - 2 * kSeekMargin));
+        const int label_x = std::max(
+            kSeekMargin, width - label_width - kSeekMargin);
+        const int seek_width = std::max(
+            0, label_x - 2 * kSeekMargin);
+        MoveWindow(seek_bar_, kSeekMargin, top + 3,
+                   seek_width, kSeekBarHeight - 6, TRUE);
+        MoveWindow(time_label_, label_x, top + 7,
+                   label_width, kSeekBarHeight - 14, TRUE);
+    }
+
+    std::wstring format_time(uint64_t frame) const {
+        uint64_t seconds = 0;
+        if (header_.fps_num) {
+            const long double value =
+                static_cast<long double>(frame) * header_.fps_den /
+                header_.fps_num;
+            seconds = value >= static_cast<long double>(UINT64_MAX)
+                ? UINT64_MAX
+                : static_cast<uint64_t>(value);
+        }
+        const uint64_t hours = seconds / 3600;
+        const uint64_t minutes = (seconds / 60) % 60;
+        const uint64_t remaining = seconds % 60;
+        wchar_t text[64] = {};
+        if (hours) {
+            swprintf_s(text, L"%llu:%02llu:%02llu",
+                       static_cast<unsigned long long>(hours),
+                       static_cast<unsigned long long>(minutes),
+                       static_cast<unsigned long long>(remaining));
+        } else {
+            swprintf_s(text, L"%llu:%02llu",
+                       static_cast<unsigned long long>(seconds / 60),
+                       static_cast<unsigned long long>(remaining));
+        }
+        return text;
+    }
+
+    void set_time_label(uint64_t frame) const {
+        if (!time_label_ || !IsWindow(time_label_)) return;
+        const std::wstring current = format_time(frame);
+        const std::wstring total = format_time(seek_index_.size());
+        const std::wstring text = current + L" / " + total;
+        SetWindowTextW(time_label_, text.c_str());
+    }
+
+    bool build_seek_index() {
+        seek_index_.clear();
+        if (_fseeki64(file_, HLV1_HEADER_SIZE, SEEK_SET) != 0) {
+            error_ = L"Cannot seek to the first HLV packet";
+            return false;
+        }
+
+        uint64_t last_keyframe = UINT64_MAX;
+        for (;;) {
+            const __int64 offset = _ftelli64(file_);
+            if (offset < 0) {
+                error_ = L"Cannot read the HLV packet position";
+                return false;
+            }
+            HLV1Packet packet = {};
+            const int result = hlv1_packet_read(file_, &packet);
+            if (result == HLV1_EOF) break;
+            if (result < 0) {
+                error_ = L"Cannot build the seek index at frame " +
+                         std::to_wstring(seek_index_.size()) + L": " +
+                         widen_ascii(hlv1_strerror(result));
+                hlv1_packet_free(&packet);
+                return false;
+            }
+            if (packet.frame_type == HLV1_FRAME_KEY)
+                last_keyframe = seek_index_.size();
+            if (last_keyframe == UINT64_MAX) {
+                error_ = L"The first HLV packet is not a keyframe";
+                hlv1_packet_free(&packet);
+                return false;
+            }
+            seek_index_.push_back({offset, last_keyframe});
+            hlv1_packet_free(&packet);
+        }
+        if (seek_index_.empty()) {
+            error_ = L"The HLV file contains no video frames";
+            return false;
+        }
+        if (_fseeki64(file_, seek_index_.front().packet_offset, SEEK_SET) != 0) {
+            error_ = L"Cannot rewind the HLV file after indexing";
+            return false;
+        }
+        return true;
+    }
+
+    void configure_seek_control() {
+        if (!seek_bar_ || seek_index_.empty()) return;
+        const uint64_t last_frame = seek_index_.size() - 1;
+        seek_range_max_ = static_cast<int>(
+            std::min<uint64_t>(last_frame, INT_MAX));
+        SendMessageW(seek_bar_, TBM_SETRANGEMIN, FALSE, 0);
+        SendMessageW(seek_bar_, TBM_SETRANGEMAX, TRUE, seek_range_max_);
+
+        const long double units_per_second =
+            last_frame && header_.fps_num
+                ? static_cast<long double>(seek_range_max_) *
+                  header_.fps_num /
+                  (static_cast<long double>(last_frame) * header_.fps_den)
+                : 1.0L;
+        const int line = std::max(
+            1, static_cast<int>(units_per_second + 0.5L));
+        const int page = std::max(
+            line, static_cast<int>(units_per_second * 10.0L + 0.5L));
+        SendMessageW(seek_bar_, TBM_SETLINESIZE, 0, line);
+        SendMessageW(seek_bar_, TBM_SETPAGESIZE, 0, page);
+        SendMessageW(seek_bar_, TBM_SETPOS, TRUE, 0);
+        EnableWindow(seek_bar_, seek_range_max_ > 0);
+        set_time_label(0);
+    }
+
+    uint64_t frame_from_seek_position(int position) const {
+        if (seek_index_.size() <= 1 || seek_range_max_ <= 0) return 0;
+        position = std::clamp(position, 0, seek_range_max_);
+        const long double frame =
+            static_cast<long double>(position) *
+            (seek_index_.size() - 1) / seek_range_max_;
+        return static_cast<uint64_t>(frame + 0.5L);
+    }
+
+    int seek_position_from_frame(uint64_t frame) const {
+        if (seek_index_.size() <= 1 || seek_range_max_ <= 0) return 0;
+        frame = std::min<uint64_t>(frame, seek_index_.size() - 1);
+        const long double position =
+            static_cast<long double>(frame) * seek_range_max_ /
+            (seek_index_.size() - 1);
+        return static_cast<int>(position + 0.5L);
+    }
+
+    void update_seek_position(uint64_t frame) const {
+        if (seek_dragging_) return;
+        if (seek_bar_ && IsWindow(seek_bar_)) {
+            SendMessageW(seek_bar_, TBM_SETPOS, TRUE,
+                         seek_position_from_frame(frame));
+        }
+        set_time_label(frame);
+    }
+
+    void recycle_queued_frames() {
+        if (!current_.pixels.empty())
+            recycled_.push_back(std::move(current_));
+        current_ = {};
+        while (!ready_.empty()) {
+            recycled_.push_back(std::move(ready_.front()));
+            ready_.pop_front();
+        }
+    }
+
+    bool reopen_audio() {
+        audio_.close();
+        audio_warning_.clear();
+        if (!(header_.flags & HLV1_FLAG_AUDIO)) return true;
+        std::wstring audio_error;
+        if (audio_.open(header_.audio_sample_rate, audio_error)) return true;
+        audio_warning_ = L"Audio is disabled: " + audio_error;
+        return true;
+    }
+
+    bool seek_to(uint64_t target) {
+        if (!loaded_ || seek_index_.empty()) return true;
+        target = std::min<uint64_t>(target, seek_index_.size() - 1);
+        const bool resume = !paused_;
+        KillTimer(window_, kPlaybackTimer);
+        audio_.close();
+        recycle_queued_frames();
+
+        if (decoder_) hlv1_decoder_destroy(decoder_);
+        decoder_ = hlv1_decoder_create(&header_);
+        if (!decoder_) {
+            error_ = L"Cannot reset the HLV decoder for seeking";
+            return false;
+        }
+
+        const uint64_t keyframe = seek_index_[target].keyframe_index;
+        if (_fseeki64(file_, seek_index_[keyframe].packet_offset, SEEK_SET) != 0) {
+            error_ = L"Cannot seek to the selected HLV keyframe";
+            return false;
+        }
+        decoded_frames_ = keyframe;
+        presented_frames_ = target;
+        end_of_file_ = false;
+        finished_ = false;
+        error_.clear();
+
+        while (decoded_frames_ < target) {
+            const uint64_t before = decoded_frames_;
+            if (!decode_one(false, false)) return false;
+            if (end_of_file_ || decoded_frames_ == before) {
+                error_ = L"The HLV file ended before the selected frame";
+                return false;
+            }
+        }
+
+        reopen_audio();
+        while (ready_.size() < kVideoLeadFrames + 1 && !end_of_file_) {
+            if (!decode_one(true, true)) return false;
+        }
+        if (ready_.empty()) {
+            error_ = L"The selected HLV frame could not be decoded";
+            return false;
+        }
+        present_front();
+
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter(&now);
+        const long double target_offset =
+            static_cast<long double>(target) * clock_frequency_.QuadPart *
+            header_.fps_den / header_.fps_num;
+        clock_start_.QuadPart =
+            now.QuadPart - static_cast<LONGLONG>(target_offset);
+        if (resume) {
+            paused_ = false;
+            audio_.restart();
+        } else {
+            paused_ = true;
+            pause_started_ = now;
+            audio_.pause();
+        }
+        if (!SetTimer(window_, kPlaybackTimer, 1, nullptr)) {
+            error_ = L"Cannot recreate the playback timer after seeking";
+            return false;
+        }
+        update_title();
+        return true;
+    }
+
     bool fail(const std::wstring &message) {
         error_ = message;
         const std::wstring saved_error = error_;
@@ -853,7 +1192,7 @@ private:
         return false;
     }
 
-    bool decode_one() {
+    bool decode_one(bool queue_video = true, bool queue_audio = true) {
         HLV1Packet packet = {};
         int result = hlv1_packet_read(file_, &packet);
         if (result == HLV1_EOF) {
@@ -875,15 +1214,17 @@ private:
             return false;
         }
 
-        VideoFrame output;
-        if (!recycled_.empty()) {
-            output = std::move(recycled_.back());
-            recycled_.pop_back();
+        if (queue_video) {
+            VideoFrame output;
+            if (!recycled_.empty()) {
+                output = std::move(recycled_.back());
+                recycled_.pop_back();
+            }
+            convert_frame(decoded, output);
+            ready_.push_back(std::move(output));
         }
-        convert_frame(decoded, output);
-        ready_.push_back(std::move(output));
 
-        if (audio_.active()) {
+        if (queue_audio && audio_.active()) {
             const size_t audio_size = hlv1_packet_audio_size(&packet);
             const uint8_t *audio_data = hlv1_packet_audio_data(&packet);
             std::wstring audio_error;
@@ -903,6 +1244,7 @@ private:
         current_ = std::move(ready_.front());
         ready_.pop_front();
         ++presented_frames_;
+        update_seek_position(presented_frames_ - 1);
         render_current();
     }
 
@@ -910,7 +1252,8 @@ private:
         if (video_renderer_.active() && !current_.pixels.empty()) {
             std::wstring render_error;
             if (video_renderer_.present(
-                    current_, fit_to_window_, render_error)) {
+                    current_, fit_to_window_, control_bar_height(),
+                    render_error)) {
                 return;
             }
             video_warning_ =
@@ -952,6 +1295,8 @@ private:
     }
 
     HWND window_ = nullptr;
+    HWND seek_bar_ = nullptr;
+    HWND time_label_ = nullptr;
     FILE *file_ = nullptr;
     HLV1Decoder *decoder_ = nullptr;
     HLV1Header header_ = {};
@@ -959,6 +1304,7 @@ private:
     D3DVideoRenderer video_renderer_;
     std::deque<VideoFrame> ready_;
     std::vector<VideoFrame> recycled_;
+    std::vector<SeekIndexEntry> seek_index_;
     VideoFrame current_;
     std::wstring path_;
     std::wstring error_;
@@ -969,11 +1315,13 @@ private:
     LARGE_INTEGER pause_started_ = {};
     uint64_t decoded_frames_ = 0;
     uint64_t presented_frames_ = 0;
+    int seek_range_max_ = 0;
     bool loaded_ = false;
     bool paused_ = false;
     bool finished_ = false;
     bool end_of_file_ = false;
     bool fit_to_window_ = true;
+    bool seek_dragging_ = false;
 };
 
 Player *g_player = nullptr;
@@ -1036,6 +1384,21 @@ LRESULT CALLBACK window_proc(HWND window, UINT message,
     case WM_TIMER:
         if (wparam == kPlaybackTimer) g_player->tick();
         return 0;
+    case WM_HSCROLL:
+        if (g_player && reinterpret_cast<HWND>(lparam) &&
+            GetDlgCtrlID(reinterpret_cast<HWND>(lparam)) == ID_SEEK_BAR) {
+            g_player->handle_seek_scroll(LOWORD(wparam));
+            return 0;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+        if (g_player) {
+            HBRUSH brush = g_player->control_color(
+                reinterpret_cast<HDC>(wparam),
+                reinterpret_cast<HWND>(lparam));
+            if (brush) return reinterpret_cast<LRESULT>(brush);
+        }
+        break;
     case WM_DROPFILES: {
         HDROP drop = reinterpret_cast<HDROP>(wparam);
         const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
@@ -1151,6 +1514,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     }
 
     timeBeginPeriod(1);
+    INITCOMMONCONTROLSEX common_controls = {};
+    common_controls.dwSize = sizeof common_controls;
+    common_controls.dwICC = ICC_BAR_CLASSES;
+    if (!InitCommonControlsEx(&common_controls)) {
+        if (arguments) LocalFree(arguments);
+        timeEndPeriod(1);
+        return 1;
+    }
     WNDCLASSEXW window_class = {};
     window_class.cbSize = sizeof window_class;
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -1189,11 +1560,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     if (arguments && argument_count >= 2) player.open(arguments[1]);
     LocalFree(arguments);
 
+    ACCEL accelerator_entries[] = {
+        {FVIRTKEY | FCONTROL, 'O', ID_FILE_OPEN},
+        {FVIRTKEY, VK_SPACE, ID_PLAY_PAUSE},
+        {FVIRTKEY, 'F', ID_VIEW_FIT},
+        {FVIRTKEY, VK_ESCAPE, ID_FILE_EXIT}
+    };
+    HACCEL accelerators = CreateAcceleratorTableW(
+        accelerator_entries,
+        static_cast<int>(std::size(accelerator_entries)));
     MSG message = {};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (accelerators &&
+            TranslateAcceleratorW(window, accelerators, &message)) {
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
+    if (accelerators) DestroyAcceleratorTable(accelerators);
     g_player = nullptr;
     timeEndPeriod(1);
     return static_cast<int>(message.wParam);

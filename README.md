@@ -64,10 +64,10 @@ Build and test the desktop tools with MSVC:
 ## Native Windows player
 
 The desktop build produces `build\msvc\hlvplay.exe`, a native HLV player that
-uses only Windows GDI and `waveOut`; FFmpeg and external codec packs are not
-needed at runtime. It plays the embedded PCM_U8 mono track, preserves the video
-aspect ratio, supports pause/resume, native-size centred display and
-drag-and-drop:
+uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg and
+external codec packs are not needed at runtime. It plays the embedded PCM_U8
+mono track, preserves the video aspect ratio, and supports pause/resume,
+timeline seeking, native-size centred display and drag-and-drop:
 
 ```powershell
 .\scripts\build_windows_player.ps1

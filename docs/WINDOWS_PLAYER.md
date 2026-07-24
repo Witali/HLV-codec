@@ -40,15 +40,27 @@ Open a file from PowerShell:
 
 The player also accepts files through **File > Open** and drag-and-drop.
 
+- Drag the timeline at the bottom of the window to choose the playback time.
+- With the timeline focused, `Left`/`Right` seek by one second,
+  `Page Up`/`Page Down` by ten seconds, and `Home`/`End` select the boundaries.
 - `Space`: pause or resume video and audio together.
 - `F`: switch between aspect-preserving fit and native-size centred display.
 - `Ctrl+O`: open another file.
 - `Esc`: close the player.
 
-Four video/audio intervals are prepared at startup. Video timing uses the HLV
-frame-rate fraction and a high-resolution Windows clock. Audio is queued in
-eight reusable `waveOut` buffers. The image remains centred and its aspect
-ratio is never distorted.
+The time label beside the timeline shows the selected position and total
+duration. Four video/audio intervals are prepared at startup. Video timing uses
+the HLV frame-rate fraction and a high-resolution Windows clock. Audio is
+queued in eight reusable `waveOut` buffers. The image remains centred and its
+aspect ratio is never distorted.
+
+When a file is opened, the player validates its packets and builds a compact
+frame-to-keyframe index. A seek starts at the nearest preceding keyframe,
+decodes dependent P-frames without presenting them, then displays the selected
+frame and restarts the audio queue from the matching packet. Seeking while
+paused preserves the paused state. Files whose header has a streaming
+`frame_count=0` are also seekable because the local index uses the actual
+packet count.
 
 The window title reports the active presentation path:
 
@@ -70,6 +82,5 @@ by the window. Its deterministic checksum is calculated from the BGRA result:
 if ($LASTEXITCODE -ne 0) { throw "HLV validation failed" }
 ```
 
-Seeking is not implemented yet because P-frames depend on previous reference
-frames. A future seek index should point to keyframes and resume decoding from
-the selected keyframe.
+The headless check still performs a complete independent sequential decode;
+the interactive seek index does not bypass packet CRC validation.
