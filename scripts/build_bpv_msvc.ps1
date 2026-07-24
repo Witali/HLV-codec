@@ -8,6 +8,9 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $source = Join-Path $repo "codecs\bpv\tools\bpv1enc.c"
+$decoderSource = Join-Path $repo "codecs\bpv\src\bpv1_decode.c"
+$decoderTest = Join-Path $repo "codecs\bpv\tests\test_bpv1_decoder.c"
+$include = Join-Path $repo "codecs\bpv\include"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not (Test-Path -LiteralPath $vswhere)) {
@@ -36,6 +39,24 @@ Write-Host "Building BPV1 C encoder..."
 & cmd.exe /d /c $command
 if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building bpv1enc."
+}
+
+$decoderTestOutput = Join-Path $OutputDirectory "test_bpv1_decoder.exe"
+$decoderTestCommandTemplate = 'call "{0}" -no_logo -arch=x64 && ' +
+    'cd /d "{1}" && cl /nologo /O2 /W4 /std:c11 /I"{2}" ' +
+    '"{3}" "{4}" /Fe:"{5}"'
+$decoderTestCommand = $decoderTestCommandTemplate -f `
+    $devcmd, $OutputDirectory, $include, $decoderTest, $decoderSource, `
+    $decoderTestOutput
+
+Write-Host "Building BPV1 portable decoder test..."
+& cmd.exe /d /c $decoderTestCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed while building the BPV1 decoder test."
+}
+& $decoderTestOutput
+if ($LASTEXITCODE -ne 0) {
+    throw "BPV1 portable decoder test failed."
 }
 
 $previousEncoder = $env:BPV1ENC
