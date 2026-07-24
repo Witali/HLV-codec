@@ -111,6 +111,18 @@ enum class VideoCodec {
     kMpeg1,
 };
 
+enum class SelectionReadResult {
+    kReady,
+    kMissingOrInvalid,
+    kIoError,
+};
+
+enum class VideoOpenResult {
+    kReady,
+    kMissingOrUnsupported,
+    kIoError,
+};
+
 struct DecodeRequest {
     VideoCodec codec;
     const HLV1Packet *hlv_packet;
@@ -234,7 +246,10 @@ void decodeTask(void *) {
                 result.mpeg_frame = *frame;
                 result.has_mpeg_frame = true;
             }
-            result.result = HLV1_OK;
+            result.result =
+                !frame && video_file && std::ferror(video_file)
+                    ? HLV1_ERR_IO
+                    : HLV1_OK;
         } else if (request.codec == VideoCodec::kHlv) {
             result.result =
                 decoder.decode(request.hlv_packet, &result.hlv_frame);
@@ -687,7 +702,11 @@ int prefetchMpegAudioFrame() {
     plm_samples_t *samples = plm_decode_audio(mpeg_audio);
     const uint32_t decode_us =
         static_cast<uint32_t>(microsNow() - decode_start);
-    if (!samples) return HLV1_EOF;
+    if (!samples) {
+        return audio_file && std::ferror(audio_file)
+                   ? HLV1_ERR_IO
+                   : HLV1_EOF;
+    }
     mpeg_audio_decode_frames = mpeg_audio_decode_frames + 1;
     mpeg_audio_decode_us = mpeg_audio_decode_us + decode_us;
     const int64_t convert_start = microsNow();
@@ -1101,17 +1120,23 @@ bool isSafeVideoFilename(const char *name) {
     return true;
 }
 
-bool readSelectedVideoPath(bool *selection_present) {
-    if (selection_present) *selection_present = false;
+SelectionReadResult readSelectedVideoPath() {
+    errno = 0;
     FILE *selection =
         std::fopen(player_settings::kVideoSelectionPath, "rb");
-    if (!selection) return false;
-    if (selection_present) *selection_present = true;
+    if (!selection) {
+        return errno == ENOENT
+                   ? SelectionReadResult::kMissingOrInvalid
+                   : SelectionReadResult::kIoError;
+    }
 
     char filename[112]{};
-    const bool read = std::fgets(filename, sizeof filename, selection);
-    std::fclose(selection);
-    if (!read) return false;
+    const bool read =
+        std::fgets(filename, sizeof filename, selection) != nullptr;
+    const bool io_error = std::ferror(selection) != 0;
+    const bool close_error = std::fclose(selection) != 0;
+    if (io_error || close_error) return SelectionReadResult::kIoError;
+    if (!read) return SelectionReadResult::kMissingOrInvalid;
 
     char *start = filename;
     while (*start == ' ' || *start == '\t') ++start;
@@ -1122,22 +1147,38 @@ bool readSelectedVideoPath(bool *selection_present) {
         --end;
     }
     *end = '\0';
-    if (!isSafeVideoFilename(start)) return false;
+    if (!isSafeVideoFilename(start)) {
+        return SelectionReadResult::kMissingOrInvalid;
+    }
 
     const int written = std::snprintf(
         selected_video_path, sizeof selected_video_path, "%s/%s",
         player_settings::kVideoDirectory, start);
     return written > 0 &&
-           static_cast<size_t>(written) < sizeof selected_video_path;
+                   static_cast<size_t>(written) <
+                       sizeof selected_video_path
+               ? SelectionReadResult::kReady
+               : SelectionReadResult::kMissingOrInvalid;
 }
 
-bool openVideoCandidate(const char *path) {
+VideoOpenResult openVideoCandidate(const char *path) {
+    errno = 0;
     video_file = std::fopen(path, "rb");
-    if (!video_file) return false;
+    if (!video_file) {
+        return errno == ENOENT
+                   ? VideoOpenResult::kMissingOrUnsupported
+                   : VideoOpenResult::kIoError;
+    }
     uint8_t signature[12]{};
     const size_t signature_size =
         std::fread(signature, 1, sizeof signature, video_file);
-    std::rewind(video_file);
+    const bool io_error = std::ferror(video_file) != 0 ||
+                          std::fseek(video_file, 0, SEEK_SET) != 0;
+    if (io_error) {
+        std::fclose(video_file);
+        video_file = nullptr;
+        return VideoOpenResult::kIoError;
+    }
     if (signature_size >= 4 && !std::memcmp(signature, "HLV1", 4)) {
         video_codec = VideoCodec::kHlv;
     } else if (signature_size >= 4 &&
@@ -1154,10 +1195,10 @@ bool openVideoCandidate(const char *path) {
     } else {
         std::fclose(video_file);
         video_file = nullptr;
-        return false;
+        return VideoOpenResult::kMissingOrUnsupported;
     }
     active_video_path = path;
-    return true;
+    return VideoOpenResult::kReady;
 }
 
 int probeMpegAudioSampleRate(const char *path) {
@@ -1196,14 +1237,23 @@ bool reopenVideoAt(long offset) {
 
 bool openVideo() {
     closeVideo();
-    bool selection_present = false;
-    const bool selected = readSelectedVideoPath(&selection_present);
-    if (!selection_present || !selected) {
+    const SelectionReadResult selection_result = readSelectedVideoPath();
+    if (selection_result == SelectionReadResult::kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot read /HLV/play.txt");
+        return false;
+    }
+    if (selection_result != SelectionReadResult::kReady) {
         showStatus("NO SELECTED FILE.",
                    "create /HLV/play.txt");
         return false;
     }
-    if (!openVideoCandidate(selected_video_path)) {
+    const VideoOpenResult open_result =
+        openVideoCandidate(selected_video_path);
+    if (open_result == VideoOpenResult::kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot open selected video");
+        return false;
+    }
+    if (open_result != VideoOpenResult::kReady) {
         showStatus("SELECTED FILE ERROR",
                    "missing or unsupported video");
         return false;
@@ -1800,6 +1850,13 @@ void failPlayback(const char *title, int result) {
     last_retry_ms = millisNow();
 }
 
+void failSdCardRead(const char *detail) {
+    ESP_LOGE(kTag, "SD card read failed: %s", detail);
+    showStatus("SD CARD READ ERROR", detail);
+    closeVideo();
+    last_retry_ms = millisNow();
+}
+
 void fallBackToTimerClock(const char *reason) {
     ESP_LOGW(kTag, "%s; switching to the ESP timer video clock", reason);
     stopAudio();
@@ -2052,6 +2109,10 @@ void playOneFrameSequential() {
         return;
     }
     if (packet_result != HLV1_OK) {
+        if (packet_result == HLV1_ERR_IO) {
+            failSdCardRead("cannot read HLV video");
+            return;
+        }
         failPlayback("Packet read error", packet_result);
         return;
     }
@@ -2077,6 +2138,10 @@ void playOneMpegFrameSequential() {
     const uint32_t decode_us =
         static_cast<uint32_t>(microsNow() - decode_start);
     if (!frame) {
+        if (video_file && std::ferror(video_file)) {
+            failSdCardRead("cannot read MPEG video");
+            return;
+        }
         finishVideoLoop();
         return;
     }
@@ -2092,8 +2157,16 @@ void playOneMpegFramePipelined() {
             return;
         }
         DecodeResult first{};
-        if (!waitDecode(&first) || first.result != HLV1_OK) {
+        if (!waitDecode(&first)) {
             failPlayback("MPEG-1 decode error", HLV1_ERR_BITSTREAM);
+            return;
+        }
+        if (first.result == HLV1_ERR_IO) {
+            failSdCardRead("cannot read MPEG video");
+            return;
+        }
+        if (first.result != HLV1_OK) {
+            failPlayback("MPEG-1 decode error", first.result);
             return;
         }
         if (!first.has_mpeg_frame) {
@@ -2120,8 +2193,16 @@ void playOneMpegFramePipelined() {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    if (!received || next.result != HLV1_OK) {
+    if (!received) {
         failPlayback("MPEG-1 decode error", HLV1_ERR_BITSTREAM);
+        return;
+    }
+    if (next.result == HLV1_ERR_IO) {
+        failSdCardRead("cannot read MPEG video");
+        return;
+    }
+    if (next.result != HLV1_OK) {
+        failPlayback("MPEG-1 decode error", next.result);
         return;
     }
     if (next.has_mpeg_frame) {
@@ -2162,6 +2243,10 @@ void playOneMjpegFrame() {
         return;
     }
     if (packet_result != MJPEG_AVI_OK) {
+        if (packet_result == MJPEG_AVI_ERR_IO) {
+            failSdCardRead("cannot read MJPEG video");
+            return;
+        }
         failPlayback("MJPEG packet error", packet_result);
         return;
     }
@@ -2208,6 +2293,10 @@ void playOneBpvFrameSequential() {
         return;
     }
     if (packet_result != BPV1_OK) {
+        if (packet_result == BPV1_ERR_IO) {
+            failSdCardRead("cannot read BPV1 video");
+            return;
+        }
         failPlayback("BPV1 packet error", packet_result);
         return;
     }
@@ -2248,6 +2337,10 @@ void playOneBpvFramePipelined() {
         return;
     }
     if (packet_result != BPV1_OK) {
+        if (packet_result == BPV1_ERR_IO) {
+            failSdCardRead("cannot read BPV1 video");
+            return;
+        }
         failPlayback("BPV1 packet error", packet_result);
         return;
     }
@@ -2320,6 +2413,10 @@ void playOneFramePipelined() {
         return;
     }
     if (packet_result != HLV1_OK) {
+        if (packet_result == HLV1_ERR_IO) {
+            failSdCardRead("cannot read HLV video");
+            return;
+        }
         failPlayback("Packet read error", packet_result);
         return;
     }
