@@ -20,6 +20,7 @@ else()
             "hlv_player.cpp"
             "cyd_display.cpp"
             "hlv_esp32_decoder.cpp"
+            "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
         INCLUDE_DIRS "."
         REQUIRES

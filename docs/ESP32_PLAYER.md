@@ -1,4 +1,4 @@
-# HLV-1 player for ESP32-2432S028 CYD2USB
+# Multi-codec player for ESP32-2432S028 CYD2USB
 
 The board in `IMG_20260722_174354.jpg` and `IMG_20260722_174401.jpg` is the
 two-USB ESP32-2432S028 variant commonly called CYD2USB. It normally uses an
@@ -7,8 +7,10 @@ DAC GPIO26.
 
 ## What the firmware does
 
-- reads `/sdcard/video.hlv` from a FAT16/FAT32 microSD card;
-- decodes HLV-1 stream versions 1 through 13;
+- reads the selected filename from `/sdcard/HLV/play.txt`;
+- decodes HLV-1 stream versions 1 through 13 or standard AVI/MJPEG;
+- shows `NO SELECTED FILE.` on the display instead of guessing a fallback
+  when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts YUV420 to RGB565 in 16-row strips, without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
@@ -196,13 +198,22 @@ the full PCM range remains available. Conversion controls include:
     -NoAudioNormalization
 ```
 
-The result is `out\video.hlv`. Copy it to the root of a FAT16/FAT32 card under
-the exact name `video.hlv`. Uncompressed 16 kHz audio consumes 16,000 bytes per
-second in addition to the compressed video. The optional helper copies and
-verifies the file when the card is mounted as a Windows drive:
+The result is `out\video.hlv`. Uncompressed 16 kHz audio consumes 16,000 bytes
+per second in addition to the compressed video. The optional helper copies the
+video into the card's `/HLV` directory, verifies it and writes the mandatory
+`/HLV/play.txt` selection when the card is mounted as a Windows drive:
 
 ```powershell
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\
+```
+
+For the MJPEG profile, encode the approved 1080p MOV at a 320-pixel width with
+its aspect ratio and native frame rate preserved:
+
+```powershell
+.\scripts\encode_big_buck_bunny_mjpeg.ps1
+.\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
+    -InputFile .\out\BigBuckBunny_1080p_mjpeg_q5_native-fps_320x180.avi
 ```
 
 ### Big Buck Bunny example
@@ -261,14 +272,15 @@ Replace `COM8` if the board appears on another port. After the EN-to-GND
 capacitor modification, the uploader uses the tested CH340C DTR/RTS sequence
 and requires no button presses: reset is held for 200 ms and GPIO0 for 100 ms.
 It writes the bootloader, partition table and application to internal flash.
-The uploader defaults to a conservative 460800 baud. `video.hlv` is not
-flashed; it remains on the removable card.
+The uploader defaults to a conservative 460800 baud. Selected videos and
+`play.txt` are not flashed; they remain on the removable card.
 
-With the normal player running, an HLV file can instead be written into the
-card's `/HLV` directory without removing the card:
+With the normal player running, a video and its selection file can instead be
+written into the card's `/HLV` directory without removing the card:
 
 ```powershell
 .\upload-video.ps1 -Port COM8 -File ..\..\out\video.hlv
+.\upload-video.ps1 -Port COM8 -File ..\..\out\play.txt
 ```
 
 The command handshake remains at 460800 baud; the verified data-transfer

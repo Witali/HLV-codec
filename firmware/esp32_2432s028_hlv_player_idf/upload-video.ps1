@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)][string]$Port,
     [Parameter(Mandatory)][string]$File,
-    [string]$Name = "video.hlv",
+    [string]$Name,
     [ValidateSet(460800, 921600, 1500000, 2000000)]
     [int]$DataBaud = 2000000
 )
@@ -31,6 +31,9 @@ if (-not $python) {
 }
 
 $source = (Resolve-Path -LiteralPath $File).Path
+if (-not $Name) {
+    $Name = [IO.Path]::GetFileName($source)
+}
 & $python (Join-Path $project "uart_upload.py") $source `
     --port $Port --name $Name --data-baud $DataBaud
 if ($LASTEXITCODE -ne 0) {

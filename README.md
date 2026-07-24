@@ -11,6 +11,12 @@ microcontrollers. Its package contains the portable C encoder and decoder, a
 static library, Y4M/PCM tools, correctness tests, and the native Windows player
 source.
 
+The second device codec is the standard
+[`AVI/MJPEG profile`](codecs/mjpeg/). Its Big Buck Bunny preset keeps a
+320-pixel width, preserves the 16:9 aspect ratio (`320x180`), retains the
+native source frame rate, and muxes PCM_U8 audio through the same saved level
+curve as the HLV preset.
+
 ## HLV-1 v0.3 development build
 
 The decoder accepts stream syntax v1 through v13. New encodes use **stream
@@ -108,11 +114,15 @@ firmware project directory:
 .\scripts\upload_esp32.ps1 -Port COM8
 ```
 
-With the player firmware running normally, an HLV file can be copied to
-`/sdcard/HLV/video.hlv` over the CH340C UART without removing the card:
+The player reads one filename from `/sdcard/HLV/play.txt`; it never guesses a
+fallback video. The selected `.hlv` or MJPEG `.avi` file must be in the same
+directory. With the firmware running normally, both files can be copied over
+the CH340C UART without removing the card:
 
 ```powershell
-.\scripts\upload_video_uart.ps1 -Port COM8 -File .\out\video.hlv
+.\scripts\upload_video_uart.ps1 -Port COM8 `
+    -File .\out\BigBuckBunny_1080p_mjpeg_q5_native-fps_320x180.avi
+.\scripts\upload_video_uart.ps1 -Port COM8 -File .\out\play.txt
 ```
 
 See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload

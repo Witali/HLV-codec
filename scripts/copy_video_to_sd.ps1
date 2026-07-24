@@ -22,16 +22,21 @@ if ($drive.AvailableFreeSpace -lt $sourceInfo.Length) {
     throw "The SD card does not have enough free space."
 }
 
-$output = Join-Path $destination "video.hlv"
+$videoDirectory = Join-Path $destination "HLV"
+New-Item -ItemType Directory -Force -Path $videoDirectory | Out-Null
+$output = Join-Path $videoDirectory $sourceInfo.Name
 Copy-Item -LiteralPath $InputFile -Destination $output -Force
 
 $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InputFile).Hash
 $outputHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $output).Hash
 if ($sourceHash -ne $outputHash) {
-    throw "SHA-256 verification failed after copying video.hlv."
+    throw "SHA-256 verification failed after copying the selected video."
 }
 
+$selection = Join-Path $videoDirectory "play.txt"
+Set-Content -LiteralPath $selection -Value $sourceInfo.Name -Encoding ascii
 $outputInfo = Get-Item -LiteralPath $output
 Write-Host ("Ready: {0} ({1:N0} bytes)" -f $outputInfo.FullName,
     $outputInfo.Length)
 Write-Host "SHA-256: $outputHash"
+Write-Host "Selected by: $selection"

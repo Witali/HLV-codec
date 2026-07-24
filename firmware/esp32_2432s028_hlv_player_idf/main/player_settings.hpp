@@ -57,7 +57,9 @@ constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropThenLoopAudio;
 constexpr bool kLogFrameTimings = true;
 
 constexpr char kVideoDirectory[] = "/sdcard/HLV";
-constexpr char kVideoPath[] = "/sdcard/HLV/video.hlv";
+// play.txt contains one base filename from the same directory. Playback never
+// guesses or falls back to another file when this selection is absent.
+constexpr char kVideoSelectionPath[] = "/sdcard/HLV/play.txt";
 constexpr int kSdClockKhz =
     CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ * 1000;
 constexpr int kDisplayClockHz =

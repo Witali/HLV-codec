@@ -1,7 +1,8 @@
-# HLV player for ESP32-2432S028 — pure ESP-IDF
+# Multi-codec player for ESP32-2432S028 — pure ESP-IDF
 
 This is a self-contained ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools.
+The application supports HLV-1 and standard AVI/MJPEG with PCM_U8 audio.
 
 The only application components are:
 
@@ -40,7 +41,9 @@ connection used by the monitor. Close the serial monitor, leave the board in
 normal application mode, and run:
 
 ```powershell
-.\upload-video.ps1 -Port COM8 -File ..\..\out\video.hlv
+.\upload-video.ps1 -Port COM8 `
+    -File ..\..\out\BigBuckBunny_1080p_mjpeg_q5_native-fps_320x180.avi
+.\upload-video.ps1 -Port COM8 -File ..\..\out\play.txt
 ```
 
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
@@ -49,16 +52,18 @@ package is required. The control handshake uses 460800 baud and block data uses
 2000000 baud by default. The verified fallback values are 1500000, 921600 and
 460800 baud.
 
-The destination defaults to `/sdcard/HLV/video.hlv`, which is the file opened
-by the player:
+The destination defaults to the source filename. `/sdcard/HLV/play.txt`
+contains the one video filename that the player opens:
 
 ```powershell
-.\upload-video.ps1 -Port COM8 -File clip.hlv -Name video.hlv
-.\upload-video.ps1 -Port COM8 -File clip.hlv -Name test-01.hlv
+.\upload-video.ps1 -Port COM8 -File clip.avi
+Set-Content play.txt "clip.avi" -Encoding ascii
+.\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
-Names are ASCII, end in `.hlv`, and are at most 48 characters. Other names are
-stored in `/HLV`, but `video.hlv` remains the automatic boot file.
+Names are ASCII, end in `.hlv`, `.avi` or `.txt`, and are at most 48
+characters. The player never guesses a fallback file. If `play.txt` is absent
+or invalid, it displays `NO SELECTED FILE.` and waits.
 
 The player finishes the current decode operation, stops video and audio, and
 closes both SD file cursors before acknowledging an upload. The screen shows a
@@ -68,7 +73,8 @@ not required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
 buffer exists only during an upload, while the decoder and audio buffers are
-released. After the transfer the player opens `/HLV/video.hlv` again.
+released. After each transfer the player reads `/HLV/play.txt` again and opens
+its selection.
 
 Protocol version 1 starts with this ASCII line at the console baud:
 
@@ -153,8 +159,8 @@ section of ESP-IDF menuconfig:
 Clean builds default to an 80 MHz display clock and a 40 MHz SD-card clock.
 Reduce either value if the board or card shows transfer errors.
 
-Place `video.hlv` in the root of a FAT16/FAT32 microSD card. The file itself is
-not written to internal flash.
+Place the video and `play.txt` in the FAT16/FAT32 card's `/HLV` directory.
+Neither file is written to internal flash.
 
 ## Xtensa QEMU decoder benchmark
 
@@ -206,10 +212,10 @@ display DMA timing.
 
 - Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
   strips.
-- Storage: `/sdcard/HLV/video.hlv` on SDSPI DMA at configurable 40 MHz, a
-  16 KiB aligned read-ahead
-  buffer and nine reusable 7680-byte packet blocks (67.5 KiB), enough for a
-  fully literal 320x180 key frame plus one mono audio interval.
+- Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
+  configurable 40 MHz with a 16 KiB aligned read-ahead buffer. HLV uses nine
+  reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  JPEG chunk size plus one reusable 320x180 RGB565 frame.
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
   Stream v13 literal blocks are copied directly into this packed storage.

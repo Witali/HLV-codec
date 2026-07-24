@@ -57,12 +57,18 @@ bool validFilename(const char *filename) {
             character == '.' || character == '_' || character == '-';
         if (!valid) return false;
     }
-    if (length < 4) return false;
+    if (length < 5) return false;
     const char *extension = filename + length - 4;
-    return extension[0] == '.' &&
-           (extension[1] == 'h' || extension[1] == 'H') &&
-           (extension[2] == 'l' || extension[2] == 'L') &&
-           (extension[3] == 'v' || extension[3] == 'V');
+    if (extension[0] != '.') return false;
+    const auto same = [](char value, char lower) {
+        return value == lower || value == lower - ('a' - 'A');
+    };
+    return (same(extension[1], 'h') && same(extension[2], 'l') &&
+            same(extension[3], 'v')) ||
+           (same(extension[1], 'a') && same(extension[2], 'v') &&
+            same(extension[3], 'i')) ||
+           (same(extension[1], 't') && same(extension[2], 'x') &&
+            same(extension[3], 't'));
 }
 
 bool supportedDataBaud(uint32_t baud) {

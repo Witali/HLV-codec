@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload an HLV video to the ESP32 player's SD card over UART0."""
+"""Upload a player video or selection file to microSD over UART0."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ SUPPORTED_DATA_BAUDS = (460_800, 921_600, 1_500_000, 2_000_000)
 MAX_FILE_SIZE = 0xFFFFFFFF
 BLOCK_MAGIC = b"HLVB"
 BLOCK_HEADER = struct.Struct("<4sIHI")
-VALID_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.hlv$", re.IGNORECASE)
+VALID_NAME = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:hlv|avi|txt)$", re.IGNORECASE
+)
 
 
 class UploadError(RuntimeError):
@@ -97,15 +99,31 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
            data_baud: int, response_timeout: float) -> None:
     if len(remote_name) > 48 or not VALID_NAME.fullmatch(remote_name):
         raise UploadError(
-            "remote name must end in .hlv and contain only ASCII letters, "
+            "remote name must end in .hlv, .avi or .txt and contain only ASCII letters, "
             "digits, dot, underscore or dash (48 characters maximum)"
         )
     size = path.stat().st_size
     if not 0 < size <= MAX_FILE_SIZE:
         raise UploadError("FAT32 upload size must be between 1 byte and 4 GiB - 1")
+    suffix = pathlib.Path(remote_name).suffix.lower()
     with path.open("rb") as source:
-        if source.read(4) != b"HLV1":
-            raise UploadError("source does not have an HLV1 file header")
+        header = source.read(12)
+    if suffix == ".hlv" and header[:4] != b"HLV1":
+        raise UploadError("source does not have an HLV1 file header")
+    if suffix == ".avi" and (
+        header[:4] != b"RIFF" or header[8:12] != b"AVI "
+    ):
+        raise UploadError("source does not have a RIFF AVI file header")
+    if suffix == ".txt":
+        try:
+            selected = path.read_text(encoding="ascii").strip()
+        except UnicodeError as error:
+            raise UploadError("selection file must be ASCII") from error
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.(?:hlv|avi)",
+                            selected, re.IGNORECASE):
+            raise UploadError(
+                "selection file must contain one safe .hlv or .avi filename"
+            )
 
     print(f"Calculating CRC32 for {path.name}...")
     file_crc = crc32_file(path)
@@ -183,11 +201,11 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Upload an HLV file to the ESP32 player's SD card")
+        description="Upload a video or play.txt to the ESP32 player's SD card")
     parser.add_argument("file", type=pathlib.Path)
     parser.add_argument("--port", required=True, help="serial port, for example COM8")
-    parser.add_argument("--name", default="video.hlv",
-                        help="destination name in /HLV (default: video.hlv)")
+    parser.add_argument("--name",
+                        help="destination name in /HLV (default: source name)")
     parser.add_argument("--data-baud", type=int, choices=SUPPORTED_DATA_BAUDS,
                         default=DEFAULT_DATA_BAUD)
     parser.add_argument("--timeout", type=float, default=15.0,
@@ -202,7 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: file not found: {path}", file=sys.stderr)
         return 2
     try:
-        upload(path, args.port, args.name, args.data_baud, args.timeout)
+        upload(path, args.port, args.name or path.name,
+               args.data_baud, args.timeout)
     except (UploadError, serial.SerialException, OSError, ValueError) as error:
         print(f"\nerror: {error}", file=sys.stderr)
         return 1
