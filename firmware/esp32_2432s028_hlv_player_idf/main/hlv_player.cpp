@@ -171,6 +171,11 @@ uint8_t native_v_row[kScreenWidth / 2];
 int32_t mpeg_red_add[kScreenWidth / 2];
 int32_t mpeg_green_add[kScreenWidth / 2];
 int32_t mpeg_blue_add[kScreenWidth / 2];
+int32_t yuv_luma[256];
+int32_t yuv_red_add[256];
+int32_t yuv_green_u_add[256];
+int32_t yuv_green_v_add[256];
+int32_t yuv_blue_add[256];
 int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
@@ -329,6 +334,17 @@ int clamp8(int value) {
     return value < 0 ? 0 : value > 255 ? 255 : value;
 }
 
+void initYuvTables() {
+    for (int sample = 0; sample < 256; ++sample) {
+        const int chroma = sample - 128;
+        yuv_luma[sample] = 298 * (sample > 16 ? sample - 16 : 0);
+        yuv_red_add[sample] = 409 * chroma + 128;
+        yuv_green_u_add[sample] = -100 * chroma;
+        yuv_green_v_add[sample] = -208 * chroma + 128;
+        yuv_blue_add[sample] = 516 * chroma + 128;
+    }
+}
+
 bool mpegFpsRational(double fps, uint16_t *numerator,
                      uint16_t *denominator) {
     struct Rate {
@@ -364,7 +380,7 @@ uint8_t mpegSampleToU8(float left, float right) {
 }
 
 uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
-    const int luma = 298 * (y > 16 ? y - 16 : 0);
+    const int luma = yuv_luma[static_cast<uint8_t>(y)];
     const int red = clamp8((luma + red_add) >> 8);
     const int green = clamp8((luma + green_add) >> 8);
     const int blue = clamp8((luma + blue_add) >> 8);
@@ -397,11 +413,12 @@ void convertNativeRow(const HLV1Frame *frame, int source_y,
     }
     for (int x = 0; x < frame->width; x += 2) {
         const int chroma_x = x >> 1;
-        const int u = static_cast<int>(u_row[chroma_x]) - 128;
-        const int v = static_cast<int>(v_row[chroma_x]) - 128;
-        const int red_add = 409 * v + 128;
-        const int green_add = -100 * u - 208 * v + 128;
-        const int blue_add = 516 * u + 128;
+        const uint8_t u = u_row[chroma_x];
+        const uint8_t v = v_row[chroma_x];
+        const int red_add = yuv_red_add[v];
+        const int green_add =
+            yuv_green_u_add[u] + yuv_green_v_add[v];
+        const int blue_add = yuv_blue_add[u];
         output[x] = yuvToRgb565(y_row[x], red_add, green_add, blue_add);
         if (x + 1 < frame->width) {
             output[x + 1] = yuvToRgb565(
@@ -422,17 +439,13 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
         const int source_x = scaled_x_map[output_x];
         const int chroma_x = source_x >> 1;
         if (chroma_x != previous_chroma_x) {
-            const int u = static_cast<int>(
-                              hlv1_frame_u_sample(frame, chroma_x,
-                                                 chroma_y)) -
-                          128;
-            const int v = static_cast<int>(
-                              hlv1_frame_v_sample(frame, chroma_x,
-                                                 chroma_y)) -
-                          128;
-            red_add = 409 * v + 128;
-            green_add = -100 * u - 208 * v + 128;
-            blue_add = 516 * u + 128;
+            const uint8_t u =
+                hlv1_frame_u_sample(frame, chroma_x, chroma_y);
+            const uint8_t v =
+                hlv1_frame_v_sample(frame, chroma_x, chroma_y);
+            red_add = yuv_red_add[v];
+            green_add = yuv_green_u_add[u] + yuv_green_v_add[v];
+            blue_add = yuv_blue_add[u];
             previous_chroma_x = chroma_x;
         }
         output[output_x] = yuvToRgb565(
@@ -1627,11 +1640,12 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
             cr_row = native_v_row;
         }
         for (int chroma_x = 0; chroma_x < chroma_width; ++chroma_x) {
-            const int cb = static_cast<int>(cb_row[chroma_x]) - 128;
-            const int cr = static_cast<int>(cr_row[chroma_x]) - 128;
-            mpeg_red_add[chroma_x] = 409 * cr + 128;
-            mpeg_green_add[chroma_x] = -100 * cb - 208 * cr + 128;
-            mpeg_blue_add[chroma_x] = 516 * cb + 128;
+            const uint8_t cb = cb_row[chroma_x];
+            const uint8_t cr = cr_row[chroma_x];
+            mpeg_red_add[chroma_x] = yuv_red_add[cr];
+            mpeg_green_add[chroma_x] =
+                yuv_green_u_add[cb] + yuv_green_v_add[cr];
+            mpeg_blue_add[chroma_x] = yuv_blue_add[cb];
         }
         mpeg_cached_chroma_y = chroma_y;
     }
@@ -2469,6 +2483,7 @@ void playOneFramePipelined() {
 
 extern "C" void app_main(void) {
     ESP_LOGI(kTag, "Multi-codec ESP-IDF SD player starting");
+    initYuvTables();
     const esp_err_t display_result = display.init();
     if (display_result != ESP_OK) {
         ESP_LOGE(kTag, "Display initialization failed: %s",
