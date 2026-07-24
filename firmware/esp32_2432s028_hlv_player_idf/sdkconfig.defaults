@@ -56,8 +56,9 @@ CONFIG_FATFS_MAX_LFN=63
 CONFIG_FATFS_VOLUME_COUNT=1
 CONFIG_FATFS_SECTOR_512=y
 CONFIG_FATFS_FS_LOCK=0
-CONFIG_FATFS_PER_FILE_CACHE=n
-CONFIG_FATFS_USE_FASTSEEK=n
+CONFIG_FATFS_PER_FILE_CACHE=y
+CONFIG_FATFS_USE_FASTSEEK=y
+CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=64
 CONFIG_FATFS_USE_STRFUNC_NONE=y
 
 # fopen/read/write/lseek and directory mutations are required for HLV UART
@@ -69,7 +70,8 @@ CONFIG_VFS_SUPPORT_SELECT=n
 CONFIG_VFS_SUPPORT_TERMIOS=n
 CONFIG_VFS_INITIALIZE_DEV_NULL=n
 
-# Main owns only orchestration.  Decode and audio work use separately sized
-# allocations/tasks, so this stack need not inherit Arduino's larger default.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# Multi-codec open paths and stdio/FatFs calls need headroom on app_main.
+# Keep 8 KB: the former 4 KB stack overflowed while opening MJPEG after BPV
+# audio integration.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_FREERTOS_HZ=1000
