@@ -569,10 +569,25 @@ int prefetchMjpegAudioChunk() {
     return MJPEG_AVI_OK;
 }
 
+int prefetchBpvAudioPacket() {
+    BPV1FrameInfo info{};
+    const int result =
+        bpv1_frame_info_read(audio_file, &bpv_header, &info);
+    if (result != BPV1_OK) return result;
+    if (info.frame_bytes > LONG_MAX ||
+        std::fseek(audio_file, static_cast<long>(info.frame_bytes),
+                   SEEK_CUR)) {
+        return BPV1_ERR_IO;
+    }
+    return prefetchAudioBytes(info.audio_bytes);
+}
+
 int prefetchAudioPacket() {
-    return video_codec == VideoCodec::kMjpeg
-               ? prefetchMjpegAudioChunk()
-               : prefetchHlvAudioPacket();
+    if (video_codec == VideoCodec::kMjpeg)
+        return prefetchMjpegAudioChunk();
+    if (video_codec == VideoCodec::kBpv)
+        return prefetchBpvAudioPacket();
+    return prefetchHlvAudioPacket();
 }
 
 void audioReaderTask(void *) {
@@ -759,6 +774,20 @@ bool prepareAudio(const HLV1Header &header) {
             audio_info.audio_sample_rate != header.audio_sample_rate ||
             audio_info.audio_channels != 1 ||
             audio_info.audio_bits_per_sample != 8) {
+            stopAudio();
+            return false;
+        }
+    } else if (video_codec == VideoCodec::kBpv) {
+        BPV1Header audio_header{};
+        if (bpv1_header_read(audio_file, &audio_header) != BPV1_OK ||
+            audio_header.width != header.width ||
+            audio_header.height != header.height ||
+            audio_header.fps_num != header.fps_num ||
+            audio_header.fps_den != header.fps_den ||
+            audio_header.frame_count != header.frame_count ||
+            audio_header.audio_sample_rate != header.audio_sample_rate ||
+            audio_header.audio_codec != BPV1_AUDIO_PCM_U8 ||
+            audio_header.audio_channels != 1) {
             stopAudio();
             return false;
         }
@@ -1040,12 +1069,20 @@ bool openVideo() {
         sequence_header.gop = bpv_header.keyframe_interval;
         sequence_header.version = bpv_header.version;
         sequence_header.search_radius = bpv_header.search_radius;
+        if (bpv_header.audio_codec == BPV1_AUDIO_PCM_U8) {
+            sequence_header.flags = HLV1_FLAG_AUDIO;
+            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_sample_rate =
+                bpv_header.audio_sample_rate;
+            sequence_header.audio_channels = bpv_header.audio_channels;
+        }
         ESP_LOGI(kTag,
                  "BPV1 v%u: %ux%u, %u/%u fps, %u frames, "
-                 "decoder=%u bytes, packet=%u bytes",
+                 "audio=%u Hz, decoder=%u bytes, packet=%u bytes",
                  bpv_header.version, bpv_header.width, bpv_header.height,
                  bpv_header.fps_num, bpv_header.fps_den,
                  static_cast<unsigned>(bpv_header.frame_count),
+                 bpv_header.audio_sample_rate,
                  static_cast<unsigned>(bpv_decoder.memoryBytes()),
                  static_cast<unsigned>(bpv_decoder.packetCapacity()));
     } else {

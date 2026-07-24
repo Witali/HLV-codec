@@ -780,6 +780,12 @@ public:
             header_.gop = bpv_header_.keyframe_interval;
             header_.version = bpv_header_.version;
             header_.search_radius = bpv_header_.search_radius;
+            if (bpv_header_.audio_codec == BPV1_AUDIO_PCM_U8) {
+                header_.flags |= HLV1_FLAG_AUDIO;
+                header_.audio_codec = HLV1_AUDIO_PCM_U8;
+                header_.audio_sample_rate = bpv_header_.audio_sample_rate;
+                header_.audio_channels = bpv_header_.audio_channels;
+            }
         } else {
             return fail(L"Unsupported video signature; expected HLV1 or BPV1");
         }
@@ -808,8 +814,7 @@ public:
                              L"using double-buffered GDI: " + video_error;
         }
 
-        if (codec_ == VideoCodec::kHlv &&
-            (header_.flags & HLV1_FLAG_AUDIO)) {
+        if (header_.flags & HLV1_FLAG_AUDIO) {
             std::wstring audio_error;
             if (!audio_.open(header_.audio_sample_rate, audio_error)) {
                 audio_warning_ = L"Audio is disabled: " + audio_error;
@@ -1192,9 +1197,12 @@ private:
                 seek_index_.push_back({offset, last_keyframe});
                 const __int64 payload_offset = _ftelli64(file_);
                 if (payload_offset < 0 || payload_offset > file_end ||
-                    static_cast<uint64_t>(info.frame_bytes) >
+                    static_cast<uint64_t>(info.frame_bytes) +
+                            info.audio_bytes >
                         static_cast<uint64_t>(file_end - payload_offset) ||
-                    _fseeki64(file_, payload_offset + info.frame_bytes,
+                    _fseeki64(file_,
+                              payload_offset + info.frame_bytes +
+                                  info.audio_bytes,
                               SEEK_SET) != 0) {
                     error_ = L"Truncated BPV1 frame " +
                              std::to_wstring(frame);
@@ -1439,6 +1447,17 @@ private:
                     return false;
                 }
                 ready_.push_back(std::move(output));
+            }
+            if (queue_audio && audio_.active()) {
+                const size_t audio_size =
+                    bpv1_packet_audio_size(&packet);
+                const uint8_t *audio_data =
+                    bpv1_packet_audio_data(&packet);
+                std::wstring audio_error;
+                if (!audio_.submit(audio_data, audio_size, audio_error)) {
+                    audio_warning_ = L"Audio stopped: " + audio_error;
+                    audio_.close();
+                }
             }
             ++decoded_frames_;
             return true;
@@ -1771,6 +1790,14 @@ int check_file(const wchar_t *path) {
                 if (result == BPV1_OK) result = BPV1_ERR_DECODE;
                 break;
             }
+            const size_t packet_audio_bytes =
+                bpv1_packet_audio_size(&packet);
+            if (packet_audio_bytes &&
+                !bpv1_packet_audio_data(&packet)) {
+                result = BPV1_ERR_FORMAT;
+                break;
+            }
+            audio_bytes += packet_audio_bytes;
             for (uint32_t pixel : converted.pixels) {
                 checksum ^= pixel;
                 checksum *= UINT64_C(1099511628211);
