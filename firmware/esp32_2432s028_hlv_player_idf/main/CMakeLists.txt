@@ -39,6 +39,7 @@ else()
             freertos
             heap
             log
+            pl_mpeg
             sdmmc
             vfs
     )

@@ -2,14 +2,16 @@
 
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
-application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, and
-BPV1 v1 through v4 with PCM_U8 audio and active per-GOP palettes.
+application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
+through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
+240x180 MPEG-1 Video/MP2 profile.
 
 The only application components are:
 
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`.
+- `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
 
 `MINIMAL_BUILD` in `CMakeLists.txt` admits only their transitive ESP-IDF
 dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
@@ -17,7 +19,7 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
 UART0 at 460800 remains enabled for compact per-frame diagnostics. The default dual-core
-pipeline pins ordered HLV decoding to APP CPU (CPU1), while the main task on
+pipeline pins ordered HLV or MPEG-1 decoding to APP CPU (CPU1), while the main task on
 PRO CPU (CPU0) converts the preceding frame to RGB565 and queues its SPI DMA
 strips. Predictive P-frames are never decoded out of order. Dual-core mode
 cannot add the 8 KiB RTC Fast RAM to the heap. Slow exception-emulated byte
@@ -84,7 +86,8 @@ Set-Content play.txt "clip.avi" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
-Names are ASCII, end in `.hlv`, `.avi`, `.bpv1` or `.txt`, and are at most 48
+Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg` or `.txt`,
+and are at most 48
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
@@ -147,7 +150,7 @@ V,width,height,fps_num,fps_den,audio_rate,frame_count
 F,1,540,18320,26740,45600,108220
 ```
 
-The `V` record comes from the active HLV, AVI or BPV sequence metadata. The
+The `V` record comes from the active HLV, AVI, BPV or MPEG-1 sequence metadata. The
 collector uses its rational `fps_num/fps_den` value to calculate the work
 budget instead of assuming 15 fps. It also prints the observed decoded-frame
 cadence and counts late display transfers omitted by the real-time mode.
@@ -248,14 +251,19 @@ display DMA timing.
   instead retains two 32,400-byte block-record frames plus its bounded
   dictionaries; the complete BPV decoder allocation is about 105 KiB at
   320x180 and has no full RGB frame.
+- MPEG-1: two padded 240x192 YCbCr reference frames (138,240 bytes), two
+  bounded 8 KiB buffers in the video instance, and a separate audio-only
+  PL_MPEG instance. Files larger than 240x180 or containing B pictures are
+  rejected by the saved profile.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV. MJPEG and BPV use the
-  sequential CPU0 path. Only frame descriptors cross cores in the HLV path,
+  reader and two one-entry decode queues for HLV or MPEG-1. MJPEG and BPV use
+  the sequential CPU0 path. Only frame descriptors cross cores in the pipelined paths,
   so no YUV frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet
-  tails. The DAC sample count is the master video clock. Frame targets are
+  tails, or decodes MP2 with its video stream disabled. The DAC sample count is
+  the master video clock. Frame targets are
   calculated from `fps_num/fps_den` in the HLV header. The current real-time
   mode keeps audio continuous and omits the display transfer of a late frame;
   predictive decoding still runs so subsequent P-frames remain valid.

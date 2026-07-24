@@ -8,19 +8,20 @@ DAC GPIO26.
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
-- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, or BPV1
-  v1 through v4, including active per-GOP palettes;
+- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
+  v1 through v4 including active per-GOP palettes, or the constrained
+  240x180 MPEG-1 Video/MP2 profile;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts HLV YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
+- converts HLV/MPEG YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
   16-row strips, without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
   buffer; HLV then fills nine reusable 7680-byte packet blocks (67.5 KiB
   total), while MJPEG and BPV use bounded maximum-frame packet buffers;
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
-- decodes frame N on CPU1 while CPU0 converts and queues frame N-1 for the
+- decodes HLV or MPEG-1 frame N on CPU1 while CPU0 converts and queues frame N-1 for the
   display, without copying either compressed packets or YUV frames;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
 - feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
@@ -98,7 +99,7 @@ latency spikes, so the retained default remains 40 MHz.
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
 build. The main task remains pinned to PRO CPU (CPU0) and owns SD reads, RGB565
 conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
-performs ordered HLV decoding. Two one-entry FreeRTOS queues pass a packet
+performs ordered HLV or MPEG-1 decoding. Two one-entry FreeRTOS queues pass a packet
 descriptor to CPU1 and return a frame descriptor to CPU0; pixel data remains
 in the decoder's two existing predictive frame buffers.
 
@@ -108,7 +109,10 @@ at the same time. Instead, while CPU1 decodes frame N from frame N-1, CPU0 only
 reads frame N-1 for display conversion. Before frame N+1 starts, both actions
 have completed, allowing the old buffer to be reused safely. This overlaps the
 two largest CPU stages while preserving bitstream order and adding no third
-framebuffer. Set the flag to `false` to retain the sequential comparison mode.
+framebuffer. MPEG-1 uses the same schedule with two alternating YCbCr
+reference buffers; its copied frame descriptor remains valid while CPU1 writes
+the other buffer. Set the flag to `false` to retain the sequential comparison
+mode.
 
 ## Segmented ESP32 decoder
 
@@ -227,6 +231,19 @@ preserves native 24 fps and writes BPV1 v4 with active per-GOP palettes:
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
     -InputFile .\out\BigBuckBunny_1080p_bpv1_v4_active_lambda64_normalized_native-fps_320x180.bpv1
 ```
+
+For an ESP32-safe MPEG Program Stream:
+
+```powershell
+.\scripts\encode_mpeg1.ps1 `
+    -InputFile .\out\sources\VID_20260522_181611.mp4 `
+    -OutputFile .\out\video.mpg
+```
+
+This creates 240x180 MPEG-1 Video at the native nominal frame rate with no
+B pictures, plus normalized MP2 mono at 32 kHz. See
+[`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
+dual-core scheduling details.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
