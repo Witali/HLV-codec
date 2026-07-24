@@ -1,4 +1,6 @@
 NODE ?= node
+CC ?= cc
+CFLAGS ?= -O3 -Wall -Wextra -std=c11
 
 SOURCES := \
 	src/bpv1-codec.js \
@@ -10,7 +12,10 @@ SOURCES := \
 	tools/bpv1dec.js \
 	tools/bpv1info.js
 
-all: check
+all: bpv1enc check
+
+bpv1enc: tools/bpv1enc.c
+	$(CC) $(CFLAGS) -pthread -o $@ $< -lm
 
 check:
 	@for file in $(SOURCES); do $(NODE) --check $$file || exit 1; done
@@ -21,7 +26,10 @@ test: check
 	$(NODE) tests/bpv1-rate-distortion.test.js
 	$(NODE) tests/bpv1-cli.test.js
 
-clean:
-	@:
+test-c: bpv1enc
+	BPV1ENC=./bpv1enc $(NODE) tests/bpv1-c-encoder.test.js
 
-.PHONY: all check test clean
+clean:
+	rm -f bpv1enc
+
+.PHONY: all check test test-c clean

@@ -14,6 +14,8 @@ Sources:
 The first archive supplied the three JavaScript reference modules, their
 tests, and the Russian format/RD documentation. Project-local Y4M adapters,
 streaming validation and CLI tests were added during integration.
+The bounded-memory, multi-threaded C11 encoder and its compatibility test are
+project-local implementations of the documented BPV1 v2 bitstream.
 
 The second archive supplied a 60-second synthetic experiment. Only its compact
 reports and measurements are retained. Generated BPV1 streams, MP4 previews,

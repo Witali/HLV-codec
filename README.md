@@ -19,11 +19,12 @@ curve as the HLV preset.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
-and block/pattern dictionaries. The package includes automatic palette
-training, encoder-side rate-distortion selection, streaming validation, Y4M
-encoder/decoder adapters and the supplied 60-second reference measurements.
-BPV1 is currently part of the desktop benchmark laboratory; it has not yet
-been added to the ESP32 player and carries no audio stream.
+and block/pattern dictionaries. The package includes a bounded-memory,
+eight-thread C11 encoder, automatic palette training, encoder-side
+rate-distortion selection, streaming validation, Y4M adapters and the supplied
+60-second reference measurements. BPV1 is currently part of the desktop
+benchmark laboratory; it has not yet been added to the ESP32 player and
+carries no audio stream.
 
 ## HLV-1 v0.3 development build
 
@@ -81,6 +82,14 @@ Build and test the desktop tools with MSVC:
 
 ```powershell
 .\scripts\build_msvc.ps1
+.\scripts\build_bpv_msvc.ps1
+```
+
+Encode the approved 1080p Big Buck Bunny source to BPV1 v2 at 320x180 and its
+native 24 fps. The script uses eight C GOP workers by default:
+
+```powershell
+.\scripts\encode_big_buck_bunny_bpv.ps1
 ```
 
 ## Native Windows player
