@@ -1419,13 +1419,11 @@ bool renderBpvFrame(const BPV1Frame *frame) {
         const int rows = std::min(kRowsPerTransfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
-        for (int row = 0; row < rows; ++row) {
-            if (bpv1_frame_render_rgb565_row(
-                    &bpv_header, frame,
-                    static_cast<uint16_t>(y0 + row),
-                    pixels + row * width, width) != BPV1_OK) {
-                return false;
-            }
+        if (bpv1_frame_render_rgb565_rows(
+                &bpv_header, frame, static_cast<uint16_t>(y0),
+                static_cast<uint16_t>(rows), pixels, width,
+                static_cast<size_t>(width) * rows) != BPV1_OK) {
+            return false;
         }
         if (display.drawBitmap(x_offset, y_offset + y0, width, rows,
                                pixels) != ESP_OK) {

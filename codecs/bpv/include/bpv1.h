@@ -123,6 +123,14 @@ int bpv1_frame_render_rgb24_row(const BPV1Header *header,
 int bpv1_frame_render_rgb565_row(const BPV1Header *header,
                                  const BPV1Frame *frame, uint16_t y,
                                  uint16_t *rgb565, size_t pixels);
+/*
+ * Render consecutive source rows into a strided RGB565 buffer. Processing
+ * rows in 4-row block groups reuses each block's four converted colours.
+ */
+int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
+                                  const BPV1Frame *frame, uint16_t y,
+                                  uint16_t rows, uint16_t *rgb565,
+                                  size_t stride_pixels, size_t pixels);
 
 #ifdef __cplusplus
 }
