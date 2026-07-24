@@ -121,10 +121,11 @@ try {
         "$audioConversion,${audioLevelCurve}:" +
         "makeup=${curveMakeupText}dB"
     )
-    Write-Host (
+    $audioStatusMessage = (
         "Preparing PCM_U8 mono 16 kHz: curve peak {0:N2} dBFS, " +
         "makeup {1} dB, target {2:N1} dBFS..."
     ) -f $curvePeakDb, $curveMakeupText, $audioPeakTargetDb
+    Write-Host $audioStatusMessage
     & $ffmpeg -y -hide_banner -loglevel error -i $InputFile `
         -map 0:a:0 -vn -af $audioFilter `
         -ac 1 -ar 16000 -f u8 $temporaryAudio
