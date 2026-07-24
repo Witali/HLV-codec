@@ -155,15 +155,15 @@ void convert_mpeg_frame(plm_frame_t *source, VideoFrame &destination) {
     for (unsigned y = 0; y < source->height; ++y) {
         std::memcpy(destination.nv12.data() +
                         static_cast<size_t>(y) * source->width,
-                    source->y.data + static_cast<size_t>(y) * source->y.width,
+                    source->y.data + static_cast<size_t>(y) * source->y.stride,
                     source->width);
     }
     uint8_t *chroma = destination.nv12.data() + luma_size;
     for (unsigned y = 0; y < source->height / 2U; ++y) {
         const uint8_t *cb =
-            source->cb.data + static_cast<size_t>(y) * source->cb.width;
+            source->cb.data + static_cast<size_t>(y) * source->cb.stride;
         const uint8_t *cr =
-            source->cr.data + static_cast<size_t>(y) * source->cr.width;
+            source->cr.data + static_cast<size_t>(y) * source->cr.stride;
         uint8_t *output =
             chroma + static_cast<size_t>(y) * source->width;
         for (unsigned x = 0; x < source->width / 2U; ++x) {

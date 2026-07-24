@@ -4,7 +4,7 @@ This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
 through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
-240x180 MPEG-1 Video/MP2 profile.
+MPEG-1 Video/MP2 profile up to 320x240.
 
 The only application components are:
 
@@ -18,12 +18,12 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 `sdkconfig.defaults` profile also disables coredumps, the task watchdog,
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
-UART0 at 460800 remains enabled for compact per-frame diagnostics. The default dual-core
-pipeline pins ordered HLV or MPEG-1 decoding to APP CPU (CPU1), while the main task on
-PRO CPU (CPU0) converts the preceding frame to RGB565 and queues its SPI DMA
-strips. Predictive P-frames are never decoded out of order. Dual-core mode
-cannot add the 8 KiB RTC Fast RAM to the heap. Slow exception-emulated byte
-access to ordinary IRAM stays disabled.
+UART0 at 460800 remains enabled for compact per-frame diagnostics. The default
+dual-core pipeline pins ordered HLV, BPV or MPEG-1 decoding to APP CPU (CPU1),
+while the main task on PRO CPU (CPU0) converts the preceding frame to RGB565
+and queues its SPI DMA strips. Predictive P-frames are never decoded out of
+order. Dual-core mode cannot add the 8 KiB RTC Fast RAM to the heap. Slow
+exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main`, `hlv1` and `bpv1` components explicitly use `-O3`.
 
@@ -239,8 +239,9 @@ display DMA timing.
 - Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
   strips.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
-  configurable 40 MHz with a 16 KiB aligned read-ahead buffer. HLV uses nine
-  reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
+  (4 KiB for MPEG-1, 16 KiB for the other formats). HLV uses nine reusable
+  7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
   JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
   uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
   39,678 bytes for these three MJPEG allocations instead of a full-frame
@@ -251,14 +252,15 @@ display DMA timing.
   instead retains two 32,400-byte block-record frames plus its bounded
   dictionaries; the complete BPV decoder allocation is about 105 KiB at
   320x180 and has no full RGB frame.
-- MPEG-1: two padded 240x192 YCbCr reference frames (138,240 bytes), two
-  bounded 8 KiB buffers in the video instance, and a separate audio-only
-  PL_MPEG instance. Files larger than 240x180 or containing B pictures are
-  rejected by the saved profile.
+- MPEG-1: two packed Y6/U5/V5 reference frames plus one 8-bit macroblock row
+  (170,880 bytes total at 320x240), bounded 4 KiB read-ahead and elementary
+  buffers, and a separate audio-only PL_MPEG instance. Packed planes use
+  separate allocations. Files larger than 320x240 or containing B pictures
+  are rejected by the saved profile.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV or MPEG-1. MJPEG and BPV use
-  the sequential CPU0 path. Only frame descriptors cross cores in the pipelined paths,
-  so no YUV frame or packet payload is copied.
+  reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG uses
+  the sequential CPU0 path. Only frame descriptors cross cores in the
+  pipelined paths, so no frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet

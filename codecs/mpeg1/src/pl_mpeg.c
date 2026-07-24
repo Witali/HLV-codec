@@ -1,5 +1,11 @@
+#if defined(ESP_PLATFORM) || defined(PLM_MPEG_EMBEDDED)
+#define PLM_BUFFER_DEFAULT_SIZE (4 * 1024)
+#define PLM_VIDEO_COMPACT_Y6_U5_V5
+#define PLM_VIDEO_STREAMING_PICTURES
+#else
 #define PLM_BUFFER_DEFAULT_SIZE (8 * 1024)
-#define PLM_VIDEO_MAX_FRAME_BYTES (240 * 192 * 3 / 2)
+#endif
+#define PLM_VIDEO_MAX_FRAME_BYTES (320 * 240 * 3 / 2)
 #define PLM_VIDEO_NO_B_FRAMES
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"

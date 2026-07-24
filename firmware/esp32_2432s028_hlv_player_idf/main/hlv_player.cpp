@@ -41,6 +41,7 @@ constexpr int kScreenHeight = CydDisplay::kHeight;
 constexpr int kRowsPerTransfer = CydDisplay::kRowsPerTransfer;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
+constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -155,7 +156,8 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
-alignas(4) uint8_t video_read_ahead[kVideoReadAheadBytes];
+uint8_t *video_read_ahead = nullptr;
+size_t video_read_ahead_size = 0;
 alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
 alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
 alignas(4) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
@@ -1035,6 +1037,9 @@ void closeVideo() {
         std::fclose(video_file);
         video_file = nullptr;
     }
+    heap_caps_free(video_read_ahead);
+    video_read_ahead = nullptr;
+    video_read_ahead_size = 0;
     video_codec = VideoCodec::kNone;
     active_video_path = nullptr;
 }
@@ -1146,13 +1151,16 @@ int probeMpegAudioSampleRate(const char *path) {
 }
 
 bool reopenVideoAt(long offset) {
-    if (!active_video_path || offset < 0) return false;
+    if (!active_video_path || !video_read_ahead ||
+        !video_read_ahead_size || offset < 0) {
+        return false;
+    }
     if (video_file) std::fclose(video_file);
     video_file = std::fopen(active_video_path, "rb");
     if (!video_file) return false;
     if (std::setvbuf(video_file,
                      reinterpret_cast<char *>(video_read_ahead),
-                     _IOFBF, sizeof video_read_ahead) ||
+                     _IOFBF, video_read_ahead_size) ||
         std::fseek(video_file, offset, SEEK_SET)) {
         std::fclose(video_file);
         video_file = nullptr;
@@ -1175,9 +1183,20 @@ bool openVideo() {
                    "missing or unsupported video");
         return false;
     }
+    video_read_ahead_size =
+        video_codec == VideoCodec::kMpeg1
+            ? kMpegVideoReadAheadBytes
+            : kVideoReadAheadBytes;
+    video_read_ahead = static_cast<uint8_t *>(
+        heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
+    if (!video_read_ahead) {
+        showStatus("Not enough RAM", "read-ahead allocation failed");
+        closeVideo();
+        return false;
+    }
     if (std::setvbuf(video_file,
                      reinterpret_cast<char *>(video_read_ahead),
-                     _IOFBF, sizeof video_read_ahead)) {
+                     _IOFBF, video_read_ahead_size)) {
         showStatus("SD setup failed", "cannot configure read-ahead");
         closeVideo();
         return false;
@@ -1491,16 +1510,47 @@ bool renderFrame(const HLV1Frame *frame) {
     return true;
 }
 
+void unpackMpegSamples(const uint8_t *row, int x, unsigned bits,
+                       uint8_t *output, int count) {
+    unsigned bit = static_cast<unsigned>(x) * bits;
+    const uint8_t *input = row + (bit >> 3);
+    unsigned cached = 8U - (bit & 7U);
+    unsigned window = static_cast<unsigned>(*input++) >> (bit & 7U);
+    const unsigned mask = (1U << bits) - 1U;
+    const unsigned output_shift = 8U - bits;
+    for (int i = 0; i < count; ++i) {
+        if (cached < bits) {
+            window |= static_cast<unsigned>(*input++) << cached;
+            cached += 8U;
+        }
+        output[i] =
+            static_cast<uint8_t>((window & mask) << output_shift);
+        window >>= bits;
+        cached -= bits;
+    }
+}
+
 void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, uint16_t *output, int output_width) {
     const uint8_t *y_row =
-        frame->y.data + static_cast<size_t>(source_y) * frame->y.width;
+        frame->y.data + static_cast<size_t>(source_y) * frame->y.stride;
     const uint8_t *cb_row =
         frame->cb.data +
-        static_cast<size_t>(source_y >> 1) * frame->cb.width;
+        static_cast<size_t>(source_y >> 1) * frame->cb.stride;
     const uint8_t *cr_row =
         frame->cr.data +
-        static_cast<size_t>(source_y >> 1) * frame->cr.width;
+        static_cast<size_t>(source_y >> 1) * frame->cr.stride;
+    if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
+        unpackMpegSamples(y_row, 0, 6, native_y_row,
+                          static_cast<int>(frame->width));
+        const int chroma_width =
+            (static_cast<int>(frame->width) + 1) >> 1;
+        unpackMpegSamples(cb_row, 0, 5, native_u_row, chroma_width);
+        unpackMpegSamples(cr_row, 0, 5, native_v_row, chroma_width);
+        y_row = native_y_row;
+        cb_row = native_u_row;
+        cr_row = native_v_row;
+    }
     int previous_chroma_x = -1;
     int red_add = 0;
     int green_add = 0;

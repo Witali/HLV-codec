@@ -10,19 +10,21 @@ DAC GPIO26.
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
   v1 through v4 including active per-GOP palettes, or the constrained
-  240x180 MPEG-1 Video/MP2 profile;
+  MPEG-1 Video/MP2 profile up to 320x240;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts HLV/MPEG YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
   16-row strips, without a full RGB framebuffer;
-- reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
-  buffer; HLV then fills nine reusable 7680-byte packet blocks (67.5 KiB
-  total), while MJPEG and BPV use bounded maximum-frame packet buffers;
+- reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
+  stdio read-ahead buffer (4 KiB for MPEG-1 and 16 KiB otherwise); HLV then
+  fills nine reusable 7680-byte packet blocks (67.5 KiB total), while MJPEG
+  and BPV use bounded maximum-frame packet buffers;
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
-- decodes HLV or MPEG-1 frame N on CPU1 while CPU0 converts and queues frame N-1 for the
-  display, without copying either compressed packets or YUV frames;
+- decodes HLV, BPV or MPEG-1 frame N on CPU1 while CPU0 converts and queues
+  frame N-1 for the display, without copying compressed packets or frame
+  payloads;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
 - feeds six 256-sample DMA buffers from a separate 4 KiB FreeRTOS stream
   buffer, so display transfers do not directly clock the sound;
@@ -53,6 +55,13 @@ The current build sets `kEnableAudio = true` in the same settings file. Its
 the audio task are created only after the large decoder frames and packet pool.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
+
+The MPEG-1 decoder has a separate compact path. It keeps two packed
+Y6/U5/V5 reference frames, uses one 8-bit macroblock row for reconstruction,
+and streams a compressed picture through a bounded 4 KiB elementary buffer.
+At 320x240 those frame allocations total 170,880 bytes. The six packed planes
+are allocated separately to avoid a single large contiguous-heap
+requirement.
 
 Playback timing comes from `fps_num/fps_den` in the active format header. With
 HLV or MJPEG audio, the exact rational frame index is converted to a target PCM sample
@@ -99,9 +108,9 @@ latency spikes, so the retained default remains 40 MHz.
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
 build. The main task remains pinned to PRO CPU (CPU0) and owns SD reads, RGB565
 conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
-performs ordered HLV or MPEG-1 decoding. Two one-entry FreeRTOS queues pass a packet
-descriptor to CPU1 and return a frame descriptor to CPU0; pixel data remains
-in the decoder's two existing predictive frame buffers.
+performs ordered HLV, BPV or MPEG-1 decoding. Two one-entry FreeRTOS queues
+pass a packet descriptor to CPU1 and return a frame descriptor to CPU0; pixel
+data remains in the decoder's two existing predictive frame buffers.
 
 HLV P-frames depend on the immediately preceding reconstructed frame and their
 entropy stream is sequential, so two arbitrary frames cannot be safely decoded
@@ -109,10 +118,12 @@ at the same time. Instead, while CPU1 decodes frame N from frame N-1, CPU0 only
 reads frame N-1 for display conversion. Before frame N+1 starts, both actions
 have completed, allowing the old buffer to be reused safely. This overlaps the
 two largest CPU stages while preserving bitstream order and adding no third
-framebuffer. MPEG-1 uses the same schedule with two alternating YCbCr
-reference buffers; its copied frame descriptor remains valid while CPU1 writes
-the other buffer. Set the flag to `false` to retain the sequential comparison
-mode.
+framebuffer. MPEG-1 uses the same schedule with two alternating packed
+Y6/U5/V5 reference buffers; its copied frame descriptor remains valid while
+CPU1 writes the other buffer. BPV uses its two block-record arrays in the same
+way and finishes rendering the preceding frame before a v4 keyframe replaces
+the active palette. Set the flag to `false` to retain the sequential
+comparison mode.
 
 ## Segmented ESP32 decoder
 
@@ -240,8 +251,9 @@ For an ESP32-safe MPEG Program Stream:
     -OutputFile .\out\video.mpg
 ```
 
-This creates 240x180 MPEG-1 Video at the native nominal frame rate with no
-B pictures, plus normalized MP2 mono at 32 kHz. See
+This creates the default 240x180 MPEG-1 Video at the native nominal frame rate
+with no B pictures, plus normalized MP2 mono at 32 kHz. Add
+`-Width 320 -Height 240` for the maximum supported frame size. See
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 

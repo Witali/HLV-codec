@@ -18,9 +18,10 @@ native source frame rate, and muxes PCM_U8 audio through the same saved level
 curve as the HLV preset.
 
 The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
-Stream with MPEG-1 Video and MP2 audio. Its ESP32-safe variant is 240x180,
-contains only I/P pictures, and uses a two-frame, 8 KiB-buffered decoder. The
-same files play in the native Windows application.
+Stream with MPEG-1 Video and MP2 audio. Its ESP32 memory-bounded variant
+accepts pictures up to 320x240, contains only I/P pictures, and stores two
+packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
+play in the native Windows application with ordinary 8-bit YUV frames.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion

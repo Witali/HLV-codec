@@ -3,17 +3,23 @@
 The Windows and ESP32 players accept a standard MPEG Program Stream (`.mpg`
 or `.mpeg`) containing:
 
-- MPEG-1 Video, YUV420, at most 240x180 visible pixels;
+- MPEG-1 Video, YUV420, at most 320x240 visible pixels;
 - only I and P pictures (`-bf 0`), with a GOP of 30 by default;
 - a standard MPEG frame rate recognized by PL_MPEG;
 - one optional MPEG-1 Audio Layer II stream, decoded to mono PCM_U8 at
   playback time.
 
-The ESP32 limit is deliberate. A 240x180 picture occupies a padded 240x192
-YCbCr allocation of 69,120 bytes. The no-B decoder stores two such reference
-frames (138,240 bytes), instead of the three frames needed for general MPEG-1
-with B pictures. Input and elementary-stream buffers are bounded at 8 KiB.
-Larger pictures and streams containing B pictures are outside this profile.
+The ESP32 limit is deliberate. At 320x240, each packed Y6/U5/V5 reference
+frame occupies 81,600 bytes. The no-B decoder stores two such frames plus one
+7,680-byte 8-bit macroblock-row work area, for 170,880 bytes total. The six
+packed planes are separate allocations, so playback does not depend on one
+170 KiB contiguous heap block. Both the stdio read-ahead and PL_MPEG
+elementary-stream buffer are bounded at 4 KiB. Larger pictures and streams
+containing B pictures are outside this profile.
+
+The compact reference format is an ESP32 build option; the Windows player
+retains full 8-bit YUV420 references. Y6/U5/V5 rounding can introduce a small
+quality loss and predictive drift compared with the desktop decode.
 
 The player uses the MIT-licensed PL_MPEG source pinned in
 `third_party/pl_mpeg`. Local changes, their upstream commit and the license are
@@ -46,13 +52,16 @@ and 64 kbit/s. The script uses the project's primary audio curve: a gentle
 -20 dB/1.6:1 compressor followed by measured compressor makeup to a -0.1 dBFS
 peak. Video and processed audio are muxed by the same final FFmpeg invocation.
 
+Use `-Width 320 -Height 240` for the maximum device resolution. The smaller
+default remains useful when decode throughput matters more than resolution.
+
 After encoding, the script:
 
 1. enumerates all video picture types and rejects any B picture;
 2. decodes the complete video and audio streams with FFmpeg;
 3. writes an adjacent FFprobe JSON report.
 
-The profile uses 2048-byte MPEG-PS packs so the 8 KiB decoder buffers retain
+The profile uses 2048-byte MPEG-PS packs so the 4 KiB decoder buffers retain
 headroom for packet parsing.
 
 ## ESP32 scheduling
@@ -62,12 +71,19 @@ second file cursor with video disabled. This prevents either task from
 allocating the other stream's decoder.
 
 With `kUseDualCorePipeline=true`, the ordered MPEG-1 decoder runs on CPU1. Its
-two buffers alternate between the previous reference and the next decode
-target. CPU0 simultaneously converts a copied descriptor for the preceding
-frame to RGB565 and submits 16-row SPI DMA strips. The payload is not copied,
-and the next picture is not started until both the decode and render stages
-have completed. The MP2 reader remains a high-priority CPU0 task feeding the
-existing DAC stream buffer.
+two packed buffers alternate between the previous reference and the next
+decode target. CPU0 simultaneously expands a copied descriptor for the
+preceding frame to RGB565 and submits 16-row SPI DMA strips. The payload is
+not copied, and the next picture is not started until both the decode and
+render stages have completed. The MP2 reader remains a high-priority CPU0
+task feeding the existing DAC stream buffer.
+
+The physical ESP32 successfully decoded the 120-frame 320x240/30 fps smoke
+file without frame-sequence gaps. The optimized decoder averaged 61.5 ms per
+frame and achieved about 15.5 decoded frames/s, so full-QVGA MPEG-1 is
+memory-safe but not real-time at 30 fps on this board. Moving the hot decoder
+path to IRAM improved decode time by only about 0.5% while consuming 19.6 KiB
+of IRAM, so that experiment was not retained.
 
 ## Windows validation
 
