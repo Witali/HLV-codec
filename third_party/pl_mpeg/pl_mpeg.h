@@ -2997,7 +2997,10 @@ void plm_video_init_compact_frame(
 );
 void plm_video_init_row_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base);
 void plm_video_compact_copy_macroblock(plm_video_t *self);
+void plm_video_compact_copy_block(plm_video_t *self, int block);
+void plm_video_compact_predict_coded_blocks(plm_video_t *self, int cbp);
 void plm_video_compact_store_macroblock(plm_video_t *self);
+void plm_video_compact_store_block(plm_video_t *self, int block);
 #endif
 void plm_video_decode_picture(plm_video_t *self);
 void plm_video_decode_slice(plm_video_t *self, int slice);
@@ -3680,17 +3683,25 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 		: (self->macroblock_intra ? 0x3f : 0);
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
+	int copy_unchanged_blocks = FALSE;
 	if (!self->macroblock_intra) {
 		if (
 			self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE &&
-			cbp == 0 &&
 			self->motion_forward.h == 0 &&
 			self->motion_forward.v == 0
 		) {
-			plm_video_compact_copy_macroblock(self);
-			return;
+			if (cbp == 0) {
+				plm_video_compact_copy_macroblock(self);
+				return;
+			}
+			copy_unchanged_blocks = TRUE;
 		}
-		plm_video_predict_macroblock(self);
+		if (copy_unchanged_blocks) {
+			plm_video_compact_predict_coded_blocks(self, cbp);
+		}
+		else {
+			plm_video_predict_macroblock(self);
+		}
 	}
 #endif
 
@@ -3701,7 +3712,20 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 		mask >>= 1;
 	}
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-	plm_video_compact_store_macroblock(self);
+	if (copy_unchanged_blocks) {
+		for (int block = 0, mask = 0x20; block < 6; block++) {
+			if (cbp & mask) {
+				plm_video_compact_store_block(self, block);
+			}
+			else {
+				plm_video_compact_copy_block(self, block);
+			}
+			mask >>= 1;
+		}
+	}
+	else {
+		plm_video_compact_store_macroblock(self);
+	}
 #endif
 }
 
@@ -3984,6 +4008,25 @@ static void plm_video_compact_store_luma16(
 	}
 }
 
+static void plm_video_compact_store_luma8(
+	uint8_t *dest, const uint8_t *source, int *error_sum
+) {
+	for (int x = 0; x < 8; x += 4) {
+		uint8_t a = plm_video_compact_code(source[x], 2, 63);
+		uint8_t b = plm_video_compact_code(source[x + 1], 2, 63);
+		uint8_t c = plm_video_compact_code(source[x + 2], 2, 63);
+		uint8_t d = plm_video_compact_code(source[x + 3], 2, 63);
+		*error_sum += (int)source[x] - ((int)a << 2);
+		*error_sum += (int)source[x + 1] - ((int)b << 2);
+		*error_sum += (int)source[x + 2] - ((int)c << 2);
+		*error_sum += (int)source[x + 3] - ((int)d << 2);
+		dest[0] = (uint8_t)(a | (b << 6));
+		dest[1] = (uint8_t)((b >> 2) | (c << 4));
+		dest[2] = (uint8_t)((c >> 4) | (d << 2));
+		dest += 3;
+	}
+}
+
 static void plm_video_compact_store_chroma8(
 	uint8_t *dest, const uint8_t *source, int *error_sum
 ) {
@@ -4068,6 +4111,148 @@ void plm_video_compact_copy_macroblock(plm_video_t *self) {
 		source->cr.correction[chroma_index];
 	dest->cb.correction[chroma_index] =
 		source->cb.correction[chroma_index];
+}
+
+void plm_video_compact_copy_block(plm_video_t *self, int block) {
+	const plm_frame_t *source = &self->frame_forward;
+	plm_frame_t *dest = &self->frame_compact_current;
+	if (block < 4) {
+		unsigned block_x = (unsigned)(self->mb_col << 1) +
+			(unsigned)(block & 1);
+		unsigned block_y = (unsigned)(self->mb_row << 1) +
+			(unsigned)(block >> 1);
+		const uint8_t *source_row =
+			source->y.data + (size_t)(block_y << 3) * source->y.stride +
+			(size_t)block_x * 6U;
+		uint8_t *dest_row =
+			dest->y.data + (size_t)(block_y << 3) * dest->y.stride +
+			(size_t)block_x * 6U;
+		for (int row = 0; row < 8; ++row) {
+			memcpy(dest_row, source_row, 6);
+			source_row += source->y.stride;
+			dest_row += dest->y.stride;
+		}
+		size_t correction_index =
+			(size_t)block_y * dest->y.correction_stride + block_x;
+		dest->y.correction[correction_index] =
+			source->y.correction[correction_index];
+		return;
+	}
+
+	const plm_plane_t *source_plane =
+		block == 4 ? &source->cb : &source->cr;
+	plm_plane_t *dest_plane =
+		block == 4 ? &dest->cb : &dest->cr;
+	const uint8_t *source_row =
+		source_plane->data +
+		(size_t)(self->mb_row << 3) * source_plane->stride +
+		(size_t)self->mb_col * 5U;
+	uint8_t *dest_row =
+		dest_plane->data +
+		(size_t)(self->mb_row << 3) * dest_plane->stride +
+		(size_t)self->mb_col * 5U;
+	for (int row = 0; row < 8; ++row) {
+		memcpy(dest_row, source_row, 5);
+		source_row += source_plane->stride;
+		dest_row += dest_plane->stride;
+	}
+	size_t correction_index =
+		(size_t)self->mb_row * dest_plane->correction_stride +
+		(unsigned)self->mb_col;
+	dest_plane->correction[correction_index] =
+		source_plane->correction[correction_index];
+}
+
+void plm_video_compact_predict_coded_blocks(plm_video_t *self, int cbp) {
+	const plm_frame_t *source = &self->frame_forward;
+	plm_frame_t *dest = &self->frame_current;
+	for (int block = 0, mask = 0x20; block < 6; ++block, mask >>= 1) {
+		if (!(cbp & mask)) {
+			continue;
+		}
+		if (block < 4) {
+			int block_x = block & 1;
+			int block_y = block >> 1;
+			int source_x = (self->mb_col << 4) + (block_x << 3);
+			int source_y = (self->mb_row << 4) + (block_y << 3);
+			uint8_t *dest_row =
+				dest->y.data + (size_t)(block_y << 3) * dest->y.stride +
+				(size_t)source_x;
+			for (int row = 0; row < 8; ++row) {
+				plm_plane_unpack_compact_samples(
+					&source->y, source_x, source_y + row,
+					6, dest_row, 8);
+				dest_row += dest->y.stride;
+			}
+			continue;
+		}
+
+		const plm_plane_t *source_plane =
+			block == 4 ? &source->cb : &source->cr;
+		plm_plane_t *dest_plane =
+			block == 4 ? &dest->cb : &dest->cr;
+		int source_x = self->mb_col << 3;
+		int source_y = self->mb_row << 3;
+		uint8_t *dest_row =
+			dest_plane->data + (size_t)source_x;
+		for (int row = 0; row < 8; ++row) {
+			plm_plane_unpack_compact_samples(
+				source_plane, source_x, source_y + row,
+				5, dest_row, 8);
+			dest_row += dest_plane->stride;
+		}
+	}
+}
+
+void plm_video_compact_store_block(plm_video_t *self, int block) {
+	const plm_frame_t *source = &self->frame_current;
+	plm_frame_t *dest = &self->frame_compact_current;
+	int error_sum = 0;
+	if (block < 4) {
+		unsigned local_x = (unsigned)(block & 1) << 3;
+		unsigned local_y = (unsigned)(block >> 1) << 3;
+		unsigned block_x = (unsigned)(self->mb_col << 1) +
+			(unsigned)(block & 1);
+		unsigned block_y = (unsigned)(self->mb_row << 1) +
+			(unsigned)(block >> 1);
+		const uint8_t *source_row =
+			source->y.data + (size_t)local_y * source->y.stride +
+			(size_t)(self->mb_col << 4) + local_x;
+		uint8_t *dest_row =
+			dest->y.data + (size_t)(block_y << 3) * dest->y.stride +
+			(size_t)block_x * 6U;
+		for (int row = 0; row < 8; ++row) {
+			plm_video_compact_store_luma8(
+				dest_row, source_row, &error_sum);
+			source_row += source->y.stride;
+			dest_row += dest->y.stride;
+		}
+		dest->y.correction[
+			(size_t)block_y * dest->y.correction_stride + block_x] =
+				plm_video_compact_error_q4(error_sum);
+		return;
+	}
+
+	const plm_plane_t *source_plane =
+		block == 4 ? &source->cb : &source->cr;
+	plm_plane_t *dest_plane =
+		block == 4 ? &dest->cb : &dest->cr;
+	const uint8_t *source_row =
+		source_plane->data + (size_t)(self->mb_col << 3);
+	uint8_t *dest_row =
+		dest_plane->data +
+		(size_t)(self->mb_row << 3) * dest_plane->stride +
+		(size_t)self->mb_col * 5U;
+	for (int row = 0; row < 8; ++row) {
+		plm_video_compact_store_chroma8(
+			dest_row, source_row, &error_sum);
+		source_row += source_plane->stride;
+		dest_row += dest_plane->stride;
+	}
+	dest_plane->correction[
+		(size_t)self->mb_row * dest_plane->correction_stride +
+		(unsigned)self->mb_col] =
+			plm_video_compact_error_q4(error_sum);
 }
 
 void plm_video_compact_store_macroblock(plm_video_t *self) {
