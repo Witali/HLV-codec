@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$Port,
     [ValidateRange(1, 1000000)][int]$Frames = 900,
-    [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120
+    [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
+    [switch]$AllowAudioUnderrun
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,8 +22,18 @@ if (-not $python) {
     throw "Project-local ESP-IDF Python environment was not found."
 }
 
-& $python (Join-Path $project "capture_player_metrics.py") `
-    --port $Port --frames $Frames --timeout $TimeoutSeconds --reset
+$captureArguments = @(
+    (Join-Path $project "capture_player_metrics.py"),
+    "--port", $Port,
+    "--frames", $Frames,
+    "--timeout", $TimeoutSeconds,
+    "--reset"
+)
+if ($AllowAudioUnderrun) {
+    $captureArguments += "--allow-audio-underrun"
+}
+
+& $python @captureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Player metric capture failed with exit code $LASTEXITCODE"
 }

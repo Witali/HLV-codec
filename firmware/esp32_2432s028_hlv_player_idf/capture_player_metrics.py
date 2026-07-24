@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import math
 import statistics
 import sys
@@ -122,6 +123,7 @@ def main() -> int:
     audio: list[AudioRecord] = []
     video: VideoRecord | None = None
     statuses: list[str] = []
+    recent_lines: collections.deque[str] = collections.deque(maxlen=40)
     first_frame_time: float | None = None
     last_frame_time: float | None = None
     deadline = time.monotonic() + args.timeout
@@ -151,6 +153,8 @@ def main() -> int:
             if not raw:
                 continue
             line = raw.decode("ascii", errors="ignore").strip()
+            if line:
+                recent_lines.append(line)
             if line.startswith("S,"):
                 statuses.append(line)
                 continue
@@ -187,6 +191,9 @@ def main() -> int:
         )
         for status in statuses[-8:]:
             print(status, file=sys.stderr)
+        for line in recent_lines:
+            if not line.startswith("S,"):
+                print(line, file=sys.stderr)
         return 3
 
     print(
