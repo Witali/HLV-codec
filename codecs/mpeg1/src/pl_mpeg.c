@@ -1,0 +1,5 @@
+#define PLM_BUFFER_DEFAULT_SIZE (8 * 1024)
+#define PLM_VIDEO_MAX_FRAME_BYTES (240 * 192 * 3 / 2)
+#define PLM_VIDEO_NO_B_FRAMES
+#define PL_MPEG_IMPLEMENTATION
+#include "pl_mpeg.h"
