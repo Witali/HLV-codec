@@ -26,6 +26,24 @@ param(
     [ValidateRange(0, 1000000000)]
     [double]$Lambda = 64,
 
+    [ValidateRange(1, 8)]
+    [int]$CandidatePalettes = 3,
+
+    [ValidateRange(64, 262144)]
+    [int]$SampleBlocks = 32768,
+
+    [ValidateRange(1, 4096)]
+    [int]$SamplesPerFrame = 16,
+
+    [ValidateRange(1, 32)]
+    [int]$BlockIterations = 10,
+
+    [ValidateRange(1, 32)]
+    [int]$ColorIterations = 10,
+
+    [ValidateRange(16, 65536)]
+    [int]$ColorsPerCluster = 8192,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -176,12 +194,15 @@ try {
         "--threads", $Threads,
         "--gop", $Gop,
         "--lambda", $Lambda,
-        "--candidate-palettes", 3,
+        "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,
         "--max-block-dictionary", 256,
         "--max-pattern-dictionary", 256,
-        "--sample-blocks", 32768,
-        "--samples-per-frame", 16,
+        "--sample-blocks", $SampleBlocks,
+        "--samples-per-frame", $SamplesPerFrame,
+        "--block-iterations", $BlockIterations,
+        "--color-iterations", $ColorIterations,
+        "--colors-per-cluster", $ColorsPerCluster,
         "--audio-u8", $temporaryAudio,
         "--audio-rate", 16000,
         "--report", $ReportFile,
@@ -190,7 +211,8 @@ try {
     Write-Host (
         "Encoding BPV1 v3: ${Width}x${Height}, native FPS, " +
         "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $Gop, " +
-        "$Threads worker threads..."
+        "$CandidatePalettes candidate palettes, $SampleBlocks training " +
+        "blocks, $Threads worker threads..."
     )
     & $encoder @encoderArguments
     if ($LASTEXITCODE -ne 0) {
