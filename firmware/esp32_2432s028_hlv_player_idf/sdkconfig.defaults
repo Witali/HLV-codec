@@ -11,7 +11,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Player SPI clocks. These can also be changed in the "HLV player" menu.
 CONFIG_HLV_PLAYER_DISPLAY_SPI_CLOCK_MHZ=80
-CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ=40
+CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ=10
 
 # Decode and color conversion benefit from the full ESP32 clock.  Optimize the
 # rest for size to retain internal SRAM and instruction-cache headroom.

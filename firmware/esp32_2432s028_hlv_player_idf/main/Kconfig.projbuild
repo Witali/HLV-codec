@@ -12,9 +12,10 @@ menu "HLV player"
     config HLV_PLAYER_SD_SPI_CLOCK_MHZ
         int "SD-card SPI clock (MHz)"
         range 1 40
-        default 40
+        default 10
         help
             Maximum SPI clock requested from the SDSPI host after card
-            initialization. Some cards or PCB layouts may require 20 MHz.
+            initialization. The conservative 10 MHz default improves the
+            timing margin on cards and PCB layouts with unreliable reads.
 
 endmenu
