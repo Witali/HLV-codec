@@ -256,9 +256,14 @@ struct DecodeContext {
     const uint8_t *input = nullptr;
     size_t input_size = 0;
     size_t input_offset = 0;
-    uint16_t *output = nullptr;
+    uint16_t *strip = nullptr;
     uint16_t width = 0;
     uint16_t height = 0;
+    uint16_t strip_y = UINT16_MAX;
+    uint16_t strip_rows = 0;
+    MjpegAviStripOutput output = nullptr;
+    void *output_context = nullptr;
+    bool output_failed = false;
 };
 
 UINT jpegInput(JDEC *decoder, BYTE *buffer, UINT requested) {
@@ -278,11 +283,22 @@ UINT jpegOutput(JDEC *decoder, void *bitmap, JRECT *rect) {
     if (!context || !bitmap || !rect ||
         rect->right >= context->width || rect->bottom >= context->height)
         return 0;
+    if (context->strip_y == UINT16_MAX) {
+        context->strip_y = rect->top;
+        context->strip_rows =
+            static_cast<uint16_t>(rect->bottom - rect->top + 1U);
+    } else if (rect->top != context->strip_y ||
+               rect->bottom - rect->top + 1U != context->strip_rows) {
+        return 0;
+    }
+    if (context->strip_rows > 16U) return 0;
+
     const auto *rgb = static_cast<const uint8_t *>(bitmap);
     const size_t block_width = rect->right - rect->left + 1U;
     for (size_t y = rect->top; y <= rect->bottom; ++y) {
         uint16_t *destination =
-            context->output + y * context->width + rect->left;
+            context->strip +
+            (y - context->strip_y) * context->width + rect->left;
         for (size_t x = 0; x < block_width; ++x) {
             const uint8_t red = *rgb++;
             const uint8_t green = *rgb++;
@@ -292,6 +308,16 @@ UINT jpegOutput(JDEC *decoder, void *bitmap, JRECT *rect) {
                                       ((green & 0xfcU) << 3) |
                                       (blue >> 3));
         }
+    }
+    if (rect->right + 1U == context->width) {
+        if (!context->output(
+                context->output_context, context->strip,
+                context->strip_y, context->strip_rows)) {
+            context->output_failed = true;
+            return 0;
+        }
+        context->strip_y = UINT16_MAX;
+        context->strip_rows = 0;
     }
     return 1;
 }
@@ -395,8 +421,8 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info) {
     compressed_capacity_ = info_.max_video_frame_size;
     compressed_ = static_cast<uint8_t *>(
         heap_caps_malloc(compressed_capacity_, MALLOC_CAP_8BIT));
-    rgb565_ = static_cast<uint16_t *>(heap_caps_malloc(
-        frameBufferBytes(), MALLOC_CAP_8BIT));
+    strip_ = static_cast<uint16_t *>(
+        heap_caps_malloc(stripBufferBytes(), MALLOC_CAP_8BIT));
     work_buffer_ = static_cast<uint8_t *>(
         heap_caps_malloc(kJpegWorkBytes, MALLOC_CAP_8BIT));
     if (!ready()) {
@@ -404,19 +430,19 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info) {
         return MJPEG_AVI_ERR_MEMORY;
     }
     ESP_LOGI(kTag,
-             "MJPEG buffers: compressed=%u, RGB565=%u, work=%u bytes",
+             "MJPEG buffers: compressed=%u, RGB565 strip=%u, work=%u bytes",
              static_cast<unsigned>(compressed_capacity_),
-             static_cast<unsigned>(frameBufferBytes()),
+             static_cast<unsigned>(stripBufferBytes()),
              static_cast<unsigned>(kJpegWorkBytes));
     return MJPEG_AVI_OK;
 }
 
 void MjpegAviDecoder::end() {
     heap_caps_free(compressed_);
-    heap_caps_free(rgb565_);
+    heap_caps_free(strip_);
     heap_caps_free(work_buffer_);
     compressed_ = nullptr;
-    rgb565_ = nullptr;
+    strip_ = nullptr;
     work_buffer_ = nullptr;
     compressed_capacity_ = 0;
     info_ = {};
@@ -443,12 +469,14 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
 }
 
 int MjpegAviDecoder::decode(const MjpegAviPacket &packet,
-                            const uint16_t **rgb565) {
-    if (!ready() || !packet.jpeg || !packet.jpeg_size || !rgb565)
+                            MjpegAviStripOutput output,
+                            void *output_context) {
+    if (!ready() || !packet.jpeg || !packet.jpeg_size || !output)
         return MJPEG_AVI_ERR_ARGUMENT;
     DecodeContext context{
-        packet.jpeg, packet.jpeg_size, 0, rgb565_,
-        info_.width, info_.height};
+        packet.jpeg, packet.jpeg_size, 0, strip_,
+        info_.width, info_.height, UINT16_MAX, 0,
+        output, output_context, false};
     JDEC decoder{};
     const JRESULT prepare = jd_prepare(
         &decoder, jpegInput, work_buffer_, kJpegWorkBytes, &context);
@@ -459,11 +487,11 @@ int MjpegAviDecoder::decode(const MjpegAviPacket &packet,
         return MJPEG_AVI_ERR_DECODE;
     }
     const JRESULT decoded = jd_decomp(&decoder, jpegOutput, 0);
-    if (decoded != JDR_OK) {
+    if (context.output_failed) return MJPEG_AVI_ERR_IO;
+    if (decoded != JDR_OK || context.strip_y != UINT16_MAX) {
         ESP_LOGE(kTag, "jd_decomp failed: %d",
                  static_cast<int>(decoded));
         return MJPEG_AVI_ERR_DECODE;
     }
-    *rgb565 = rgb565_;
     return MJPEG_AVI_OK;
 }

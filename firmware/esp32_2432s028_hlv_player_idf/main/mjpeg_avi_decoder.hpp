@@ -36,6 +36,9 @@ struct MjpegAviPacket {
     size_t jpeg_size = 0;
 };
 
+using MjpegAviStripOutput = bool (*)(
+    void *context, const uint16_t *rgb565, uint16_t y, uint16_t rows);
+
 const char *mjpeg_avi_strerror(int result);
 int mjpeg_avi_read_info(FILE *file, MjpegAviInfo *info);
 
@@ -51,23 +54,26 @@ public:
     void end();
 
     bool ready() const {
-        return compressed_ != nullptr && rgb565_ != nullptr &&
+        return compressed_ != nullptr && strip_ != nullptr &&
                work_buffer_ != nullptr;
     }
     const MjpegAviInfo &info() const { return info_; }
     size_t compressedCapacity() const { return compressed_capacity_; }
-    size_t frameBufferBytes() const {
-        return static_cast<size_t>(info_.width) * info_.height *
+    size_t stripBufferBytes() const {
+        return static_cast<size_t>(info_.width) * kStripRows *
                sizeof(uint16_t);
     }
 
     int readPacket(FILE *file, MjpegAviPacket *packet);
-    int decode(const MjpegAviPacket &packet, const uint16_t **rgb565);
+    int decode(const MjpegAviPacket &packet, MjpegAviStripOutput output,
+               void *output_context);
 
 private:
+    static constexpr size_t kStripRows = 16;
+
     MjpegAviInfo info_{};
     uint8_t *compressed_ = nullptr;
     size_t compressed_capacity_ = 0;
-    uint16_t *rgb565_ = nullptr;
+    uint16_t *strip_ = nullptr;
     uint8_t *work_buffer_ = nullptr;
 };

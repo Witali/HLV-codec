@@ -116,9 +116,10 @@ The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG or BPV1 from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
 320x240 ST7789 over SPI2 DMA. HLV and MJPEG PCM_U8 tracks play through DAC
 GPIO26 DMA and the onboard amplifier; BPV1 is video-only. The BPV1 path keeps
-two compact 9-byte block-record frames and renders RGB565 directly into the
-existing 16-row DMA strips, without allocating a full RGB framebuffer. Arduino
-and LovyanGFX are not part of the build.
+two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
+into one 16-row RGB565 strip. Both paths render through the existing display
+DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX
+are not part of the build.
 The pinned ESP-IDF, Python environment and ESP32 toolchain live inside the
 firmware project directory:
 

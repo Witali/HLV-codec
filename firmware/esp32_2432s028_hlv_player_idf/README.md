@@ -238,8 +238,10 @@ display DMA timing.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a 16 KiB aligned read-ahead buffer. HLV uses nine
   reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
-  JPEG chunk size plus one reusable 320x180 RGB565 frame; BPV uses one bounded
-  maximum-size packet buffer.
+  JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
+  uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
+  39,678 bytes for these three MJPEG allocations instead of a full-frame
+  design's 144,638 bytes.
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
   Stream v13 literal blocks are copied directly into this packed storage. BPV

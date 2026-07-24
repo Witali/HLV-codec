@@ -13,11 +13,11 @@ DAC GPIO26.
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts HLV YUV420 or BPV palette blocks to RGB565 in 16-row strips,
-  without a full RGB framebuffer;
+- converts HLV YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
+  16-row strips, without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
   buffer; HLV then fills nine reusable 7680-byte packet blocks (67.5 KiB
-  total), while BPV uses one bounded maximum-frame packet buffer;
+  total), while MJPEG and BPV use bounded maximum-frame packet buffers;
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
 - decodes frame N on CPU1 while CPU0 converts and queues frame N-1 for the
@@ -234,6 +234,12 @@ complete allocation is about 105 KiB. It renders source rows directly into
 the two existing display DMA strips, so no 115,200-byte RGB565 frame is
 allocated. BPV1 contains no audio, and playback therefore uses the rational
 ESP timer clock.
+
+The MJPEG decoder likewise does not retain a complete RGB565 frame. TJpgDec
+converts one MCU row into a reusable 320x16 RGB565 strip and submits it through
+the two display DMA buffers before decoding the next row. For the Big Buck
+Bunny q5 AVI, the maximum 25,342-byte JPEG packet, 10,240-byte strip and
+4,096-byte TJpgDec work area require 39,678 bytes instead of 144,638 bytes.
 
 ### Big Buck Bunny example
 

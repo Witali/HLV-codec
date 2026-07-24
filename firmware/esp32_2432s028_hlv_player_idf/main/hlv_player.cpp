@@ -1127,7 +1127,8 @@ bool openVideo() {
     }
 
     if (video_codec == VideoCodec::kMjpeg) {
-        ESP_LOGI(kTag, "Playing MJPEG in %s mode, frame storage=RGB565",
+        ESP_LOGI(kTag,
+                 "Playing MJPEG in %s mode, frame storage=RGB565 strip",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -1216,47 +1217,80 @@ bool renderFrame(const HLV1Frame *frame) {
     return true;
 }
 
-bool renderMjpegFrame(const uint16_t *frame) {
-    if (!frame) return false;
+struct MjpegRenderContext {
+    uint32_t render_us = 0;
+    int next_scaled_y = 0;
+    bool display_failed = false;
+};
+
+bool renderMjpegStrip(void *opaque, const uint16_t *strip,
+                      uint16_t source_y, uint16_t source_rows) {
+    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    if (!context || !strip || !source_rows) return false;
+    const int64_t render_start = microsNow();
     const int width = mjpeg_info.width;
     const int height = mjpeg_info.height;
+    const int source_end = source_y + source_rows;
+    if (source_end > height) return false;
+
     if (player_settings::kScaleVideoToDisplay) {
-        for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
-            const int rows =
-                std::min(kRowsPerTransfer, kScreenHeight - y0);
+        while (context->next_scaled_y < kScreenHeight &&
+               scaled_y_map[context->next_scaled_y] < source_end) {
+            const int destination_y = context->next_scaled_y;
+            int rows = 0;
+            while (rows < kRowsPerTransfer &&
+                   destination_y + rows < kScreenHeight &&
+                   scaled_y_map[destination_y + rows] < source_end) {
+                if (scaled_y_map[destination_y + rows] < source_y)
+                    return false;
+                ++rows;
+            }
+            if (!rows) break;
             uint16_t *pixels = display.acquireBuffer();
-            if (!pixels) return false;
+            if (!pixels) {
+                context->display_failed = true;
+                return false;
+            }
             for (int row = 0; row < rows; ++row) {
                 const uint16_t *source =
-                    frame + scaled_y_map[y0 + row] * width;
+                    strip +
+                    (scaled_y_map[destination_y + row] - source_y) *
+                        width;
                 uint16_t *destination =
                     pixels + row * kScreenWidth;
                 for (int x = 0; x < kScreenWidth; ++x) {
                     destination[x] = source[scaled_x_map[x]];
                 }
             }
-            if (display.drawBitmap(0, y0, kScreenWidth, rows, pixels) !=
-                ESP_OK) {
+            if (display.drawBitmap(0, destination_y, kScreenWidth, rows,
+                                   pixels) != ESP_OK) {
+                context->display_failed = true;
                 return false;
             }
+            context->next_scaled_y += rows;
         }
+        context->render_us +=
+            static_cast<uint32_t>(microsNow() - render_start);
         return true;
     }
 
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
-    for (int y0 = 0; y0 < height; y0 += kRowsPerTransfer) {
-        const int rows = std::min(kRowsPerTransfer, height - y0);
-        uint16_t *pixels = display.acquireBuffer();
-        if (!pixels) return false;
-        std::memcpy(pixels, frame + y0 * width,
-                    static_cast<size_t>(width) * rows *
-                        sizeof(uint16_t));
-        if (display.drawBitmap(x_offset, y_offset + y0, width, rows,
-                               pixels) != ESP_OK) {
-            return false;
-        }
+    uint16_t *pixels = display.acquireBuffer();
+    if (!pixels) {
+        context->display_failed = true;
+        return false;
     }
+    std::memcpy(pixels, strip,
+                static_cast<size_t>(width) * source_rows *
+                    sizeof(uint16_t));
+    if (display.drawBitmap(x_offset, y_offset + source_y, width,
+                           source_rows, pixels) != ESP_OK) {
+        context->display_failed = true;
+        return false;
+    }
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
     return true;
 }
 
@@ -1381,18 +1415,17 @@ bool renderHlvOpaque(const void *frame) {
     return renderFrame(static_cast<const HLV1Frame *>(frame));
 }
 
-bool renderMjpegOpaque(const void *frame) {
-    return renderMjpegFrame(static_cast<const uint16_t *>(frame));
-}
-
 bool renderBpvOpaque(const void *frame) {
     return renderBpvFrame(static_cast<const BPV1Frame *>(frame));
 }
 
-bool presentDecodedFrame(const void *frame, RenderFunction render_function,
-                         uint32_t read_us, uint32_t decode_us) {
-    const int64_t present_start = microsNow();
+struct PresentationState {
+    int64_t start_us = 0;
     bool render = true;
+};
+
+PresentationState beginPresentation() {
+    PresentationState state{microsNow(), true};
     if (audio_enabled) {
         if (!audio_started) {
             startAudio();
@@ -1448,7 +1481,7 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
                         audio_loop_events = audio_loop_events + 1;
                         consecutive_skipped_presentations = 0;
                     } else {
-                        render = false;
+                        state.render = false;
                         ++skipped_presentations;
                         ++consecutive_skipped_presentations;
                     }
@@ -1460,12 +1493,11 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
     }
 
     if (!audio_enabled) waitUntil(next_present_us);
-    uint32_t render_us = 0;
-    if (render) {
-        const int64_t render_start = microsNow();
-        if (!render_function(frame)) return false;
-        render_us = static_cast<uint32_t>(microsNow() - render_start);
-    }
+    return state;
+}
+
+void finishPresentation(const PresentationState &state, uint32_t read_us,
+                        uint32_t decode_us, uint32_t render_us) {
     ++decoded_frames;
 
     if (!audio_enabled) {
@@ -1479,7 +1511,7 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
     }
 
     const uint32_t present_us =
-        static_cast<uint32_t>(microsNow() - present_start);
+        static_cast<uint32_t>(microsNow() - state.start_us);
     const uint32_t work_us = read_us + decode_us + render_us;
     if (player_settings::kLogFrameTimings) {
         // Capture every value before printing. UART overhead is therefore not
@@ -1502,18 +1534,24 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
                 static_cast<unsigned>(audio_loop_chunks));
         }
     }
+}
+
+bool presentDecodedFrame(const void *frame, RenderFunction render_function,
+                         uint32_t read_us, uint32_t decode_us) {
+    const PresentationState state = beginPresentation();
+    uint32_t render_us = 0;
+    if (state.render) {
+        const int64_t render_start = microsNow();
+        if (!render_function(frame)) return false;
+        render_us = static_cast<uint32_t>(microsNow() - render_start);
+    }
+    finishPresentation(state, read_us, decode_us, render_us);
     return true;
 }
 
 bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
                   uint32_t decode_us) {
     return presentDecodedFrame(frame, renderHlvOpaque, read_us, decode_us);
-}
-
-bool presentMjpegFrame(const uint16_t *frame, uint32_t read_us,
-                       uint32_t decode_us) {
-    return presentDecodedFrame(frame, renderMjpegOpaque, read_us,
-                               decode_us);
 }
 
 bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
@@ -1602,18 +1640,34 @@ void playOneMjpegFrame() {
         return;
     }
 
-    const uint16_t *frame = nullptr;
-    const int64_t decode_start = microsNow();
-    const int decode_result = mjpeg_decoder.decode(packet, &frame);
-    const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
-    if (decode_result != MJPEG_AVI_OK) {
-        failPlayback("JPEG decode error", decode_result);
-        return;
+    const PresentationState presentation = beginPresentation();
+    uint32_t decode_us = 0;
+    uint32_t render_us = 0;
+    if (presentation.render) {
+        MjpegRenderContext render_context{};
+        const int64_t decode_start = microsNow();
+        const int decode_result = mjpeg_decoder.decode(
+            packet, renderMjpegStrip, &render_context);
+        const uint32_t combined_us =
+            static_cast<uint32_t>(microsNow() - decode_start);
+        render_us = render_context.render_us;
+        decode_us = combined_us > render_us
+                        ? combined_us - render_us
+                        : 0;
+        if (decode_result != MJPEG_AVI_OK) {
+            failPlayback(render_context.display_failed
+                             ? "Display DMA error"
+                             : "JPEG decode error",
+                         decode_result);
+            return;
+        }
+        if (player_settings::kScaleVideoToDisplay &&
+            render_context.next_scaled_y != kScreenHeight) {
+            failPlayback("JPEG output error", MJPEG_AVI_ERR_DECODE);
+            return;
+        }
     }
-    if (!presentMjpegFrame(frame, read_us, decode_us)) {
-        failPlayback("Display DMA error", MJPEG_AVI_ERR_IO);
-    }
+    finishPresentation(presentation, read_us, decode_us, render_us);
 }
 
 void playOneBpvFrame() {
