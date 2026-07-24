@@ -29,6 +29,17 @@ Use the saved profile:
     -OutputFile .\out\video.mpg
 ```
 
+For the checked source used during MPEG-1 integration, the preset wrapper
+fixes the source path, dimensions and output naming:
+
+```powershell
+.\scripts\encode_vid_20260522_181611_mpeg1.ps1
+```
+
+Both scripts accept `-MaxFrames` for a short smoke encode. The preset also
+exposes video quality, GOP, thread count, MP2 bitrate, output path and report
+path without duplicating the encoding pipeline.
+
 Defaults are 240x180, centered 4:3 crop, native nominal frame rate, MPEG-1
 quality 3, GOP 30, no B pictures, eight FFmpeg threads, and MP2 mono at 32 kHz
 and 64 kbit/s. The script uses the project's primary audio curve: a gentle

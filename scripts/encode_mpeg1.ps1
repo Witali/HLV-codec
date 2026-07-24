@@ -136,7 +136,7 @@ $arguments = @(
     "-max_muxing_queue_size", "1024"
 )
 if ($MaxFrames) {
-    $arguments += @("-frames:v", $MaxFrames)
+    $arguments += @("-frames:v", $MaxFrames, "-shortest")
 }
 $arguments += @("-f", "mpeg", $OutputFile)
 
