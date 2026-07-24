@@ -1493,6 +1493,9 @@ enum plm_buffer_mode {
 
 struct plm_buffer_t {
 	size_t bit_index;
+	size_t bit_cache_index;
+	uint32_t bit_cache;
+	uint8_t bit_cache_count;
 	size_t capacity;
 	size_t length;
 	size_t total_size;
@@ -1705,6 +1708,7 @@ void plm_buffer_rewind(plm_buffer_t *self) {
 
 void plm_buffer_seek(plm_buffer_t *self, size_t pos) {
 	self->has_ended = FALSE;
+	self->bit_cache_count = 0;
 
 	if (self->seek_callback) {
 		self->seek_callback(self, pos, self->load_callback_user_data);
@@ -1732,6 +1736,7 @@ size_t plm_buffer_tell(plm_buffer_t *self) {
 }
 
 void plm_buffer_discard_read_bytes(plm_buffer_t *self) {
+	self->bit_cache_count = 0;
 	size_t byte_pos = self->bit_index >> 3;
 	if (byte_pos == self->length) {
 		self->bit_index = 0;
@@ -1797,27 +1802,74 @@ int plm_buffer_has(plm_buffer_t *self, size_t count) {
 	return FALSE;
 }
 
+static void plm_buffer_refill_bit_cache(plm_buffer_t *self) {
+	size_t available = (self->length << 3) - self->bit_index;
+	unsigned count = available > 32U ? 32U : (unsigned)available;
+	size_t bit_index = self->bit_index;
+	uint32_t cache = 0;
+	unsigned loaded = 0;
+
+	size_t byte_index = bit_index >> 3;
+	unsigned bit_offset = (unsigned)(bit_index & 7U);
+	if (self->length - byte_index >= 4U) {
+		uint32_t window =
+			((uint32_t)self->bytes[byte_index] << 24) |
+			((uint32_t)self->bytes[byte_index + 1] << 16) |
+			((uint32_t)self->bytes[byte_index + 2] << 8) |
+			(uint32_t)self->bytes[byte_index + 3];
+		count = 32U - bit_offset;
+		cache = bit_offset
+			? window & ((1U << count) - 1U)
+			: window;
+		self->bit_cache_index = self->bit_index;
+		self->bit_cache = cache;
+		self->bit_cache_count = (uint8_t)count;
+		return;
+	}
+
+	while (loaded < count) {
+		unsigned offset = (unsigned)(bit_index & 7U);
+		unsigned in_byte = 8U - offset;
+		unsigned take = count - loaded;
+		if (take > in_byte) {
+			take = in_byte;
+		}
+		unsigned byte = self->bytes[bit_index >> 3];
+		unsigned shift = in_byte - take;
+		unsigned mask = 0xffU >> (8U - take);
+		cache = (cache << take) | ((byte >> shift) & mask);
+		bit_index += take;
+		loaded += take;
+	}
+
+	self->bit_cache_index = self->bit_index;
+	self->bit_cache = cache;
+	self->bit_cache_count = (uint8_t)count;
+}
+
 int plm_buffer_read(plm_buffer_t *self, int count) {
-	if (!plm_buffer_has(self, count)) {
+	if (count <= 0 || count > 32) {
 		return 0;
 	}
-
-	int value = 0;
-	while (count) {
-		int current_byte = self->bytes[self->bit_index >> 3];
-
-		int remaining = 8 - (self->bit_index & 7); // Remaining bits in byte
-		int read = remaining < count ? remaining : count; // Bits in self run
-		int shift = remaining - read;
-		int mask = (0xff >> (8 - read));
-
-		value = (value << read) | ((current_byte & (mask << shift)) >> shift);
-
-		self->bit_index += read;
-		count -= read;
+	if (
+		self->bit_cache_count < (unsigned)count ||
+		self->bit_cache_index != self->bit_index
+	) {
+		if (!plm_buffer_has(self, count)) {
+			return 0;
+		}
+		plm_buffer_refill_bit_cache(self);
 	}
 
-	return value;
+	unsigned remaining = self->bit_cache_count - (unsigned)count;
+	uint32_t value = self->bit_cache >> remaining;
+	self->bit_cache_count = (uint8_t)remaining;
+	self->bit_cache = remaining == 32U
+		? self->bit_cache
+		: self->bit_cache & (remaining ? ((1U << remaining) - 1U) : 0U);
+	self->bit_index += (unsigned)count;
+	self->bit_cache_index = self->bit_index;
+	return (int)value;
 }
 
 void plm_buffer_align(plm_buffer_t *self) {
@@ -1892,6 +1944,46 @@ int plm_buffer_peek_non_zero(plm_buffer_t *self, int bit_count) {
 }
 
 int16_t plm_buffer_read_vlc(plm_buffer_t *self, const plm_vlc_t *table) {
+	enum { PLM_VLC_LOOKAHEAD_BITS = 16 };
+	if (
+		(self->bit_cache_count >= PLM_VLC_LOOKAHEAD_BITS &&
+		 self->bit_cache_index == self->bit_index) ||
+		plm_buffer_has(self, PLM_VLC_LOOKAHEAD_BITS)
+	) {
+		if (
+			self->bit_cache_count < PLM_VLC_LOOKAHEAD_BITS ||
+			self->bit_cache_index != self->bit_index
+		) {
+			plm_buffer_refill_bit_cache(self);
+		}
+		uint32_t lookahead =
+			self->bit_cache >>
+			(self->bit_cache_count - PLM_VLC_LOOKAHEAD_BITS);
+		plm_vlc_t state = {0, 0};
+		unsigned used = 0;
+		do {
+			state = table[
+				state.index +
+				((lookahead >>
+				  (PLM_VLC_LOOKAHEAD_BITS - 1U - used)) & 1U)];
+			used++;
+		} while (state.index > 0 && used < PLM_VLC_LOOKAHEAD_BITS);
+		if (state.index <= 0) {
+			unsigned remaining = self->bit_cache_count - used;
+			self->bit_cache_count = (uint8_t)remaining;
+			self->bit_cache =
+				remaining == 32U
+					? self->bit_cache
+					: self->bit_cache &
+						  (remaining
+							   ? ((1U << remaining) - 1U)
+							   : 0U);
+			self->bit_index += used;
+			self->bit_cache_index = self->bit_index;
+			return state.value;
+		}
+	}
+
 	plm_vlc_t state = {0, 0};
 	do {
 		state = table[state.index + plm_buffer_read(self, 1)];
