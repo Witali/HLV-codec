@@ -194,6 +194,7 @@ volatile uint32_t audio_loop_events = 0;
 volatile uint32_t audio_loop_chunks = 0;
 volatile uint32_t mpeg_audio_decode_frames = 0;
 volatile uint32_t mpeg_audio_decode_us = 0;
+volatile uint32_t mpeg_audio_convert_us = 0;
 size_t audio_preroll_bytes = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
@@ -343,7 +344,7 @@ bool mpegFpsRational(double fps, uint16_t *numerator,
 uint8_t mpegSampleToU8(float left, float right) {
     const float mono = std::clamp((left + right) * 0.5f, -1.0f, 1.0f);
     return static_cast<uint8_t>(std::clamp(
-        static_cast<int>(std::lround(128.0f + mono * 127.0f)),
+        static_cast<int>(128.5f + mono * 127.0f),
         0, 255));
 }
 
@@ -683,11 +684,15 @@ int prefetchMpegAudioFrame() {
     if (!samples) return HLV1_EOF;
     mpeg_audio_decode_frames = mpeg_audio_decode_frames + 1;
     mpeg_audio_decode_us = mpeg_audio_decode_us + decode_us;
+    const int64_t convert_start = microsNow();
     for (unsigned index = 0; index < samples->count; ++index) {
         mpeg_audio_pcm[index] = mpegSampleToU8(
             samples->interleaved[index * 2U],
             samples->interleaved[index * 2U + 1U]);
     }
+    mpeg_audio_convert_us =
+        mpeg_audio_convert_us +
+        static_cast<uint32_t>(microsNow() - convert_start);
     size_t sent = 0;
     while (sent < samples->count && !audio_reader_stop_requested) {
         sent += xStreamBufferSend(
@@ -859,6 +864,7 @@ void stopAudio() {
     audio_loop_chunks = 0;
     mpeg_audio_decode_frames = 0;
     mpeg_audio_decode_us = 0;
+    mpeg_audio_convert_us = 0;
     audio_preroll_bytes = 0;
     consecutive_skipped_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
@@ -1963,7 +1969,7 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
                        decode_us, render_us, work_us, present_us);
         if (audio_enabled && decoded_frames % 30U == 0U) {
             esp_rom_printf(
-                "A,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                "A,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 decoded_frames,
                 static_cast<unsigned>(
                     xStreamBufferBytesAvailable(audio_stream)),
@@ -1975,7 +1981,8 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
                 static_cast<unsigned>(audio_loop_events),
                 static_cast<unsigned>(audio_loop_chunks),
                 static_cast<unsigned>(mpeg_audio_decode_frames),
-                static_cast<unsigned>(mpeg_audio_decode_us));
+                static_cast<unsigned>(mpeg_audio_decode_us),
+                static_cast<unsigned>(mpeg_audio_convert_us));
         }
     }
 }

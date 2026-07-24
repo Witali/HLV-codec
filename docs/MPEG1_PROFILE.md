@@ -136,6 +136,16 @@ two 120-frame mono runs averaged 17.70 and 17.74 ms per MP2 frame, versus
 time without changing the samples. Stereo decoding continues through the
 unchanged two-channel synthesis path.
 
+### PCM output conversion
+
+The final float-to-PCM_U8 loop formerly called `lroundf()` for every sample.
+After clamping, the shifted value is always positive, so adding 0.5 before the
+integer conversion has the same rounding result without a library call. The
+mono and stereo fixtures had zero differing output bytes. On the ESP32, the
+separately measured conversion fell from 451.5 us per MP2 frame to 162.8 and
+163.4 us in two runs, a 63.9% reduction. The firmware now reports this
+cumulative time as `mp2_convert_us` alongside MP2 decode time.
+
 ## Windows validation
 
 The native player needs no external codec at runtime:
