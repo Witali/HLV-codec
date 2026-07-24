@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 
-#define BPV1_VERSION 3
+#define BPV1_VERSION 4
+#define BPV1_AUDIO_VERSION 3
 #define BPV1_VIDEO_VERSION 2
 #define BPV1_LEGACY_VERSION 1
 #define BPV1_BLOCK_SIZE 4
@@ -76,18 +77,22 @@ typedef struct {
     uint32_t frame_index;
     uint8_t keyframe;
     const uint8_t *blocks;
+    const uint8_t *palette;
 } BPV1Frame;
 
 typedef struct BPV1Decoder BPV1Decoder;
 
 const char *bpv1_strerror(int result);
 
-/* Read and validate the fixed header plus the v1/v2/v3 palette bank. */
+/*
+ * Read and validate the fixed header. Versions 1 through 3 store one palette
+ * bank in the header; v4 carries a complete active bank in every keyframe.
+ */
 int bpv1_header_read(FILE *file, BPV1Header *header);
 
 /*
  * Read one frame header and leave the file positioned at its payload.  The
- * header occupies nine bytes in v1/v2 and thirteen bytes in v3.  This is
+ * header occupies nine bytes in v1/v2 and thirteen bytes in v3/v4. This is
  * useful for seek-index construction.
  */
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,

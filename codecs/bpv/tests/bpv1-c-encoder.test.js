@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const bpv = require("../tools/bpv1-file.js");
+const codec = require("../src/bpv1-codec.js");
 const y4m = require("../tools/y4m.js");
 
 const packageRoot = path.resolve(__dirname, "..");
@@ -31,7 +32,14 @@ function makeFrame(width, height, shift) {
   return rgba;
 }
 
-function runEncoder(input, output, report, threads, audio = null) {
+function runEncoder(
+  input,
+  output,
+  report,
+  threads,
+  audio = null,
+  activePalettes = true,
+) {
   const arguments_ = [
     input,
     output,
@@ -47,6 +55,7 @@ function runEncoder(input, output, report, threads, audio = null) {
     "--no-progress",
     "--force",
   ];
+  arguments_.push(activePalettes ? "--active-palettes" : "--fixed-palettes");
   if (audio) {
     arguments_.push("--audio-u8", audio, "--audio-rate", "16000");
   }
@@ -77,6 +86,8 @@ try {
   const audio = path.join(temporary, "audio.u8");
   const outputAudio = path.join(temporary, "output-audio.bpv1");
   const reportAudio = path.join(temporary, "report-audio.json");
+  const outputFixed = path.join(temporary, "output-fixed.bpv1");
+  const reportFixed = path.join(temporary, "report-fixed.json");
   const width = 64;
   const height = 64;
   const parts = [y4m.y4mHeader(width, height, 24, 1)];
@@ -95,6 +106,7 @@ try {
   runEncoder(input, output1, report1, 1);
   runEncoder(input, output4, report4, 4);
   runEncoder(input, outputAudio, reportAudio, 4, audio);
+  runEncoder(input, outputFixed, reportFixed, 1, null, false);
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
@@ -105,20 +117,27 @@ try {
   );
 
   const info = bpv.walkFrames(bytes4);
-  assert.equal(info.version, 2);
+  assert.equal(info.version, 4);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 6);
   assert.equal(info.fpsNumerator, 24);
   assert.equal(info.fpsDenominator, 1);
   assert.equal(info.keyframes, 2);
+  assert.equal(info.paletteUpdates, 2);
+  const decoded = codec.decodeVideo(bytes4);
+  assert.equal(decoded.frames.length, 6);
+  assert.equal(
+    codec.renderFrame(decoded, 0).length,
+    width * height * 4,
+  );
 
   const audioFrames = [];
   const audioInfo = bpv.walkFrames(
     fs.readFileSync(outputAudio),
     (frame) => audioFrames.push(frame.audio),
   );
-  assert.equal(audioInfo.version, 3);
+  assert.equal(audioInfo.version, 4);
   assert.equal(audioInfo.audioCodec, 1);
   assert.equal(audioInfo.audioSampleRate, 16000);
   assert.equal(audioInfo.audioChannels, 1);
@@ -128,10 +147,16 @@ try {
     fs.readFileSync(audio),
   );
 
+  const fixedInfo = bpv.walkFrames(fs.readFileSync(outputFixed));
+  assert.equal(fixedInfo.version, 2);
+  assert.equal(fixedInfo.paletteUpdates, 0);
+
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
   assert.equal(report.encoder, "native C11");
   assert.equal(report.threads, 4);
   assert.equal(report.frames, 6);
+  assert.equal(report.paletteMode, "active-gop");
+  assert.equal(report.paletteUpdates, 2);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
 } finally {

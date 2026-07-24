@@ -9,6 +9,7 @@
   const MAGIC = [0x42, 0x50, 0x56, 0x31]; // BPV1
   const VERSION = 2;
   const AUDIO_VERSION = 3;
+  const ACTIVE_PALETTE_VERSION = 4;
   const LEGACY_VERSION = 1;
   const BLOCK_SIZE = 4;
   const LOCAL_COLORS = 4;
@@ -145,7 +146,8 @@
       if (bytes[offset++] !== MAGIC[i]) throw new RangeError("Invalid BPV1 magic");
     }
     const version = readU8(bytes, offset); offset += 1;
-    if (version !== AUDIO_VERSION &&
+    if (version !== ACTIVE_PALETTE_VERSION &&
+        version !== AUDIO_VERSION &&
         version !== VERSION &&
         version !== LEGACY_VERSION) {
       throw new RangeError(`Unsupported BPV1 version: ${version}`);
@@ -164,7 +166,7 @@
     let audioCodec = 0;
     let audioSampleRate = 0;
     let audioChannels = 0;
-    if (version === AUDIO_VERSION) {
+    if (version >= AUDIO_VERSION) {
       audioCodec = extension;
       audioSampleRate = readU16(bytes, offset); offset += 2;
       audioChannels = readU8(bytes, offset); offset += 1;
@@ -180,8 +182,14 @@
       throw new RangeError("Non-zero BPV1 reserved byte");
     }
     const palette = new Array(paletteCount * COLORS_PER_PALETTE);
-    for (let i = 0; i < palette.length; i += 1) {
-      palette[i] = { r: bytes[offset++], g: bytes[offset++], b: bytes[offset++] };
+    if (version !== ACTIVE_PALETTE_VERSION) {
+      for (let i = 0; i < palette.length; i += 1) {
+        palette[i] = {
+          r: bytes[offset++],
+          g: bytes[offset++],
+          b: bytes[offset++],
+        };
+      }
     }
 
     const blocksX = Math.ceil(width / BLOCK_SIZE);
@@ -191,21 +199,39 @@
     let previousBlocks = null;
     let blockDictionary = [];
     let patternDictionary = [];
+    let activePalette = palette;
 
     for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
       const keyframe = readU8(bytes, offset) !== 0; offset += 1;
       const frameBytes = readU32(bytes, offset); offset += 4;
       const modeBytesLength = readU32(bytes, offset); offset += 4;
-      const audioBytes = version === AUDIO_VERSION
+      const audioBytes = version >= AUDIO_VERSION
         ? readU32(bytes, offset)
         : 0;
-      if (version === AUDIO_VERSION) offset += 4;
+      if (version >= AUDIO_VERSION) offset += 4;
       const frameEnd = offset + frameBytes;
       if (frameEnd > bytes.length) throw new RangeError("Truncated BPV1 frame");
+      if (frameIndex === 0 && !keyframe) {
+        throw new RangeError("The first BPV1 frame must be a keyframe");
+      }
       if (keyframe) {
         previousBlocks = null;
         blockDictionary = [];
         patternDictionary = [];
+        if (version === ACTIVE_PALETTE_VERSION) {
+          activePalette =
+            new Array(paletteCount * COLORS_PER_PALETTE);
+          for (let i = 0; i < activePalette.length; i += 1) {
+            activePalette[i] = {
+              r: readU8(bytes, offset++),
+              g: readU8(bytes, offset++),
+              b: readU8(bytes, offset++),
+            };
+          }
+          if (offset > frameEnd) {
+            throw new RangeError("Truncated BPV1 active palette");
+          }
+        }
       }
       const modes = unpackModes(bytes.subarray(offset, offset + modeBytesLength), blockCount);
       offset += modeBytesLength;
@@ -255,12 +281,15 @@
       if (audioEnd > bytes.length) throw new RangeError("Truncated BPV1 audio");
       const audio = bytes.slice(offset, audioEnd);
       offset = audioEnd;
-      frames.push({ blocks, audio });
+      frames.push({ blocks, audio, palette: activePalette });
       previousBlocks = blocks;
     }
     if (offset !== bytes.length) throw new RangeError("Trailing BPV1 data");
     return {
-      width, height, frames, palette, paletteCount,
+      width, height, frames,
+      palette: version === ACTIVE_PALETTE_VERSION
+        ? frames[0].palette : palette,
+      paletteCount,
       colorsPerPalette: COLORS_PER_PALETTE,
       fpsNumerator, fpsDenominator, keyframeInterval, searchRadius,
       audioCodec, audioSampleRate, audioChannels,
@@ -279,7 +308,7 @@
         const localPosition = (y & 3) * 4 + (x & 3);
         const localIndex = read2Bit(block.pattern, localPosition);
         const globalIndex = block.paletteIndex * COLORS_PER_PALETTE + block.localColors[localIndex];
-        const color = decoded.palette[globalIndex];
+        const color = (frame.palette || decoded.palette)[globalIndex];
         const o = (y * decoded.width + x) * 4;
         out[o] = color.r; out[o + 1] = color.g; out[o + 2] = color.b; out[o + 3] = 255;
       }
@@ -407,5 +436,5 @@
   function readU16(bytes, o) { if (o + 2 > bytes.length) throw new RangeError("Truncated BPV1"); return bytes[o] | bytes[o+1] << 8; }
   function readU32(bytes, o) { if (o + 4 > bytes.length) throw new RangeError("Truncated BPV1"); return (bytes[o] | bytes[o+1] << 8 | bytes[o+2] << 16 | bytes[o+3] << 24) >>> 0; }
 
-  return { encodeVideo, decodeVideo, renderFrame, constants: { VERSION, AUDIO_VERSION, LEGACY_VERSION, MODE_SKIP, MODE_MOTION, MODE_BLOCK_DICT, MODE_PATTERN_DICT, MODE_RAW, BLOCK_SIZE, LOCAL_COLORS, PALETTE_COUNT, COLORS_PER_PALETTE } };
+  return { encodeVideo, decodeVideo, renderFrame, constants: { VERSION, AUDIO_VERSION, ACTIVE_PALETTE_VERSION, LEGACY_VERSION, MODE_SKIP, MODE_MOTION, MODE_BLOCK_DICT, MODE_PATTERN_DICT, MODE_RAW, BLOCK_SIZE, LOCAL_COLORS, PALETTE_COUNT, COLORS_PER_PALETTE } };
 });

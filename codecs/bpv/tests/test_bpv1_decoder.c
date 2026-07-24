@@ -155,7 +155,7 @@ static int test_audio_packet(void) {
         audio[index] = (uint8_t)index;
     if (!file ||
         fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, BPV1_AUDIO_VERSION) ||
         write_u16(file, 4) || write_u16(file, 4) ||
         write_u32(file, 1) ||
         write_u16(file, 10) || write_u16(file, 1) ||
@@ -186,6 +186,77 @@ static int test_audio_packet(void) {
         !frame) {
         fprintf(stderr, "BPV1 v3 audio packet test failed\n");
         goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int write_active_frame(FILE *file, const uint8_t *palette,
+                              const uint8_t *raw) {
+    const uint32_t frame_bytes =
+        BPV1_MAX_PALETTE_BYTES + 1U + BPV1_RECORD_BYTES;
+    return write_u8(file, 1) ||
+           write_u32(file, frame_bytes) ||
+           write_u32(file, 1) ||
+           write_u32(file, 0) ||
+           fwrite(palette, 1, BPV1_MAX_PALETTE_BYTES, file) !=
+               BPV1_MAX_PALETTE_BYTES ||
+           write_u8(file, 4U << 5) ||
+           fwrite(raw, 1, BPV1_RECORD_BYTES, file) != BPV1_RECORD_BYTES;
+}
+
+static int test_active_palettes(void) {
+    uint8_t red_palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    uint8_t green_palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t raw[BPV1_RECORD_BYTES] = {0};
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    uint8_t expected[2][3] = {{255, 0, 0}, {0, 255, 0}};
+    int frame_index;
+    int result = 1;
+    red_palette[0] = 255;
+    green_palette[1] = 255;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_VERSION) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u32(file, 2) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 1) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u8(file, 0) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_active_frame(file, red_palette, raw) ||
+        write_active_frame(file, green_palette, raw) ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        header.version != BPV1_VERSION ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_packet_capacity(decoder) !=
+            BPV1_MAX_PALETTE_BYTES + 10U) {
+        fprintf(stderr, "BPV1 v4 active-palette setup failed\n");
+        goto cleanup;
+    }
+    for (frame_index = 0; frame_index < 2; ++frame_index) {
+        BPV1Packet packet;
+        const BPV1Frame *frame = NULL;
+        uint8_t row[12];
+        if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+            bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+            bpv1_frame_render_rgb24_row(
+                &header, frame, 0, row, sizeof row) != BPV1_OK ||
+            row[0] != expected[frame_index][0] ||
+            row[1] != expected[frame_index][1] ||
+            row[2] != expected[frame_index][2]) {
+            fprintf(stderr, "BPV1 v4 active palette frame %d failed\n",
+                    frame_index);
+            goto cleanup;
+        }
     }
     result = 0;
 
@@ -310,6 +381,7 @@ int main(int argc, char **argv) {
     }
     if (test_dictionary_eviction()) goto cleanup;
     if (test_audio_packet()) goto cleanup;
+    if (test_active_palettes()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

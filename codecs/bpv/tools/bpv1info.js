@@ -38,6 +38,7 @@ function main() {
         ? `Audio: PCM_U8 mono ${summary.audioSampleRate} Hz, ${summary.audioBytes} bytes`
         : "Audio: none",
       `Keyframes: ${summary.keyframes} (configured interval ${summary.keyframeInterval})`,
+      `Active palette updates: ${summary.paletteUpdates}`,
       `Frame bytes: min ${summary.minimumFrameBytes}, mean ${summary.meanFrameBytes.toFixed(2)}, max ${summary.maximumFrameBytes}`,
       `Modes: ${Object.entries(summary.modeCounts).map(([name, count]) => `${name}=${count}`).join(", ")}`,
     ].join("\n") + "\n",

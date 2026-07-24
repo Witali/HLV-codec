@@ -3,6 +3,7 @@
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
 const VERSION = 2;
 const AUDIO_VERSION = 3;
+const ACTIVE_PALETTE_VERSION = 4;
 const LEGACY_VERSION = 1;
 const AUDIO_NONE = 0;
 const AUDIO_PCM_U8 = 1;
@@ -36,7 +37,8 @@ function parseHeader(input) {
     if (readU8(bytes, offset++) !== byte) throw new RangeError("Invalid BPV1 magic");
   }
   const version = readU8(bytes, offset); offset += 1;
-  if (version !== AUDIO_VERSION &&
+  if (version !== ACTIVE_PALETTE_VERSION &&
+      version !== AUDIO_VERSION &&
       version !== VERSION &&
       version !== LEGACY_VERSION) {
     throw new RangeError(`Unsupported BPV1 version: ${version}`);
@@ -58,7 +60,7 @@ function parseHeader(input) {
   let audioSampleRate = 0;
   let audioChannels = 0;
   let reserved = extension;
-  if (version === AUDIO_VERSION) {
+  if (version >= AUDIO_VERSION) {
     audioCodec = extension;
     audioSampleRate = readU16(bytes, offset); offset += 2;
     audioChannels = readU8(bytes, offset); offset += 1;
@@ -82,9 +84,12 @@ function parseHeader(input) {
     throw new RangeError("Invalid zero BPV1 coding parameter");
   }
   const paletteBytes = paletteCount * COLORS_PER_PALETTE * 3;
-  requireBytes(bytes, offset, paletteBytes, "palette");
-  const palette = bytes.slice(offset, offset + paletteBytes);
-  offset += paletteBytes;
+  let palette = new Uint8Array(paletteBytes);
+  if (version !== ACTIVE_PALETTE_VERSION) {
+    requireBytes(bytes, offset, paletteBytes, "palette");
+    palette = bytes.slice(offset, offset + paletteBytes);
+    offset += paletteBytes;
+  }
   return {
     bytes,
     version,
@@ -125,17 +130,19 @@ function walkFrames(input, onFrame) {
   let totalFrameBytes = 0;
   let totalAudioBytes = 0;
   let keyframes = 0;
+  let paletteUpdates = 0;
+  let activePalette = header.palette;
 
   for (let frameIndex = 0; frameIndex < header.frameCount; frameIndex += 1) {
-    const frameHeaderBytes = header.version === AUDIO_VERSION ? 13 : 9;
+    const frameHeaderBytes = header.version >= AUDIO_VERSION ? 13 : 9;
     requireBytes(bytes, offset, frameHeaderBytes, `frame ${frameIndex} header`);
     const keyframe = readU8(bytes, offset) !== 0; offset += 1;
     const frameBytes = readU32(bytes, offset); offset += 4;
     const modeBytesLength = readU32(bytes, offset); offset += 4;
-    const audioBytes = header.version === AUDIO_VERSION
+    const audioBytes = header.version >= AUDIO_VERSION
       ? readU32(bytes, offset)
       : 0;
-    if (header.version === AUDIO_VERSION) offset += 4;
+    if (header.version >= AUDIO_VERSION) offset += 4;
     const maximumAudioBytes = header.audioCodec === AUDIO_PCM_U8
       ? Math.ceil(
         header.audioSampleRate * header.fpsDenominator /
@@ -157,6 +164,21 @@ function walkFrames(input, onFrame) {
       );
     }
     if (modeBytesLength > frameBytes) {
+      throw new RangeError(`Mode map exceeds BPV1 frame ${frameIndex}`);
+    }
+    if (frameIndex === 0 && !keyframe) {
+      throw new RangeError("The first BPV1 frame must be a keyframe");
+    }
+    if (header.version === ACTIVE_PALETTE_VERSION && keyframe) {
+      const paletteBytes =
+        header.paletteCount * COLORS_PER_PALETTE * 3;
+      requireFrameBytes(offset, paletteBytes, frameEnd, frameIndex);
+      activePalette = bytes.slice(offset, offset + paletteBytes);
+      header.palette = activePalette;
+      offset += paletteBytes;
+      paletteUpdates += 1;
+    }
+    if (modeBytesLength > frameEnd - offset) {
       throw new RangeError(`Mode map exceeds BPV1 frame ${frameIndex}`);
     }
     const modes = bytes.subarray(offset, offset + modeBytesLength);
@@ -268,6 +290,7 @@ function walkFrames(input, onFrame) {
         videoBytes: frameBytes,
         audio,
         audioBytes,
+        palette: activePalette,
       }, header);
     }
     previous = blocks;
@@ -286,6 +309,7 @@ function walkFrames(input, onFrame) {
     durationSeconds: header.frameCount * header.fpsDenominator / header.fpsNumerator,
     keyframeInterval: header.keyframeInterval,
     keyframes,
+    paletteUpdates,
     maxBlockDictionary: header.maxBlockDictionary,
     maxPatternDictionary: header.maxPatternDictionary,
     searchRadius: header.searchRadius,
@@ -323,9 +347,10 @@ function renderFrameRgba(frame, header) {
         blocks[record + 1 + local];
       const color = colorIndex * 3;
       const output = (y * header.width + x) * 4;
-      rgba[output] = header.palette[color];
-      rgba[output + 1] = header.palette[color + 1];
-      rgba[output + 2] = header.palette[color + 2];
+      const palette = frame.palette || header.palette;
+      rgba[output] = palette[color];
+      rgba[output + 1] = palette[color + 1];
+      rgba[output + 2] = palette[color + 2];
       rgba[output + 3] = 255;
     }
   }
@@ -421,6 +446,7 @@ module.exports = {
     AUDIO_NONE,
     AUDIO_PCM_U8,
     AUDIO_VERSION,
+    ACTIVE_PALETTE_VERSION,
     BLOCK_SIZE,
     COLORS_PER_PALETTE,
     LEGACY_VERSION,
