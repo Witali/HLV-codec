@@ -23,6 +23,7 @@
 #include "sdmmc_cmd.h"
 
 #include "board_config.hpp"
+#include "bpv_esp32_decoder.hpp"
 #include "cyd_display.hpp"
 #include "hlv1.h"
 #include "hlv_esp32_decoder.hpp"
@@ -113,6 +114,7 @@ enum class VideoCodec {
     kNone,
     kHlv,
     kMjpeg,
+    kBpv,
 };
 
 CydDisplay display;
@@ -121,6 +123,8 @@ FILE *audio_file = nullptr;
 HlvEsp32Decoder decoder;
 MjpegAviDecoder mjpeg_decoder;
 MjpegAviInfo mjpeg_info{};
+BpvEsp32Decoder bpv_decoder;
+BPV1Header bpv_header{};
 UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
@@ -134,6 +138,7 @@ uint32_t decoded_frames = 0;
 uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
+uint16_t bpv_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
@@ -863,6 +868,8 @@ void closeVideo() {
     decoder.end();
     mjpeg_decoder.end();
     mjpeg_info = {};
+    bpv_decoder.end();
+    bpv_header = {};
     if (video_file) {
         std::fclose(video_file);
         video_file = nullptr;
@@ -942,6 +949,9 @@ bool openVideoCandidate(const char *path) {
     std::rewind(video_file);
     if (signature_size >= 4 && !std::memcmp(signature, "HLV1", 4)) {
         video_codec = VideoCodec::kHlv;
+    } else if (signature_size >= 4 &&
+               !std::memcmp(signature, "BPV1", 4)) {
+        video_codec = VideoCodec::kBpv;
     } else if (signature_size == sizeof signature &&
                !std::memcmp(signature, "RIFF", 4) &&
                !std::memcmp(signature + 8, "AVI ", 4)) {
@@ -1015,6 +1025,29 @@ bool openVideo() {
                  sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
                      mjpeg_decoder.compressedCapacity()));
+    } else if (video_codec == VideoCodec::kBpv) {
+        const int result = bpv_decoder.begin(video_file, &bpv_header);
+        if (result != BPV1_OK) {
+            showStatus("Invalid video.bpv1", bpv1_strerror(result));
+            closeVideo();
+            return false;
+        }
+        sequence_header.width = bpv_header.width;
+        sequence_header.height = bpv_header.height;
+        sequence_header.fps_num = bpv_header.fps_num;
+        sequence_header.fps_den = bpv_header.fps_den;
+        sequence_header.frame_count = bpv_header.frame_count;
+        sequence_header.gop = bpv_header.keyframe_interval;
+        sequence_header.version = bpv_header.version;
+        sequence_header.search_radius = bpv_header.search_radius;
+        ESP_LOGI(kTag,
+                 "BPV1 v%u: %ux%u, %u/%u fps, %u frames, "
+                 "decoder=%u bytes, packet=%u bytes",
+                 bpv_header.version, bpv_header.width, bpv_header.height,
+                 bpv_header.fps_num, bpv_header.fps_den,
+                 static_cast<unsigned>(bpv_header.frame_count),
+                 static_cast<unsigned>(bpv_decoder.memoryBytes()),
+                 static_cast<unsigned>(bpv_decoder.packetCapacity()));
     } else {
         const int header_result =
             hlv1_header_read(video_file, &sequence_header);
@@ -1095,6 +1128,13 @@ bool openVideo() {
 
     if (video_codec == VideoCodec::kMjpeg) {
         ESP_LOGI(kTag, "Playing MJPEG in %s mode, frame storage=RGB565",
+                 player_settings::kScaleVideoToDisplay
+                     ? "scale-to-320x240"
+                     : "native-centred");
+    } else if (video_codec == VideoCodec::kBpv) {
+        ESP_LOGI(kTag,
+                 "Playing BPV1 v%u in %s mode, frame storage=4x4 records",
+                 bpv_header.version,
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -1220,10 +1260,71 @@ bool renderMjpegFrame(const uint16_t *frame) {
     return true;
 }
 
+bool renderBpvFrame(const BPV1Frame *frame) {
+    if (!frame) return false;
+    const int width = frame->width;
+    const int height = frame->height;
+    if (player_settings::kScaleVideoToDisplay) {
+        int cached_source_y = -1;
+        for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
+            const int rows =
+                std::min(kRowsPerTransfer, kScreenHeight - y0);
+            uint16_t *pixels = display.acquireBuffer();
+            if (!pixels) return false;
+            for (int row = 0; row < rows; ++row) {
+                const int source_y = scaled_y_map[y0 + row];
+                if (source_y != cached_source_y) {
+                    if (bpv1_frame_render_rgb565_row(
+                            &bpv_header, frame,
+                            static_cast<uint16_t>(source_y),
+                            bpv_rgb_row, width) != BPV1_OK) {
+                        return false;
+                    }
+                    cached_source_y = source_y;
+                }
+                uint16_t *destination =
+                    pixels + row * kScreenWidth;
+                for (int x = 0; x < kScreenWidth; ++x) {
+                    destination[x] = bpv_rgb_row[scaled_x_map[x]];
+                }
+            }
+            if (display.drawBitmap(0, y0, kScreenWidth, rows, pixels) !=
+                ESP_OK) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    const int x_offset = (kScreenWidth - width) / 2;
+    const int y_offset = (kScreenHeight - height) / 2;
+    for (int y0 = 0; y0 < height; y0 += kRowsPerTransfer) {
+        const int rows = std::min(kRowsPerTransfer, height - y0);
+        uint16_t *pixels = display.acquireBuffer();
+        if (!pixels) return false;
+        for (int row = 0; row < rows; ++row) {
+            if (bpv1_frame_render_rgb565_row(
+                    &bpv_header, frame,
+                    static_cast<uint16_t>(y0 + row),
+                    pixels + row * width, width) != BPV1_OK) {
+                return false;
+            }
+        }
+        if (display.drawBitmap(x_offset, y_offset + y0, width, rows,
+                               pixels) != ESP_OK) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void failPlayback(const char *title, int result) {
-    const char *detail = video_codec == VideoCodec::kMjpeg
-                             ? mjpeg_avi_strerror(result)
-                             : hlv1_strerror(result);
+    const char *detail =
+        video_codec == VideoCodec::kMjpeg
+            ? mjpeg_avi_strerror(result)
+            : video_codec == VideoCodec::kBpv
+                ? bpv1_strerror(result)
+                : hlv1_strerror(result);
     ESP_LOGE(kTag, "%s: %s", title, detail);
     showStatus(title, detail);
     closeVideo();
@@ -1282,6 +1383,10 @@ bool renderHlvOpaque(const void *frame) {
 
 bool renderMjpegOpaque(const void *frame) {
     return renderMjpegFrame(static_cast<const uint16_t *>(frame));
+}
+
+bool renderBpvOpaque(const void *frame) {
+    return renderBpvFrame(static_cast<const BPV1Frame *>(frame));
 }
 
 bool presentDecodedFrame(const void *frame, RenderFunction render_function,
@@ -1411,6 +1516,11 @@ bool presentMjpegFrame(const uint16_t *frame, uint32_t read_us,
                                decode_us);
 }
 
+bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
+                     uint32_t decode_us) {
+    return presentDecodedFrame(frame, renderBpvOpaque, read_us, decode_us);
+}
+
 uint32_t readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
     *result = decoder.readPacket(video_file, packet);
@@ -1503,6 +1613,36 @@ void playOneMjpegFrame() {
     }
     if (!presentMjpegFrame(frame, read_us, decode_us)) {
         failPlayback("Display DMA error", MJPEG_AVI_ERR_IO);
+    }
+}
+
+void playOneBpvFrame() {
+    BPV1Packet packet{};
+    const int64_t read_start = microsNow();
+    const int packet_result =
+        bpv_decoder.readPacket(video_file, &packet);
+    const uint32_t read_us =
+        static_cast<uint32_t>(microsNow() - read_start);
+    if (packet_result == BPV1_EOF) {
+        finishVideoLoop();
+        return;
+    }
+    if (packet_result != BPV1_OK) {
+        failPlayback("BPV1 packet error", packet_result);
+        return;
+    }
+
+    const BPV1Frame *frame = nullptr;
+    const int64_t decode_start = microsNow();
+    const int decode_result = bpv_decoder.decode(&packet, &frame);
+    const uint32_t decode_us =
+        static_cast<uint32_t>(microsNow() - decode_start);
+    if (decode_result != BPV1_OK) {
+        failPlayback("BPV1 decode error", decode_result);
+        return;
+    }
+    if (!presentBpvFrame(frame, read_us, decode_us)) {
+        failPlayback("Display DMA error", BPV1_ERR_IO);
     }
 }
 
@@ -1611,6 +1751,11 @@ extern "C" void app_main(void) {
         if (video_file && video_codec == VideoCodec::kMjpeg &&
             mjpeg_decoder.ready()) {
             playOneMjpegFrame();
+            continue;
+        }
+        if (video_file && video_codec == VideoCodec::kBpv &&
+            bpv_decoder.ready()) {
+            playOneBpvFrame();
             continue;
         }
         if (video_file && video_codec == VideoCodec::kHlv &&

@@ -22,9 +22,9 @@ reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
 and block/pattern dictionaries. The package includes a bounded-memory,
 eight-thread C11 encoder, automatic palette training, encoder-side
 rate-distortion selection, streaming validation, Y4M adapters and the supplied
-60-second reference measurements. BPV1 is currently part of the desktop
-benchmark laboratory; it has not yet been added to the ESP32 player and
-carries no audio stream.
+60-second reference measurements. The same portable C decoder is linked into
+the native Windows and ESP32 players. BPV1 carries video only; those players
+therefore use their frame timer and do not open an audio device for `.bpv1`.
 
 ## HLV-1 v0.3 development build
 
@@ -94,15 +94,17 @@ native 24 fps. The script uses eight C GOP workers by default:
 
 ## Native Windows player
 
-The desktop build produces `build\msvc\hlvplay.exe`, a native HLV player that
-uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg and
-external codec packs are not needed at runtime. It plays the embedded PCM_U8
-mono track, preserves the video aspect ratio, and supports pause/resume,
-timeline seeking, native-size centred display and drag-and-drop:
+The desktop build produces `build\msvc\hlvplay.exe`, a native HLV/BPV player
+that uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg
+and external codec packs are not needed at runtime. It plays embedded HLV
+PCM_U8 mono, preserves the video aspect ratio, and supports pause/resume,
+keyframe-aware timeline seeking, native-size centred display and drag-and-drop:
 
 ```powershell
 .\scripts\build_windows_player.ps1
 .\build\msvc\hlvplay.exe .\out\video.hlv
+.\build\msvc\hlvplay.exe `
+    .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
 ```
 
 See [`docs/WINDOWS_PLAYER.md`](docs/WINDOWS_PLAYER.md) for controls and the
@@ -110,15 +112,13 @@ headless full-file validation mode.
 
 ## ESP32-2432S028 playback
 
-The pure ESP-IDF CYD2USB firmware reads HLV-1 from a FAT32 microSD card over an
-independent SPI3/VSPI DMA bus, displays it on the 320x240 ST7789 over SPI2 DMA,
-and plays its mono track through DAC GPIO26 DMA and the onboard amplifier. The
-included Big Buck Bunny profile preserves the official 320x180 resolution and
-centres it without scaling. Its ESP32-specific decoder reads packets into a
-reusable 9 x 7680-byte DMA block pool, so a frame never needs one large
-contiguous payload allocation. The current test configuration also packs both
-predictive frames as Y6/U5/V5 4:2:0, reducing their storage plus working rows
-from 184,320 to 138,240 bytes. Arduino and LovyanGFX are not part of the build.
+The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG or BPV1 from a FAT32
+microSD card over an independent SPI3/VSPI DMA bus and displays it on the
+320x240 ST7789 over SPI2 DMA. HLV and MJPEG PCM_U8 tracks play through DAC
+GPIO26 DMA and the onboard amplifier; BPV1 is video-only. The BPV1 path keeps
+two compact 9-byte block-record frames and renders RGB565 directly into the
+existing 16-row DMA strips, without allocating a full RGB framebuffer. Arduino
+and LovyanGFX are not part of the build.
 The pinned ESP-IDF, Python environment and ESP32 toolchain live inside the
 firmware project directory:
 
@@ -133,8 +133,9 @@ firmware project directory:
 
 The player reads one filename from `/sdcard/HLV/play.txt`; it never guesses a
 fallback video. The selected `.hlv` or MJPEG `.avi` file must be in the same
-directory. With the firmware running normally, both files can be copied over
-the CH340C UART without removing the card:
+directory; video-only `.bpv1` is accepted as well. With the firmware running
+normally, the video and selection file can be copied over the CH340C UART
+without removing the card:
 
 ```powershell
 .\scripts\upload_video_uart.ps1 -Port COM8 `

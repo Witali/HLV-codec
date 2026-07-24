@@ -1,10 +1,10 @@
 # BPV1 codec
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
-laboratory. This package contains a bounded-memory, multi-threaded C11 encoder
-plus the version 2 JavaScript reference implementation and decoder, automatic
-64-palette training, rate-distortion block selection, strict stream
-inspection, Y4M command-line adapters, and tests.
+laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
+a portable streaming C decoder, the version 2 JavaScript reference
+implementation, automatic 64-palette training, rate-distortion block
+selection, strict stream inspection, Y4M command-line adapters, and tests.
 
 The fixed v2 profile uses:
 
@@ -52,6 +52,13 @@ On a POSIX C11 host:
 make -C codecs/bpv test-c
 ```
 
+The native test covers all five block modes and row rendering. Passing an
+existing file performs a complete sequential C decode:
+
+```powershell
+.\build\msvc\test_bpv1_decoder.exe .\out\video.bpv1
+```
+
 ## Native C encoder
 
 The production encoder uses two bounded-memory passes over a seekable
@@ -96,6 +103,21 @@ one frame at a time.
 
 BPV1 currently carries video only. Audio must be measured or transported
 separately until a shared multi-codec audiovisual container is defined.
+
+## Players
+
+The same `src/bpv1_decode.c` implementation is linked into both players:
+
+```powershell
+.\build\msvc\hlvplay.exe .\out\video.bpv1
+```
+
+On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
+in `/HLV` on the microSD card. The decoder retains two compact 9-byte block
+record frames and renders RGB565 rows directly into the display's existing DMA
+strips. At 320x180 its decoder state, maximum packet buffer and dictionaries
+consume about 105 KiB and no complete RGB framebuffer. BPV playback is
+sequential and timer-clocked because the format has no audio track.
 
 ## Reference measurement
 

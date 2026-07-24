@@ -21,7 +21,7 @@ MAX_FILE_SIZE = 0xFFFFFFFF
 BLOCK_MAGIC = b"HLVB"
 BLOCK_HEADER = struct.Struct("<4sIHI")
 VALID_NAME = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:hlv|avi|txt)$", re.IGNORECASE
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:hlv|avi|bpv1|txt)$", re.IGNORECASE
 )
 
 
@@ -99,7 +99,7 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
            data_baud: int, response_timeout: float) -> None:
     if len(remote_name) > 48 or not VALID_NAME.fullmatch(remote_name):
         raise UploadError(
-            "remote name must end in .hlv, .avi or .txt and contain only ASCII letters, "
+            "remote name must end in .hlv, .avi, .bpv1 or .txt and contain only ASCII letters, "
             "digits, dot, underscore or dash (48 characters maximum)"
         )
     size = path.stat().st_size
@@ -110,6 +110,8 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         header = source.read(12)
     if suffix == ".hlv" and header[:4] != b"HLV1":
         raise UploadError("source does not have an HLV1 file header")
+    if suffix == ".bpv1" and header[:4] != b"BPV1":
+        raise UploadError("source does not have a BPV1 file header")
     if suffix == ".avi" and (
         header[:4] != b"RIFF" or header[8:12] != b"AVI "
     ):
@@ -119,10 +121,11 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
             selected = path.read_text(encoding="ascii").strip()
         except UnicodeError as error:
             raise UploadError("selection file must be ASCII") from error
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.(?:hlv|avi)",
+        if not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._ -]*\.(?:hlv|avi|bpv1)",
                             selected, re.IGNORECASE):
             raise UploadError(
-                "selection file must contain one safe .hlv or .avi filename"
+                "selection file must contain one safe .hlv, .avi or .bpv1 filename"
             )
 
     print(f"Calculating CRC32 for {path.name}...")

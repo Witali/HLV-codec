@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include "hlv1.h"
+#include "bpv1.h"
 
 #include <algorithm>
 #include <array>
@@ -82,6 +83,12 @@ struct VideoFrame {
     std::vector<uint8_t> nv12;
 };
 
+enum class VideoCodec {
+    kNone,
+    kHlv,
+    kBpv
+};
+
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
     destination.width = source->width;
     destination.height = source->height;
@@ -129,6 +136,106 @@ void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
             output[x * 2 + 1] = vrow[x];
         }
     }
+}
+
+int rgb_to_y(int red, int green, int blue) {
+    return clamp8(16 + ((66 * red + 129 * green + 25 * blue + 128) >> 8));
+}
+
+int rgb_to_u(int red, int green, int blue) {
+    return clamp8(128 +
+                  ((-38 * red - 74 * green + 112 * blue + 128) >> 8));
+}
+
+int rgb_to_v(int red, int green, int blue) {
+    return clamp8(128 +
+                  ((112 * red - 94 * green - 18 * blue + 128) >> 8));
+}
+
+bool convert_bpv_frame(const BPV1Header *header, const BPV1Frame *source,
+                       VideoFrame &destination) {
+    if (!header || !source) return false;
+    destination.width = source->width;
+    destination.height = source->height;
+    const size_t luma_size =
+        static_cast<size_t>(source->width) * source->height;
+    destination.pixels.resize(luma_size);
+    const bool nv12_compatible =
+        !(source->width & 1U) && !(source->height & 1U);
+    destination.nv12.resize(
+        nv12_compatible ? luma_size + luma_size / 2U : 0);
+    std::vector<uint8_t> rows(
+        static_cast<size_t>(source->width) * 3U * 2U);
+    uint8_t *top = rows.data();
+    uint8_t *bottom = top + static_cast<size_t>(source->width) * 3U;
+
+    for (uint16_t y = 0; y < source->height; y += 2) {
+        if (bpv1_frame_render_rgb24_row(
+                header, source, y, top,
+                static_cast<size_t>(source->width) * 3U) != BPV1_OK) {
+            return false;
+        }
+        const bool has_bottom = y + 1U < source->height;
+        if (has_bottom &&
+            bpv1_frame_render_rgb24_row(
+                header, source, static_cast<uint16_t>(y + 1U), bottom,
+                static_cast<size_t>(source->width) * 3U) != BPV1_OK) {
+            return false;
+        }
+        if (!has_bottom) {
+            std::memcpy(bottom, top,
+                        static_cast<size_t>(source->width) * 3U);
+        }
+
+        for (unsigned row = 0; row < (has_bottom ? 2U : 1U); ++row) {
+            const uint8_t *rgb = row ? bottom : top;
+            const size_t output_y = static_cast<size_t>(y) + row;
+            for (uint16_t x = 0; x < source->width; ++x) {
+                const int red = rgb[static_cast<size_t>(x) * 3U];
+                const int green = rgb[static_cast<size_t>(x) * 3U + 1U];
+                const int blue = rgb[static_cast<size_t>(x) * 3U + 2U];
+                destination.pixels[
+                    output_y * source->width + x] =
+                    (static_cast<uint32_t>(red) << 16) |
+                    (static_cast<uint32_t>(green) << 8) |
+                    static_cast<uint32_t>(blue);
+                if (nv12_compatible) {
+                    destination.nv12[
+                        output_y * source->width + x] =
+                        static_cast<uint8_t>(rgb_to_y(red, green, blue));
+                }
+            }
+        }
+
+        if (nv12_compatible) {
+            uint8_t *chroma =
+                destination.nv12.data() + luma_size +
+                static_cast<size_t>(y / 2U) * source->width;
+            for (uint16_t x = 0; x < source->width; x += 2) {
+                int red = 0;
+                int green = 0;
+                int blue = 0;
+                for (unsigned row = 0; row < 2; ++row) {
+                    const uint8_t *rgb = row ? bottom : top;
+                    for (unsigned column = 0; column < 2; ++column) {
+                        const size_t pixel =
+                            (static_cast<size_t>(x) + column) * 3U;
+                        red += rgb[pixel];
+                        green += rgb[pixel + 1U];
+                        blue += rgb[pixel + 2U];
+                    }
+                }
+                red = (red + 2) / 4;
+                green = (green + 2) / 4;
+                blue = (blue + 2) / 4;
+                chroma[x] =
+                    static_cast<uint8_t>(rgb_to_u(red, green, blue));
+                chroma[x + 1U] =
+                    static_cast<uint8_t>(rgb_to_v(red, green, blue));
+            }
+        }
+    }
+    return true;
 }
 
 std::wstring hresult_error(const wchar_t *operation, HRESULT result) {
@@ -644,16 +751,54 @@ public:
         if (_wfopen_s(&file_, path.c_str(), L"rb") != 0 || !file_)
             return fail(L"Cannot open the selected file");
 
-        int result = hlv1_header_read(file_, &header_);
-        if (result < 0)
-            return fail(L"Invalid HLV header: " + widen_ascii(hlv1_strerror(result)));
+        uint8_t signature[4] = {};
+        if (std::fread(signature, 1, sizeof signature, file_) !=
+                sizeof signature ||
+            _fseeki64(file_, 0, SEEK_SET) != 0) {
+            return fail(L"Cannot read the selected file header");
+        }
+        if (!std::memcmp(signature, "HLV1", 4)) {
+            codec_ = VideoCodec::kHlv;
+            const int result = hlv1_header_read(file_, &header_);
+            if (result < 0) {
+                return fail(L"Invalid HLV header: " +
+                            widen_ascii(hlv1_strerror(result)));
+            }
+        } else if (!std::memcmp(signature, "BPV1", 4)) {
+            codec_ = VideoCodec::kBpv;
+            const int result = bpv1_header_read(file_, &bpv_header_);
+            if (result < 0) {
+                return fail(L"Invalid BPV1 header: " +
+                            widen_ascii(bpv1_strerror(result)));
+            }
+            header_ = {};
+            header_.width = bpv_header_.width;
+            header_.height = bpv_header_.height;
+            header_.fps_num = bpv_header_.fps_num;
+            header_.fps_den = bpv_header_.fps_den;
+            header_.frame_count = bpv_header_.frame_count;
+            header_.gop = bpv_header_.keyframe_interval;
+            header_.version = bpv_header_.version;
+            header_.search_radius = bpv_header_.search_radius;
+        } else {
+            return fail(L"Unsupported video signature; expected HLV1 or BPV1");
+        }
         if (header_.width > 8192 || header_.height > 8192)
             return fail(L"The video dimensions are too large for this player");
+        first_packet_offset_ = _ftelli64(file_);
+        if (first_packet_offset_ < 0)
+            return fail(L"Cannot determine the first video packet offset");
 
         if (!build_seek_index()) return fail(error_);
 
-        decoder_ = hlv1_decoder_create(&header_);
-        if (!decoder_) return fail(L"Cannot allocate the HLV decoder");
+        if (codec_ == VideoCodec::kHlv) {
+            decoder_ = hlv1_decoder_create(&header_);
+            if (!decoder_) return fail(L"Cannot allocate the HLV decoder");
+        } else {
+            bpv_decoder_ = bpv1_decoder_create(&bpv_header_);
+            if (!bpv_decoder_)
+                return fail(L"Cannot allocate the BPV1 decoder");
+        }
 
         std::wstring video_error;
         if (!video_renderer_.open(
@@ -663,7 +808,8 @@ public:
                              L"using double-buffered GDI: " + video_error;
         }
 
-        if (header_.flags & HLV1_FLAG_AUDIO) {
+        if (codec_ == VideoCodec::kHlv &&
+            (header_.flags & HLV1_FLAG_AUDIO)) {
             std::wstring audio_error;
             if (!audio_.open(header_.audio_sample_rate, audio_error)) {
                 audio_warning_ = L"Audio is disabled: " + audio_error;
@@ -673,7 +819,8 @@ public:
         while (ready_.size() < kVideoLeadFrames + 1 && !end_of_file_) {
             if (!decode_one()) return fail(error_);
         }
-        if (ready_.empty()) return fail(L"The HLV file contains no video frames");
+        if (ready_.empty())
+            return fail(L"The selected file contains no video frames");
 
         present_front();
         QueryPerformanceCounter(&clock_start_);
@@ -691,7 +838,7 @@ public:
         if (!warning.empty() && !audio_warning_.empty()) warning += L"\n\n";
         warning += audio_warning_;
         if (!warning.empty()) {
-            MessageBoxW(window_, warning.c_str(), L"HLV Player",
+            MessageBoxW(window_, warning.c_str(), L"Video Player",
                         MB_OK | MB_ICONWARNING);
         }
         return true;
@@ -705,6 +852,10 @@ public:
             hlv1_decoder_destroy(decoder_);
             decoder_ = nullptr;
         }
+        if (bpv_decoder_) {
+            bpv1_decoder_destroy(bpv_decoder_);
+            bpv_decoder_ = nullptr;
+        }
         if (file_) {
             fclose(file_);
             file_ = nullptr;
@@ -714,6 +865,9 @@ public:
         current_ = {};
         seek_index_.clear();
         std::memset(&header_, 0, sizeof header_);
+        std::memset(&bpv_header_, 0, sizeof bpv_header_);
+        codec_ = VideoCodec::kNone;
+        first_packet_offset_ = 0;
         decoded_frames_ = 0;
         presented_frames_ = 0;
         end_of_file_ = false;
@@ -858,7 +1012,7 @@ public:
             RECT text_rect = client;
             text_rect.bottom = text_rect.top + video_height;
             const wchar_t *message = error_.empty()
-                ? L"Open an .hlv file (Ctrl+O) or drag it into this window"
+                ? L"Open an .hlv or .bpv1 file (Ctrl+O), or drag it here"
                 : error_.c_str();
             DrawTextW(target, message, -1, &text_rect,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -997,44 +1151,94 @@ private:
 
     bool build_seek_index() {
         seek_index_.clear();
-        if (_fseeki64(file_, HLV1_HEADER_SIZE, SEEK_SET) != 0) {
-            error_ = L"Cannot seek to the first HLV packet";
+        if (_fseeki64(file_, first_packet_offset_, SEEK_SET) != 0) {
+            error_ = L"Cannot seek to the first video packet";
             return false;
         }
 
         uint64_t last_keyframe = UINT64_MAX;
-        for (;;) {
-            const __int64 offset = _ftelli64(file_);
-            if (offset < 0) {
-                error_ = L"Cannot read the HLV packet position";
+        if (codec_ == VideoCodec::kBpv) {
+            if (_fseeki64(file_, 0, SEEK_END) != 0) {
+                error_ = L"Cannot determine the BPV1 file size";
                 return false;
             }
-            HLV1Packet packet = {};
-            const int result = hlv1_packet_read(file_, &packet);
-            if (result == HLV1_EOF) break;
-            if (result < 0) {
-                error_ = L"Cannot build the seek index at frame " +
-                         std::to_wstring(seek_index_.size()) + L": " +
-                         widen_ascii(hlv1_strerror(result));
+            const __int64 file_end = _ftelli64(file_);
+            if (file_end < first_packet_offset_ ||
+                _fseeki64(file_, first_packet_offset_, SEEK_SET) != 0) {
+                error_ = L"Invalid BPV1 file size";
+                return false;
+            }
+            for (uint32_t frame = 0; frame < bpv_header_.frame_count;
+                 ++frame) {
+                const __int64 offset = _ftelli64(file_);
+                if (offset < 0) {
+                    error_ = L"Cannot read the BPV1 packet position";
+                    return false;
+                }
+                BPV1FrameInfo info = {};
+                const int result =
+                    bpv1_frame_info_read(file_, &bpv_header_, &info);
+                if (result != BPV1_OK) {
+                    error_ = L"Cannot build the BPV1 seek index at frame " +
+                             std::to_wstring(frame) + L": " +
+                             widen_ascii(bpv1_strerror(result));
+                    return false;
+                }
+                if (info.keyframe) last_keyframe = frame;
+                if (last_keyframe == UINT64_MAX) {
+                    error_ = L"The first BPV1 packet is not a keyframe";
+                    return false;
+                }
+                seek_index_.push_back({offset, last_keyframe});
+                const __int64 payload_offset = _ftelli64(file_);
+                if (payload_offset < 0 || payload_offset > file_end ||
+                    static_cast<uint64_t>(info.frame_bytes) >
+                        static_cast<uint64_t>(file_end - payload_offset) ||
+                    _fseeki64(file_, payload_offset + info.frame_bytes,
+                              SEEK_SET) != 0) {
+                    error_ = L"Truncated BPV1 frame " +
+                             std::to_wstring(frame);
+                    return false;
+                }
+            }
+            if (_ftelli64(file_) != file_end) {
+                error_ = L"Trailing data follows the BPV1 stream";
+                return false;
+            }
+        } else {
+            for (;;) {
+                const __int64 offset = _ftelli64(file_);
+                if (offset < 0) {
+                    error_ = L"Cannot read the HLV packet position";
+                    return false;
+                }
+                HLV1Packet packet = {};
+                const int result = hlv1_packet_read(file_, &packet);
+                if (result == HLV1_EOF) break;
+                if (result < 0) {
+                    error_ = L"Cannot build the seek index at frame " +
+                             std::to_wstring(seek_index_.size()) + L": " +
+                             widen_ascii(hlv1_strerror(result));
+                    hlv1_packet_free(&packet);
+                    return false;
+                }
+                if (packet.frame_type == HLV1_FRAME_KEY)
+                    last_keyframe = seek_index_.size();
+                if (last_keyframe == UINT64_MAX) {
+                    error_ = L"The first HLV packet is not a keyframe";
+                    hlv1_packet_free(&packet);
+                    return false;
+                }
+                seek_index_.push_back({offset, last_keyframe});
                 hlv1_packet_free(&packet);
-                return false;
             }
-            if (packet.frame_type == HLV1_FRAME_KEY)
-                last_keyframe = seek_index_.size();
-            if (last_keyframe == UINT64_MAX) {
-                error_ = L"The first HLV packet is not a keyframe";
-                hlv1_packet_free(&packet);
-                return false;
-            }
-            seek_index_.push_back({offset, last_keyframe});
-            hlv1_packet_free(&packet);
         }
         if (seek_index_.empty()) {
-            error_ = L"The HLV file contains no video frames";
+            error_ = L"The selected file contains no video frames";
             return false;
         }
         if (_fseeki64(file_, seek_index_.front().packet_offset, SEEK_SET) != 0) {
-            error_ = L"Cannot rewind the HLV file after indexing";
+            error_ = L"Cannot rewind the video after indexing";
             return false;
         }
         return true;
@@ -1120,16 +1324,24 @@ private:
         audio_.close();
         recycle_queued_frames();
 
-        if (decoder_) hlv1_decoder_destroy(decoder_);
-        decoder_ = hlv1_decoder_create(&header_);
-        if (!decoder_) {
-            error_ = L"Cannot reset the HLV decoder for seeking";
-            return false;
+        if (codec_ == VideoCodec::kBpv) {
+            if (!bpv_decoder_) {
+                error_ = L"The BPV1 decoder is unavailable";
+                return false;
+            }
+            bpv1_decoder_reset(bpv_decoder_);
+        } else {
+            if (decoder_) hlv1_decoder_destroy(decoder_);
+            decoder_ = hlv1_decoder_create(&header_);
+            if (!decoder_) {
+                error_ = L"Cannot reset the HLV decoder for seeking";
+                return false;
+            }
         }
 
         const uint64_t keyframe = seek_index_[target].keyframe_index;
         if (_fseeki64(file_, seek_index_[keyframe].packet_offset, SEEK_SET) != 0) {
-            error_ = L"Cannot seek to the selected HLV keyframe";
+            error_ = L"Cannot seek to the selected video keyframe";
             return false;
         }
         decoded_frames_ = keyframe;
@@ -1142,7 +1354,7 @@ private:
             const uint64_t before = decoded_frames_;
             if (!decode_one(false, false)) return false;
             if (end_of_file_ || decoded_frames_ == before) {
-                error_ = L"The HLV file ended before the selected frame";
+                error_ = L"The video ended before the selected frame";
                 return false;
             }
         }
@@ -1152,7 +1364,7 @@ private:
             if (!decode_one(true, true)) return false;
         }
         if (ready_.empty()) {
-            error_ = L"The selected HLV frame could not be decoded";
+            error_ = L"The selected video frame could not be decoded";
             return false;
         }
         present_front();
@@ -1187,12 +1399,51 @@ private:
         error_ = saved_error;
         update_title();
         InvalidateRect(window_, nullptr, FALSE);
-        MessageBoxW(window_, error_.c_str(), L"HLV Player",
+        MessageBoxW(window_, error_.c_str(), L"Video Player",
                     MB_OK | MB_ICONERROR);
         return false;
     }
 
     bool decode_one(bool queue_video = true, bool queue_audio = true) {
+        if (codec_ == VideoCodec::kBpv) {
+            BPV1Packet packet = {};
+            int result =
+                bpv1_decoder_read_packet(bpv_decoder_, file_, &packet);
+            if (result == BPV1_EOF) {
+                end_of_file_ = true;
+                return true;
+            }
+            if (result < 0) {
+                error_ = L"BPV1 packet read failed: " +
+                         widen_ascii(bpv1_strerror(result));
+                return false;
+            }
+
+            const BPV1Frame *decoded = nullptr;
+            result = bpv1_decoder_decode(bpv_decoder_, &packet, &decoded);
+            if (result < 0) {
+                error_ = L"BPV1 frame " +
+                         std::to_wstring(decoded_frames_) +
+                         L" failed to decode: " +
+                         widen_ascii(bpv1_strerror(result));
+                return false;
+            }
+            if (queue_video) {
+                VideoFrame output;
+                if (!recycled_.empty()) {
+                    output = std::move(recycled_.back());
+                    recycled_.pop_back();
+                }
+                if (!convert_bpv_frame(&bpv_header_, decoded, output)) {
+                    error_ = L"Cannot render the decoded BPV1 frame";
+                    return false;
+                }
+                ready_.push_back(std::move(output));
+            }
+            ++decoded_frames_;
+            return true;
+        }
+
         HLV1Packet packet = {};
         int result = hlv1_packet_read(file_, &packet);
         if (result == HLV1_EOF) {
@@ -1269,7 +1520,7 @@ private:
         audio_.close();
         finished_ = true;
         update_title();
-        MessageBoxW(window_, error_.c_str(), L"HLV Player",
+        MessageBoxW(window_, error_.c_str(), L"Video Player",
                     MB_OK | MB_ICONERROR);
     }
 
@@ -1280,7 +1531,7 @@ private:
     }
 
     void update_title() const {
-        std::wstring title = L"HLV Player";
+        std::wstring title = L"HLV/BPV Player";
         if (!path_.empty()) title += L" - " + file_name(path_);
         if (loaded_) {
             title += L" [";
@@ -1299,7 +1550,10 @@ private:
     HWND time_label_ = nullptr;
     FILE *file_ = nullptr;
     HLV1Decoder *decoder_ = nullptr;
+    BPV1Decoder *bpv_decoder_ = nullptr;
     HLV1Header header_ = {};
+    BPV1Header bpv_header_ = {};
+    VideoCodec codec_ = VideoCodec::kNone;
     AudioOutput audio_;
     D3DVideoRenderer video_renderer_;
     std::deque<VideoFrame> ready_;
@@ -1315,6 +1569,7 @@ private:
     LARGE_INTEGER pause_started_ = {};
     uint64_t decoded_frames_ = 0;
     uint64_t presented_frames_ = 0;
+    __int64 first_packet_offset_ = 0;
     int seek_range_max_ = 0;
     bool loaded_ = false;
     bool paused_ = false;
@@ -1331,7 +1586,11 @@ std::wstring choose_file(HWND owner) {
     OPENFILENAMEW dialog = {};
     dialog.lStructSize = sizeof dialog;
     dialog.hwndOwner = owner;
-    dialog.lpstrFilter = L"HLV video (*.hlv)\0*.hlv\0All files (*.*)\0*.*\0\0";
+    dialog.lpstrFilter =
+        L"HLV/BPV video (*.hlv;*.bpv1)\0*.hlv;*.bpv1\0"
+        L"HLV video (*.hlv)\0*.hlv\0"
+        L"BPV1 video (*.bpv1)\0*.bpv1\0"
+        L"All files (*.*)\0*.*\0\0";
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
@@ -1436,14 +1695,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message,
 int check_file(const wchar_t *path) {
     FILE *file = nullptr;
     if (_wfopen_s(&file, path, L"rb") != 0 || !file) return 1;
-    HLV1Header header = {};
-    int result = hlv1_header_read(file, &header);
-    if (result < 0) {
-        fclose(file);
-        return 1;
-    }
-    HLV1Decoder *decoder = hlv1_decoder_create(&header);
-    if (!decoder) {
+    uint8_t signature[4] = {};
+    if (std::fread(signature, 1, sizeof signature, file) !=
+            sizeof signature ||
+        _fseeki64(file, 0, SEEK_SET) != 0) {
         fclose(file);
         return 1;
     }
@@ -1452,44 +1707,92 @@ int check_file(const wchar_t *path) {
     uint64_t audio_bytes = 0;
     uint64_t checksum = UINT64_C(14695981039346656037);
     VideoFrame converted;
-    for (;;) {
-        HLV1Packet packet = {};
-        result = hlv1_packet_read(file, &packet);
-        if (result == HLV1_EOF) break;
-        if (result < 0) {
-            hlv1_packet_free(&packet);
-            break;
-        }
-        const HLV1Frame *frame = nullptr;
-        result = hlv1_decoder_decode(decoder, &packet, &frame);
-        if (result < 0) {
-            hlv1_packet_free(&packet);
-            break;
-        }
-        const size_t audio_size = hlv1_packet_audio_size(&packet);
-        if (audio_size && !hlv1_packet_audio_data(&packet)) {
-            result = HLV1_ERR_FORMAT;
-            hlv1_packet_free(&packet);
-            break;
-        }
-        audio_bytes += audio_size;
-        convert_frame(frame, converted);
-        for (uint32_t pixel : converted.pixels) {
-            checksum ^= pixel;
-            checksum *= UINT64_C(1099511628211);
-        }
-        ++frames;
-        hlv1_packet_free(&packet);
-    }
+    const char *label = nullptr;
+    bool valid = false;
 
-    hlv1_decoder_destroy(decoder);
+    if (!std::memcmp(signature, "HLV1", 4)) {
+        HLV1Header header = {};
+        int result = hlv1_header_read(file, &header);
+        HLV1Decoder *decoder =
+            result < 0 ? nullptr : hlv1_decoder_create(&header);
+        if (!decoder) {
+            fclose(file);
+            return 1;
+        }
+        for (;;) {
+            HLV1Packet packet = {};
+            result = hlv1_packet_read(file, &packet);
+            if (result == HLV1_EOF) break;
+            if (result < 0) {
+                hlv1_packet_free(&packet);
+                break;
+            }
+            const HLV1Frame *frame = nullptr;
+            result = hlv1_decoder_decode(decoder, &packet, &frame);
+            if (result < 0) {
+                hlv1_packet_free(&packet);
+                break;
+            }
+            const size_t audio_size = hlv1_packet_audio_size(&packet);
+            if (audio_size && !hlv1_packet_audio_data(&packet)) {
+                result = HLV1_ERR_FORMAT;
+                hlv1_packet_free(&packet);
+                break;
+            }
+            audio_bytes += audio_size;
+            convert_frame(frame, converted);
+            for (uint32_t pixel : converted.pixels) {
+                checksum ^= pixel;
+                checksum *= UINT64_C(1099511628211);
+            }
+            ++frames;
+            hlv1_packet_free(&packet);
+        }
+        valid = result == HLV1_EOF;
+        label = "HLV";
+        hlv1_decoder_destroy(decoder);
+    } else if (!std::memcmp(signature, "BPV1", 4)) {
+        BPV1Header header = {};
+        int result = bpv1_header_read(file, &header);
+        BPV1Decoder *decoder =
+            result < 0 ? nullptr : bpv1_decoder_create(&header);
+        if (!decoder) {
+            fclose(file);
+            return 1;
+        }
+        for (uint32_t index = 0; index < header.frame_count; ++index) {
+            BPV1Packet packet = {};
+            const BPV1Frame *frame = nullptr;
+            result = bpv1_decoder_read_packet(decoder, file, &packet);
+            if (result == BPV1_OK)
+                result = bpv1_decoder_decode(decoder, &packet, &frame);
+            if (result != BPV1_OK || !frame ||
+                !convert_bpv_frame(&header, frame, converted)) {
+                if (result == BPV1_OK) result = BPV1_ERR_DECODE;
+                break;
+            }
+            for (uint32_t pixel : converted.pixels) {
+                checksum ^= pixel;
+                checksum *= UINT64_C(1099511628211);
+            }
+            ++frames;
+        }
+        if (result == BPV1_OK) {
+            BPV1Packet trailing = {};
+            result = bpv1_decoder_read_packet(decoder, file, &trailing);
+        }
+        valid = result == BPV1_EOF && frames == header.frame_count;
+        label = "BPV1";
+        bpv1_decoder_destroy(decoder);
+    }
     fclose(file);
-    if (result != HLV1_EOF) return 1;
+    if (!valid || !label) return 1;
 
     char output[256] = {};
     const int length = std::snprintf(
         output, sizeof output,
-        "HLV check OK: %llu frames, %llu audio bytes, checksum %016llx\r\n",
+        "%s check OK: %llu frames, %llu audio bytes, checksum %016llx\r\n",
+        label,
         static_cast<unsigned long long>(frames),
         static_cast<unsigned long long>(audio_bytes),
         static_cast<unsigned long long>(checksum));
@@ -1540,7 +1843,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     RECT window_rect = {0, 0, 640, 480};
     AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, TRUE);
     HWND window = CreateWindowExW(
-        0, kWindowClass, L"HLV Player", WS_OVERLAPPEDWINDOW,
+        0, kWindowClass, L"HLV/BPV Player", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         window_rect.right - window_rect.left,
         window_rect.bottom - window_rect.top,

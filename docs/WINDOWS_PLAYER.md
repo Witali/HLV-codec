@@ -1,13 +1,14 @@
-# Native Windows HLV player
+# Native Windows HLV/BPV player
 
-`hlvplay.exe` is a dependency-free Windows desktop player for HLV-1 files. It
-uses the codec sources in this repository, a D3D11 video processor and a
-two-buffer DXGI flip swap chain for video presentation, and the Windows
-`waveOut` API for unsigned 8-bit mono PCM. Decoded YUV 4:2:0 frames are uploaded
-as NV12; the GPU performs colour conversion and scaling. If D3D11
-initialisation or presentation fails, the player automatically switches to a
-double-buffered GDI path. No FFmpeg, codec pack or third-party runtime DLL is
-required for playback.
+`hlvplay.exe` is a dependency-free Windows desktop player for HLV-1 and BPV1
+v1/v2 files. It uses the portable codec sources in this repository, a D3D11
+video processor and a two-buffer DXGI flip swap chain for presentation, and
+the Windows `waveOut` API for HLV unsigned 8-bit mono PCM. HLV YUV and decoded
+BPV palette blocks are prepared as NV12 plus BGRA; the GPU performs colour
+conversion and scaling. If D3D11 initialisation or presentation fails, the
+player automatically switches to double-buffered GDI. BPV1 is video-only, so
+`.bpv1` playback uses the high-resolution frame timer without opening audio.
+No FFmpeg, codec pack or third-party runtime DLL is required.
 
 ## Setup and build
 
@@ -36,6 +37,7 @@ Open a file from PowerShell:
 
 ```powershell
 .\build\msvc\hlvplay.exe .\out\video.hlv
+.\build\msvc\hlvplay.exe .\out\video.bpv1
 ```
 
 The player also accepts files through **File > Open** and drag-and-drop.
@@ -54,13 +56,14 @@ the HLV frame-rate fraction and a high-resolution Windows clock. Audio is
 queued in eight reusable `waveOut` buffers. The image remains centred and its
 aspect ratio is never distorted.
 
-When a file is opened, the player validates its packets and builds a compact
-frame-to-keyframe index. A seek starts at the nearest preceding keyframe,
-decodes dependent P-frames without presenting them, then displays the selected
-frame and restarts the audio queue from the matching packet. Seeking while
-paused preserves the paused state. Files whose header has a streaming
-`frame_count=0` are also seekable because the local index uses the actual
-packet count.
+When a file is opened, the player validates its packet layout and builds a
+compact frame-to-keyframe index. A seek starts at the nearest preceding
+keyframe, decodes dependent frames without presenting them, then displays the
+selected frame. HLV audio restarts from the matching packet; BPV has no audio.
+Seeking while paused preserves the paused state. HLV files whose header has a
+streaming `frame_count=0` remain seekable because their local index uses the
+actual packet count. BPV indexing also rejects truncated frames and bytes
+following the declared frame count.
 
 The window title reports the active presentation path:
 
@@ -73,13 +76,15 @@ The window title reports the active presentation path:
 
 ## File verification
 
-The headless check path decodes every packet, validates its audio tail and
-prepares every frame through the same YUV-to-NV12/BGRA conversion routine used
-by the window. Its deterministic checksum is calculated from the BGRA result:
+The headless check path decodes every packet and prepares every frame through
+the same NV12/BGRA conversion routines used by the window. For HLV it also
+validates every audio tail. Its deterministic checksum is calculated from the
+BGRA result:
 
 ```powershell
 .\build\msvc\hlvplay.exe --check .\out\video.hlv
-if ($LASTEXITCODE -ne 0) { throw "HLV validation failed" }
+.\build\msvc\hlvplay.exe --check .\out\video.bpv1
+if ($LASTEXITCODE -ne 0) { throw "Video validation failed" }
 ```
 
 The headless check still performs a complete independent sequential decode;

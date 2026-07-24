@@ -57,18 +57,23 @@ bool validFilename(const char *filename) {
             character == '.' || character == '_' || character == '-';
         if (!valid) return false;
     }
-    if (length < 5) return false;
-    const char *extension = filename + length - 4;
-    if (extension[0] != '.') return false;
-    const auto same = [](char value, char lower) {
-        return value == lower || value == lower - ('a' - 'A');
+    const auto endsWith = [filename, length](const char *suffix) {
+        const size_t suffix_length = std::strlen(suffix);
+        if (suffix_length > length) return false;
+        const char *value = filename + length - suffix_length;
+        for (size_t index = 0; index < suffix_length; ++index) {
+            char left = value[index];
+            char right = suffix[index];
+            if (left >= 'A' && left <= 'Z')
+                left = static_cast<char>(left - 'A' + 'a');
+            if (right >= 'A' && right <= 'Z')
+                right = static_cast<char>(right - 'A' + 'a');
+            if (left != right) return false;
+        }
+        return true;
     };
-    return (same(extension[1], 'h') && same(extension[2], 'l') &&
-            same(extension[3], 'v')) ||
-           (same(extension[1], 'a') && same(extension[2], 'v') &&
-            same(extension[3], 'i')) ||
-           (same(extension[1], 't') && same(extension[2], 'x') &&
-            same(extension[3], 't'));
+    return endsWith(".hlv") || endsWith(".avi") ||
+           endsWith(".bpv1") || endsWith(".txt");
 }
 
 bool supportedDataBaud(uint32_t baud) {

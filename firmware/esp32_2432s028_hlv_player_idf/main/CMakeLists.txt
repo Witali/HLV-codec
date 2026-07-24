@@ -19,11 +19,13 @@ else()
         SRCS
             "hlv_player.cpp"
             "cyd_display.cpp"
+            "bpv_esp32_decoder.cpp"
             "hlv_esp32_decoder.cpp"
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
         INCLUDE_DIRS "."
         REQUIRES
+            bpv1
             hlv1
             esp_driver_dac
             esp_driver_gpio

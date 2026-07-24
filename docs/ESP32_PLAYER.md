@@ -8,13 +8,16 @@ DAC GPIO26.
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
-- decodes HLV-1 stream versions 1 through 13 or standard AVI/MJPEG;
+- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, or BPV1
+  stream versions 1 and 2;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts YUV420 to RGB565 in 16-row strips, without a full RGB framebuffer;
+- converts HLV YUV420 or BPV palette blocks to RGB565 in 16-row strips,
+  without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a 16 KiB aligned stdio read-ahead
-  buffer, then fills nine reusable 7680-byte packet blocks (67.5 KiB total);
+  buffer; HLV then fills nine reusable 7680-byte packet blocks (67.5 KiB
+  total), while BPV uses one bounded maximum-frame packet buffer;
 - writes the ST7789 on the independent SPI2/HSPI bus using two alternating
   320x16 DMA strips, overlapping conversion with transfer;
 - decodes frame N on CPU1 while CPU0 converts and queues frame N-1 for the
@@ -50,8 +53,8 @@ the audio task are created only after the large decoder frames and packet pool.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
 
-Playback timing comes from `fps_num/fps_den` in the HLV sequence header. With
-audio, the exact rational frame index is converted to a target PCM sample
+Playback timing comes from `fps_num/fps_den` in the active format header. With
+HLV or MJPEG audio, the exact rational frame index is converted to a target PCM sample
 position and the DAC sample counter is the master clock. Without audio, the
 ESP timer advances by the quotient and remainder of
 `1,000,000 * fps_den / fps_num`, so fractional rates do not accumulate
@@ -215,6 +218,22 @@ its aspect ratio and native frame rate preserved:
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
     -InputFile .\out\BigBuckBunny_1080p_mjpeg_q5_native-fps_320x180.avi
 ```
+
+For BPV1, the corresponding script uses the same approved 1080p source,
+preserves native 24 fps and writes video-only BPV1 v2:
+
+```powershell
+.\scripts\encode_big_buck_bunny_bpv.ps1
+.\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
+    -InputFile .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
+```
+
+The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
+block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
+complete allocation is about 105 KiB. It renders source rows directly into
+the two existing display DMA strips, so no 115,200-byte RGB565 frame is
+allocated. BPV1 contains no audio, and playback therefore uses the rational
+ESP timer clock.
 
 ### Big Buck Bunny example
 

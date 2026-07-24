@@ -1,13 +1,15 @@
 # Multi-codec player for ESP32-2432S028 — pure ESP-IDF
 
-This is a self-contained ESP-IDF 5.5.5 project for the two-USB CYD board. It
-does not use Arduino, LovyanGFX or globally installed Espressif tools.
-The application supports HLV-1 and standard AVI/MJPEG with PCM_U8 audio.
+This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
+does not use Arduino, LovyanGFX or globally installed Espressif tools. The
+application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, and
+video-only BPV1 v1/v2.
 
 The only application components are:
 
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
-- `hlv1`: a vendored decoder-only snapshot of the portable HLV codec.
+- `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
+- `bpv1`: the shared portable BPV decoder from `codecs/bpv`.
 
 `MINIMAL_BUILD` in `CMakeLists.txt` admits only their transitive ESP-IDF
 dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
@@ -21,7 +23,7 @@ strips. Predictive P-frames are never decoded out of order. Dual-core mode
 cannot add the 8 KiB RTC Fast RAM to the heap. Slow exception-emulated byte
 access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
-`main` and `hlv1` components explicitly use `-O3`.
+`main`, `hlv1` and `bpv1` components explicitly use `-O3`.
 
 ## Build and flash
 
@@ -46,6 +48,16 @@ normal application mode, and run:
 .\upload-video.ps1 -Port COM8 -File ..\..\out\play.txt
 ```
 
+BPV1 uses the same upload path:
+
+```powershell
+.\upload-video.ps1 -Port COM8 `
+    -File ..\..\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1 `
+    -Name bunny.bpv1
+Set-Content play.txt "bunny.bpv1" -Encoding ascii
+.\upload-video.ps1 -Port COM8 -File play.txt
+```
+
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The control handshake uses 460800 baud and block data uses
@@ -61,7 +73,7 @@ Set-Content play.txt "clip.avi" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
-Names are ASCII, end in `.hlv`, `.avi` or `.txt`, and are at most 48
+Names are ASCII, end in `.hlv`, `.avi`, `.bpv1` or `.txt`, and are at most 48
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
@@ -124,10 +136,10 @@ V,width,height,fps_num,fps_den,audio_rate,frame_count
 F,1,540,18320,26740,45600,108220
 ```
 
-The `V` record comes directly from the HLV sequence header. The collector uses
-its rational `fps_num/fps_den` value to calculate the work budget instead of
-assuming 15 fps. It also prints the observed decoded-frame cadence and counts
-late display transfers omitted by the real-time mode.
+The `V` record comes from the active HLV, AVI or BPV sequence metadata. The
+collector uses its rational `fps_num/fps_den` value to calculate the work
+budget instead of assuming 15 fps. It also prints the observed decoded-frame
+cadence and counts late display transfers omitted by the real-time mode.
 
 `work_us` is the sum of packet read, decode and render work. `present_us`
 measures presentation from entry through A/V-clock waiting and display
@@ -215,12 +227,17 @@ display DMA timing.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a 16 KiB aligned read-ahead buffer. HLV uses nine
   reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
-  JPEG chunk size plus one reusable 320x180 RGB565 frame.
+  JPEG chunk size plus one reusable 320x180 RGB565 frame; BPV uses one bounded
+  maximum-size packet buffer.
 - Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
   138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
-  Stream v13 literal blocks are copied directly into this packed storage.
+  Stream v13 literal blocks are copied directly into this packed storage. BPV
+  instead retains two 32,400-byte block-record frames plus its bounded
+  dictionaries; the complete BPV decoder allocation is about 105 KiB at
+  320x180 and has no full RGB frame.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues. Only frame descriptors cross cores,
+  reader and two one-entry decode queues for HLV. MJPEG and BPV use the
+  sequential CPU0 path. Only frame descriptors cross cores in the HLV path,
   so no YUV frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
