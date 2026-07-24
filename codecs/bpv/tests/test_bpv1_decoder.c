@@ -353,6 +353,7 @@ int main(int argc, char **argv) {
         const BPV1Frame *frame = NULL;
         uint8_t row[12];
         uint16_t row565[4];
+        uint16_t rows565[16];
         int x;
         if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
             bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
@@ -360,7 +361,9 @@ int main(int argc, char **argv) {
             bpv1_frame_render_rgb24_row(
                 &header, frame, 0, row, sizeof row) != BPV1_OK ||
             bpv1_frame_render_rgb565_row(
-                &header, frame, 0, row565, 4) != BPV1_OK) {
+                &header, frame, 0, row565, 4) != BPV1_OK ||
+            bpv1_frame_render_rgb565_rows(
+                &header, frame, 0, 4, rows565, 4, 16) != BPV1_OK) {
             fprintf(stderr, "BPV1 frame %d failed\n", frame_index);
             goto cleanup;
         }
@@ -368,6 +371,12 @@ int main(int argc, char **argv) {
             if (row[x * 3] != 255 || row[x * 3 + 1] != 0 ||
                 row[x * 3 + 2] != 0 || row565[x] != 0xf800) {
                 fprintf(stderr, "BPV1 rendered pixel mismatch\n");
+                goto cleanup;
+            }
+        }
+        for (x = 0; x < 16; ++x) {
+            if (rows565[x] != 0xf800) {
+                fprintf(stderr, "BPV1 multi-row rendered pixel mismatch\n");
                 goto cleanup;
             }
         }

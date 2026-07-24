@@ -102,30 +102,28 @@ static_assert(player_settings::kAudioPrerollFrames > 0,
 static_assert(player_settings::kMaxConsecutiveVideoSkips > 0,
               "Hybrid A/V sync must permit at least one video skip");
 
-enum class DecodeCodec {
-    kHlv,
-    kMpeg1,
-};
-
-struct DecodeRequest {
-    DecodeCodec codec;
-    const HLV1Packet *packet;
-};
-
-struct DecodeResult {
-    int result;
-    const HLV1Frame *frame;
-    plm_frame_t mpeg_frame;
-    bool has_mpeg_frame;
-    uint32_t decode_us;
-};
-
 enum class VideoCodec {
     kNone,
     kHlv,
     kMjpeg,
     kBpv,
     kMpeg1,
+};
+
+struct DecodeRequest {
+    VideoCodec codec;
+    const HLV1Packet *hlv_packet;
+    const BPV1Packet *bpv_packet;
+};
+
+struct DecodeResult {
+    VideoCodec codec;
+    int result;
+    const HLV1Frame *hlv_frame;
+    const BPV1Frame *bpv_frame;
+    plm_frame_t mpeg_frame;
+    bool has_mpeg_frame;
+    uint32_t decode_us;
 };
 
 CydDisplay display;
@@ -198,6 +196,8 @@ bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame{};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
+BPV1Frame pending_bpv_frame{};
+bool pending_bpv_frame_valid = false;
 uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
@@ -216,8 +216,9 @@ void decodeTask(void *) {
             continue;
         }
         DecodeResult result{};
+        result.codec = request.codec;
         const int64_t start = microsNow();
-        if (request.codec == DecodeCodec::kMpeg1) {
+        if (request.codec == VideoCodec::kMpeg1) {
             plm_frame_t *frame =
                 mpeg_video ? plm_decode_video(mpeg_video) : nullptr;
             if (frame) {
@@ -225,8 +226,14 @@ void decodeTask(void *) {
                 result.has_mpeg_frame = true;
             }
             result.result = HLV1_OK;
+        } else if (request.codec == VideoCodec::kHlv) {
+            result.result =
+                decoder.decode(request.hlv_packet, &result.hlv_frame);
+        } else if (request.codec == VideoCodec::kBpv) {
+            result.result =
+                bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
         } else {
-            result.result = decoder.decode(request.packet, &result.frame);
+            result.result = HLV1_ERR_ARGUMENT;
         }
         result.decode_us = static_cast<uint32_t>(microsNow() - start);
         xQueueSend(decode_result_queue, &result, portMAX_DELAY);
@@ -264,7 +271,7 @@ bool startDecodeWorker() {
 
 bool submitDecode(const HLV1Packet *packet) {
     if (!decode_task_handle || decode_in_flight || !packet) return false;
-    DecodeRequest request{DecodeCodec::kHlv, packet};
+    DecodeRequest request{VideoCodec::kHlv, packet, nullptr};
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -272,7 +279,15 @@ bool submitDecode(const HLV1Packet *packet) {
 
 bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
-    DecodeRequest request{DecodeCodec::kMpeg1, nullptr};
+    DecodeRequest request{VideoCodec::kMpeg1, nullptr, nullptr};
+    if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
+    decode_in_flight = true;
+    return true;
+}
+
+bool submitBpvDecode(const BPV1Packet *packet) {
+    if (!decode_task_handle || decode_in_flight || !packet) return false;
+    DecodeRequest request{VideoCodec::kBpv, nullptr, packet};
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -1003,6 +1018,7 @@ void closeVideo() {
     }
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
+    pending_bpv_frame_valid = false;
     pending_read_us = 0;
     pending_decode_us = 0;
     stopAudio();
@@ -1293,6 +1309,12 @@ bool openVideo() {
                  bpv_header.audio_sample_rate,
                  static_cast<unsigned>(bpv_decoder.memoryBytes()),
                  static_cast<unsigned>(bpv_decoder.packetCapacity()));
+        if (!startDecodeWorker()) {
+            showStatus("Dual-core init failed",
+                       "cannot create CPU1 decoder task");
+            closeVideo();
+            return false;
+        }
     } else {
         const int header_result =
             hlv1_header_read(video_file, &sequence_header);
@@ -1669,13 +1691,11 @@ bool renderBpvFrame(const BPV1Frame *frame) {
         const int rows = std::min(kRowsPerTransfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
-        for (int row = 0; row < rows; ++row) {
-            if (bpv1_frame_render_rgb565_row(
-                    &bpv_header, frame,
-                    static_cast<uint16_t>(y0 + row),
-                    pixels + row * width, width) != BPV1_OK) {
-                return false;
-            }
+        if (bpv1_frame_render_rgb565_rows(
+                &bpv_header, frame, static_cast<uint16_t>(y0),
+                static_cast<uint16_t>(rows), pixels, width,
+                static_cast<size_t>(width) * rows) != BPV1_OK) {
+            return false;
         }
         if (display.drawBitmap(x_offset, y_offset + y0, width, rows,
                                pixels) != ESP_OK) {
@@ -2093,7 +2113,7 @@ void playOneMjpegFrame() {
     finishPresentation(presentation, read_us, decode_us, render_us);
 }
 
-void playOneBpvFrame() {
+void playOneBpvFrameSequential() {
     BPV1Packet packet{};
     const int64_t read_start = microsNow();
     const int packet_result =
@@ -2121,6 +2141,82 @@ void playOneBpvFrame() {
     if (!presentBpvFrame(frame, read_us, decode_us)) {
         failPlayback("Display DMA error", BPV1_ERR_IO);
     }
+}
+
+void playOneBpvFramePipelined() {
+    BPV1Packet packet{};
+    const int64_t read_start = microsNow();
+    const int packet_result =
+        bpv_decoder.readPacket(video_file, &packet);
+    const uint32_t read_us =
+        static_cast<uint32_t>(microsNow() - read_start);
+    if (packet_result == BPV1_EOF) {
+        if (pending_bpv_frame_valid) {
+            const bool rendered =
+                presentBpvFrame(&pending_bpv_frame, pending_read_us,
+                                pending_decode_us);
+            pending_bpv_frame_valid = false;
+            if (!rendered) {
+                failPlayback("Display DMA error", BPV1_ERR_IO);
+                return;
+            }
+        }
+        finishVideoLoop();
+        return;
+    }
+    if (packet_result != BPV1_OK) {
+        failPlayback("BPV1 packet error", packet_result);
+        return;
+    }
+
+    bool rendered = true;
+    // BPV v4 replaces the active palette at every keyframe. Finish using the
+    // preceding palette before CPU1 starts changing it. Between keyframes the
+    // decoder's two block arrays already provide safe zero-copy ping-pong
+    // storage: CPU0 reads the previous array while CPU1 writes the current one.
+    if (pending_bpv_frame_valid && packet.info.keyframe &&
+        bpv_header.version == BPV1_VERSION) {
+        rendered =
+            presentBpvFrame(&pending_bpv_frame, pending_read_us,
+                            pending_decode_us);
+        pending_bpv_frame_valid = false;
+    }
+
+    if (rendered && !submitBpvDecode(&packet)) {
+        failPlayback("BPV1 decode pipeline error", BPV1_ERR_IO);
+        return;
+    }
+
+    if (rendered && pending_bpv_frame_valid) {
+        rendered =
+            presentBpvFrame(&pending_bpv_frame, pending_read_us,
+                            pending_decode_us);
+        pending_bpv_frame_valid = false;
+    }
+
+    DecodeResult result{};
+    const bool received = rendered && waitDecode(&result);
+    if (!rendered) {
+        if (decode_in_flight) {
+            DecodeResult ignored{};
+            waitDecode(&ignored);
+        }
+        failPlayback("Display DMA error", BPV1_ERR_IO);
+        return;
+    }
+    if (!received) {
+        failPlayback("BPV1 decode pipeline error", BPV1_ERR_IO);
+        return;
+    }
+    if (result.codec != VideoCodec::kBpv ||
+        result.result != BPV1_OK || !result.bpv_frame) {
+        failPlayback("BPV1 decode error", result.result);
+        return;
+    }
+    pending_bpv_frame = *result.bpv_frame;
+    pending_read_us = read_us;
+    pending_decode_us = result.decode_us;
+    pending_bpv_frame_valid = true;
 }
 
 void playOneFramePipelined() {
@@ -2168,11 +2264,12 @@ void playOneFramePipelined() {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    if (result.result != HLV1_OK) {
+    if (result.codec != VideoCodec::kHlv ||
+        result.result != HLV1_OK || !result.hlv_frame) {
         failPlayback("Decode error", result.result);
         return;
     }
-    pending_frame = *result.frame;
+    pending_frame = *result.hlv_frame;
     pending_read_us = read_us;
     pending_decode_us = result.decode_us;
     pending_frame_valid = true;
@@ -2251,7 +2348,11 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kBpv &&
             bpv_decoder.ready()) {
-            playOneBpvFrame();
+            if (player_settings::kUseDualCorePipeline) {
+                playOneBpvFramePipelined();
+            } else {
+                playOneBpvFrameSequential();
+            }
             continue;
         }
         if (video_file && video_codec == VideoCodec::kHlv &&
