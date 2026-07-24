@@ -156,6 +156,10 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
+int32_t mpeg_red_add[kScreenWidth / 2];
+int32_t mpeg_green_add[kScreenWidth / 2];
+int32_t mpeg_blue_add[kScreenWidth / 2];
+int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
 alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
@@ -1543,47 +1547,67 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, uint16_t *output, int output_width) {
     const uint8_t *y_row =
         frame->y.data + static_cast<size_t>(source_y) * frame->y.stride;
+    const int chroma_y = source_y >> 1;
     const uint8_t *cb_row =
         frame->cb.data +
-        static_cast<size_t>(source_y >> 1) * frame->cb.stride;
+        static_cast<size_t>(chroma_y) * frame->cb.stride;
     const uint8_t *cr_row =
         frame->cr.data +
-        static_cast<size_t>(source_y >> 1) * frame->cr.stride;
+        static_cast<size_t>(chroma_y) * frame->cr.stride;
+    const int chroma_width =
+        (static_cast<int>(frame->width) + 1) >> 1;
     if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
         unpackMpegSamples(y_row, 0, 6, native_y_row,
                           static_cast<int>(frame->width));
-        const int chroma_width =
-            (static_cast<int>(frame->width) + 1) >> 1;
-        unpackMpegSamples(cb_row, 0, 5, native_u_row, chroma_width);
-        unpackMpegSamples(cr_row, 0, 5, native_v_row, chroma_width);
         y_row = native_y_row;
-        cb_row = native_u_row;
-        cr_row = native_v_row;
     }
-    int previous_chroma_x = -1;
-    int red_add = 0;
-    int green_add = 0;
-    int blue_add = 0;
-    for (int destination_x = 0;
-         destination_x < output_width; ++destination_x) {
-        const int source_x =
-            scaled ? scaled_x_map[destination_x] : destination_x;
-        const int chroma_x = source_x >> 1;
-        if (chroma_x != previous_chroma_x) {
+
+    if (chroma_y != mpeg_cached_chroma_y) {
+        if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
+            unpackMpegSamples(cb_row, 0, 5, native_u_row, chroma_width);
+            unpackMpegSamples(cr_row, 0, 5, native_v_row, chroma_width);
+            cb_row = native_u_row;
+            cr_row = native_v_row;
+        }
+        for (int chroma_x = 0; chroma_x < chroma_width; ++chroma_x) {
             const int cb = static_cast<int>(cb_row[chroma_x]) - 128;
             const int cr = static_cast<int>(cr_row[chroma_x]) - 128;
-            red_add = 409 * cr + 128;
-            green_add = -100 * cb - 208 * cr + 128;
-            blue_add = 516 * cb + 128;
-            previous_chroma_x = chroma_x;
+            mpeg_red_add[chroma_x] = 409 * cr + 128;
+            mpeg_green_add[chroma_x] = -100 * cb - 208 * cr + 128;
+            mpeg_blue_add[chroma_x] = 516 * cb + 128;
         }
-        output[destination_x] =
-            yuvToRgb565(y_row[source_x], red_add, green_add, blue_add);
+        mpeg_cached_chroma_y = chroma_y;
+    }
+
+    if (!scaled) {
+        for (int source_x = 0; source_x < output_width; source_x += 2) {
+            const int chroma_x = source_x >> 1;
+            const int red_add = mpeg_red_add[chroma_x];
+            const int green_add = mpeg_green_add[chroma_x];
+            const int blue_add = mpeg_blue_add[chroma_x];
+            output[source_x] = yuvToRgb565(
+                y_row[source_x], red_add, green_add, blue_add);
+            if (source_x + 1 < output_width) {
+                output[source_x + 1] = yuvToRgb565(
+                    y_row[source_x + 1], red_add, green_add, blue_add);
+            }
+        }
+        return;
+    }
+
+    for (int destination_x = 0;
+         destination_x < output_width; ++destination_x) {
+        const int source_x = scaled_x_map[destination_x];
+        const int chroma_x = source_x >> 1;
+        output[destination_x] = yuvToRgb565(
+            y_row[source_x], mpeg_red_add[chroma_x],
+            mpeg_green_add[chroma_x], mpeg_blue_add[chroma_x]);
     }
 }
 
 bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
+    mpeg_cached_chroma_y = -1;
     if (player_settings::kScaleVideoToDisplay) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight;

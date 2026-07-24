@@ -85,6 +85,24 @@ memory-safe but not real-time at 30 fps on this board. Moving the hot decoder
 path to IRAM improved decode time by only about 0.5% while consuming 19.6 KiB
 of IRAM, so that experiment was not retained.
 
+### Chroma-row reuse
+
+Each YUV420 chroma row belongs to two adjacent luma rows. The compact render
+path previously unpacked the same Cb/Cr row and recalculated its RGB
+contributions for both luma rows. It now keeps the unpacked row and its three
+conversion terms until the chroma-row index changes. At 320x240 this avoids
+38,400 packed-sample iterations and 76,800 integer multiplications per frame.
+The cache consumes 1,936 bytes of DRAM; 132,276 bytes remain available in the
+linked firmware.
+
+Two physical 120-frame runs measured 29.59 and 29.60 ms average render time,
+versus 35.70--35.85 ms before the change. Total measured per-frame work fell
+from 98.13--99.57 ms to 90.92--90.96 ms, and both runs retained all 120 frame
+sequence records. Since video decoding and rendering use different cores, the
+end-to-end decoded rate improved more modestly, from 15.08--15.39 to
+15.67 frames/s, while CPU0 gained substantially more time for audio and display
+service.
+
 ### Fixed-point evaluation
 
 The video hot path is already integer: VLC parsing, motion compensation,
