@@ -2,7 +2,7 @@
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
 laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
-a portable streaming C decoder, the version 2 JavaScript reference
+a portable streaming C decoder, the version 2/3 JavaScript reference
 implementation, automatic 64-palette training, rate-distortion block
 selection, strict stream inspection, Y4M command-line adapters, and tests.
 
@@ -16,9 +16,11 @@ The fixed v2 profile uses:
 - periodic keyframes that reset prediction and dictionaries;
 - encoder-side selection by `J = RGB SSE + lambda * estimated payload bits`.
 
-The decoder remains compatible with legacy BPV1 v1 streams containing 16
-shared palettes. See [BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level
-format and [RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule.
+BPV1 v3 retains the v2 video syntax and can interleave unsigned 8-bit mono PCM
+with every video frame. The decoder remains compatible with video-only v2 and
+legacy v1 streams containing 16 shared palettes. See
+[BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level format and
+[RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule.
 
 ## Test
 
@@ -72,7 +74,9 @@ ffmpeg -hide_banner -loglevel error -i input.mov -an \
   -vf "scale=320:-2:flags=lanczos,setsar=1,format=yuv420p" \
   -fps_mode passthrough -f yuv4mpegpipe input.y4m
 ./codecs/bpv/bpv1enc input.y4m output.bpv1 \
-  --threads 8 --gop 48 --lambda 64 --report output.json
+  --threads 8 --gop 48 --lambda 64 \
+  --audio-u8 input-mono-16000.u8 --audio-rate 16000 \
+  --report output.json
 ```
 
 The saved Big Buck Bunny script always reads the project-approved 1080p MOV,
@@ -101,8 +105,9 @@ the normalized RGBA sequence in host memory. The command-line decoder does
 not retain decoded frames: it keeps compact 9-byte block records and renders
 one frame at a time.
 
-BPV1 currently carries video only. Audio must be measured or transported
-separately until a shared multi-codec audiovisual container is defined.
+Without `--audio-u8` the encoder writes the compatible video-only v2 stream.
+With audio it writes v3. Short PCM inputs are padded with unsigned silence
+(`128`), and trailing samples beyond the video duration are ignored.
 
 ## Players
 
@@ -116,8 +121,8 @@ On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
 in `/HLV` on the microSD card. The decoder retains two compact 9-byte block
 record frames and renders RGB565 rows directly into the display's existing DMA
 strips. At 320x180 its decoder state, maximum packet buffer and dictionaries
-consume about 105 KiB and no complete RGB framebuffer. BPV playback is
-sequential and timer-clocked because the format has no audio track.
+consume about 106 KiB and no complete RGB framebuffer. BPV v3 uses the same
+PCM_U8 DAC/audio-clock pipeline as HLV; video-only v1/v2 remains timer-clocked.
 
 ## Reference measurement
 

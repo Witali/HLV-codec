@@ -52,7 +52,7 @@ static int make_stream(FILE *file) {
     palette[8] = 255;
 
     if (fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, BPV1_VIDEO_VERSION) ||
         write_u16(file, 4) || write_u16(file, 4) ||
         write_u32(file, 5) ||
         write_u16(file, 24) || write_u16(file, 1) ||
@@ -82,7 +82,7 @@ static int make_eviction_stream(FILE *file) {
     const uint8_t dictionary_one[2] = {1, 0};
 
     if (fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, BPV1_VIDEO_VERSION) ||
         write_u16(file, 4) || write_u16(file, 4) ||
         write_u32(file, 5) ||
         write_u16(file, 24) || write_u16(file, 1) ||
@@ -129,6 +129,63 @@ static int test_dictionary_eviction(void) {
                     frame_index);
             goto cleanup;
         }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_audio_packet(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t raw[BPV1_RECORD_BYTES] = {
+        0, 0, 1, 2, 3, 0, 0, 0, 0
+    };
+    uint8_t audio[100];
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    int result = 1;
+    size_t index;
+    for (index = 0; index < sizeof audio; ++index)
+        audio[index] = (uint8_t)index;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_VERSION) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u32(file, 1) ||
+        write_u16(file, 10) || write_u16(file, 1) ||
+        write_u16(file, 1) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u8(file, 0) || write_u8(file, BPV1_AUDIO_PCM_U8) ||
+        write_u16(file, 1000) || write_u8(file, 1) ||
+        write_u8(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, 1) ||
+        write_u32(file, 1U + sizeof raw) ||
+        write_u32(file, 1) ||
+        write_u32(file, sizeof audio) ||
+        write_u8(file, 4U << 5) ||
+        fwrite(raw, 1, sizeof raw, file) != sizeof raw ||
+        fwrite(audio, 1, sizeof audio, file) != sizeof audio ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        header.audio_codec != BPV1_AUDIO_PCM_U8 ||
+        header.audio_sample_rate != 1000 ||
+        header.audio_channels != 1 ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+        packet.audio_size != sizeof audio ||
+        !packet.audio_data ||
+        memcmp(packet.audio_data, audio, sizeof audio) ||
+        bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+        !frame) {
+        fprintf(stderr, "BPV1 v3 audio packet test failed\n");
+        goto cleanup;
     }
     result = 0;
 
@@ -252,6 +309,7 @@ int main(int argc, char **argv) {
         }
     }
     if (test_dictionary_eviction()) goto cleanup;
+    if (test_audio_packet()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

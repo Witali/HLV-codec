@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 
-#define BPV1_VERSION 2
+#define BPV1_VERSION 3
+#define BPV1_VIDEO_VERSION 2
 #define BPV1_LEGACY_VERSION 1
 #define BPV1_BLOCK_SIZE 4
 #define BPV1_RECORD_BYTES 9
@@ -18,6 +19,9 @@ extern "C" {
 #define BPV1_PALETTE_COUNT 64
 #define BPV1_MAX_PALETTE_BYTES \
     (BPV1_PALETTE_COUNT * BPV1_COLORS_PER_PALETTE * 3)
+
+#define BPV1_AUDIO_NONE 0
+#define BPV1_AUDIO_PCM_U8 1
 
 enum {
     BPV1_OK = 0,
@@ -41,6 +45,9 @@ typedef struct {
     uint16_t max_block_dictionary;
     uint16_t max_pattern_dictionary;
     uint8_t search_radius;
+    uint16_t audio_sample_rate;
+    uint8_t audio_codec;
+    uint8_t audio_channels;
     uint8_t palette_count;
     uint8_t palette[BPV1_MAX_PALETTE_BYTES];
 } BPV1Header;
@@ -49,12 +56,15 @@ typedef struct {
     uint8_t keyframe;
     uint32_t frame_bytes;
     uint32_t mode_bytes;
+    uint32_t audio_bytes;
 } BPV1FrameInfo;
 
 typedef struct {
     BPV1FrameInfo info;
     const uint8_t *data;
     size_t size;
+    const uint8_t *audio_data;
+    size_t audio_size;
 } BPV1Packet;
 
 typedef struct {
@@ -72,12 +82,13 @@ typedef struct BPV1Decoder BPV1Decoder;
 
 const char *bpv1_strerror(int result);
 
-/* Read and validate the fixed header plus the v1/v2 palette bank. */
+/* Read and validate the fixed header plus the v1/v2/v3 palette bank. */
 int bpv1_header_read(FILE *file, BPV1Header *header);
 
 /*
- * Read one nine-byte frame header and leave the file positioned at its
- * payload. This is useful for seek-index construction.
+ * Read one frame header and leave the file positioned at its payload.  The
+ * header occupies nine bytes in v1/v2 and thirteen bytes in v3.  This is
+ * useful for seek-index construction.
  */
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
                          BPV1FrameInfo *info);
@@ -96,6 +107,9 @@ int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet);
 int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                         const BPV1Frame **frame);
+
+size_t bpv1_packet_audio_size(const BPV1Packet *packet);
+const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet);
 
 /* Render one source row without allocating a complete RGB framebuffer. */
 int bpv1_frame_render_rgb24_row(const BPV1Header *header,

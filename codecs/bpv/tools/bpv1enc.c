@@ -10,7 +10,8 @@
 #include <threads.h>
 #include <time.h>
 
-#define BPV_VERSION 2
+#define BPV_VIDEO_VERSION 2
+#define BPV_AUDIO_VERSION 3
 #define BLOCK_SIZE 4
 #define PIXELS_PER_BLOCK 16
 #define PALETTE_COUNT 64
@@ -88,7 +89,16 @@ typedef struct {
     const char *report_path;
     int force;
     int progress;
+    const char *audio_path;
+    int audio_rate;
 } Options;
+
+typedef struct {
+    FILE *file;
+    uint32_t sample_rate;
+    uint64_t phase;
+    uint64_t bytes;
+} AudioInput;
 
 typedef struct {
     uint64_t mode_counts[MODE_COUNT];
@@ -142,6 +152,8 @@ static void usage(FILE *stream) {
         "  --max-block-dictionary N       block dictionary entries (default 256)\n"
         "  --max-pattern-dictionary N     pattern dictionary entries (default 256)\n"
         "  --max-frames N                 encode a leading test fragment\n"
+        "  --audio-u8 FILE                mux unsigned 8-bit mono raw PCM\n"
+        "  --audio-rate N                 PCM sample rate (default 16000)\n"
         "  --report FILE                  write JSON metrics\n"
         "  --force                        replace output\n"
         "  --no-progress                  suppress progress\n"
@@ -1188,8 +1200,10 @@ static int write_bpv_header(
     const Training *training,
     uint32_t frame_count
 ) {
+    const int has_audio = options->audio_path != NULL;
     if (fwrite("BPV1", 1, 4, output) != 4 ||
-        write_u8(output, BPV_VERSION) ||
+        write_u8(output, has_audio ? BPV_AUDIO_VERSION :
+                                      BPV_VIDEO_VERSION) ||
         write_u16(output, (uint16_t)info->width) ||
         write_u16(output, (uint16_t)info->height) ||
         write_u32(output, frame_count) ||
@@ -1199,9 +1213,67 @@ static int write_bpv_header(
         write_u16(output, (uint16_t)options->max_block_dictionary) ||
         write_u16(output, (uint16_t)options->max_pattern_dictionary) ||
         write_u8(output, (uint8_t)options->search_radius) ||
-        write_u8(output, 0) ||
+        write_u8(output, has_audio ? 1 : 0) ||
+        (has_audio &&
+         (write_u16(output, (uint16_t)options->audio_rate) ||
+          write_u8(output, 1) ||
+          write_u8(output, 0))) ||
         fwrite(training->palette, 1, sizeof training->palette, output) !=
             sizeof training->palette) return -1;
+    return 0;
+}
+
+static int write_audio_frame(
+    FILE *output,
+    AudioInput *audio,
+    const Y4mInfo *info,
+    const uint8_t *encoded,
+    size_t encoded_size,
+    size_t *consumed,
+    uint64_t *written_bytes
+) {
+    uint64_t step;
+    uint64_t sample_count;
+    uint8_t samples[4096];
+    size_t offset = *consumed;
+    size_t remaining;
+    if (offset > encoded_size || encoded_size - offset < 9U) return -1;
+    const uint32_t frame_bytes =
+        (uint32_t)encoded[offset + 1U] |
+        ((uint32_t)encoded[offset + 2U] << 8) |
+        ((uint32_t)encoded[offset + 3U] << 16) |
+        ((uint32_t)encoded[offset + 4U] << 24);
+    if ((size_t)frame_bytes > encoded_size - offset - 9U) return -1;
+
+    step = (uint64_t)audio->sample_rate *
+           (uint32_t)info->fps_denominator;
+    if (audio->phase > UINT64_MAX - step) return -1;
+    audio->phase += step;
+    sample_count = audio->phase / (uint32_t)info->fps_numerator;
+    audio->phase %= (uint32_t)info->fps_numerator;
+    if (sample_count > UINT32_MAX) return -1;
+
+    if (fwrite(encoded + offset, 1, 9, output) != 9 ||
+        write_u32(output, (uint32_t)sample_count) ||
+        fwrite(encoded + offset + 9U, 1, frame_bytes, output) !=
+            frame_bytes) {
+        return -1;
+    }
+    remaining = (size_t)sample_count;
+    while (remaining) {
+        const size_t chunk =
+            remaining < sizeof samples ? remaining : sizeof samples;
+        const size_t got = fread(samples, 1, chunk, audio->file);
+        if (got < chunk) {
+            if (ferror(audio->file)) return -1;
+            memset(samples + got, 128, chunk - got);
+        }
+        if (fwrite(samples, 1, chunk, output) != chunk) return -1;
+        remaining -= chunk;
+    }
+    audio->bytes += sample_count;
+    *written_bytes += 13U + frame_bytes + sample_count;
+    *consumed = offset + 9U + frame_bytes;
     return 0;
 }
 
@@ -1223,7 +1295,8 @@ static int encode_all_gops(
     const Training *training,
     uint32_t frame_count,
     EncodeStats *stats,
-    uint64_t *payload_bytes
+    uint64_t *payload_bytes,
+    AudioInput *audio
 ) {
     Y4mInfo info;
     uint32_t next_frame = 0;
@@ -1271,11 +1344,30 @@ static int encode_all_gops(
                 thrd_join(workers[job_index], &worker_result);
                 worker_active[job_index] = 0;
             }
-            if (jobs[job_index].result || worker_result ||
-                fwrite(jobs[job_index].output.data, 1,
-                    jobs[job_index].output.size, output) !=
-                    jobs[job_index].output.size) goto batch_fail;
-            *payload_bytes += jobs[job_index].output.size;
+            if (jobs[job_index].result || worker_result) goto batch_fail;
+            if (audio && audio->file) {
+                size_t consumed = 0;
+                int frame;
+                for (frame = 0; frame < jobs[job_index].frame_count;
+                     ++frame) {
+                    if (write_audio_frame(
+                            output, audio, expected_info,
+                            jobs[job_index].output.data,
+                            jobs[job_index].output.size, &consumed,
+                            payload_bytes)) {
+                        goto batch_fail;
+                    }
+                }
+                if (consumed != jobs[job_index].output.size)
+                    goto batch_fail;
+            } else {
+                if (fwrite(jobs[job_index].output.data, 1,
+                           jobs[job_index].output.size, output) !=
+                    jobs[job_index].output.size) {
+                    goto batch_fail;
+                }
+                *payload_bytes += jobs[job_index].output.size;
+            }
             stats_add(stats, &jobs[job_index].stats);
             free(jobs[job_index].frames);
             jobs[job_index].frames = NULL;
@@ -1409,9 +1501,11 @@ static int write_report(
     if (fprintf(stream,
         "{\n"
         "  \"codec\": \"BPV1\",\n"
-        "  \"version\": 2,\n"
+        "  \"version\": %d,\n"
         "  \"encoder\": \"native C11\",\n"
-        "  \"input\": ") < 0 ||
+        "  \"input\": ",
+        options->audio_path ? BPV_AUDIO_VERSION :
+                              BPV_VIDEO_VERSION) < 0 ||
         write_json_string(stream, input_path) ||
         fputs(",\n  \"output\": ", stream) == EOF ||
         write_json_string(stream, output_path) ||
@@ -1426,6 +1520,9 @@ static int write_report(
         "  \"bytes\": %" PRIu64 ",\n"
         "  \"bitrateKbps\": %.6f,\n"
         "  \"bitsPerPixelPerFrame\": %.9f,\n"
+        "  \"audioCodec\": \"%s\",\n"
+        "  \"audioSampleRate\": %d,\n"
+        "  \"audioChannels\": %d,\n"
         "  \"threads\": %d,\n"
         "  \"gop\": %d,\n"
         "  \"lambda\": %.6f,\n"
@@ -1454,6 +1551,9 @@ static int write_report(
         file_bytes * 8.0 / duration / 1000.0,
         file_bytes * 8.0 /
             ((double)info->width * info->height * frame_count),
+        options->audio_path ? "pcm_u8" : "none",
+        options->audio_path ? options->audio_rate : 0,
+        options->audio_path ? 1 : 0,
         options->threads, options->gop, options->lambda,
         options->candidate_palettes, options->search_radius,
         options->maximum_sample_blocks,
@@ -1470,7 +1570,7 @@ static int write_report(
 int main(int argc, char **argv) {
     Options options = {
         8, 48, 64.0, 3, 2, 256, 256, 32768, 16, 10, 10, 8192,
-        0, NULL, 0, 1
+        0, NULL, 0, 1, NULL, 16000
     };
     const char *input_path = NULL;
     const char *output_path = NULL;
@@ -1478,6 +1578,7 @@ int main(int argc, char **argv) {
     FILE *input = NULL;
     FILE *output = NULL;
     FILE *report = NULL;
+    AudioInput audio = {0};
     Y4mInfo info;
     Training training;
     EncodeStats stats;
@@ -1548,6 +1649,13 @@ int main(int argc, char **argv) {
             if (parse_int_option(value, 1, INT32_MAX, &parsed)) goto bad_option;
             options.max_frames = (uint32_t)parsed;
             index++;
+        } else if (!strcmp(argument, "--audio-u8") && value) {
+            options.audio_path = value;
+            index++;
+        } else if (!strcmp(argument, "--audio-rate") && value) {
+            if (parse_int_option(value, 1000, 65535,
+                    &options.audio_rate)) goto bad_option;
+            index++;
         } else if (!strcmp(argument, "--report") && value) {
             options.report_path = value;
             index++;
@@ -1592,6 +1700,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "bpv1enc: palette training failed\n");
         goto cleanup;
     }
+    if (options.audio_path) {
+        audio.file = fopen(options.audio_path, "rb");
+        if (!audio.file) {
+            fprintf(stderr, "bpv1enc: cannot open %s\n",
+                    options.audio_path);
+            goto cleanup;
+        }
+        audio.sample_rate = (uint32_t)options.audio_rate;
+    }
     output = fopen(partial_path, "wb");
     if (!output || write_bpv_header(
             output, &info, &options, &training, frame_count)) {
@@ -1599,7 +1716,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     if (encode_all_gops(input, output, &info, &options, &training,
-            frame_count, &stats, &payload_bytes)) {
+            frame_count, &stats, &payload_bytes, &audio)) {
         fprintf(stderr, "bpv1enc: GOP encoding failed\n");
         goto cleanup;
     }
@@ -1615,7 +1732,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "bpv1enc: cannot finalize %s\n", output_path);
         goto cleanup;
     }
-    file_bytes = 25 + sizeof training.palette + payload_bytes;
+    file_bytes = (options.audio_path ? 29U : 25U) +
+                 sizeof training.palette + payload_bytes;
     if (options.report_path) {
         report = fopen(options.report_path, "wb");
         if (!report || write_report(report, input_path, output_path,
@@ -1629,6 +1747,9 @@ int main(int argc, char **argv) {
     }
     write_report(stderr, input_path, output_path, &info, &options, &stats,
         frame_count, file_bytes, wall_seconds() - started);
+    if (audio.file)
+        fprintf(stderr, "BPV1 audio: PCM_U8 mono %u Hz, %.3f MiB\n",
+                audio.sample_rate, audio.bytes / 1048576.0);
     exit_code = 0;
     goto cleanup;
 
@@ -1641,6 +1762,7 @@ cleanup:
     if (report) fclose(report);
     if (output) fclose(output);
     if (input) fclose(input);
+    if (audio.file) fclose(audio.file);
     if (exit_code && partial_path) remove(partial_path);
     free(partial_path);
     return exit_code;

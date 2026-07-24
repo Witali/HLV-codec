@@ -34,6 +34,9 @@ function main() {
       `Frames: ${summary.frameCount} at ${summary.fpsNumerator}/${summary.fpsDenominator} fps`,
       `Duration: ${summary.durationSeconds.toFixed(3)} s`,
       `File: ${summary.fileBytes} bytes`,
+      summary.audioCodec
+        ? `Audio: PCM_U8 mono ${summary.audioSampleRate} Hz, ${summary.audioBytes} bytes`
+        : "Audio: none",
       `Keyframes: ${summary.keyframes} (configured interval ${summary.keyframeInterval})`,
       `Frame bytes: min ${summary.minimumFrameBytes}, mean ${summary.meanFrameBytes.toFixed(2)}, max ${summary.maximumFrameBytes}`,
       `Modes: ${Object.entries(summary.modeCounts).map(([name, count]) => `${name}=${count}`).join(", ")}`,

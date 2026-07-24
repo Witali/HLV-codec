@@ -31,8 +31,8 @@ function makeFrame(width, height, shift) {
   return rgba;
 }
 
-function runEncoder(input, output, report, threads) {
-  const result = childProcess.spawnSync(executable, [
+function runEncoder(input, output, report, threads, audio = null) {
+  const arguments_ = [
     input,
     output,
     "--threads", String(threads),
@@ -46,7 +46,11 @@ function runEncoder(input, output, report, threads) {
     "--report", report,
     "--no-progress",
     "--force",
-  ], {
+  ];
+  if (audio) {
+    arguments_.push("--audio-u8", audio, "--audio-rate", "16000");
+  }
+  const result = childProcess.spawnSync(executable, arguments_, {
     cwd: packageRoot,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -70,6 +74,9 @@ try {
   const output4 = path.join(temporary, "output-4.bpv1");
   const report1 = path.join(temporary, "report-1.json");
   const report4 = path.join(temporary, "report-4.json");
+  const audio = path.join(temporary, "audio.u8");
+  const outputAudio = path.join(temporary, "output-audio.bpv1");
+  const reportAudio = path.join(temporary, "report-audio.json");
   const width = 64;
   const height = 64;
   const parts = [y4m.y4mHeader(width, height, 24, 1)];
@@ -81,9 +88,13 @@ try {
     ));
   }
   fs.writeFileSync(input, Buffer.concat(parts));
+  fs.writeFileSync(audio, Buffer.from(
+    Array.from({ length: 4000 }, (_, index) => index & 255),
+  ));
 
   runEncoder(input, output1, report1, 1);
   runEncoder(input, output4, report4, 4);
+  runEncoder(input, outputAudio, reportAudio, 4, audio);
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
@@ -101,6 +112,21 @@ try {
   assert.equal(info.fpsNumerator, 24);
   assert.equal(info.fpsDenominator, 1);
   assert.equal(info.keyframes, 2);
+
+  const audioFrames = [];
+  const audioInfo = bpv.walkFrames(
+    fs.readFileSync(outputAudio),
+    (frame) => audioFrames.push(frame.audio),
+  );
+  assert.equal(audioInfo.version, 3);
+  assert.equal(audioInfo.audioCodec, 1);
+  assert.equal(audioInfo.audioSampleRate, 16000);
+  assert.equal(audioInfo.audioChannels, 1);
+  assert.equal(audioInfo.audioBytes, 4000);
+  assert.deepEqual(
+    Buffer.concat(audioFrames.map((samples) => Buffer.from(samples))),
+    fs.readFileSync(audio),
+  );
 
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
   assert.equal(report.encoder, "native C11");

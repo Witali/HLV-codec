@@ -2,7 +2,10 @@
 
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
 const VERSION = 2;
+const AUDIO_VERSION = 3;
 const LEGACY_VERSION = 1;
+const AUDIO_NONE = 0;
+const AUDIO_PCM_U8 = 1;
 const PALETTE_COUNT = 64;
 const LEGACY_PALETTE_COUNT = 16;
 const COLORS_PER_PALETTE = 16;
@@ -33,7 +36,9 @@ function parseHeader(input) {
     if (readU8(bytes, offset++) !== byte) throw new RangeError("Invalid BPV1 magic");
   }
   const version = readU8(bytes, offset); offset += 1;
-  if (version !== VERSION && version !== LEGACY_VERSION) {
+  if (version !== AUDIO_VERSION &&
+      version !== VERSION &&
+      version !== LEGACY_VERSION) {
     throw new RangeError(`Unsupported BPV1 version: ${version}`);
   }
   const paletteCount = version === LEGACY_VERSION
@@ -48,7 +53,24 @@ function parseHeader(input) {
   const maxBlockDictionary = readU16(bytes, offset); offset += 2;
   const maxPatternDictionary = readU16(bytes, offset); offset += 2;
   const searchRadius = readU8(bytes, offset); offset += 1;
-  const reserved = readU8(bytes, offset); offset += 1;
+  const extension = readU8(bytes, offset); offset += 1;
+  let audioCodec = AUDIO_NONE;
+  let audioSampleRate = 0;
+  let audioChannels = 0;
+  let reserved = extension;
+  if (version === AUDIO_VERSION) {
+    audioCodec = extension;
+    audioSampleRate = readU16(bytes, offset); offset += 2;
+    audioChannels = readU8(bytes, offset); offset += 1;
+    reserved = readU8(bytes, offset); offset += 1;
+    if (!((audioCodec === AUDIO_NONE &&
+           audioSampleRate === 0 && audioChannels === 0) ||
+          (audioCodec === AUDIO_PCM_U8 &&
+           audioSampleRate > 0 && audioChannels === 1))) {
+      throw new RangeError("Unsupported BPV1 audio format");
+    }
+  }
+  if (reserved !== 0) throw new RangeError("Non-zero BPV1 reserved byte");
   if (width === 0 || height === 0) throw new RangeError("BPV1 dimensions must be non-zero");
   if (frameCount === 0) throw new RangeError("BPV1 stream contains no frames");
   if (fpsNumerator === 0 || fpsDenominator === 0) {
@@ -76,6 +98,9 @@ function parseHeader(input) {
     maxPatternDictionary,
     searchRadius,
     reserved,
+    audioCodec,
+    audioSampleRate,
+    audioChannels,
     paletteCount,
     colorsPerPalette: COLORS_PER_PALETTE,
     palette,
@@ -98,13 +123,28 @@ function walkFrames(input, onFrame) {
   let minimumFrameBytes = Infinity;
   let maximumFrameBytes = 0;
   let totalFrameBytes = 0;
+  let totalAudioBytes = 0;
   let keyframes = 0;
 
   for (let frameIndex = 0; frameIndex < header.frameCount; frameIndex += 1) {
-    requireBytes(bytes, offset, 9, `frame ${frameIndex} header`);
+    const frameHeaderBytes = header.version === AUDIO_VERSION ? 13 : 9;
+    requireBytes(bytes, offset, frameHeaderBytes, `frame ${frameIndex} header`);
     const keyframe = readU8(bytes, offset) !== 0; offset += 1;
     const frameBytes = readU32(bytes, offset); offset += 4;
     const modeBytesLength = readU32(bytes, offset); offset += 4;
+    const audioBytes = header.version === AUDIO_VERSION
+      ? readU32(bytes, offset)
+      : 0;
+    if (header.version === AUDIO_VERSION) offset += 4;
+    const maximumAudioBytes = header.audioCodec === AUDIO_PCM_U8
+      ? Math.ceil(
+        header.audioSampleRate * header.fpsDenominator /
+        header.fpsNumerator,
+      ) * header.audioChannels
+      : 0;
+    if (audioBytes > maximumAudioBytes) {
+      throw new RangeError(`Invalid BPV1 audio length in frame ${frameIndex}`);
+    }
     const frameStart = offset;
     const frameEnd = frameStart + frameBytes;
     if (frameEnd > bytes.length || frameEnd < frameStart) {
@@ -207,16 +247,27 @@ function walkFrames(input, onFrame) {
         `declared ${frameBytes}`,
       );
     }
-    const storedFrameBytes = 9 + frameBytes;
+    const audioStart = frameEnd;
+    const audioEnd = audioStart + audioBytes;
+    if (audioEnd > bytes.length || audioEnd < audioStart) {
+      throw new RangeError(`Truncated BPV1 audio in frame ${frameIndex}`);
+    }
+    const audio = bytes.subarray(audioStart, audioEnd);
+    offset = audioEnd;
+    const storedFrameBytes = frameHeaderBytes + frameBytes + audioBytes;
     minimumFrameBytes = Math.min(minimumFrameBytes, storedFrameBytes);
     maximumFrameBytes = Math.max(maximumFrameBytes, storedFrameBytes);
     totalFrameBytes += storedFrameBytes;
+    totalAudioBytes += audioBytes;
     if (typeof onFrame === "function") {
       onFrame({
         blocks,
         frameIndex,
         keyframe,
         frameBytes: storedFrameBytes,
+        videoBytes: frameBytes,
+        audio,
+        audioBytes,
       }, header);
     }
     previous = blocks;
@@ -239,6 +290,10 @@ function walkFrames(input, onFrame) {
     maxPatternDictionary: header.maxPatternDictionary,
     searchRadius: header.searchRadius,
     paletteCount: header.paletteCount,
+    audioCodec: header.audioCodec,
+    audioSampleRate: header.audioSampleRate,
+    audioChannels: header.audioChannels,
+    audioBytes: totalAudioBytes,
     blockCount,
     modeCounts: Object.fromEntries(MODE_NAMES.map((name, index) => [name, modeCounts[index]])),
     minimumFrameBytes,
@@ -363,6 +418,9 @@ module.exports = {
   renderFrameRgba,
   walkFrames,
   constants: {
+    AUDIO_NONE,
+    AUDIO_PCM_U8,
+    AUDIO_VERSION,
     BLOCK_SIZE,
     COLORS_PER_PALETTE,
     LEGACY_VERSION,

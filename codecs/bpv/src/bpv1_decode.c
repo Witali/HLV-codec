@@ -34,6 +34,7 @@ struct BPV1Decoder {
     uint8_t *current;
     uint8_t *packet_data;
     size_t block_bytes;
+    size_t video_capacity;
     size_t packet_capacity;
     size_t memory_bytes;
     uint32_t frame_index;
@@ -63,6 +64,17 @@ static int multiply_size(size_t left, size_t right, size_t *result) {
     return BPV1_OK;
 }
 
+static size_t maximum_audio_bytes(const BPV1Header *header) {
+    uint64_t numerator;
+    if (!header || header->version < BPV1_VERSION ||
+        header->audio_codec == BPV1_AUDIO_NONE) {
+        return 0;
+    }
+    numerator = (uint64_t)header->audio_sample_rate * header->fps_den;
+    return (size_t)((numerator + header->fps_num - 1U) /
+                    header->fps_num) * header->audio_channels;
+}
+
 static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
                          uint32_t *blocks_y, uint32_t *block_count,
                          size_t *block_bytes, size_t *mode_bytes,
@@ -74,11 +86,20 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
         !header->keyframe_interval || !header->max_block_dictionary ||
         !header->max_pattern_dictionary ||
         (header->version != BPV1_VERSION &&
+         header->version != BPV1_VIDEO_VERSION &&
          header->version != BPV1_LEGACY_VERSION) ||
-        (header->version == BPV1_VERSION &&
+        (header->version >= BPV1_VIDEO_VERSION &&
          header->palette_count != BPV1_PALETTE_COUNT) ||
         (header->version == BPV1_LEGACY_VERSION &&
-         header->palette_count != 16)) {
+         header->palette_count != 16) ||
+        (header->version == BPV1_VERSION &&
+         !((header->audio_codec == BPV1_AUDIO_NONE &&
+            !header->audio_sample_rate && !header->audio_channels) ||
+           (header->audio_codec == BPV1_AUDIO_PCM_U8 &&
+            header->audio_sample_rate && header->audio_channels == 1))) ||
+        (header->version < BPV1_VERSION &&
+         (header->audio_codec != BPV1_AUDIO_NONE ||
+          header->audio_sample_rate || header->audio_channels))) {
         return BPV1_ERR_FORMAT;
     }
     *blocks_x =
@@ -295,6 +316,7 @@ const char *bpv1_strerror(int result) {
 
 int bpv1_header_read(FILE *file, BPV1Header *header) {
     uint8_t fixed[25];
+    uint8_t audio[4];
     size_t palette_bytes;
     uint32_t blocks_x, blocks_y, block_count;
     size_t block_bytes, mode_bytes, packet_capacity;
@@ -312,11 +334,20 @@ int bpv1_header_read(FILE *file, BPV1Header *header) {
     header->max_block_dictionary = read_u16(fixed + 19);
     header->max_pattern_dictionary = read_u16(fixed + 21);
     header->search_radius = fixed[23];
+    if (header->version == BPV1_VERSION) {
+        header->audio_codec = fixed[24];
+        if (read_exact(file, audio, sizeof audio)) return BPV1_ERR_IO;
+        header->audio_sample_rate = read_u16(audio);
+        header->audio_channels = audio[2];
+        if (audio[3] != 0) return BPV1_ERR_FORMAT;
+    } else if (fixed[24] != 0) {
+        return BPV1_ERR_FORMAT;
+    }
     header->palette_count =
-        header->version == BPV1_VERSION ? BPV1_PALETTE_COUNT :
+        header->version == BPV1_VERSION ||
+        header->version == BPV1_VIDEO_VERSION ? BPV1_PALETTE_COUNT :
         header->version == BPV1_LEGACY_VERSION ? 16 : 0;
-    if (fixed[24] != 0 ||
-        header_layout(header, &blocks_x, &blocks_y, &block_count,
+    if (header_layout(header, &blocks_x, &blocks_y, &block_count,
                       &block_bytes, &mode_bytes, &packet_capacity)) {
         return BPV1_ERR_FORMAT;
     }
@@ -327,14 +358,16 @@ int bpv1_header_read(FILE *file, BPV1Header *header) {
 
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
                          BPV1FrameInfo *info) {
-    uint8_t bytes[9];
+    uint8_t bytes[13];
     uint32_t blocks_x, blocks_y, block_count;
     size_t block_bytes, mode_bytes, packet_capacity;
     size_t count;
     if (!file || !header || !info) return BPV1_ERR_ARGUMENT;
-    count = fread(bytes, 1, sizeof bytes, file);
+    const size_t header_bytes =
+        header->version >= BPV1_VERSION ? sizeof bytes : 9U;
+    count = fread(bytes, 1, header_bytes, file);
     if (!count && feof(file)) return BPV1_EOF;
-    if (count != sizeof bytes) return BPV1_ERR_IO;
+    if (count != header_bytes) return BPV1_ERR_IO;
     if (header_layout(header, &blocks_x, &blocks_y, &block_count,
                       &block_bytes, &mode_bytes, &packet_capacity)) {
         return BPV1_ERR_FORMAT;
@@ -342,9 +375,13 @@ int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
     info->keyframe = bytes[0];
     info->frame_bytes = read_u32(bytes + 1);
     info->mode_bytes = read_u32(bytes + 5);
+    info->audio_bytes =
+        header->version >= BPV1_VERSION ? read_u32(bytes + 9) : 0;
     if (info->keyframe > 1U || info->mode_bytes != mode_bytes ||
         info->frame_bytes < info->mode_bytes ||
-        info->frame_bytes > packet_capacity) {
+        info->frame_bytes > packet_capacity ||
+        info->audio_bytes > maximum_audio_bytes(header) ||
+        (header->audio_codec == BPV1_AUDIO_NONE && info->audio_bytes)) {
         return BPV1_ERR_FORMAT;
     }
     return BPV1_OK;
@@ -363,7 +400,16 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     if (!decoder) return NULL;
     decoder->previous = (uint8_t *)malloc(block_bytes);
     decoder->current = (uint8_t *)malloc(block_bytes);
-    decoder->packet_data = (uint8_t *)malloc(packet_capacity);
+    {
+        const size_t audio_capacity = maximum_audio_bytes(header);
+        if (audio_capacity > SIZE_MAX - packet_capacity) {
+            bpv1_decoder_destroy(decoder);
+            return NULL;
+        }
+        decoder->video_capacity = packet_capacity;
+        decoder->packet_capacity = packet_capacity + audio_capacity;
+    }
+    decoder->packet_data = (uint8_t *)malloc(decoder->packet_capacity);
     if (dictionary_allocate(&decoder->blocks,
                             header->max_block_dictionary,
                             BPV1_RECORD_BYTES) != BPV1_OK ||
@@ -380,14 +426,13 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     }
     decoder->header = *header;
     decoder->block_bytes = block_bytes;
-    decoder->packet_capacity = packet_capacity;
     decoder->frame.width = header->width;
     decoder->frame.height = header->height;
     decoder->frame.blocks_x = (uint16_t)blocks_x;
     decoder->frame.blocks_y = (uint16_t)blocks_y;
     decoder->frame.block_count = block_count;
     decoder->memory_bytes = sizeof *decoder + block_bytes * 2U +
-                            packet_capacity +
+                            decoder->packet_capacity +
                             dictionary_memory_bytes(&decoder->blocks) +
                             dictionary_memory_bytes(&decoder->patterns);
     bpv1_decoder_reset(decoder);
@@ -424,16 +469,25 @@ size_t bpv1_decoder_memory_bytes(const BPV1Decoder *decoder) {
 int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet) {
     int result;
+    size_t total_size;
     if (!decoder || !file || !packet) return BPV1_ERR_ARGUMENT;
     memset(packet, 0, sizeof *packet);
     result = bpv1_frame_info_read(file, &decoder->header, &packet->info);
     if (result != BPV1_OK) return result;
-    if (packet->info.frame_bytes > decoder->packet_capacity)
+    if (packet->info.frame_bytes > decoder->video_capacity ||
+        packet->info.audio_bytes >
+            decoder->packet_capacity - packet->info.frame_bytes)
         return BPV1_ERR_RANGE;
-    if (read_exact(file, decoder->packet_data, packet->info.frame_bytes))
+    total_size = (size_t)packet->info.frame_bytes +
+                 packet->info.audio_bytes;
+    if (read_exact(file, decoder->packet_data, total_size))
         return BPV1_ERR_IO;
     packet->data = decoder->packet_data;
     packet->size = packet->info.frame_bytes;
+    packet->audio_data = packet->info.audio_bytes
+                             ? decoder->packet_data + packet->info.frame_bytes
+                             : NULL;
+    packet->audio_size = packet->info.audio_bytes;
     return BPV1_OK;
 }
 
@@ -537,6 +591,14 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
     decoder->frame.blocks = decoder->previous;
     *frame = &decoder->frame;
     return BPV1_OK;
+}
+
+size_t bpv1_packet_audio_size(const BPV1Packet *packet) {
+    return packet ? packet->audio_size : 0;
+}
+
+const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet) {
+    return packet && packet->audio_size ? packet->audio_data : NULL;
 }
 
 static int frame_row_arguments(const BPV1Header *header,
