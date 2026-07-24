@@ -7,6 +7,7 @@ firmware/esp32_2432s028_hlv_player_idf/build-physical-bench/
 
 # Generated and source video files stay outside Git.
 *.hlv
+*.bpv1
 *.y4m
 *.mp4
 *.mkv

@@ -1,0 +1,44 @@
+{
+  "0": {
+    "ok": true,
+    "verifiedFrames": 720,
+    "mse": 30.96101097366898,
+    "psnrDb": 33.22265227554815,
+    "modeCounts": {
+      "skip": 1702223,
+      "motion": 417134,
+      "block_dict": 467416,
+      "pattern_dict": 174366,
+      "raw": 118861
+    },
+    "elapsedSeconds": 6.384845018386841
+  },
+  "16": {
+    "ok": true,
+    "verifiedFrames": 720,
+    "mse": 31.24390804398148,
+    "psnrDb": 33.18315009933303,
+    "modeCounts": {
+      "skip": 1808578,
+      "motion": 417153,
+      "block_dict": 408124,
+      "pattern_dict": 141948,
+      "raw": 104197
+    },
+    "elapsedSeconds": 6.008132219314575
+  },
+  "64": {
+    "ok": true,
+    "verifiedFrames": 720,
+    "mse": 32.9523125,
+    "psnrDb": 32.95194463311208,
+    "modeCounts": {
+      "skip": 1889058,
+      "motion": 413691,
+      "block_dict": 381427,
+      "pattern_dict": 110834,
+      "raw": 84990
+    },
+    "elapsedSeconds": 6.1167638301849365
+  }
+}

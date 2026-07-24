@@ -25,6 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HLVENC = ROOT / "codecs" / "hlv" / "hlvenc"
 HLVDEC = ROOT / "codecs" / "hlv" / "hlvdec"
+BPVENC = ROOT / "codecs" / "bpv" / "tools" / "bpv1enc.js"
+BPVDEC = ROOT / "codecs" / "bpv" / "tools" / "bpv1dec.js"
 RESULTS = ROOT / "bench" / "results"
 
 PSNR_RE = re.compile(
@@ -175,6 +177,47 @@ def bench_hlv(source: Path, ref: Path, duration: float, frames: int,
     )
 
 
+def bench_bpv(source: Path, ref: Path, duration: float, frames: int,
+              fps: int, lambda_value: int, work: Path) -> Result:
+    stem = f"bpv1_v2_lambda{lambda_value}"
+    out = work / f"{stem}.bpv1"
+    dec = work / f"{stem}.y4m"
+    src = reference_pipe(ref, frames)
+    assert src.stdout is not None
+    t0 = time.perf_counter()
+    run([
+        "node", str(BPVENC), "-", str(out),
+        "--lambda", str(lambda_value),
+        "--gop", str(max(1, fps * 2)),
+        "--max-frames", str(frames),
+        "--no-progress",
+    ], stdin=src.stdout)
+    src.stdout.close()
+    stderr = src.stderr.read() if src.stderr else b""
+    rc = src.wait()
+    if rc != 0:
+        raise RuntimeError("FFmpeg reference pipe failed\n" + stderr.decode(errors="replace"))
+    enc_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    run([
+        "node", str(BPVDEC), str(out), "-", "--no-progress",
+    ], stdout=subprocess.DEVNULL)
+    dec_s = time.perf_counter() - t0
+
+    run([
+        "node", str(BPVDEC), str(out), str(dec), "--no-progress",
+    ], stdout=subprocess.DEVNULL)
+    py, pu, pv, pa = psnr(ref, dec, duration)
+    size = out.stat().st_size
+    dec.unlink(missing_ok=True)
+    return Result(
+        source.name, duration, frames, "BPV1-v2", f"lambda={lambda_value}", size,
+        size * 8 / duration / 1000, enc_s, frames / enc_s,
+        dec_s, frames / dec_s, py, pu, pv, pa,
+    )
+
+
 def ffmpeg_codec_args(codec: str, value: int, fps: int) -> tuple[list[str], str, str]:
     if codec == "mjpeg":
         return ["-c:v", "mjpeg", "-q:v", str(value), "-pix_fmt", "yuvj420p"], f"q={value}", "avi"
@@ -258,6 +301,7 @@ def write_results(rows: list[Result], prefix: str) -> None:
 
 def parse_grid(args) -> dict[str, list[int]]:
     return {
+        "bpv": parse_list(args.bpv_lambdas),
         "mjpeg": parse_list(args.mjpeg_values),
         "mpeg1": parse_list(args.mpeg1_values),
         "mpeg2": parse_list(args.mpeg2_values),
@@ -276,8 +320,11 @@ def main() -> None:
     ap.add_argument("--hlv-qualities", default="40,55,70")
     ap.add_argument("--hlv-presets", default="fast,balanced")
     ap.add_argument("--hlv-syntaxes", default="1,2")
+    ap.add_argument("--skip-hlv", action="store_true",
+                    help="run only codecs selected by --codecs")
     ap.add_argument("--codecs", default="mjpeg,mpeg1,mpeg2,h264,vp8,vp9")
     ap.add_argument("--include-av1", action="store_true")
+    ap.add_argument("--bpv-lambdas", default="0,16,64")
     ap.add_argument("--mjpeg-values", default="2,6,12")
     ap.add_argument("--mpeg1-values", default="2,6,12")
     ap.add_argument("--mpeg2-values", default="2,6,12")
@@ -291,7 +338,7 @@ def main() -> None:
     ap.add_argument("--keep-files", action="store_true", help="keep default work directory under bench/work")
     args = ap.parse_args()
 
-    if not HLVENC.exists() or not HLVDEC.exists():
+    if not args.skip_hlv and (not HLVENC.exists() or not HLVDEC.exists()):
         raise SystemExit("Build HLV tools first with make")
     if args.fps <= 0 or args.duration <= 0:
         raise SystemExit("fps and duration must be positive")
@@ -311,6 +358,12 @@ def main() -> None:
     unknown = [x for x in codecs if x not in grids]
     if unknown:
         raise SystemExit("Unknown codecs: " + ", ".join(unknown))
+    if "bpv" in codecs and (
+        not BPVENC.exists() or
+        not BPVDEC.exists() or
+        shutil.which("node") is None
+    ):
+        raise SystemExit("BPV benchmarks require Node.js and codecs/bpv tools")
 
     rows = load_results(args.prefix) if args.resume else []
     done = {result_key(r.source, r.frames, r.codec, r.setting) for r in rows}
@@ -335,28 +388,41 @@ def main() -> None:
             ref = work / "reference_ffv1.mkv"
             make_reference(source, source_limit, args.fps, frames, ref)
 
-            for syntax in parse_list(args.hlv_syntaxes):
-                for preset in [x.strip() for x in args.hlv_presets.split(",") if x.strip()]:
-                    for q in parse_list(args.hlv_qualities):
-                        codec = f"HLV-v{syntax}"
-                        setting = f"q={q},{preset}"
-                        key = result_key(source.name, frames, codec, setting)
-                        if key in done:
-                            print(f"= resume: {source.name} {codec} {setting}", file=sys.stderr)
-                            continue
-                        row = bench_hlv(source, ref, duration, frames, q, preset, syntax, work)
-                        rows.append(row)
-                        done.add(key)
-                        write_results(rows, args.prefix)
+            if not args.skip_hlv:
+                for syntax in parse_list(args.hlv_syntaxes):
+                    for preset in [x.strip() for x in args.hlv_presets.split(",") if x.strip()]:
+                        for q in parse_list(args.hlv_qualities):
+                            codec = f"HLV-v{syntax}"
+                            setting = f"q={q},{preset}"
+                            key = result_key(source.name, frames, codec, setting)
+                            if key in done:
+                                print(f"= resume: {source.name} {codec} {setting}", file=sys.stderr)
+                                continue
+                            row = bench_hlv(source, ref, duration, frames, q, preset, syntax, work)
+                            rows.append(row)
+                            done.add(key)
+                            write_results(rows, args.prefix)
 
             for codec in codecs:
                 for val in grids[codec]:
-                    setting = f"q={val}" if codec in {"mjpeg", "mpeg1", "mpeg2"} else f"crf={val}"
-                    key = result_key(source.name, frames, codec, setting)
+                    if codec == "bpv":
+                        label = "BPV1-v2"
+                        setting = f"lambda={val}"
+                    else:
+                        label = codec
+                        setting = f"q={val}" if codec in {"mjpeg", "mpeg1", "mpeg2"} else f"crf={val}"
+                    key = result_key(source.name, frames, label, setting)
                     if key in done:
-                        print(f"= resume: {source.name} {codec} {setting}", file=sys.stderr)
+                        print(f"= resume: {source.name} {label} {setting}", file=sys.stderr)
                         continue
-                    row = bench_ffmpeg(source, ref, duration, frames, args.fps, codec, val, work)
+                    if codec == "bpv":
+                        row = bench_bpv(
+                            source, ref, duration, frames, args.fps, val, work,
+                        )
+                    else:
+                        row = bench_ffmpeg(
+                            source, ref, duration, frames, args.fps, codec, val, work,
+                        )
                     rows.append(row)
                     done.add(key)
                     write_results(rows, args.prefix)

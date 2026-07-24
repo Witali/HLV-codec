@@ -1,0 +1,14 @@
+{
+  "name": "@hlv-codec/bpv1-reference",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BPV1 v2 reference codec and Y4M command-line adapters",
+  "type": "commonjs",
+  "scripts": {
+    "check": "node --check src/bpv1-codec.js && node --check src/bpv1-auto-palette.js && node --check src/bpv1-rate-distortion.js && node --check tools/bpv1-file.js && node --check tools/y4m.js && node --check tools/bpv1enc.js && node --check tools/bpv1dec.js && node --check tools/bpv1info.js",
+    "test": "npm run check && node tests/bpv1-codec.test.js && node tests/bpv1-auto-palette.test.js && node tests/bpv1-rate-distortion.test.js && node tests/bpv1-cli.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

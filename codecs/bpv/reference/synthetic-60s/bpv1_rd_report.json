@@ -1,0 +1,159 @@
+{
+  "format": "BPV1 v2",
+  "experiment": "rate-distortion block selection on the same synthetic 60-second 320x200 sequence",
+  "criterion": "J = RGB block SSE + lambda * payload bits",
+  "candidatePaletteCount": 3,
+  "modeMapBitsPerBlock": 3,
+  "modeMapExcludedFromRate": true,
+  "baseline": {
+    "name": "automatic 64 palettes, nearest cluster only, exact reuse",
+    "fileBytes": 5264429,
+    "fileMiB": 5.020550727844238,
+    "averageBitrateKbps": 701.9238666666668,
+    "bitsPerPixelPerFrame": 0.9139633680555556,
+    "mse": 36.59984771412037,
+    "psnrDb": 32.49601082496854,
+    "modeCounts": {
+      "skip": 1688945,
+      "motion": 416682,
+      "block_dict": 465535,
+      "pattern_dict": 184562,
+      "raw": 124276
+    },
+    "modePercent": {
+      "skip": 58.64392361111111,
+      "motion": 14.468125,
+      "block_dict": 16.16440972222222,
+      "pattern_dict": 6.408402777777778,
+      "raw": 4.315138888888889
+    }
+  },
+  "results": [
+    {
+      "lambda": 0.0,
+      "file": "synthetic_64pal_rd_lambda_0p0_60s_320x200.bpv1",
+      "fileBytes": 5148988,
+      "fileMiB": 4.910457611083984,
+      "averageBitrateKbps": 686.5317333333332,
+      "bitsPerPixelPerFrame": 0.8939215277777778,
+      "mse": 30.96101097366898,
+      "psnrDb": 33.22265227554815,
+      "modeCounts": {
+        "skip": 1702223,
+        "motion": 417134,
+        "block_dict": 467416,
+        "pattern_dict": 174366,
+        "raw": 118861
+      },
+      "modePercent": {
+        "skip": 59.10496527777778,
+        "motion": 14.483819444444444,
+        "block_dict": 16.22972222222222,
+        "pattern_dict": 6.054375,
+        "raw": 4.127118055555556
+      },
+      "elapsedSeconds": 32.02835011482239,
+      "verification": {
+        "ok": true,
+        "verifiedFrames": 720,
+        "mse": 30.96101097366898,
+        "psnrDb": 33.22265227554815,
+        "modeCounts": {
+          "skip": 1702223,
+          "motion": 417134,
+          "block_dict": 467416,
+          "pattern_dict": 174366,
+          "raw": 118861
+        },
+        "elapsedSeconds": 6.384845018386841
+      }
+    },
+    {
+      "lambda": 16.0,
+      "file": "synthetic_64pal_rd_lambda_16p0_60s_320x200.bpv1",
+      "fileBytes": 4671540,
+      "fileMiB": 4.455127716064453,
+      "averageBitrateKbps": 622.872,
+      "bitsPerPixelPerFrame": 0.81103125,
+      "mse": 31.24390804398148,
+      "psnrDb": 33.18315009933303,
+      "modeCounts": {
+        "skip": 1808578,
+        "motion": 417153,
+        "block_dict": 408124,
+        "pattern_dict": 141948,
+        "raw": 104197
+      },
+      "modePercent": {
+        "skip": 62.797847222222224,
+        "motion": 14.484479166666667,
+        "block_dict": 14.170972222222222,
+        "pattern_dict": 4.92875,
+        "raw": 3.617951388888889
+      },
+      "elapsedSeconds": 32.512232303619385,
+      "verification": {
+        "ok": true,
+        "verifiedFrames": 720,
+        "mse": 31.24390804398148,
+        "psnrDb": 33.18315009933303,
+        "modeCounts": {
+          "skip": 1808578,
+          "motion": 417153,
+          "block_dict": 408124,
+          "pattern_dict": 141948,
+          "raw": 104197
+        },
+        "elapsedSeconds": 6.008132219314575
+      }
+    },
+    {
+      "lambda": 64.0,
+      "file": "synthetic_64pal_rd_lambda_64p0_60s_320x200.bpv1",
+      "fileBytes": 4220561,
+      "fileMiB": 4.025040626525879,
+      "averageBitrateKbps": 562.7414666666667,
+      "bitsPerPixelPerFrame": 0.7327362847222222,
+      "mse": 32.9523125,
+      "psnrDb": 32.95194463311208,
+      "modeCounts": {
+        "skip": 1889058,
+        "motion": 413691,
+        "block_dict": 381427,
+        "pattern_dict": 110834,
+        "raw": 84990
+      },
+      "modePercent": {
+        "skip": 65.59229166666667,
+        "motion": 14.364270833333334,
+        "block_dict": 13.243993055555556,
+        "pattern_dict": 3.848402777777778,
+        "raw": 2.951041666666667
+      },
+      "smallestFrameBytes": 1509,
+      "largestFrameBytes": 28980,
+      "meanFrameBytes": 5857.5888888888885,
+      "verification": {
+        "ok": true,
+        "verifiedFrames": 720,
+        "mse": 32.9523125,
+        "psnrDb": 32.95194463311208,
+        "modeCounts": {
+          "skip": 1889058,
+          "motion": 413691,
+          "block_dict": 381427,
+          "pattern_dict": 110834,
+          "raw": 84990
+        },
+        "elapsedSeconds": 6.1167638301849365
+      }
+    }
+  ],
+  "selectedLambda": 64,
+  "notes": [
+    "lambda=0 isolates the benefit of testing three nearby automatic BPAL palettes instead of only the nearest block cluster.",
+    "lambda>0 additionally permits a higher-distortion representation when its estimated payload is cheaper.",
+    "Exact motion search and the existing block/pattern dictionaries remain unchanged after the RD block choice.",
+    "The decoder and its RAM requirements are unchanged."
+  ]
+}

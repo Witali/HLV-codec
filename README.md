@@ -17,6 +17,14 @@ The second device codec is the standard
 native source frame rate, and muxes PCM_U8 audio through the same saved level
 curve as the HLV preset.
 
+[`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
+reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
+and block/pattern dictionaries. The package includes automatic palette
+training, encoder-side rate-distortion selection, streaming validation, Y4M
+encoder/decoder adapters and the supplied 60-second reference measurements.
+BPV1 is currently part of the desktop benchmark laboratory; it has not yet
+been added to the ESP32 player and carries no audio stream.
+
 ## HLV-1 v0.3 development build
 
 The decoder accepts stream syntax v1 through v13. New encodes use **stream
@@ -274,10 +282,16 @@ python3 scripts/benchmark.py \
   --sources bench/sources/*_5min.mp4 \
   --duration 300 --fps 10 \
   --hlv-syntaxes 2 --hlv-presets balanced --hlv-qualities 40,55,70 \
-  --codecs mjpeg,h264,vp8 \
+  --codecs bpv,mjpeg,h264,vp8 --bpv-lambdas 0,16,64 \
   --mjpeg-values 2,6,12 --h264-values 18,26,34 --vp8-values 10,28,46 \
   --prefix local_5min --keep-files --resume
 ```
+
+`bpv` runs the BPV1 v2 Y4M adapters and records results as `BPV1-v2`.
+Palette training keeps the normalized RGBA sequence in host memory, so begin
+with a short duration before scheduling long BPV runs. The matched-bitrate
+tool also accepts `--codecs bpv`; it searches lambda from
+`--bpv-max-lambda` down to zero.
 
 MPEG-1/2 accept only standardized frame rates in FFmpeg. Compare them in a separate 25 fps run:
 

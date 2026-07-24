@@ -23,11 +23,17 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from benchmark import make_reference, normalize_filter, psnr, ssim, reference_pipe, run, source_duration
 
 ROOT = Path(__file__).resolve().parents[1]
 HLVENC = ROOT / "codecs" / "hlv" / "hlvenc"
 HLVDEC = ROOT / "codecs" / "hlv" / "hlvdec"
+BPVENC = ROOT / "codecs" / "bpv" / "tools" / "bpv1enc.js"
+BPVDEC = ROOT / "codecs" / "bpv" / "tools" / "bpv1dec.js"
 RESULTS = ROOT / "bench" / "results"
 
 
@@ -77,6 +83,9 @@ def codec_domain(codec: str, args=None) -> list[int]:
             maximum = 2040 if args.hlv_syntax >= 4 else 255
             return list(range(maximum, 0, -1))
         return list(range(1, 101))
+    if codec == "bpv":
+        maximum = args.bpv_max_lambda if args is not None else 256
+        return list(range(maximum, -1, -1))
     if codec == "mjpeg":
         return list(range(31, 1, -1))
     if codec in {"mpeg1", "mpeg2"}:
@@ -162,6 +171,25 @@ def encode_candidate(codec: str, value: int, ref: Path, frames: int,
         if rc:
             raise RuntimeError("reference pipe failed\n" + err.decode(errors="replace"))
         elapsed = time.perf_counter() - t0
+    elif codec == "bpv":
+        setting = f"lambda={value}"
+        out = work / f"bpv1_v2_lambda{value}.bpv1"
+        src = reference_pipe(ref, frames)
+        assert src.stdout is not None
+        t0 = time.perf_counter()
+        run([
+            "node", str(BPVENC), "-", str(out),
+            "--lambda", str(value),
+            "--gop", str(max(1, fps * 2)),
+            "--max-frames", str(frames),
+            "--no-progress",
+        ], stdin=src.stdout)
+        src.stdout.close()
+        err = src.stderr.read() if src.stderr else b""
+        rc = src.wait()
+        if rc:
+            raise RuntimeError("reference pipe failed\n" + err.decode(errors="replace"))
+        elapsed = time.perf_counter() - t0
     else:
         cargs, setting, ext = ffmpeg_args(codec, value, fps)
         out = work / f"{codec}_{setting.replace('=', '')}.{ext}"
@@ -221,6 +249,20 @@ def finalize(source: Path, codec: str, target: float, candidate: Candidate,
         sy, su, sv, sa = ssim(ref, decoded, duration)
         decoded.unlink(missing_ok=True)
         label = f"HLV-v{hlv_syntax}"
+    elif codec == "bpv":
+        decoded = work / f"decoded_bpv_target_{target:g}.y4m"
+        t0 = time.perf_counter()
+        run([
+            "node", str(BPVDEC), str(candidate.path), "-", "--no-progress",
+        ], stdout=subprocess.DEVNULL)
+        decode_s = time.perf_counter() - t0
+        run([
+            "node", str(BPVDEC), str(candidate.path), str(decoded), "--no-progress",
+        ], stdout=subprocess.DEVNULL)
+        py, pu, pv, pa = psnr(ref, decoded, duration)
+        sy, su, sv, sa = ssim(ref, decoded, duration)
+        decoded.unlink(missing_ok=True)
+        label = "BPV1-v2"
     else:
         t0 = time.perf_counter()
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(candidate.path), "-f", "null", "-"])
@@ -292,15 +334,25 @@ def main() -> None:
     ap.add_argument("--hlv-luma-weight", type=int, default=4)
     ap.add_argument("--hlv-lambda-scale", type=float, default=1.0)
     ap.add_argument("--hlv-ac-deadzone", type=float, default=1.0)
+    ap.add_argument("--bpv-max-lambda", type=int, default=256,
+                    help="upper BPV1 lambda bound for bitrate search")
     args = ap.parse_args()
 
-    if not HLVENC.exists() or not HLVDEC.exists():
-        raise SystemExit("Build HLV first with make")
     targets = parse_list(args.targets, float)
     codecs = [x.strip() for x in args.codecs.split(",") if x.strip()]
-    unknown = [c for c in codecs if c not in {"hlv", "mjpeg", "mpeg1", "mpeg2", "h264", "vp8", "vp9", "av1"}]
+    unknown = [c for c in codecs if c not in {"hlv", "bpv", "mjpeg", "mpeg1", "mpeg2", "h264", "vp8", "vp9", "av1"}]
     if unknown:
         raise SystemExit("Unknown codecs: " + ", ".join(unknown))
+    if "hlv" in codecs and (not HLVENC.exists() or not HLVDEC.exists()):
+        raise SystemExit("Build HLV first with make")
+    if args.bpv_max_lambda < 0:
+        raise SystemExit("--bpv-max-lambda must not be negative")
+    if "bpv" in codecs and (
+        not BPVENC.exists() or
+        not BPVDEC.exists() or
+        shutil.which("node") is None
+    ):
+        raise SystemExit("BPV benchmarks require Node.js and codecs/bpv tools")
     if any(t <= 0 for t in targets):
         raise SystemExit("Targets must be positive")
 
@@ -338,7 +390,11 @@ def main() -> None:
             candidate_caches: dict[str, dict[int, Candidate]] = {c: {} for c in codecs}
             for target in targets:
                 for codec in codecs:
-                    label = f"HLV-v{args.hlv_syntax}" if codec == "hlv" else codec
+                    label = (
+                        f"HLV-v{args.hlv_syntax}" if codec == "hlv"
+                        else "BPV1-v2" if codec == "bpv"
+                        else codec
+                    )
                     if (source.name, frames, target, label) in done:
                         print(f"= resume {source.name} {target:g} {label}", file=sys.stderr)
                         continue
