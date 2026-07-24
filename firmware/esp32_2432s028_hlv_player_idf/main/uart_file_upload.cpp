@@ -74,7 +74,8 @@ bool validFilename(const char *filename) {
         return true;
     };
     return endsWith(".hlv") || endsWith(".avi") ||
-           endsWith(".bpv1") || endsWith(".txt");
+           endsWith(".bpv1") || endsWith(".mpg") ||
+           endsWith(".mpeg") || endsWith(".txt");
 }
 
 bool supportedDataBaud(uint32_t baud) {
