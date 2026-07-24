@@ -137,10 +137,18 @@ typedef struct HLV1Frame {
     uint8_t *y;
     uint8_t *u;
     uint8_t *v;
+    int correction_stride_y;
+    int correction_stride_u;
+    int correction_stride_v;
+    int8_t *correction_storage;
+    int8_t *correction_y;
+    int8_t *correction_u;
+    int8_t *correction_v;
 } HLV1Frame;
 
 /* ESP-class compact frame storage. Samples are packed little-endian within
- * each byte-aligned row and expand back onto an MSB-aligned 8-bit grid. */
+ * each byte-aligned row. A signed Q4 correction per 8x8 plane block preserves
+ * the discarded local average when samples expand back to 8 bits. */
 #define HLV1_FRAME_STORAGE_CONTIGUOUS 0
 #define HLV1_FRAME_STORAGE_PLANAR 1
 #define HLV1_FRAME_STORAGE_Y6_U5_V5 2
@@ -154,6 +162,26 @@ static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
     if (shift + bits > 8U) value |= (unsigned)row[byte + 1] << 8;
     value = (value >> shift) & ((1U << bits) - 1U);
     return (uint8_t)(value << (8U - bits));
+}
+
+/* The signed correction is a Q4 block average.  A fixed 4x4 threshold map
+ * distributes its fractional part without extra state, so every 8x8 block
+ * retains the discarded average to 1/16 sample. */
+static inline int hlv1_frame_compact_correction(const int8_t *correction,
+                                                 int correction_stride,
+                                                 int x, int y) {
+    static const uint8_t threshold[16] = {
+         0,  8,  2, 10,
+        12,  4, 14,  6,
+         3, 11,  1,  9,
+        15,  7, 13,  5
+    };
+    if (!correction) return 0;
+    int q4 = correction[(y >> 3) * correction_stride + (x >> 3)];
+    int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+    int fraction = q4 - whole * 16;
+    unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
+    return whole + (threshold[phase] < fraction);
 }
 
 /* Expand a consecutive span without repeating bit-offset multiplication and
@@ -181,28 +209,46 @@ static inline void hlv1_frame_unpack_packed_samples(const uint8_t *row,
     }
 }
 
+static inline void hlv1_frame_unpack_corrected_samples(
+    const uint8_t *row, int x, int y, unsigned bits,
+    const int8_t *correction, int correction_stride,
+    uint8_t *output, int count) {
+    hlv1_frame_unpack_packed_samples(row, x, bits, output, count);
+    for (int i = 0; i < count; ++i) {
+        int value = output[i] + hlv1_frame_compact_correction(
+            correction, correction_stride, x + i, y);
+        output[i] = (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
+    }
+}
+
 static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->y + y * frame->stride_y;
-    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
-               ? hlv1_frame_packed_sample(row, x, 6)
-               : row[x];
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
+    int value = hlv1_frame_packed_sample(row, x, 6) +
+                hlv1_frame_compact_correction(
+                    frame->correction_y, frame->correction_stride_y, x, y);
+    return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
 }
 
 static inline uint8_t hlv1_frame_u_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->u + y * frame->stride_u;
-    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
-               ? hlv1_frame_packed_sample(row, x, 5)
-               : row[x];
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
+    int value = hlv1_frame_packed_sample(row, x, 5) +
+                hlv1_frame_compact_correction(
+                    frame->correction_u, frame->correction_stride_u, x, y);
+    return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
 }
 
 static inline uint8_t hlv1_frame_v_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->v + y * frame->stride_v;
-    return frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5
-               ? hlv1_frame_packed_sample(row, x, 5)
-               : row[x];
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
+    int value = hlv1_frame_packed_sample(row, x, 5) +
+                hlv1_frame_compact_correction(
+                    frame->correction_v, frame->correction_stride_v, x, y);
+    return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
 }
 
 /**

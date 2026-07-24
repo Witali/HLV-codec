@@ -382,6 +382,7 @@ int hlv1_frame_alloc(HLV1Frame *f, int width, int height) {
 
 void hlv1_frame_free(HLV1Frame *f) {
     if (!f) return;
+    free(f->correction_storage);
     if (f->storage_mode != HLV1_FRAME_STORAGE_CONTIGUOUS) {
         free(f->u);
         free(f->v);

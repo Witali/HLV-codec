@@ -250,12 +250,14 @@ display DMA timing.
   uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
   39,678 bytes for these three MJPEG allocations instead of a full-frame
   design's 144,638 bytes.
-- Video: two packed Y6/U5/V5 4:2:0 frames plus a macroblock-row work area;
-  138,240 bytes at 320x180 instead of 184,320 bytes for two 8-bit frames.
-  Stream v13 literal blocks are copied directly into this packed storage. BPV
-  instead retains two 32,400-byte block-record frames plus its bounded
-  dictionaries; the complete BPV decoder allocation is about 105 KiB at
-  320x180 and has no full RGB frame.
+- Video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
+  8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
+  instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
+  tables preserve each block's discarded average to 1/16 sample. Stream v13
+  literal blocks are copied directly into this packed storage with zero
+  correction. BPV instead retains two 32,400-byte block-record frames plus its
+  bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
+  at 320x180 and has no full RGB frame.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded

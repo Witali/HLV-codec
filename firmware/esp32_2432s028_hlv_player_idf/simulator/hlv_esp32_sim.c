@@ -45,6 +45,24 @@ static uint64_t hash_bytes(uint64_t hash, const uint8_t *data, size_t size) {
 }
 
 static uint64_t hash_frame(uint64_t hash, const HLV1Frame *frame) {
+    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
+        for (int y = 0; y < frame->padded_height; ++y)
+            for (int x = 0; x < frame->padded_width; ++x) {
+                uint8_t sample = hlv1_frame_y_sample(frame, x, y);
+                hash = hash_bytes(hash, &sample, 1);
+            }
+        for (int y = 0; y < frame->padded_height / 2; ++y)
+            for (int x = 0; x < frame->padded_width / 2; ++x) {
+                uint8_t sample = hlv1_frame_u_sample(frame, x, y);
+                hash = hash_bytes(hash, &sample, 1);
+            }
+        for (int y = 0; y < frame->padded_height / 2; ++y)
+            for (int x = 0; x < frame->padded_width / 2; ++x) {
+                uint8_t sample = hlv1_frame_v_sample(frame, x, y);
+                hash = hash_bytes(hash, &sample, 1);
+            }
+        return hash;
+    }
     size_t y_size = (size_t)frame->stride_y * frame->padded_height;
     size_t c_height = (size_t)frame->padded_height / 2U;
     hash = hash_bytes(hash, frame->y, y_size);
@@ -119,8 +137,11 @@ static size_t compact_frame_working_bytes(const HLV1Header *header) {
     size_t height = ((size_t)header->height + 15U) & ~(size_t)15U;
     size_t packed_frame = width * 6U / 8U * height +
                           2U * (width / 2U * 5U / 8U) * (height / 2U);
+    size_t corrections =
+        width / 8U * (height / 8U) +
+        2U * (width / 16U) * (height / 16U);
     size_t working_rows = width * 16U + 2U * (width / 2U) * 8U;
-    return 2U * packed_frame + working_rows;
+    return 2U * (packed_frame + corrections) + working_rows;
 }
 
 static void usage(const char *program) {
@@ -207,12 +228,14 @@ int main(int argc, char **argv) {
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
     if (stats.frames) {
         printf("Modes/frame: skip %.2f, inter %.2f, global %.2f, split %.2f, "
-               "palette %.2f (2/4/8 %.2f/%.2f/%.2f), literal %.2f; "
+               "fill %.2f, palette %.2f (2/4/8 %.2f/%.2f/%.2f), "
+               "literal %.2f; "
                "coeff %.1f, WHT %.1f\n",
                (double)stats.skipped / stats.frames,
                (double)stats.inter / stats.frames,
                (double)stats.global / stats.frames,
                (double)stats.split_inter / stats.frames,
+               (double)stats.fill / stats.frames,
                (double)stats.palette / stats.frames,
                (double)stats.palette_2 / stats.frames,
                (double)stats.palette_4 / stats.frames,

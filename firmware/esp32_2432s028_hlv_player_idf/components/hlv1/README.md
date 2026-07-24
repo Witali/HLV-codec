@@ -11,5 +11,10 @@ The snapshot is copied from the repository's `codecs/hlv/include/hlv1.h`,
 absent; section garbage collection removes the unused encoder-side helpers
 which remain in the shared common source.
 
-The snapshot accepts syntax v1-v13. Its compact v13 `LITERAL` path copies
-byte-aligned Y6/U5/V5 rows directly into the predictive planes.
+The snapshot accepts syntax v1-v13. Compact references store Y6/U5/V5 samples
+plus one signed Q4 local-average correction per 8x8 plane block. Motion
+compensation, intra prediction and display expansion apply the same
+deterministic correction, while zero-motion `SKIP` copies it with the packed
+macroblock. The v13 `LITERAL` path copies byte-aligned rows directly and
+records zero correction because those samples are already quantized by the
+stream syntax.

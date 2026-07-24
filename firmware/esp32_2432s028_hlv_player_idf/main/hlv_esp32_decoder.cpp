@@ -26,15 +26,21 @@ int HlvEsp32Decoder::begin(const HLV1Header &header,
     const size_t packed_frame_bytes =
         padded_width * padded_height * 6U / 8U +
         2U * (padded_width / 2U) * (padded_height / 2U) * 5U / 8U;
+    const size_t correction_frame_bytes =
+        (padded_width / 8U) * (padded_height / 8U) +
+        2U * (padded_width / 16U) * (padded_height / 16U);
     const size_t compact_work_bytes =
         padded_width * 16U + 2U * (padded_width / 2U) * 8U;
     const size_t selected_frame_bytes = compact_yuv_
-                                            ? 2U * packed_frame_bytes +
+                                            ? 2U * (packed_frame_bytes +
+                                                    correction_frame_bytes) +
                                                   compact_work_bytes
                                             : 2U * full_frame_bytes;
     ESP_LOGI(kTag,
              "Core ready (%s): heap=%u largest=%u, DMA=%u largest-DMA=%u",
-             compact_yuv_ ? "packed Y6/U5/V5 4:2:0" : "8-bit YUV 4:2:0",
+             compact_yuv_
+                 ? "packed Y6/U5/V5 + Q4 corrections"
+                 : "8-bit YUV 4:2:0",
              static_cast<unsigned>(
                  heap_caps_get_free_size(MALLOC_CAP_8BIT)),
              static_cast<unsigned>(

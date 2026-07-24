@@ -364,12 +364,18 @@ void convertNativeRow(const HLV1Frame *frame, int source_y,
     const uint8_t *u_row = frame->u + chroma_y * frame->stride_u;
     const uint8_t *v_row = frame->v + chroma_y * frame->stride_v;
     if (frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
-        hlv1_frame_unpack_packed_samples(
-            y_row, 0, 6, native_y_row, frame->width);
-        hlv1_frame_unpack_packed_samples(
-            u_row, 0, 5, native_u_row, (frame->width + 1) / 2);
-        hlv1_frame_unpack_packed_samples(
-            v_row, 0, 5, native_v_row, (frame->width + 1) / 2);
+        hlv1_frame_unpack_corrected_samples(
+            y_row, 0, source_y, 6,
+            frame->correction_y, frame->correction_stride_y,
+            native_y_row, frame->width);
+        hlv1_frame_unpack_corrected_samples(
+            u_row, 0, chroma_y, 5,
+            frame->correction_u, frame->correction_stride_u,
+            native_u_row, (frame->width + 1) / 2);
+        hlv1_frame_unpack_corrected_samples(
+            v_row, 0, chroma_y, 5,
+            frame->correction_v, frame->correction_stride_v,
+            native_v_row, (frame->width + 1) / 2);
         y_row = native_y_row;
         u_row = native_u_row;
         v_row = native_v_row;
@@ -1457,7 +1463,7 @@ bool openVideo() {
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred",
-                 decoder.compactYuv() ? "packed Y6/U5/V5 4:2:0"
+                 decoder.compactYuv() ? "packed Y6/U5/V5 + Q4 corrections"
                                       : "8-bit YUV 4:2:0");
     }
     reportHeap("decoder ready");

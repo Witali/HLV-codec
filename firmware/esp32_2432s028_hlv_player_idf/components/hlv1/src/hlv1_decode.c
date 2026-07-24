@@ -79,17 +79,33 @@ static int compact_frame_alloc(HLV1Frame *f, int width, int height) {
     f->storage_mode = HLV1_FRAME_STORAGE_Y6_U5_V5;
     size_t y_size = (size_t)f->stride_y * f->padded_height;
     size_t c_size = (size_t)f->stride_u * (f->padded_height / 2);
+    f->correction_stride_y = f->padded_width / 8;
+    f->correction_stride_u = f->padded_width / 16;
+    f->correction_stride_v = f->correction_stride_u;
+    size_t y_correction_size =
+        (size_t)f->correction_stride_y * (f->padded_height / 8);
+    size_t c_correction_size =
+        (size_t)f->correction_stride_u * (f->padded_height / 16);
     f->y = (uint8_t *)malloc(y_size);
     f->u = (uint8_t *)malloc(c_size);
     f->v = (uint8_t *)malloc(c_size);
+    f->correction_storage =
+        (int8_t *)malloc(y_correction_size + 2 * c_correction_size);
+    if (f->correction_storage) {
+        f->correction_y = f->correction_storage;
+        f->correction_u = f->correction_y + y_correction_size;
+        f->correction_v = f->correction_u + c_correction_size;
+    }
     f->storage = f->y;
-    if (!f->y || !f->u || !f->v) {
+    if (!f->y || !f->u || !f->v || !f->correction_storage) {
         hlv1_frame_free(f);
         return HLV1_ERR_MEMORY;
     }
     memset(f->y, 0, y_size);
     memset(f->u, 0, c_size);
     memset(f->v, 0, c_size);
+    memset(f->correction_storage, 0,
+           y_correction_size + 2 * c_correction_size);
     return HLV1_OK;
 }
 
@@ -126,12 +142,26 @@ static uint8_t compact_quantize_code(uint8_t *value, unsigned shift,
     return (uint8_t)code;
 }
 
-static void compact_store_luma16(uint8_t *dst, uint8_t *src) {
+static int8_t compact_error_q4(int sum) {
+    return (int8_t)(sum >= 0 ? (sum + 2) / 4 : -((-sum + 2) / 4));
+}
+
+static void compact_store_luma16(uint8_t *dst, uint8_t *src,
+                                 int error_sum[2]) {
     for (int x = 0; x < 16; x += 4) {
+        uint8_t oa = src[x];
+        uint8_t ob = src[x + 1];
+        uint8_t oc = src[x + 2];
+        uint8_t od = src[x + 3];
         uint8_t a = compact_quantize_code(&src[x], 2, 63);
         uint8_t b = compact_quantize_code(&src[x + 1], 2, 63);
         uint8_t c = compact_quantize_code(&src[x + 2], 2, 63);
         uint8_t d = compact_quantize_code(&src[x + 3], 2, 63);
+        int *sum = &error_sum[x >> 3];
+        *sum += (int)oa - src[x];
+        *sum += (int)ob - src[x + 1];
+        *sum += (int)oc - src[x + 2];
+        *sum += (int)od - src[x + 3];
         dst[0] = (uint8_t)(a | (b << 6));
         dst[1] = (uint8_t)((b >> 2) | (c << 4));
         dst[2] = (uint8_t)((c >> 4) | (d << 2));
@@ -139,7 +169,10 @@ static void compact_store_luma16(uint8_t *dst, uint8_t *src) {
     }
 }
 
-static void compact_store_chroma8(uint8_t *dst, uint8_t *src) {
+static void compact_store_chroma8(uint8_t *dst, uint8_t *src,
+                                  int *error_sum) {
+    uint8_t original[8];
+    memcpy(original, src, sizeof original);
     uint8_t a = compact_quantize_code(&src[0], 3, 31);
     uint8_t b = compact_quantize_code(&src[1], 3, 31);
     uint8_t c = compact_quantize_code(&src[2], 3, 31);
@@ -148,6 +181,8 @@ static void compact_store_chroma8(uint8_t *dst, uint8_t *src) {
     uint8_t f = compact_quantize_code(&src[5], 3, 31);
     uint8_t g = compact_quantize_code(&src[6], 3, 31);
     uint8_t h = compact_quantize_code(&src[7], 3, 31);
+    for (int x = 0; x < 8; ++x)
+        *error_sum += (int)original[x] - src[x];
     dst[0] = (uint8_t)(a | (b << 5));
     dst[1] = (uint8_t)((b >> 3) | (c << 2) | (d << 7));
     dst[2] = (uint8_t)((d >> 1) | (e << 4));
@@ -158,11 +193,13 @@ static void compact_store_chroma8(uint8_t *dst, uint8_t *src) {
 static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     HLV1Frame *unpacked = &d->current;
     HLV1Frame *packed = &d->compact_current;
+    int error_sum[6] = {0, 0, 0, 0, 0, 0};
     uint8_t *luma_src = unpacked->y + mb_x;
     uint8_t *luma_dst = packed->y + mb_y * packed->stride_y +
                         mb_x * 6 / 8;
     for (int y = 0; y < 16; ++y) {
-        compact_store_luma16(luma_dst, luma_src);
+        compact_store_luma16(
+            luma_dst, luma_src, &error_sum[(y >> 3) << 1]);
         luma_src += unpacked->stride_y;
         luma_dst += packed->stride_y;
     }
@@ -175,13 +212,25 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     uint8_t *u_dst = packed->u + chroma_y * packed->stride_u + chroma_byte;
     uint8_t *v_dst = packed->v + chroma_y * packed->stride_v + chroma_byte;
     for (int y = 0; y < 8; ++y) {
-        compact_store_chroma8(u_dst, u_src);
-        compact_store_chroma8(v_dst, v_src);
+        compact_store_chroma8(u_dst, u_src, &error_sum[4]);
+        compact_store_chroma8(v_dst, v_src, &error_sum[5]);
         u_src += unpacked->stride_u;
         v_src += unpacked->stride_v;
         u_dst += packed->stride_u;
         v_dst += packed->stride_v;
     }
+    int y_tile_x = mb_x / 8;
+    int y_tile_y = mb_y / 8;
+    for (int row = 0; row < 2; ++row)
+        for (int column = 0; column < 2; ++column)
+            packed->correction_y[
+                (y_tile_y + row) * packed->correction_stride_y +
+                y_tile_x + column] =
+                compact_error_q4(error_sum[row * 2 + column]);
+    int chroma_index =
+        (mb_y / 16) * packed->correction_stride_u + mb_x / 16;
+    packed->correction_u[chroma_index] = compact_error_q4(error_sum[4]);
+    packed->correction_v[chroma_index] = compact_error_q4(error_sum[5]);
 }
 
 /* A zero-motion SKIP already has exactly the representation required by the
@@ -216,6 +265,20 @@ static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
         u_dst += dst->stride_u;
         v_dst += dst->stride_v;
     }
+    int y_tile_x = mb_x / 8;
+    int y_tile_y = mb_y / 8;
+    for (int row = 0; row < 2; ++row) {
+        memcpy(
+            dst->correction_y +
+                (y_tile_y + row) * dst->correction_stride_y + y_tile_x,
+            src->correction_y +
+                (y_tile_y + row) * src->correction_stride_y + y_tile_x,
+            2);
+    }
+    int chroma_index =
+        (mb_y / 16) * dst->correction_stride_u + mb_x / 16;
+    dst->correction_u[chroma_index] = src->correction_u[chroma_index];
+    dst->correction_v[chroma_index] = src->correction_v[chroma_index];
 }
 
 static void compact_fill_macroblock(HLV1Decoder *d, int mb_x, int mb_y,
@@ -261,6 +324,21 @@ static void compact_fill_macroblock(HLV1Decoder *d, int mb_x, int mb_y,
             row += packed->stride_u;
         }
     }
+    int y_tile_x = mb_x / 8;
+    int y_tile_y = mb_y / 8;
+    int8_t y_correction =
+        (int8_t)(((int)means[0] - values[0]) * 16);
+    for (int row = 0; row < 2; ++row)
+        for (int column = 0; column < 2; ++column)
+            packed->correction_y[
+                (y_tile_y + row) * packed->correction_stride_y +
+                y_tile_x + column] = y_correction;
+    int correction_index =
+        (mb_y / 16) * packed->correction_stride_u + mb_x / 16;
+    packed->correction_u[correction_index] =
+        (int8_t)(((int)means[1] - values[1]) * 16);
+    packed->correction_v[correction_index] =
+        (int8_t)(((int)means[2] - values[2]) * 16);
     HLV1_STAT_ADD(d, fill_samples, 384);
 }
 
@@ -338,26 +416,36 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
             HLV1_PRED_STAT_ADD(stats, interpolated_bilinear_samples,
                                (uint64_t)w * h);
         const uint8_t *packed_base;
+        const int8_t *correction_base;
         int packed_stride;
+        int correction_stride;
         unsigned packed_bits;
         if (src_plane == HLV1_PLANE_Y) {
             packed_base = src_frame->y;
+            correction_base = src_frame->correction_y;
             packed_stride = src_frame->stride_y;
+            correction_stride = src_frame->correction_stride_y;
             packed_bits = 6;
         } else if (src_plane == HLV1_PLANE_U) {
             packed_base = src_frame->u;
+            correction_base = src_frame->correction_u;
             packed_stride = src_frame->stride_u;
+            correction_stride = src_frame->correction_stride_u;
             packed_bits = 5;
         } else {
             packed_base = src_frame->v;
+            correction_base = src_frame->correction_v;
             packed_stride = src_frame->stride_v;
+            correction_stride = src_frame->correction_stride_v;
             packed_bits = 5;
         }
         if (!fx && !fy) {
             for (int yy = 0; yy < h; ++yy) {
-                hlv1_frame_unpack_packed_samples(
+                hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy) * packed_stride,
-                    bx, packed_bits, dst + yy * dst_stride, w);
+                    bx, by + yy, packed_bits,
+                    correction_base, correction_stride,
+                    dst + yy * dst_stride, w);
             }
             return;
         }
@@ -371,9 +459,11 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
             int round = denominator >> 1;
             for (int yy = 0; yy < h; ++yy) {
                 uint8_t *out = dst + yy * dst_stride;
-                hlv1_frame_unpack_packed_samples(
+                hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy) * packed_stride,
-                    bx, packed_bits, top_samples, row_samples);
+                    bx, by + yy, packed_bits,
+                    correction_base, correction_stride,
+                    top_samples, row_samples);
                 for (int xx = 0; xx < w; ++xx) {
                     out[xx] = (uint8_t)(
                         (top_samples[xx] * inv_x +
@@ -387,12 +477,16 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
             int round = denominator >> 1;
             for (int yy = 0; yy < h; ++yy) {
                 uint8_t *out = dst + yy * dst_stride;
-                hlv1_frame_unpack_packed_samples(
+                hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy) * packed_stride,
-                    bx, packed_bits, top_samples, w);
-                hlv1_frame_unpack_packed_samples(
+                    bx, by + yy, packed_bits,
+                    correction_base, correction_stride,
+                    top_samples, w);
+                hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy + 1) * packed_stride,
-                    bx, packed_bits, bottom_samples, w);
+                    bx, by + yy + 1, packed_bits,
+                    correction_base, correction_stride,
+                    bottom_samples, w);
                 for (int xx = 0; xx < w; ++xx) {
                     out[xx] = (uint8_t)(
                         (top_samples[xx] * inv_y +
@@ -406,13 +500,17 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         unsigned bilinear_shift = denominator_shift * 2U;
         for (int yy = 0; yy < h; ++yy) {
             uint8_t *out = dst + yy * dst_stride;
-            hlv1_frame_unpack_packed_samples(
+            hlv1_frame_unpack_corrected_samples(
                 packed_base + (by + yy) * packed_stride,
-                bx, packed_bits, top_samples, row_samples);
+                bx, by + yy, packed_bits,
+                correction_base, correction_stride,
+                top_samples, row_samples);
             if (fy) {
-                hlv1_frame_unpack_packed_samples(
+                hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy + 1) * packed_stride,
-                    bx, packed_bits, bottom_samples, row_samples);
+                    bx, by + yy + 1, packed_bits,
+                    correction_base, correction_stride,
+                    bottom_samples, row_samples);
             }
             for (int xx = 0; xx < w; ++xx) {
                 int top_left = top_samples[xx];
@@ -704,7 +802,21 @@ static int decode_literal(HLV1Decoder *d, HLV1BitReader *br,
             r = read_literal_bytes(br, v_dst, 5);
             v_dst += packed->stride_v;
         }
-        if (r >= 0) *compact_output_ready = 1;
+        if (r >= 0) {
+            int y_tile_x = x / 8;
+            int y_tile_y = y / 8;
+            for (int row = 0; row < 2; ++row)
+                memset(
+                    packed->correction_y +
+                        (y_tile_y + row) * packed->correction_stride_y +
+                        y_tile_x,
+                    0, 2);
+            int correction_index =
+                (y / 16) * packed->correction_stride_u + x / 16;
+            packed->correction_u[correction_index] = 0;
+            packed->correction_v[correction_index] = 0;
+            *compact_output_ready = 1;
+        }
     } else {
         HLV1Frame *cur = &d->current;
         for (int yy = 0; r >= 0 && yy < 16; ++yy)
