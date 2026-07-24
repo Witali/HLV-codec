@@ -35,6 +35,8 @@ class AudioRecord:
     silence_chunks: int
     loop_events: int
     loop_chunks: int
+    decode_frames: int
+    decode_us: int
 
 
 @dataclass(frozen=True)
@@ -73,12 +75,14 @@ def parse_frame(line: str) -> FrameRecord | None:
 
 def parse_audio(line: str) -> AudioRecord | None:
     fields = line.split(",")
-    if len(fields) != 10 or fields[0] != "A":
+    if len(fields) not in (10, 12) or fields[0] != "A":
         return None
     try:
         values = [int(value) for value in fields[1:]]
     except ValueError:
         return None
+    if len(values) == 9:
+        values.extend((0, 0))
     return AudioRecord(*values)
 
 
@@ -236,7 +240,10 @@ def main() -> int:
         f"rebuffers={last.rebuffers} "
         f"underrun_samples={last.underrun_samples} "
         f"silence_chunks={last.silence_chunks} "
-        f"loop_events={last.loop_events} loop_chunks={last.loop_chunks}"
+        f"loop_events={last.loop_events} loop_chunks={last.loop_chunks} "
+        f"mp2_decode_frames={last.decode_frames} "
+        f"mp2_decode_avg_us="
+        f"{last.decode_us / last.decode_frames if last.decode_frames else 0:.1f}"
     )
     if not args.allow_audio_underrun and (
         last.rebuffers or last.underrun_samples or last.silence_chunks

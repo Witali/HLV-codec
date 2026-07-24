@@ -85,6 +85,24 @@ memory-safe but not real-time at 30 fps on this board. Moving the hot decoder
 path to IRAM improved decode time by only about 0.5% while consuming 19.6 KiB
 of IRAM, so that experiment was not retained.
 
+### Fixed-point evaluation
+
+The video hot path is already integer: VLC parsing, motion compensation,
+residual reconstruction, IDCT and RGB565 conversion do not use floating-point
+math. The remaining per-frame `double` operation only updates PL_MPEG's
+unused presentation timestamp. Removing it measured 61.70 ms/frame in the
+clean hardware run versus 61.61--61.73 ms/frame for the original code, so it
+was not retained.
+
+MP2 synthesis is the significant floating-point path. An experimental Q-format
+window replaced 36,864 float multiply-accumulates per MP2 frame with scaled
+integer operations. Its host output retained 79.7 dB SNR relative to the float
+decoder, but the ESP32 hardware result regressed from 19.23 ms to
+20.11--20.45 ms per MP2 frame and increased the 120-frame test's underrun from
+1,280 to 5,632 samples. ESP32 LX6 has a hardware single-precision FPU, while
+the extra scaling and float-to-integer conversions outweighed the integer
+windowing gain. The production decoder therefore keeps the float MP2 path.
+
 ## Windows validation
 
 The native player needs no external codec at runtime:

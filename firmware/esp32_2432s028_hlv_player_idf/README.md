@@ -164,8 +164,12 @@ written, so its own UART transmission is excluded from that frame's values.
 With audio enabled, every 30th frame also emits:
 
 ```text
-A,frame,queued,pending,played,rebuffers,underrun_samples,silence_chunks,loop_events,loop_chunks
+A,frame,queued,pending,played,rebuffers,underrun_samples,silence_chunks,loop_events,loop_chunks,mp2_decode_frames,mp2_decode_us
 ```
+
+The last two cumulative fields measure only `plm_decode_audio()` work. The
+collector reports their ratio as average MP2 decode time; non-MPEG formats
+leave both fields at zero.
 
 The local collector resets the application without entering the ROM
 bootloader, rejects frame-sequence gaps, and fails if any rebuffer or missing
