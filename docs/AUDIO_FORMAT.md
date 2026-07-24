@@ -81,5 +81,7 @@ Extract video and raw audio:
 ```
 
 The ESP32 preparation script performs resampling, mono downmixing and muxing
-automatically.  `-NoAudio` creates a video-only file; `-AudioRate` and
-`-AudioVolume` control conversion.
+automatically. Its default peak-detected level curve is calibrated to
+`-AudioPeakDb -0.1` without a separate volume filter or limiter.
+`-NoAudioNormalization` keeps only the required mono downmix and resampling,
+while `-NoAudio` creates a video-only file.

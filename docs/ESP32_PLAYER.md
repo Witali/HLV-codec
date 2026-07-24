@@ -177,21 +177,23 @@ To convert an existing video:
 ```
 
 The first audio stream is automatically downmixed to mono, resampled to
-16 kHz and muxed into the HLV file. A mild compressor defaults to -18 dB,
-2.5:1, 20 ms attack, 250 ms release and +2 dB makeup before the deliberately
-low 20% output level. This makes dialogue more audible without harsh peaks on
-the onboard amplifier. Conversion controls include:
+16 kHz and muxed into the HLV file. The default audio path uses one smooth,
+peak-detected level curve with a -20 dB threshold, 1.6:1 ratio, 0.01 ms attack,
+250 ms release and a wide soft knee. A measurement pass calibrates the curve's
+output so the actual source peak reaches -0.1 dBFS without a separate volume
+filter or limiter. Quiet material is raised relative to loud material while
+the full PCM range remains available. Conversion controls include:
 
 ```powershell
-# Quieter 16 kHz audio
-.\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 -AudioVolume 0.10
+# Leave additional headroom
+.\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 -AudioPeakDb -1
 
 # Video only
 .\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 -NoAudio
 
-# Disable dynamic-range compression
+# Downmix and resample without the level curve
 .\scripts\prepare_esp32_video.ps1 -InputFile C:\Videos\clip.mp4 `
-    -NoAudioCompression
+    -NoAudioNormalization
 ```
 
 The result is `out\video.hlv`. Copy it to the root of a FAT16/FAT32 card under
