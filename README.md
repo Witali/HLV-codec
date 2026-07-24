@@ -17,6 +17,11 @@ The second device codec is the standard
 native source frame rate, and muxes PCM_U8 audio through the same saved level
 curve as the HLV preset.
 
+The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
+Stream with MPEG-1 Video and MP2 audio. Its ESP32-safe variant is 240x180,
+contains only I/P pictures, and uses a two-frame, 8 KiB-buffered decoder. The
+same files play in the native Windows application.
+
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
 and block/pattern dictionaries. The package includes a bounded-memory,
@@ -94,7 +99,8 @@ native 24 fps. The script uses eight C GOP workers by default:
 
 ## Native Windows player
 
-The desktop build produces `build\msvc\hlvplay.exe`, a native HLV/BPV player
+The desktop build produces `build\msvc\hlvplay.exe`, a native
+HLV/BPV/MPEG-1 player
 that uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg
 and external codec packs are not needed at runtime. It plays embedded HLV
 PCM_U8 mono, preserves the video aspect ratio, and supports pause/resume,
@@ -105,6 +111,7 @@ keyframe-aware timeline seeking, native-size centred display and drag-and-drop:
 .\build\msvc\hlvplay.exe .\out\video.hlv
 .\build\msvc\hlvplay.exe `
     .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
+.\build\msvc\hlvplay.exe .\out\video.mpg
 ```
 
 See [`docs/WINDOWS_PLAYER.md`](docs/WINDOWS_PLAYER.md) for controls and the
@@ -112,10 +119,11 @@ headless full-file validation mode.
 
 ## ESP32-2432S028 playback
 
-The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG or BPV1 from a FAT32
+The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1 or the
+constrained MPEG-1/MP2 profile from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
-320x240 ST7789 over SPI2 DMA. HLV and MJPEG PCM_U8 tracks play through DAC
-GPIO26 DMA and the onboard amplifier; BPV1 is video-only. The BPV1 path keeps
+320x240 ST7789 over SPI2 DMA. HLV/MJPEG PCM_U8 and decoded MPEG MP2 play
+through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
 DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX
