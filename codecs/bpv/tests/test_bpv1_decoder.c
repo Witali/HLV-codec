@@ -71,6 +71,73 @@ static int make_stream(FILE *file) {
     return fseek(file, 0, SEEK_SET);
 }
 
+static int make_eviction_stream(FILE *file) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t records[3][BPV1_RECORD_BYTES] = {
+        {0, 0, 1, 2, 3, 0x00, 0x00, 0x00, 0x00},
+        {0, 0, 1, 2, 3, 0x55, 0x55, 0x55, 0x55},
+        {0, 0, 1, 2, 3, 0xaa, 0xaa, 0xaa, 0xaa}
+    };
+    const uint8_t dictionary_zero[2] = {0, 0};
+    const uint8_t dictionary_one[2] = {1, 0};
+
+    if (fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_VERSION) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u32(file, 5) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 5) ||
+        write_u16(file, 2) || write_u16(file, 2) ||
+        write_u8(file, 1) || write_u8(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_frame(file, 1, 4, records[0], sizeof records[0]) ||
+        write_frame(file, 0, 4, records[1], sizeof records[1]) ||
+        write_frame(file, 0, 4, records[2], sizeof records[2]) ||
+        write_frame(file, 0, 2, dictionary_zero,
+                    sizeof dictionary_zero) ||
+        write_frame(file, 0, 2, dictionary_one,
+                    sizeof dictionary_one)) {
+        return -1;
+    }
+    return fseek(file, 0, SEEK_SET);
+}
+
+static int test_dictionary_eviction(void) {
+    static const uint8_t expected_patterns[5] = {
+        0x00, 0x55, 0xaa, 0x55, 0xaa
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    int frame_index;
+    int result = 1;
+    if (!file || make_eviction_stream(file) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        !(decoder = bpv1_decoder_create(&header))) {
+        fprintf(stderr, "BPV1 dictionary eviction setup failed\n");
+        goto cleanup;
+    }
+    for (frame_index = 0; frame_index < 5; ++frame_index) {
+        BPV1Packet packet;
+        const BPV1Frame *frame = NULL;
+        if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+            bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+            !frame ||
+            frame->blocks[5] != expected_patterns[frame_index]) {
+            fprintf(stderr,
+                    "BPV1 dictionary eviction frame %d failed\n",
+                    frame_index);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
 static int validate_file(const char *path) {
     FILE *file = fopen(path, "rb");
     BPV1Header header;
@@ -184,6 +251,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
     }
+    if (test_dictionary_eviction()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

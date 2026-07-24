@@ -16,11 +16,16 @@ enum {
 
 typedef struct {
     uint8_t *entries;
+    uint16_t *buckets;
+    uint16_t *next;
+    uint32_t bucket_count;
     uint32_t capacity;
     uint32_t count;
     uint32_t start;
     size_t stride;
 } Dictionary;
+
+#define DICTIONARY_NONE UINT16_MAX
 
 struct BPV1Decoder {
     BPV1Header header;
@@ -97,37 +102,141 @@ static uint8_t *dictionary_entry(const Dictionary *dictionary,
                                  uint32_t index) {
     uint32_t physical;
     if (!dictionary || index >= dictionary->count) return NULL;
-    physical = (dictionary->start + index) % dictionary->capacity;
+    physical = dictionary->start + index;
+    if (physical >= dictionary->capacity)
+        physical -= dictionary->capacity;
     return dictionary->entries + (size_t)physical * dictionary->stride;
 }
 
 static void dictionary_reset(Dictionary *dictionary) {
     dictionary->count = 0;
     dictionary->start = 0;
+    if (dictionary->buckets) {
+        memset(dictionary->buckets, 0xff,
+               (size_t)dictionary->bucket_count *
+                   sizeof *dictionary->buckets);
+    }
+}
+
+static uint32_t dictionary_hash(const uint8_t *value, size_t size) {
+    uint32_t hash = UINT32_C(2166136261);
+    size_t index;
+    for (index = 0; index < size; ++index) {
+        hash ^= value[index];
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+static int dictionary_value_equal(const uint8_t *left,
+                                  const uint8_t *right, size_t size) {
+    size_t index;
+    for (index = 0; index < size; ++index) {
+        if (left[index] != right[index]) return 0;
+    }
+    return 1;
+}
+
+static uint16_t dictionary_find_physical(
+    const Dictionary *dictionary, const uint8_t *value, uint32_t hash) {
+    uint16_t physical =
+        dictionary->buckets[hash & (dictionary->bucket_count - 1U)];
+    while (physical != DICTIONARY_NONE) {
+        const uint8_t *entry =
+            dictionary->entries +
+            (size_t)physical * dictionary->stride;
+        if (dictionary_value_equal(entry, value, dictionary->stride))
+            return physical;
+        physical = dictionary->next[physical];
+    }
+    return DICTIONARY_NONE;
+}
+
+static void dictionary_remove_physical(Dictionary *dictionary,
+                                       uint16_t physical) {
+    const uint8_t *entry =
+        dictionary->entries + (size_t)physical * dictionary->stride;
+    const uint32_t hash = dictionary_hash(entry, dictionary->stride);
+    uint16_t *link =
+        &dictionary->buckets[hash & (dictionary->bucket_count - 1U)];
+    while (*link != DICTIONARY_NONE) {
+        if (*link == physical) {
+            *link = dictionary->next[physical];
+            return;
+        }
+        link = &dictionary->next[*link];
+    }
 }
 
 static void dictionary_add_unique(Dictionary *dictionary,
                                   const uint8_t *value) {
-    uint32_t index;
+    const uint32_t hash = dictionary_hash(value, dictionary->stride);
     uint32_t physical;
-    for (index = 0; index < dictionary->count; ++index) {
-        if (!memcmp(dictionary_entry(dictionary, index), value,
-                    dictionary->stride)) {
-            return;
-        }
+    uint32_t bucket;
+    if (dictionary_find_physical(dictionary, value, hash) !=
+        DICTIONARY_NONE) {
+        return;
     }
+
     if (dictionary->count < dictionary->capacity) {
-        physical =
-            (dictionary->start + dictionary->count) % dictionary->capacity;
+        physical = dictionary->start + dictionary->count;
+        if (physical >= dictionary->capacity)
+            physical -= dictionary->capacity;
         dictionary->count++;
     } else {
-        dictionary->start =
-            (dictionary->start + 1U) % dictionary->capacity;
-        physical = (dictionary->start + dictionary->count - 1U) %
-                   dictionary->capacity;
+        physical = dictionary->start;
+        dictionary_remove_physical(dictionary, (uint16_t)physical);
+        if (++dictionary->start == dictionary->capacity)
+            dictionary->start = 0;
     }
     memcpy(dictionary->entries + (size_t)physical * dictionary->stride,
            value, dictionary->stride);
+    bucket = hash & (dictionary->bucket_count - 1U);
+    dictionary->next[physical] = dictionary->buckets[bucket];
+    dictionary->buckets[bucket] = (uint16_t)physical;
+}
+
+static int dictionary_allocate(Dictionary *dictionary, uint32_t capacity,
+                               size_t stride) {
+    uint32_t bucket_count = 1;
+    size_t entry_bytes;
+    size_t bucket_bytes;
+    size_t next_bytes;
+    while (bucket_count < capacity * 2U)
+        bucket_count <<= 1;
+    if (multiply_size(capacity, stride, &entry_bytes) ||
+        multiply_size(bucket_count, sizeof *dictionary->buckets,
+                      &bucket_bytes) ||
+        multiply_size(capacity, sizeof *dictionary->next, &next_bytes)) {
+        return BPV1_ERR_RANGE;
+    }
+    dictionary->entries = (uint8_t *)malloc(entry_bytes);
+    dictionary->buckets = (uint16_t *)malloc(bucket_bytes);
+    dictionary->next = (uint16_t *)malloc(next_bytes);
+    if (!dictionary->entries || !dictionary->buckets ||
+        !dictionary->next) {
+        return BPV1_ERR_MEMORY;
+    }
+    dictionary->bucket_count = bucket_count;
+    dictionary->capacity = capacity;
+    dictionary->stride = stride;
+    dictionary_reset(dictionary);
+    return BPV1_OK;
+}
+
+static void dictionary_destroy(Dictionary *dictionary) {
+    if (!dictionary) return;
+    free(dictionary->entries);
+    free(dictionary->buckets);
+    free(dictionary->next);
+    memset(dictionary, 0, sizeof *dictionary);
+}
+
+static size_t dictionary_memory_bytes(const Dictionary *dictionary) {
+    return (size_t)dictionary->capacity * dictionary->stride +
+           (size_t)dictionary->bucket_count *
+               sizeof *dictionary->buckets +
+           (size_t)dictionary->capacity * sizeof *dictionary->next;
 }
 
 static unsigned read_mode(const uint8_t *modes, uint32_t block_index) {
@@ -234,17 +343,9 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     BPV1Decoder *decoder = NULL;
     uint32_t blocks_x, blocks_y, block_count;
     size_t block_bytes, mode_bytes, packet_capacity;
-    size_t block_dictionary_bytes;
-    size_t pattern_dictionary_bytes;
     if (!header) return NULL;
     if (header_layout(header, &blocks_x, &blocks_y, &block_count,
                       &block_bytes, &mode_bytes, &packet_capacity)) {
-        return NULL;
-    }
-    if (multiply_size(header->max_block_dictionary, BPV1_RECORD_BYTES,
-                      &block_dictionary_bytes) ||
-        multiply_size(header->max_pattern_dictionary, BPV1_PATTERN_BYTES,
-                      &pattern_dictionary_bytes)) {
         return NULL;
     }
     decoder = (BPV1Decoder *)calloc(1, sizeof *decoder);
@@ -252,8 +353,15 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     decoder->previous = (uint8_t *)malloc(block_bytes);
     decoder->current = (uint8_t *)malloc(block_bytes);
     decoder->packet_data = (uint8_t *)malloc(packet_capacity);
-    decoder->blocks.entries = (uint8_t *)malloc(block_dictionary_bytes);
-    decoder->patterns.entries = (uint8_t *)malloc(pattern_dictionary_bytes);
+    if (dictionary_allocate(&decoder->blocks,
+                            header->max_block_dictionary,
+                            BPV1_RECORD_BYTES) != BPV1_OK ||
+        dictionary_allocate(&decoder->patterns,
+                            header->max_pattern_dictionary,
+                            BPV1_PATTERN_BYTES) != BPV1_OK) {
+        bpv1_decoder_destroy(decoder);
+        return NULL;
+    }
     if (!decoder->previous || !decoder->current || !decoder->packet_data ||
         !decoder->blocks.entries || !decoder->patterns.entries) {
         bpv1_decoder_destroy(decoder);
@@ -262,18 +370,15 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     decoder->header = *header;
     decoder->block_bytes = block_bytes;
     decoder->packet_capacity = packet_capacity;
-    decoder->blocks.capacity = header->max_block_dictionary;
-    decoder->blocks.stride = BPV1_RECORD_BYTES;
-    decoder->patterns.capacity = header->max_pattern_dictionary;
-    decoder->patterns.stride = BPV1_PATTERN_BYTES;
     decoder->frame.width = header->width;
     decoder->frame.height = header->height;
     decoder->frame.blocks_x = (uint16_t)blocks_x;
     decoder->frame.blocks_y = (uint16_t)blocks_y;
     decoder->frame.block_count = block_count;
     decoder->memory_bytes = sizeof *decoder + block_bytes * 2U +
-                            packet_capacity + block_dictionary_bytes +
-                            pattern_dictionary_bytes;
+                            packet_capacity +
+                            dictionary_memory_bytes(&decoder->blocks) +
+                            dictionary_memory_bytes(&decoder->patterns);
     bpv1_decoder_reset(decoder);
     return decoder;
 }
@@ -283,8 +388,8 @@ void bpv1_decoder_destroy(BPV1Decoder *decoder) {
     free(decoder->previous);
     free(decoder->current);
     free(decoder->packet_data);
-    free(decoder->blocks.entries);
-    free(decoder->patterns.entries);
+    dictionary_destroy(&decoder->blocks);
+    dictionary_destroy(&decoder->patterns);
     free(decoder);
 }
 
