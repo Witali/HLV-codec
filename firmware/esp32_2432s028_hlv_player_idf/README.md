@@ -256,11 +256,14 @@ display DMA timing.
   instead retains two 32,400-byte block-record frames plus its bounded
   dictionaries; the complete BPV decoder allocation is about 105 KiB at
   320x180 and has no full RGB frame.
-- MPEG-1: two packed Y6/U5/V5 reference frames plus one 8-bit macroblock row
-  (170,880 bytes total at 320x240), bounded 4 KiB read-ahead and elementary
-  buffers, and a separate audio-only PL_MPEG instance. Packed planes use
-  separate allocations. Files larger than 320x240 or containing B pictures
-  are rejected by the saved profile.
+- MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
+  per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
+  320x240). The correction tables add 3,600 bytes and preserve the discarded
+  local average to 1/16 sample during prediction and presentation. The player
+  also uses bounded 4 KiB read-ahead and elementary buffers plus a separate
+  audio-only PL_MPEG instance. Packed planes use separate allocations. Files
+  larger than 320x240 or containing B pictures are rejected by the saved
+  profile.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
   reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG uses
   the sequential CPU0 path. Only frame descriptors cross cores in the

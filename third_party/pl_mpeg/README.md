@@ -14,6 +14,10 @@ Local low-memory changes in `pl_mpeg.h`:
   metadata/decode query;
 - `PLM_VIDEO_NO_B_FRAMES` stores two video frames instead of three and assumes
   that the input contains only I/P pictures;
+- compact Y6/U5/V5 references retain one signed Q4 DC correction per 8x8
+  block.  The correction is applied during motion compensation and display
+  expansion, preserving each block's discarded average to 1/16 sample while
+  adding only 3,600 bytes for two 320x240 reference frames;
 - allocation failures are returned to the player instead of dereferencing a
   null buffer, and `PLM_VIDEO_MAX_FRAME_BYTES` bounds the padded frame size.
 

@@ -1529,26 +1529,6 @@ bool renderFrame(const HLV1Frame *frame) {
     return true;
 }
 
-void unpackMpegSamples(const uint8_t *row, int x, unsigned bits,
-                       uint8_t *output, int count) {
-    unsigned bit = static_cast<unsigned>(x) * bits;
-    const uint8_t *input = row + (bit >> 3);
-    unsigned cached = 8U - (bit & 7U);
-    unsigned window = static_cast<unsigned>(*input++) >> (bit & 7U);
-    const unsigned mask = (1U << bits) - 1U;
-    const unsigned output_shift = 8U - bits;
-    for (int i = 0; i < count; ++i) {
-        if (cached < bits) {
-            window |= static_cast<unsigned>(*input++) << cached;
-            cached += 8U;
-        }
-        output[i] =
-            static_cast<uint8_t>((window & mask) << output_shift);
-        window >>= bits;
-        cached -= bits;
-    }
-}
-
 void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, uint16_t *output, int output_width) {
     const uint8_t *y_row =
@@ -1563,15 +1543,20 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     const int chroma_width =
         (static_cast<int>(frame->width) + 1) >> 1;
     if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
-        unpackMpegSamples(y_row, 0, 6, native_y_row,
-                          static_cast<int>(frame->width));
+        plm_plane_unpack_compact_samples(
+            &frame->y, 0, source_y, 6, native_y_row,
+            static_cast<int>(frame->width));
         y_row = native_y_row;
     }
 
     if (chroma_y != mpeg_cached_chroma_y) {
         if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
-            unpackMpegSamples(cb_row, 0, 5, native_u_row, chroma_width);
-            unpackMpegSamples(cr_row, 0, 5, native_v_row, chroma_width);
+            plm_plane_unpack_compact_samples(
+                &frame->cb, 0, chroma_y, 5,
+                native_u_row, chroma_width);
+            plm_plane_unpack_compact_samples(
+                &frame->cr, 0, chroma_y, 5,
+                native_v_row, chroma_width);
             cb_row = native_u_row;
             cr_row = native_v_row;
         }

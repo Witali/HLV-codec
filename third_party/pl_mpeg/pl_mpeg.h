@@ -195,7 +195,30 @@ typedef struct {
 	unsigned int height;
 	unsigned int stride;
 	uint8_t *data;
+	unsigned int correction_stride;
+	int8_t *correction;
 } plm_plane_t;
+
+static inline int plm_plane_compact_correction(
+	const plm_plane_t *plane, int x, int y
+) {
+	static const uint8_t threshold[16] = {
+		 0,  8,  2, 10,
+		12,  4, 14,  6,
+		 3, 11,  1,  9,
+		15,  7, 13,  5
+	};
+	if (!plane->correction) {
+		return 0;
+	}
+	int q4 = plane->correction[
+		(unsigned)(y >> 3) * plane->correction_stride +
+		(unsigned)(x >> 3)];
+	int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+	int fraction = q4 - whole * 16;
+	unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
+	return whole + (threshold[phase] < fraction);
+}
 
 // Internal sample storage used by a decoded frame. The ordinary mode stores
 // one byte per sample. The compact mode is intended for constrained embedded
@@ -217,6 +240,53 @@ typedef struct {
 	plm_plane_t cr;
 	plm_plane_t cb;
 } plm_frame_t;
+
+static inline uint8_t plm_plane_compact_sample(
+	const plm_plane_t *plane, int x, int y, unsigned bits
+) {
+	const uint8_t *row = plane->data + (size_t)y * plane->stride;
+	unsigned bit = (unsigned)x * bits;
+	unsigned byte = bit >> 3;
+	unsigned shift = bit & 7U;
+	unsigned value = row[byte];
+	if (shift + bits > 8U) {
+		value |= (unsigned)row[byte + 1] << 8;
+	}
+	value = (value >> shift) & ((1U << bits) - 1U);
+	int corrected =
+		(int)(value << (8U - bits)) +
+		plm_plane_compact_correction(plane, x, y);
+	return (uint8_t)(
+		corrected < 0 ? 0 : (corrected > 255 ? 255 : corrected));
+}
+
+static inline void plm_plane_unpack_compact_samples(
+	const plm_plane_t *plane, int x, int y, unsigned bits,
+	uint8_t *output, int count
+) {
+	if (count <= 0) {
+		return;
+	}
+	unsigned bit = (unsigned)x * bits;
+	const uint8_t *input =
+		plane->data + (size_t)y * plane->stride + (bit >> 3);
+	unsigned cached = 8U - (bit & 7U);
+	unsigned window = (unsigned)*input++ >> (bit & 7U);
+	const unsigned mask = (1U << bits) - 1U;
+	const unsigned output_shift = 8U - bits;
+	for (int i = 0; i < count; ++i) {
+		if (cached < bits) {
+			window |= (unsigned)*input++ << cached;
+			cached += 8U;
+		}
+		int value = (int)((window & mask) << output_shift);
+		value += plm_plane_compact_correction(plane, x + i, y);
+		output[i] = (uint8_t)(
+			value < 0 ? 0 : (value > 255 ? 255 : value));
+		window >>= bits;
+		cached -= bits;
+	}
+}
 
 
 // Callback function type for decoded video frames used by the high-level
@@ -2831,7 +2901,7 @@ void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base);
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
 void plm_video_init_compact_frame(
 	plm_video_t *self, plm_frame_t *frame,
-	uint8_t *y, uint8_t *cr, uint8_t *cb
+	uint8_t *y, uint8_t *cr, uint8_t *cb, int8_t *corrections
 );
 void plm_video_init_row_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base);
 void plm_video_compact_copy_macroblock(plm_video_t *self);
@@ -2883,9 +2953,11 @@ void plm_video_destroy(plm_video_t *self) {
 		PLM_FREE(self->frame_forward.y.data);
 		PLM_FREE(self->frame_forward.cr.data);
 		PLM_FREE(self->frame_forward.cb.data);
+		PLM_FREE(self->frame_forward.y.correction);
 		PLM_FREE(self->frame_compact_current.y.data);
 		PLM_FREE(self->frame_compact_current.cr.data);
 		PLM_FREE(self->frame_compact_current.cb.data);
+		PLM_FREE(self->frame_compact_current.y.correction);
 #endif
 		PLM_FREE(self->frames_data);
 	}
@@ -3118,6 +3190,12 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 		packed_luma_stride * self->luma_height;
 	size_t packed_chroma_size =
 		packed_chroma_stride * self->chroma_height;
+	size_t luma_correction_size =
+		(size_t)(self->luma_width >> 3) * (self->luma_height >> 3);
+	size_t chroma_correction_size =
+		(size_t)(self->chroma_width >> 3) * (self->chroma_height >> 3);
+	size_t correction_size =
+		luma_correction_size + 2 * chroma_correction_size;
 	size_t row_frame_size =
 		self->luma_width * 16 +
 		2 * self->chroma_width * 8;
@@ -3127,10 +3205,14 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	uint8_t *current_y = (uint8_t*)PLM_MALLOC(packed_luma_size);
 	uint8_t *current_cr = (uint8_t*)PLM_MALLOC(packed_chroma_size);
 	uint8_t *current_cb = (uint8_t*)PLM_MALLOC(packed_chroma_size);
+	int8_t *forward_corrections = (int8_t*)PLM_MALLOC(correction_size);
+	int8_t *current_corrections = (int8_t*)PLM_MALLOC(correction_size);
 	self->frames_data = (uint8_t*)PLM_MALLOC(row_frame_size);
 	if (
 		!forward_y || !forward_cr || !forward_cb ||
-		!current_y || !current_cr || !current_cb || !self->frames_data
+		!current_y || !current_cr || !current_cb ||
+		!forward_corrections || !current_corrections ||
+		!self->frames_data
 	) {
 		PLM_FREE(forward_y);
 		PLM_FREE(forward_cr);
@@ -3138,6 +3220,8 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 		PLM_FREE(current_y);
 		PLM_FREE(current_cr);
 		PLM_FREE(current_cb);
+		PLM_FREE(forward_corrections);
+		PLM_FREE(current_corrections);
 		PLM_FREE(self->frames_data);
 		self->frames_data = NULL;
 		return FALSE;
@@ -3148,12 +3232,15 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	memset(current_y, 0, packed_luma_size);
 	memset(current_cr, 0, packed_chroma_size);
 	memset(current_cb, 0, packed_chroma_size);
+	memset(forward_corrections, 0, correction_size);
+	memset(current_corrections, 0, correction_size);
 	memset(self->frames_data, 0, row_frame_size);
 	plm_video_init_compact_frame(
-		self, &self->frame_forward, forward_y, forward_cr, forward_cb);
+		self, &self->frame_forward, forward_y, forward_cr, forward_cb,
+		forward_corrections);
 	plm_video_init_compact_frame(
 		self, &self->frame_compact_current,
-		current_y, current_cr, current_cb);
+		current_y, current_cr, current_cb, current_corrections);
 	plm_video_init_row_frame(
 		self, &self->frame_current, self->frames_data);
 	self->frame_backward = self->frame_forward;
@@ -3191,26 +3278,40 @@ void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base) 
 	frame->y.height = self->luma_height;
 	frame->y.stride = self->luma_width;
 	frame->y.data = base;
+	frame->y.correction_stride = 0;
+	frame->y.correction = NULL;
 
 	frame->cr.width = self->chroma_width;
 	frame->cr.height = self->chroma_height;
 	frame->cr.stride = self->chroma_width;
 	frame->cr.data = base + luma_plane_size;
+	frame->cr.correction_stride = 0;
+	frame->cr.correction = NULL;
 
 	frame->cb.width = self->chroma_width;
 	frame->cb.height = self->chroma_height;
 	frame->cb.stride = self->chroma_width;
 	frame->cb.data = base + luma_plane_size + chroma_plane_size;
+	frame->cb.correction_stride = 0;
+	frame->cb.correction = NULL;
 }
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
 void plm_video_init_compact_frame(
 	plm_video_t *self, plm_frame_t *frame,
-	uint8_t *y, uint8_t *cr, uint8_t *cb
+	uint8_t *y, uint8_t *cr, uint8_t *cb, int8_t *corrections
 ) {
 	unsigned int luma_stride = (unsigned int)((self->luma_width * 6) >> 3);
 	unsigned int chroma_stride =
 		(unsigned int)((self->chroma_width * 5) >> 3);
+	unsigned int luma_correction_stride =
+		(unsigned int)(self->luma_width >> 3);
+	unsigned int chroma_correction_stride =
+		(unsigned int)(self->chroma_width >> 3);
+	size_t luma_correction_size =
+		(size_t)luma_correction_stride * (self->luma_height >> 3);
+	size_t chroma_correction_size =
+		(size_t)chroma_correction_stride * (self->chroma_height >> 3);
 
 	frame->width = self->width;
 	frame->height = self->height;
@@ -3219,16 +3320,23 @@ void plm_video_init_compact_frame(
 	frame->y.height = self->luma_height;
 	frame->y.stride = luma_stride;
 	frame->y.data = y;
+	frame->y.correction_stride = luma_correction_stride;
+	frame->y.correction = corrections;
 
 	frame->cr.width = self->chroma_width;
 	frame->cr.height = self->chroma_height;
 	frame->cr.stride = chroma_stride;
 	frame->cr.data = cr;
+	frame->cr.correction_stride = chroma_correction_stride;
+	frame->cr.correction = corrections + luma_correction_size;
 
 	frame->cb.width = self->chroma_width;
 	frame->cb.height = self->chroma_height;
 	frame->cb.stride = chroma_stride;
 	frame->cb.data = cb;
+	frame->cb.correction_stride = chroma_correction_stride;
+	frame->cb.correction =
+		corrections + luma_correction_size + chroma_correction_size;
 }
 
 void plm_video_init_row_frame(
@@ -3244,16 +3352,22 @@ void plm_video_init_row_frame(
 	frame->y.height = 16;
 	frame->y.stride = self->luma_width;
 	frame->y.data = base;
+	frame->y.correction_stride = 0;
+	frame->y.correction = NULL;
 
 	frame->cr.width = self->chroma_width;
 	frame->cr.height = 8;
 	frame->cr.stride = self->chroma_width;
 	frame->cr.data = base + luma_plane_size;
+	frame->cr.correction_stride = 0;
+	frame->cr.correction = NULL;
 
 	frame->cb.width = self->chroma_width;
 	frame->cb.height = 8;
 	frame->cb.stride = self->chroma_width;
 	frame->cb.data = base + luma_plane_size + chroma_plane_size;
+	frame->cb.correction_stride = 0;
+	frame->cb.correction = NULL;
 }
 #endif
 
@@ -3582,26 +3696,6 @@ void plm_video_predict_macroblock(plm_video_t *self) {
 }
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-static void plm_video_unpack_packed_samples(
-	const uint8_t *row, int x, unsigned bits, uint8_t *output, int count
-) {
-	unsigned bit = (unsigned)x * bits;
-	const uint8_t *input = row + (bit >> 3);
-	unsigned cached = 8U - (bit & 7U);
-	unsigned window = (unsigned)*input++ >> (bit & 7U);
-	const unsigned mask = (1U << bits) - 1U;
-	const unsigned output_shift = 8U - bits;
-	for (int i = 0; i < count; ++i) {
-		if (cached < bits) {
-			window |= (unsigned)*input++ << cached;
-			cached += 8U;
-		}
-		output[i] = (uint8_t)((window & mask) << output_shift);
-		window >>= bits;
-		cached -= bits;
-	}
-}
-
 static void plm_video_process_compact_macroblock(
 	plm_video_t *self, const plm_plane_t *source, uint8_t *dest,
 	unsigned bits, int motion_h, int motion_v, int block_size,
@@ -3630,25 +3724,19 @@ static void plm_video_process_compact_macroblock(
 	uint8_t *top = row_a;
 	uint8_t *bottom = row_b;
 	if (odd_v) {
-		const uint8_t *packed_top =
-			source->data + source_y * source->stride;
-		plm_video_unpack_packed_samples(
-			packed_top, source_x, bits, top, source_cols);
+		plm_plane_unpack_compact_samples(
+			source, source_x, source_y, bits, top, source_cols);
 	}
 	for (int y = 0; y < block_size; ++y) {
 		if (odd_v) {
-			const uint8_t *packed_bottom =
-				source->data +
-				(source_y + y + 1) * source->stride;
-			plm_video_unpack_packed_samples(
-				packed_bottom, source_x, bits, bottom, source_cols);
+			plm_plane_unpack_compact_samples(
+				source, source_x, source_y + y + 1,
+				bits, bottom, source_cols);
 		}
 		else {
-			const uint8_t *packed_top =
-				source->data +
-				(source_y + y) * source->stride;
-			plm_video_unpack_packed_samples(
-				packed_top, source_x, bits, top, source_cols);
+			plm_plane_unpack_compact_samples(
+				source, source_x, source_y + y,
+				bits, top, source_cols);
 		}
 		for (int x = 0; x < block_size; ++x) {
 			int prediction;
@@ -3780,12 +3868,23 @@ static uint8_t plm_video_compact_code(
 	return (uint8_t)(code > maximum ? maximum : code);
 }
 
-static void plm_video_compact_store_luma16(uint8_t *dest, const uint8_t *source) {
+static int8_t plm_video_compact_error_q4(int sum) {
+	return (int8_t)(sum >= 0 ? (sum + 2) / 4 : -((-sum + 2) / 4));
+}
+
+static void plm_video_compact_store_luma16(
+	uint8_t *dest, const uint8_t *source, int error_sum[2]
+) {
 	for (int x = 0; x < 16; x += 4) {
 		uint8_t a = plm_video_compact_code(source[x], 2, 63);
 		uint8_t b = plm_video_compact_code(source[x + 1], 2, 63);
 		uint8_t c = plm_video_compact_code(source[x + 2], 2, 63);
 		uint8_t d = plm_video_compact_code(source[x + 3], 2, 63);
+		int *sum = &error_sum[x >> 3];
+		*sum += (int)source[x] - ((int)a << 2);
+		*sum += (int)source[x + 1] - ((int)b << 2);
+		*sum += (int)source[x + 2] - ((int)c << 2);
+		*sum += (int)source[x + 3] - ((int)d << 2);
 		dest[0] = (uint8_t)(a | (b << 6));
 		dest[1] = (uint8_t)((b >> 2) | (c << 4));
 		dest[2] = (uint8_t)((c >> 4) | (d << 2));
@@ -3794,7 +3893,7 @@ static void plm_video_compact_store_luma16(uint8_t *dest, const uint8_t *source)
 }
 
 static void plm_video_compact_store_chroma8(
-	uint8_t *dest, const uint8_t *source
+	uint8_t *dest, const uint8_t *source, int *error_sum
 ) {
 	uint8_t a = plm_video_compact_code(source[0], 3, 31);
 	uint8_t b = plm_video_compact_code(source[1], 3, 31);
@@ -3804,6 +3903,14 @@ static void plm_video_compact_store_chroma8(
 	uint8_t f = plm_video_compact_code(source[5], 3, 31);
 	uint8_t g = plm_video_compact_code(source[6], 3, 31);
 	uint8_t h = plm_video_compact_code(source[7], 3, 31);
+	*error_sum += (int)source[0] - ((int)a << 3);
+	*error_sum += (int)source[1] - ((int)b << 3);
+	*error_sum += (int)source[2] - ((int)c << 3);
+	*error_sum += (int)source[3] - ((int)d << 3);
+	*error_sum += (int)source[4] - ((int)e << 3);
+	*error_sum += (int)source[5] - ((int)f << 3);
+	*error_sum += (int)source[6] - ((int)g << 3);
+	*error_sum += (int)source[7] - ((int)h << 3);
 	dest[0] = (uint8_t)(a | (b << 5));
 	dest[1] = (uint8_t)((b >> 3) | (c << 2) | (d << 7));
 	dest[2] = (uint8_t)((d >> 1) | (e << 4));
@@ -3852,11 +3959,29 @@ void plm_video_compact_copy_macroblock(plm_video_t *self) {
 		cr_dest += dest->cr.stride;
 		cb_dest += dest->cb.stride;
 	}
+	unsigned int y_column = (unsigned int)self->mb_col << 1;
+	unsigned int y_row = (unsigned int)self->mb_row << 1;
+	for (unsigned int row = 0; row < 2; ++row) {
+		memcpy(
+			dest->y.correction +
+				(y_row + row) * dest->y.correction_stride + y_column,
+			source->y.correction +
+				(y_row + row) * source->y.correction_stride + y_column,
+			2);
+	}
+	size_t chroma_index =
+		(size_t)self->mb_row * dest->cr.correction_stride +
+		(unsigned int)self->mb_col;
+	dest->cr.correction[chroma_index] =
+		source->cr.correction[chroma_index];
+	dest->cb.correction[chroma_index] =
+		source->cb.correction[chroma_index];
 }
 
 void plm_video_compact_store_macroblock(plm_video_t *self) {
 	plm_frame_t *source = &self->frame_current;
 	plm_frame_t *dest = &self->frame_compact_current;
+	int error_sum[6] = {0, 0, 0, 0, 0, 0};
 	const uint8_t *luma_source =
 		source->y.data + self->mb_col * 16;
 	uint8_t *luma_dest =
@@ -3864,7 +3989,8 @@ void plm_video_compact_store_macroblock(plm_video_t *self) {
 		self->mb_row * 16 * dest->y.stride +
 		self->mb_col * 12;
 	for (int y = 0; y < 16; ++y) {
-		plm_video_compact_store_luma16(luma_dest, luma_source);
+		plm_video_compact_store_luma16(
+			luma_dest, luma_source, &error_sum[(y >> 3) << 1]);
 		luma_source += source->y.stride;
 		luma_dest += dest->y.stride;
 	}
@@ -3882,13 +4008,33 @@ void plm_video_compact_store_macroblock(plm_video_t *self) {
 		self->mb_row * 8 * dest->cb.stride +
 		self->mb_col * 5;
 	for (int y = 0; y < 8; ++y) {
-		plm_video_compact_store_chroma8(cr_dest, cr_source);
-		plm_video_compact_store_chroma8(cb_dest, cb_source);
+		plm_video_compact_store_chroma8(
+			cr_dest, cr_source, &error_sum[4]);
+		plm_video_compact_store_chroma8(
+			cb_dest, cb_source, &error_sum[5]);
 		cr_source += source->cr.stride;
 		cb_source += source->cb.stride;
 		cr_dest += dest->cr.stride;
 		cb_dest += dest->cb.stride;
 	}
+	unsigned int y_column = (unsigned int)self->mb_col << 1;
+	unsigned int y_row = (unsigned int)self->mb_row << 1;
+	for (unsigned int row = 0; row < 2; ++row) {
+		for (unsigned int column = 0; column < 2; ++column) {
+			dest->y.correction[
+				(y_row + row) * dest->y.correction_stride +
+				y_column + column] =
+				plm_video_compact_error_q4(
+					error_sum[(row << 1) + column]);
+		}
+	}
+	size_t chroma_index =
+		(size_t)self->mb_row * dest->cr.correction_stride +
+		(unsigned int)self->mb_col;
+	dest->cr.correction[chroma_index] =
+		plm_video_compact_error_q4(error_sum[4]);
+	dest->cb.correction[chroma_index] =
+		plm_video_compact_error_q4(error_sum[5]);
 }
 #endif
 
