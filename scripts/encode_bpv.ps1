@@ -14,6 +14,9 @@ param(
     [ValidateRange(2, 65534)]
     [int]$Height = 240,
 
+    [ValidateSet("Stretch", "Crop")]
+    [string]$ResizeMode = "Stretch",
+
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
@@ -76,10 +79,20 @@ $audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
     "attack=0.01:release=250:knee=8:" +
     "link=maximum:detection=peak"
 $audioPeakTargetDb = -0.1
-$videoFilter = (
-    "scale=${Width}:${Height}:flags=lanczos," +
-    "setsar=1,format=yuv420p"
-)
+if ($ResizeMode -eq "Crop") {
+    $videoFilter = (
+        "scale=${Width}:${Height}:force_original_aspect_ratio=increase:" +
+        "force_divisible_by=2:flags=lanczos," +
+        "crop=${Width}:${Height}:(iw-${Width})/2:(ih-${Height})/2," +
+        "setsar=1,format=yuv420p"
+    )
+}
+else {
+    $videoFilter = (
+        "scale=${Width}:${Height}:flags=lanczos," +
+        "setsar=1,format=yuv420p"
+    )
+}
 
 try {
     Write-Host "Measuring the primary audio level curve..."
@@ -149,7 +162,8 @@ try {
         $temporaryVideo
     )
     Write-Host (
-        "Preparing exact ${Width}x${Height} YUV420 at native FPS..."
+        "Preparing exact ${Width}x${Height} YUV420 at native FPS " +
+        "using $ResizeMode resize..."
     )
     & $ffmpeg @videoArguments
     if ($LASTEXITCODE -ne 0) {
