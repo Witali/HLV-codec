@@ -64,6 +64,17 @@ package is required. The control handshake uses 460800 baud and block data uses
 2000000 baud by default. The verified fallback values are 1500000, 921600 and
 460800 baud.
 
+List the files currently stored in `/sdcard/HLV` without stopping playback:
+
+```powershell
+.\list-files.ps1 -Port COM8
+.\list-files.ps1 -Port COM8 -Json
+```
+
+The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
+returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
+`HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
+
 The destination defaults to the source filename. `/sdcard/HLV/play.txt`
 contains the one video filename that the player opens:
 

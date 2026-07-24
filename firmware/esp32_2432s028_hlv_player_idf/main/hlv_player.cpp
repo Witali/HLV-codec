@@ -1748,6 +1748,16 @@ extern "C" void app_main(void) {
             if (!openVideo()) last_retry_ms = millisNow();
             continue;
         }
+        if (uart_upload.takeListRequest()) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                uart_upload.listDirectory(
+                    player_settings::kVideoDirectory);
+            }
+            continue;
+        }
         if (video_file && video_codec == VideoCodec::kMjpeg &&
             mjpeg_decoder.ready()) {
             playOneMjpegFrame();

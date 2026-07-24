@@ -3,6 +3,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -120,6 +121,10 @@ esp_err_t UartFileUpload::begin(uint32_t control_baud) {
 
 bool UartFileUpload::parseRequest(const char *line,
                                   UartUploadRequest *request) {
+    if (!std::strcmp(line, "HLVLIST 1")) {
+        list_requested_ = true;
+        return false;
+    }
     if (std::strncmp(line, "HLVPUT ", 7)) return false;
 
     UartUploadRequest parsed{};
@@ -171,6 +176,47 @@ bool UartFileUpload::pollRequest(UartUploadRequest *request) {
     return false;
 }
 
+bool UartFileUpload::takeListRequest() {
+    const bool requested = list_requested_;
+    list_requested_ = false;
+    return requested;
+}
+
+bool UartFileUpload::listDirectory(const char *directory) {
+    if (!directory) {
+        reject("BAD_DIRECTORY");
+        return false;
+    }
+    DIR *handle = opendir(directory);
+    if (!handle) {
+        reject("LIST_FAILED");
+        return false;
+    }
+
+    writeResponse("HLVLISTBEGIN 1\n");
+    uint32_t count = 0;
+    while (const dirent *entry = readdir(handle)) {
+        if (!std::strcmp(entry->d_name, ".") ||
+            !std::strcmp(entry->d_name, "..")) {
+            continue;
+        }
+        char path[384];
+        if (!buildPath(path, sizeof path, directory, entry->d_name, "")) {
+            continue;
+        }
+        struct stat status {};
+        if (stat(path, &status) || !S_ISREG(status.st_mode)) continue;
+        writeResponse("HLVFILE 1 %u %s\n",
+                      static_cast<unsigned>(status.st_size),
+                      entry->d_name);
+        ++count;
+    }
+    closedir(handle);
+    finishResponse("HLVLISTEND 1 %u\n",
+                   static_cast<unsigned>(count));
+    return true;
+}
+
 bool UartFileUpload::setBaud(uint32_t baud) {
     return uart_set_baudrate(kUploadUart, baud) == ESP_OK;
 }
@@ -190,7 +236,7 @@ bool UartFileUpload::readExact(uint8_t *destination, size_t bytes,
 }
 
 void UartFileUpload::writeResponse(const char *format, ...) {
-    char response[128];
+    char response[384];
     va_list arguments;
     va_start(arguments, format);
     const int length =
@@ -205,7 +251,7 @@ void UartFileUpload::writeResponse(const char *format, ...) {
 }
 
 void UartFileUpload::finishResponse(const char *format, ...) {
-    char response[128];
+    char response[384];
     va_list arguments;
     va_start(arguments, format);
     const int length =

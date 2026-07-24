@@ -22,6 +22,8 @@ public:
 
     esp_err_t begin(uint32_t control_baud);
     bool pollRequest(UartUploadRequest *request);
+    bool takeListRequest();
+    bool listDirectory(const char *directory);
     bool receive(const UartUploadRequest &request, const char *directory,
                  char *stored_path, size_t stored_path_bytes,
                  ProgressCallback progress = nullptr,
@@ -41,4 +43,5 @@ private:
     char line_[kLineBytes]{};
     size_t line_size_ = 0;
     bool ready_ = false;
+    bool list_requested_ = false;
 };
