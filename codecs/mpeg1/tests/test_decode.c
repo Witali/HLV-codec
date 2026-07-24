@@ -55,8 +55,11 @@ int main(int argc, char **argv) {
     plm_set_audio_enabled(mpeg, 0);
     const int width = plm_get_width(mpeg);
     const int height = plm_get_height(mpeg);
-    if (width <= 0 || height <= 0) {
-        fprintf(stderr, "invalid MPEG dimensions\n");
+    const double duration = plm_get_duration(mpeg);
+    if (width <= 0 || height <= 0 || !(duration > 0.0)) {
+        fprintf(stderr,
+                "invalid MPEG metadata: width=%d height=%d duration=%.6f\n",
+                width, height, duration);
         plm_destroy(mpeg);
         return 1;
     }
@@ -116,7 +119,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "no MPEG video frames decoded\n");
         return 1;
     }
-    printf("mode=%s width=%d height=%d frames=%u checksum=%016" PRIx64 "\n",
-           argv[2], width, height, frames, checksum);
+    printf("mode=%s width=%d height=%d duration=%.6f frames=%u "
+           "checksum=%016" PRIx64 "\n",
+           argv[2], width, height, duration, frames, checksum);
     return 0;
 }

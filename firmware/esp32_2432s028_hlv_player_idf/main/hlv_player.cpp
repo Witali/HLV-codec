@@ -1282,6 +1282,8 @@ bool openVideo() {
     if (video_codec == VideoCodec::kMpeg1) {
         const int audio_sample_rate =
             probeMpegAudioSampleRate(active_video_path);
+        std::clearerr(video_file);
+        errno = 0;
         mpeg_video = plm_create_with_file(video_file, 0);
         if (!mpeg_video) {
             showStatus("Not enough RAM", "MPEG-1 demux allocation failed");
@@ -1293,12 +1295,20 @@ bool openVideo() {
         const int height = plm_get_height(mpeg_video);
         const double fps = plm_get_framerate(mpeg_video);
         const double duration = plm_get_duration(mpeg_video);
+        const int probe_errno = errno;
+        const bool probe_io_error = std::ferror(video_file) != 0;
+        const long probe_position = std::ftell(video_file);
         if (width <= 0 || width > UINT16_MAX ||
             height <= 0 || height > UINT16_MAX ||
             !mpegFpsRational(
                 fps, &sequence_header.fps_num,
                 &sequence_header.fps_den) ||
             !(duration > 0.0)) {
+            ESP_LOGE(kTag,
+                     "MPEG probe failed: %dx%d fps=%.6f "
+                     "duration=%.6f pos=%ld ferror=%d errno=%d",
+                     width, height, fps, duration, probe_position,
+                     probe_io_error ? 1 : 0, probe_errno);
             showStatus("Invalid video.mpg", "unsupported MPEG-1 stream");
             closeVideo();
             return false;
@@ -2509,6 +2519,20 @@ extern "C" void app_main(void) {
             } else {
                 uart_upload.listDirectory(
                     player_settings::kVideoDirectory);
+            }
+            continue;
+        }
+        char crc_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        if (uart_upload.takeCrcRequest(
+                crc_filename, sizeof crc_filename)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                closeVideo();
+                uart_upload.checksumFile(
+                    player_settings::kVideoDirectory, crc_filename);
+                if (!openVideo()) last_retry_ms = millisNow();
             }
             continue;
         }

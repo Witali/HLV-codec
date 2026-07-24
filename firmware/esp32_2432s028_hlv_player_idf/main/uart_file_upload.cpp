@@ -126,6 +126,19 @@ bool UartFileUpload::parseRequest(const char *line,
         list_requested_ = true;
         return false;
     }
+    if (!std::strncmp(line, "HLVCRC ", 7)) {
+        char filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVCRC 1 %48s %c", filename, &trailing);
+        if (fields != 1 || !validFilename(filename)) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        std::snprintf(crc_filename_, sizeof crc_filename_, "%s", filename);
+        crc_requested_ = true;
+        return false;
+    }
     if (std::strncmp(line, "HLVPUT ", 7)) return false;
 
     UartUploadRequest parsed{};
@@ -183,6 +196,14 @@ bool UartFileUpload::takeListRequest() {
     return requested;
 }
 
+bool UartFileUpload::takeCrcRequest(char *filename, size_t filename_bytes) {
+    if (!crc_requested_ || !filename || !filename_bytes) return false;
+    std::snprintf(filename, filename_bytes, "%s", crc_filename_);
+    crc_requested_ = false;
+    crc_filename_[0] = '\0';
+    return true;
+}
+
 bool UartFileUpload::listDirectory(const char *directory) {
     if (!directory) {
         reject("BAD_DIRECTORY");
@@ -215,6 +236,55 @@ bool UartFileUpload::listDirectory(const char *directory) {
     closedir(handle);
     finishResponse("HLVLISTEND 1 %u\n",
                    static_cast<unsigned>(count));
+    return true;
+}
+
+bool UartFileUpload::checksumFile(const char *directory,
+                                  const char *filename) {
+    char path[128];
+    if (!directory || !filename ||
+        !buildPath(path, sizeof path, directory, filename, "")) {
+        reject("BAD_PATH");
+        return false;
+    }
+    FILE *input = std::fopen(path, "rb");
+    if (!input) {
+        reject("OPEN_FAILED");
+        return false;
+    }
+    constexpr size_t kCrcBufferBytes = 4096;
+    auto *buffer = static_cast<uint8_t *>(
+        heap_caps_malloc(kCrcBufferBytes, MALLOC_CAP_8BIT));
+    if (!buffer) {
+        std::fclose(input);
+        reject("NO_MEMORY");
+        return false;
+    }
+
+    uint32_t file_crc = 0;
+    uint32_t file_size = 0;
+    bool success = true;
+    for (;;) {
+        const size_t received =
+            std::fread(buffer, 1, kCrcBufferBytes, input);
+        if (received) {
+            file_crc = esp_rom_crc32_le(file_crc, buffer, received);
+            file_size += static_cast<uint32_t>(received);
+        }
+        if (received != kCrcBufferBytes) {
+            success = std::feof(input) != 0 && std::ferror(input) == 0;
+            break;
+        }
+    }
+    if (std::fclose(input)) success = false;
+    heap_caps_free(buffer);
+    if (!success) {
+        finishResponse("HLVERR 1 READ_FAILED\n");
+        return false;
+    }
+    finishResponse("HLVCRC 1 %u %08x %s\n",
+                   static_cast<unsigned>(file_size),
+                   static_cast<unsigned>(file_crc), filename);
     return true;
 }
 
