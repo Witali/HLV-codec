@@ -6,6 +6,7 @@ idf_component_register(
         "${DIVX3_ROOT}/src/divx3_avi.c"
     INCLUDE_DIRS
         "${DIVX3_ROOT}/include"
+    REQUIRES compact_yuv420
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

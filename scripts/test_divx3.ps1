@@ -49,6 +49,7 @@ $referenceYuv = Join-Path $OutputDirectory "reference.yuv"
 $decodedYuv = Join-Path $OutputDirectory "decoded.yuv"
 $decodedMp3Yuv = Join-Path $OutputDirectory "decoded_mp3.yuv"
 $include = Join-Path $repo "codecs\divx3\include"
+$compactInclude = Join-Path $repo "codecs\common\include"
 $testSource = Join-Path $repo "codecs\divx3\tests\test_decode.c"
 $decoderSource = Join-Path $repo "codecs\divx3\src\divx3_decode.c"
 $aviSource = Join-Path $repo "codecs\divx3\src\divx3_avi.c"
@@ -56,8 +57,8 @@ $aviSource = Join-Path $repo "codecs\divx3\src\divx3_avi.c"
 $compile = (
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /TC /D_CRT_SECURE_NO_WARNINGS ' +
-    '/I"{2}" "{3}" "{4}" "{5}" /Fe:"{6}"'
-) -f $devcmd, $OutputDirectory, $include, $testSource, `
+    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" /Fe:"{7}"'
+) -f $devcmd, $OutputDirectory, $include, $compactInclude, $testSource, `
     $decoderSource, $aviSource, $testExe
 & cmd.exe /d /c $compile | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {

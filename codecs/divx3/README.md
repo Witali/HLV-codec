@@ -14,11 +14,24 @@ The current decoder supports:
 - optional mono 8-bit PCM metadata in the AVI container.
 
 The first embedded profile intentionally excludes B-pictures and per-
-macroblock quantizer changes. The portable decoder uses two padded YUV420
-reference frames. At 256x144 it reserves 141,008 bytes (about 138 KiB); at
-320x180 it reserves about 235 KiB before the AVI packet buffer, so QVGA is not
-suitable for the original ESP32 board without a later compact-frame
-optimization.
+macroblock quantizer changes. The default portable decoder keeps two padded
+eight-bit YUV420 reference frames and remains the pixel-exact validation
+mode. Predictor state is stored in rolling rows instead of full-picture
+grids.
+
+`divx3_decoder_create_y6_u5_v5()` enables the constrained-memory mode. It
+stores both references as packed Y6/U5/V5 planes with one signed Q4
+average-error correction per 8x8 plane block. At 320x240 the exact decoder
+owns 237,608 bytes and the compact decoder owns 174,008 bytes. The compact
+references are deliberately non-bit-exact; the Q4 correction prevents a
+coherent block-average bias while the regular I-frames bound temporal drift.
+
+Compare exact and compact reconstruction, including PSNR by distance from the
+preceding I-frame, with:
+
+```powershell
+.\scripts\compare_divx3_compact.ps1 -InputFile input.avi
+```
 
 Create the validated 256x144, 12 fps, `q=4` Big Buck Bunny profile with mono
 PCM_U8 audio:

@@ -18,15 +18,26 @@ enum {
 
 typedef struct Divx3Decoder Divx3Decoder;
 
+enum {
+    DIVX3_FRAME_STORAGE_YUV420 = 0,
+    DIVX3_FRAME_STORAGE_Y6_U5_V5 = 1
+};
+
 typedef struct Divx3Frame {
     const uint8_t *y;
     const uint8_t *cb;
     const uint8_t *cr;
+    const int8_t *correction_y;
+    const int8_t *correction_cb;
+    const int8_t *correction_cr;
     uint16_t width;
     uint16_t height;
     uint16_t y_stride;
     uint16_t c_stride;
+    uint16_t correction_stride_y;
+    uint16_t correction_stride_c;
     uint32_t frame_number;
+    uint8_t storage_mode;
     uint8_t intra;
 } Divx3Frame;
 
@@ -38,6 +49,13 @@ typedef struct Divx3Frame {
  * MS-MPEG4 v3 elementary frame does not carry them.
  */
 Divx3Decoder *divx3_decoder_create(uint16_t width, uint16_t height);
+
+/*
+ * Create the embedded decoder with packed Y6/U5/V5 reference frames and one
+ * signed Q4 average-error correction per 8x8 plane block. This reduces memory
+ * at the cost of non-bit-exact predictive references.
+ */
+Divx3Decoder *divx3_decoder_create_y6_u5_v5(uint16_t width, uint16_t height);
 void divx3_decoder_destroy(Divx3Decoder *decoder);
 
 /*

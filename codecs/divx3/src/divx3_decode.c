@@ -1,4 +1,5 @@
 #include "divx3.h"
+#include "compact_yuv420.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -74,8 +75,14 @@ struct Divx3Decoder {
     uint16_t mb_height;
     size_t y_bytes;
     size_t c_bytes;
+    size_t y_correction_bytes;
+    size_t c_correction_bytes;
     size_t frame_bytes;
     size_t memory_bytes;
+    uint16_t y_stride;
+    uint16_t c_stride;
+    uint16_t correction_stride_y;
+    uint16_t correction_stride_c;
     uint8_t *frame_storage;
     uint8_t *frames[2];
     int16_t *dc_luma;
@@ -95,6 +102,7 @@ struct Divx3Decoder {
     uint8_t has_reference;
     uint8_t flipflop_rounding;
     uint8_t no_rounding;
+    uint8_t compact_y6_u5_v5;
 };
 
 static const uint8_t kScanZigzag[64] = {
@@ -521,16 +529,50 @@ static void block_target(Divx3Decoder *decoder, uint8_t *frame,
     if (block < 4) {
         *destination =
             frame + (mb_y * 16U + (block / 2U) * 8U) *
-                        decoder->padded_width +
+                        decoder->y_stride +
                     mb_x * 16U + (block & 1U) * 8U;
-        *stride = decoder->padded_width;
+        *stride = decoder->y_stride;
     } else {
         size_t plane_offset =
             decoder->y_bytes + (block == 5 ? decoder->c_bytes : 0);
         *destination =
             frame + plane_offset +
-            (mb_y * 8U) * decoder->chroma_width + mb_x * 8U;
-        *stride = decoder->chroma_width;
+            (mb_y * 8U) * decoder->c_stride + mb_x * 8U;
+        *stride = decoder->c_stride;
+    }
+}
+
+static void compact_block_target(
+    Divx3Decoder *decoder, uint8_t *frame, unsigned block,
+    unsigned mb_x, unsigned mb_y, uint8_t **destination,
+    unsigned *stride, int8_t **correction, unsigned *correction_stride,
+    unsigned *bits, unsigned *block_x, unsigned *block_y) {
+    uint8_t *correction_base =
+        frame + decoder->y_bytes + decoder->c_bytes * 2U;
+    if (block < 4) {
+        *block_x = mb_x * 16U + (block & 1U) * 8U;
+        *block_y = mb_y * 16U + (block / 2U) * 8U;
+        *stride = decoder->y_stride;
+        *bits = COMPACT_YUV420_LUMA_BITS;
+        *destination =
+            frame + (size_t)*block_y * *stride +
+            (size_t)*block_x * *bits / 8U;
+        *correction = (int8_t *)correction_base;
+        *correction_stride = decoder->correction_stride_y;
+    } else {
+        unsigned plane = block == 5 ? 1U : 0U;
+        *block_x = mb_x * 8U;
+        *block_y = mb_y * 8U;
+        *stride = decoder->c_stride;
+        *bits = COMPACT_YUV420_CHROMA_BITS;
+        *destination =
+            frame + decoder->y_bytes + plane * decoder->c_bytes +
+            (size_t)*block_y * *stride +
+            (size_t)*block_x * *bits / 8U;
+        *correction =
+            (int8_t *)(correction_base + decoder->y_correction_bytes +
+                       plane * decoder->c_correction_bytes);
+        *correction_stride = decoder->correction_stride_c;
     }
 }
 
@@ -540,6 +582,32 @@ static void write_residual_block(Divx3Decoder *decoder, uint8_t *frame,
                                  const int32_t *prediction) {
     uint8_t *destination;
     unsigned stride, row, column;
+    if (decoder->compact_y6_u5_v5) {
+        int8_t *correction;
+        unsigned correction_stride;
+        unsigned bits;
+        unsigned block_x;
+        unsigned block_y;
+        uint8_t samples[64];
+        int residual_sum = 0;
+        compact_block_target(
+            decoder, frame, block, mb_x, mb_y, &destination, &stride,
+            &correction, &correction_stride, &bits, &block_x, &block_y);
+        for (row = 0; row < 8; ++row) {
+            for (column = 0; column < 8; ++column) {
+                int value = values[row * 8U + column];
+                if (prediction)
+                    value += prediction[row * 8U + column];
+                samples[row * 8U + column] = clamp_byte(value);
+            }
+            compact_yuv420_pack_aligned_samples(
+                destination + row * stride, samples + row * 8U, 8,
+                bits, &residual_sum, NULL);
+        }
+        correction[(block_y / 8U) * correction_stride + block_x / 8U] =
+            compact_yuv420_error_q4(residual_sum);
+        return;
+    }
     block_target(decoder, frame, block, mb_x, mb_y,
                  &destination, &stride);
     for (row = 0; row < 8; ++row) {
@@ -852,12 +920,26 @@ static int clamp_coordinate(int value, int extent) {
     return value;
 }
 
+static int motion_sample(const uint8_t *source, unsigned stride,
+                         int x, int y, int compact, unsigned bits,
+                         const int8_t *correction,
+                         unsigned correction_stride) {
+    const uint8_t *row = source + (size_t)y * stride;
+    return compact
+               ? compact_yuv420_corrected_sample(
+                     row, x, y, bits, correction,
+                     (int)correction_stride)
+               : row[x];
+}
+
 static void motion_compensate(int32_t output[64],
                               const uint8_t *source, unsigned stride,
                               unsigned plane_width, unsigned plane_height,
                               int block_y, int block_x,
                               int motion_x, int motion_y,
-                              int no_rounding) {
+                              int no_rounding, int compact, unsigned bits,
+                              const int8_t *correction,
+                              unsigned correction_stride) {
     int fractional_x, fractional_y;
     int integer_x = half_pixel_integer(motion_x, &fractional_x);
     int integer_y = half_pixel_integer(motion_y, &fractional_y);
@@ -870,7 +952,9 @@ static void motion_compensate(int32_t output[64],
             int source_x = block_x + (int)column + integer_x;
             int y0 = clamp_coordinate(source_y, (int)plane_height);
             int x0 = clamp_coordinate(source_x, (int)plane_width);
-            int a = source[(size_t)y0 * stride + x0];
+            int a = motion_sample(
+                source, stride, x0, y0, compact, bits,
+                correction, correction_stride);
             if (!fractional_x && !fractional_y) {
                 output[row * 8U + column] = a;
             } else {
@@ -878,9 +962,15 @@ static void motion_compensate(int32_t output[64],
                     clamp_coordinate(source_x + 1, (int)plane_width);
                 int y1 =
                     clamp_coordinate(source_y + 1, (int)plane_height);
-                int b = source[(size_t)y0 * stride + x1];
-                int c = source[(size_t)y1 * stride + x0];
-                int d = source[(size_t)y1 * stride + x1];
+                int b = motion_sample(
+                    source, stride, x1, y0, compact, bits,
+                    correction, correction_stride);
+                int c = motion_sample(
+                    source, stride, x0, y1, compact, bits,
+                    correction, correction_stride);
+                int d = motion_sample(
+                    source, stride, x1, y1, compact, bits,
+                    correction, correction_stride);
                 if (fractional_x && !fractional_y)
                     output[row * 8U + column] =
                         (a + b + round_two) >> 1;
@@ -1030,10 +1120,13 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                     int block_y;
                     int block_motion_x;
                     int block_motion_y;
+                    const int8_t *correction = NULL;
+                    unsigned correction_stride = 0;
+                    unsigned bits = 8;
                     int32_t prediction[64];
                     if (block < 4) {
                         source = reference;
-                        stride = decoder->padded_width;
+                        stride = decoder->y_stride;
                         plane_width = decoder->width;
                         plane_height = decoder->height;
                         block_x = (int)(mb_x * 16U +
@@ -1042,23 +1135,48 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                                         (block / 2U) * 8U);
                         block_motion_x = motion_x;
                         block_motion_y = motion_y;
+                        if (decoder->compact_y6_u5_v5) {
+                            correction =
+                                (const int8_t *)(reference +
+                                    decoder->y_bytes +
+                                    decoder->c_bytes * 2U);
+                            correction_stride =
+                                decoder->correction_stride_y;
+                            bits = COMPACT_YUV420_LUMA_BITS;
+                        }
                     } else {
+                        unsigned plane = block == 5 ? 1U : 0U;
                         source =
                             reference + decoder->y_bytes +
-                            (block == 5 ? decoder->c_bytes : 0);
-                        stride = decoder->chroma_width;
+                            plane * decoder->c_bytes;
+                        stride = decoder->c_stride;
                         plane_width = (decoder->width + 1U) / 2U;
                         plane_height = (decoder->height + 1U) / 2U;
                         block_x = (int)(mb_x * 8U);
                         block_y = (int)(mb_y * 8U);
                         block_motion_x = chroma_motion(motion_x);
                         block_motion_y = chroma_motion(motion_y);
+                        if (decoder->compact_y6_u5_v5) {
+                            correction =
+                                (const int8_t *)(reference +
+                                    decoder->y_bytes +
+                                    decoder->c_bytes * 2U +
+                                    decoder->y_correction_bytes +
+                                    plane *
+                                        decoder->c_correction_bytes);
+                            correction_stride =
+                                decoder->correction_stride_c;
+                            bits = COMPACT_YUV420_CHROMA_BITS;
+                        }
                     }
                     motion_compensate(prediction, source, stride,
                                       plane_width, plane_height,
                                       block_y, block_x,
                                       block_motion_x, block_motion_y,
-                                      no_rounding);
+                                      no_rounding,
+                                      decoder->compact_y6_u5_v5,
+                                      bits, correction,
+                                      correction_stride);
                     if ((cbp >> (5U - block)) & 1U) {
                         int32_t residual[64];
                         int result = decode_inter_block(
@@ -1123,20 +1241,55 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     return DIVX3_OK;
 }
 
-Divx3Decoder *divx3_decoder_create(uint16_t width, uint16_t height) {
+static Divx3Decoder *divx3_decoder_create_internal(
+    uint16_t width, uint16_t height, int compact_y6_u5_v5) {
     Divx3Decoder *decoder;
     uint32_t padded_width;
     uint32_t padded_height;
+    size_t y_stride;
+    size_t c_stride;
     size_t y_bytes;
     size_t c_bytes;
+    size_t y_correction_bytes = 0;
+    size_t c_correction_bytes = 0;
+    size_t frame_bytes;
     if (!width || !height) return NULL;
     padded_width = ((uint32_t)width + 15U) & ~15U;
     padded_height = ((uint32_t)height + 15U) & ~15U;
     if (padded_width > UINT16_MAX || padded_height > UINT16_MAX)
         return NULL;
-    y_bytes = (size_t)padded_width * padded_height;
-    c_bytes = y_bytes / 4U;
-    if (y_bytes > (SIZE_MAX - c_bytes * 2U) / 2U)
+    if (compact_y6_u5_v5) {
+        y_stride = compact_yuv420_packed_stride(
+            (int)padded_width, COMPACT_YUV420_LUMA_BITS);
+        c_stride = compact_yuv420_packed_stride(
+            (int)(padded_width / 2U),
+            COMPACT_YUV420_CHROMA_BITS);
+        y_bytes = y_stride * padded_height;
+        c_bytes = c_stride * (padded_height / 2U);
+        y_correction_bytes =
+            compact_yuv420_plane_correction_bytes(
+                (int)padded_width, (int)padded_height);
+        c_correction_bytes =
+            compact_yuv420_plane_correction_bytes(
+                (int)(padded_width / 2U),
+                (int)(padded_height / 2U));
+    } else {
+        y_stride = padded_width;
+        c_stride = padded_width / 2U;
+        y_bytes = y_stride * padded_height;
+        c_bytes = c_stride * (padded_height / 2U);
+    }
+    if (c_bytes > (SIZE_MAX - y_bytes) / 2U)
+        return NULL;
+    frame_bytes = y_bytes + c_bytes * 2U;
+    if (y_correction_bytes > SIZE_MAX - frame_bytes)
+        return NULL;
+    frame_bytes += y_correction_bytes;
+    if (c_correction_bytes > (SIZE_MAX - frame_bytes) / 2U)
+        return NULL;
+    frame_bytes += c_correction_bytes * 2U;
+    if (frame_bytes > SIZE_MAX / 2U ||
+        y_stride > UINT16_MAX || c_stride > UINT16_MAX)
         return NULL;
     decoder = (Divx3Decoder *)calloc(1, sizeof(*decoder));
     if (!decoder) return NULL;
@@ -1148,14 +1301,32 @@ Divx3Decoder *divx3_decoder_create(uint16_t width, uint16_t height) {
     decoder->chroma_height = (uint16_t)(padded_height / 2U);
     decoder->mb_width = (uint16_t)(padded_width / 16U);
     decoder->mb_height = (uint16_t)(padded_height / 16U);
+    decoder->y_stride = (uint16_t)y_stride;
+    decoder->c_stride = (uint16_t)c_stride;
+    decoder->correction_stride_y =
+        compact_y6_u5_v5 ? (uint16_t)(padded_width / 8U) : 0;
+    decoder->correction_stride_c =
+        compact_y6_u5_v5 ? (uint16_t)(padded_width / 16U) : 0;
     decoder->y_bytes = y_bytes;
     decoder->c_bytes = c_bytes;
-    decoder->frame_bytes = y_bytes + c_bytes * 2U;
+    decoder->y_correction_bytes = y_correction_bytes;
+    decoder->c_correction_bytes = c_correction_bytes;
+    decoder->frame_bytes = frame_bytes;
+    decoder->compact_y6_u5_v5 = compact_y6_u5_v5 != 0;
     if (allocate_decoder_buffers(decoder) != DIVX3_OK) {
         divx3_decoder_destroy(decoder);
         return NULL;
     }
     return decoder;
+}
+
+Divx3Decoder *divx3_decoder_create(uint16_t width, uint16_t height) {
+    return divx3_decoder_create_internal(width, height, 0);
+}
+
+Divx3Decoder *divx3_decoder_create_y6_u5_v5(
+    uint16_t width, uint16_t height) {
+    return divx3_decoder_create_internal(width, height, 1);
 }
 
 void divx3_decoder_destroy(Divx3Decoder *decoder) {
@@ -1235,11 +1406,29 @@ int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
     frame->y = output;
     frame->cb = output + decoder->y_bytes;
     frame->cr = output + decoder->y_bytes + decoder->c_bytes;
+    frame->correction_y =
+        decoder->compact_y6_u5_v5
+            ? (const int8_t *)(output + decoder->y_bytes +
+                               decoder->c_bytes * 2U)
+            : NULL;
+    frame->correction_cb =
+        frame->correction_y
+            ? frame->correction_y + decoder->y_correction_bytes
+            : NULL;
+    frame->correction_cr =
+        frame->correction_cb
+            ? frame->correction_cb + decoder->c_correction_bytes
+            : NULL;
     frame->width = decoder->width;
     frame->height = decoder->height;
-    frame->y_stride = decoder->padded_width;
-    frame->c_stride = decoder->chroma_width;
+    frame->y_stride = decoder->y_stride;
+    frame->c_stride = decoder->c_stride;
+    frame->correction_stride_y = decoder->correction_stride_y;
+    frame->correction_stride_c = decoder->correction_stride_c;
     frame->frame_number = decoder->frame_number++;
+    frame->storage_mode = decoder->compact_y6_u5_v5
+                              ? DIVX3_FRAME_STORAGE_Y6_U5_V5
+                              : DIVX3_FRAME_STORAGE_YUV420;
     frame->intra = picture_type == 0;
     return DIVX3_OK;
 }
