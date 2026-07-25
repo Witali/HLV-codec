@@ -73,6 +73,16 @@ H2633gpDecoder *h263_3gp_decoder_create(void);
 void h263_3gp_decoder_destroy(H2633gpDecoder *decoder);
 
 /*
+ * Requests one or two output frame buffers for intra-only streams. Two
+ * buffers allow a caller to render frame N while frame N+1 is decoded.
+ * Predictive QCIF streams always use two buffers. Call before open().
+ */
+int h263_3gp_decoder_set_output_buffer_count(H2633gpDecoder *decoder,
+                                              uint8_t count);
+uint8_t h263_3gp_decoder_output_buffer_count(
+    const H2633gpDecoder *decoder);
+
+/*
  * Opens the first H.263 video track in either 3GP or AVI. The embedded
  * profiles accept 176x144 QCIF plus intra-only H.263+ custom sizes 256x144,
  * 256x192, 320x180, and 320x240. 3GP audio is handled by the companion

@@ -220,16 +220,16 @@ struct H2633gpDecoder {
     uint8_t *output_v[2]{};
     size_t output_bytes = 0;
     uint8_t output_count = 0;
+    uint8_t requested_output_count = 1;
     uint16_t buffer_width = 0;
     uint16_t buffer_height = 0;
     bool intra_only = false;
     bool pv_ready = false;
 
-    uint64_t stsz_entries = 0;
     uint32_t fixed_sample_size = 0;
-    uint64_t chunk_entries = 0;
+    uint32_t *sample_sizes = nullptr;
+    uint64_t *chunk_offsets = nullptr;
     uint32_t chunk_count = 0;
-    bool chunks_are_64_bit = false;
     StscEntry *stsc = nullptr;
     uint32_t stsc_count = 0;
     SttsEntry *stts = nullptr;
@@ -247,6 +247,7 @@ struct H2633gpDecoder {
     AviState avi{};
 
     void clear() {
+        const uint8_t preserved_output_count = requested_output_count;
         if (pv_ready) PVCleanUpVideoDecoder(&controls);
         pv_ready = false;
         std::free(packet);
@@ -263,7 +264,12 @@ struct H2633gpDecoder {
         stsc = nullptr;
         std::free(stts);
         stts = nullptr;
+        std::free(sample_sizes);
+        sample_sizes = nullptr;
+        std::free(chunk_offsets);
+        chunk_offsets = nullptr;
         *this = H2633gpDecoder{};
+        requested_output_count = preserved_output_count;
     }
 };
 
@@ -726,19 +732,28 @@ int parseStsz(FILE *file, const Box &stsz, H2633gpDecoder *decoder) {
         return H263_3GP_ERR_IO;
     }
     if (decoder->info.frame_count == 0) return H263_3GP_ERR_FORMAT;
-    decoder->stsz_entries = stsz.data + 12;
+    const uint64_t entries = stsz.data + 12;
     if (decoder->fixed_sample_size != 0) {
         decoder->info.max_sample_size = decoder->fixed_sample_size;
         return H263_3GP_OK;
     }
-    if (stsz.end - decoder->stsz_entries <
+    if (stsz.end - entries <
         static_cast<uint64_t>(decoder->info.frame_count) * 4) {
         return H263_3GP_ERR_FORMAT;
     }
-    if (!seekFile(file, decoder->stsz_entries)) return H263_3GP_ERR_IO;
+    if (decoder->info.frame_count >
+        std::numeric_limits<size_t>::max() / sizeof(uint32_t)) {
+        return H263_3GP_ERR_FORMAT;
+    }
+    decoder->sample_sizes = static_cast<uint32_t *>(std::malloc(
+        static_cast<size_t>(decoder->info.frame_count) *
+        sizeof(uint32_t)));
+    if (!decoder->sample_sizes) return H263_3GP_ERR_MEMORY;
+    if (!seekFile(file, entries)) return H263_3GP_ERR_IO;
     for (uint32_t i = 0; i < decoder->info.frame_count; ++i) {
         uint32_t size = 0;
         if (!readU32(file, &size)) return H263_3GP_ERR_IO;
+        decoder->sample_sizes[i] = size;
         decoder->info.max_sample_size =
             std::max(decoder->info.max_sample_size, size);
     }
@@ -752,13 +767,32 @@ int parseChunks(FILE *file, const Box &box, H2633gpDecoder *decoder) {
         return H263_3GP_ERR_IO;
     }
     if (decoder->chunk_count == 0) return H263_3GP_ERR_FORMAT;
-    decoder->chunks_are_64_bit = box.type == fourcc('c', 'o', '6', '4');
-    decoder->chunk_entries = box.data + 8;
-    const uint64_t entry_size = decoder->chunks_are_64_bit ? 8 : 4;
-    return box.end - decoder->chunk_entries >=
-                   static_cast<uint64_t>(decoder->chunk_count) * entry_size
-               ? H263_3GP_OK
-               : H263_3GP_ERR_FORMAT;
+    const bool offsets_are_64_bit =
+        box.type == fourcc('c', 'o', '6', '4');
+    const uint64_t entries = box.data + 8;
+    const uint64_t entry_size = offsets_are_64_bit ? 8 : 4;
+    if (box.end - entries <
+        static_cast<uint64_t>(decoder->chunk_count) * entry_size ||
+        decoder->chunk_count >
+            std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
+        return H263_3GP_ERR_FORMAT;
+    }
+    decoder->chunk_offsets = static_cast<uint64_t *>(std::malloc(
+        static_cast<size_t>(decoder->chunk_count) *
+        sizeof(uint64_t)));
+    if (!decoder->chunk_offsets) return H263_3GP_ERR_MEMORY;
+    if (!seekFile(file, entries)) return H263_3GP_ERR_IO;
+    for (uint32_t i = 0; i < decoder->chunk_count; ++i) {
+        if (offsets_are_64_bit) {
+            if (!readU64(file, &decoder->chunk_offsets[i]))
+                return H263_3GP_ERR_IO;
+        } else {
+            uint32_t offset = 0;
+            if (!readU32(file, &offset)) return H263_3GP_ERR_IO;
+            decoder->chunk_offsets[i] = offset;
+        }
+    }
+    return H263_3GP_OK;
 }
 
 int parseStsc(FILE *file, const Box &stsc, H2633gpDecoder *decoder) {
@@ -916,21 +950,19 @@ int parseContainer(FILE *file, H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-int sampleSize(FILE *file, const H2633gpDecoder *decoder, uint32_t index,
+int sampleSize(const H2633gpDecoder *decoder, uint32_t index,
                uint32_t *size) {
     if (decoder->fixed_sample_size) {
         *size = decoder->fixed_sample_size;
         return H263_3GP_OK;
     }
-    if (!seekFile(file, decoder->stsz_entries +
-                            static_cast<uint64_t>(index) * 4) ||
-        !readU32(file, size)) {
-        return H263_3GP_ERR_IO;
-    }
+    if (!decoder->sample_sizes || index >= decoder->info.frame_count)
+        return H263_3GP_ERR_FORMAT;
+    *size = decoder->sample_sizes[index];
     return *size ? H263_3GP_OK : H263_3GP_ERR_FORMAT;
 }
 
-int beginChunk(FILE *file, H2633gpDecoder *decoder) {
+int beginChunk(H2633gpDecoder *decoder) {
     if (decoder->chunk_index >= decoder->chunk_count)
         return H263_3GP_ERR_FORMAT;
     while (decoder->stsc_index + 1 < decoder->stsc_count &&
@@ -940,19 +972,9 @@ int beginChunk(FILE *file, H2633gpDecoder *decoder) {
     }
     decoder->samples_in_chunk =
         decoder->stsc[decoder->stsc_index].samples_per_chunk;
-    const uint64_t entry_offset =
-        decoder->chunk_entries +
-        static_cast<uint64_t>(decoder->chunk_index) *
-            (decoder->chunks_are_64_bit ? 8 : 4);
-    if (!seekFile(file, entry_offset)) return H263_3GP_ERR_IO;
-    if (decoder->chunks_are_64_bit) {
-        if (!readU64(file, &decoder->sample_offset))
-            return H263_3GP_ERR_IO;
-    } else {
-        uint32_t offset = 0;
-        if (!readU32(file, &offset)) return H263_3GP_ERR_IO;
-        decoder->sample_offset = offset;
-    }
+    if (!decoder->chunk_offsets) return H263_3GP_ERR_FORMAT;
+    decoder->sample_offset =
+        decoder->chunk_offsets[decoder->chunk_index];
     return H263_3GP_OK;
 }
 
@@ -966,7 +988,8 @@ int initializeDecoder(H2633gpDecoder *decoder) {
     decoder->output_bytes =
         static_cast<size_t>(expected_width) * expected_height * 3 / 2;
     decoder->intra_only = decoder->info.width != 176;
-    decoder->output_count = decoder->intra_only ? 1 : 2;
+    decoder->output_count =
+        decoder->intra_only ? decoder->requested_output_count : 2;
 
     // Reserve the frame planes before PacketVideo makes its smaller table
     // allocations. Separate Y/U/V blocks avoid requiring one contiguous
@@ -1030,6 +1053,19 @@ void h263_3gp_decoder_destroy(H2633gpDecoder *decoder) {
     if (!decoder) return;
     decoder->clear();
     delete decoder;
+}
+
+int h263_3gp_decoder_set_output_buffer_count(H2633gpDecoder *decoder,
+                                              uint8_t count) {
+    if (!decoder || (count != 1 && count != 2) || decoder->pv_ready)
+        return H263_3GP_ERR_ARGUMENT;
+    decoder->requested_output_count = count;
+    return H263_3GP_OK;
+}
+
+uint8_t h263_3gp_decoder_output_buffer_count(
+    const H2633gpDecoder *decoder) {
+    return decoder ? decoder->output_count : 0;
 }
 
 int h263_avi_probe(FILE *file, H2633gpInfo *info) {
@@ -1171,11 +1207,11 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
             return H263_3GP_ERR_IO;
     } else {
         if (decoder->sample_in_chunk == 0) {
-            const int result = beginChunk(file, decoder);
+            const int result = beginChunk(decoder);
             if (result != H263_3GP_OK) return result;
         }
         const int result =
-            sampleSize(file, decoder, decoder->sample_index, &size);
+            sampleSize(decoder, decoder->sample_index, &size);
         if (result != H263_3GP_OK) return result;
         if (size > decoder->info.max_sample_size)
             return H263_3GP_ERR_FORMAT;
@@ -1255,6 +1291,14 @@ size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {
     if (!decoder) return 0;
     return sizeof(*decoder) + decoder->info.max_sample_size + kInputPadding +
            decoder->output_bytes * decoder->output_count +
+           (decoder->sample_sizes
+                ? static_cast<size_t>(decoder->info.frame_count) *
+                      sizeof(uint32_t)
+                : 0) +
+           (decoder->chunk_offsets
+                ? static_cast<size_t>(decoder->chunk_count) *
+                      sizeof(uint64_t)
+                : 0) +
            static_cast<size_t>(decoder->stsc_count) * sizeof(StscEntry) +
            static_cast<size_t>(decoder->stts_count) * sizeof(SttsEntry) +
            (decoder->pv_ready

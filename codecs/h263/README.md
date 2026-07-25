@@ -13,10 +13,10 @@ The embedded profiles are intentionally bounded:
 - AMR-NB mono audio at 8 kHz in 3GP, or PCM S16LE mono at 8 kHz in AVI;
 - no B pictures and no resolution changes.
 
-The demultiplexer reads `stsz`, `stco`/`co64`, `stsc`, and `stts` tables
-directly from the file. Only compact `stsc` and one-entry constant-rate `stts`
-state is retained in RAM; per-frame sample sizes and chunk offsets remain in
-the 3GP file.
+The demultiplexer reads `stsz`, `stco`/`co64`, `stsc`, and `stts` tables.
+Sample sizes and chunk offsets are cached when a 3GP file is opened, removing
+two random SD seeks from every decoded frame. AVI video and PCM remain
+sequential streams through independent file cursors.
 
 The AVI path scans RIFF headers and `idx1` without retaining per-frame state.
 Video and PCM are then read sequentially through independent file cursors.
@@ -53,11 +53,12 @@ complete source with black padding. The script adds AMR-NB audio when the
 source has audio, verifies the stream metadata, and fully decodes the result
 with FFmpeg. Use `-NoAudio` for a silent file.
 
-Custom H.263+ profiles use GOP 1 regardless of `-Gop`. Keeping every custom
-frame intra-coded lets the ESP32 decoder use one YUV420 frame. Its Y, U, and V
-planes are allocated independently so 320x240 does not require one contiguous
-115,200-byte block. The baseline QCIF profile retains inter-frame prediction
-and two frames.
+Custom H.263+ profiles use GOP 1 regardless of `-Gop`. In dual-core mode the
+ESP32 requests two YUV420 outputs so CPU1 can decode frame N+1 while CPU0
+converts and submits frame N. It automatically falls back to one output if
+the second allocation is unavailable. Y, U, and V are separate allocations,
+so 320x240 never requires one contiguous 115,200-byte block. Predictive QCIF
+also uses two outputs to preserve its reference frame.
 
 FFmpeg exposes custom picture sizes through its H.263+ encoder but its 3GP
 muxer accepts only the generic H.263 codec id. For the four custom profiles,

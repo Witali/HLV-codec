@@ -212,6 +212,7 @@ struct DecodeResult {
     int result;
     const HLV1Frame *hlv_frame;
     const BPV1Frame *bpv_frame;
+    H2633gpFrame h263_frame;
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
@@ -328,6 +329,10 @@ bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame{};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
+H2633gpFrame pending_h263_frame{};
+bool pending_h263_frame_valid = false;
+uint32_t pending_h263_decode_us = 0;
+bool h263_dual_buffered = false;
 BPV1Frame pending_bpv_frame{};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet{};
@@ -371,6 +376,12 @@ void decodeTask(void *) {
         } else if (request.codec == VideoCodec::kBpv) {
             result.result =
                 bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
+        } else if (request.codec == VideoCodec::kH263) {
+            result.result =
+                h263_decoder && video_file
+                    ? h263_3gp_decoder_decode_next(
+                          h263_decoder, video_file, &result.h263_frame)
+                    : H263_3GP_ERR_ARGUMENT;
         } else {
             result.result = HLV1_ERR_ARGUMENT;
         }
@@ -414,7 +425,7 @@ bool startDecodeWorker() {
     }
     ESP_LOGI(kTag,
              "Playback pipeline: CPU0 render/main I/O, "
-             "CPU1 ordered decode/BPV prefetch");
+             "CPU1 ordered decode/BPV prefetch, H.263 ping-pong");
     return true;
 }
 
@@ -432,6 +443,18 @@ bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
     DecodeRequest request{};
     request.codec = VideoCodec::kMpeg1;
+    if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
+    decode_in_flight = true;
+    return true;
+}
+
+bool submitH263Decode() {
+    if (!decode_task_handle || decode_in_flight || !h263_decoder ||
+        !video_file) {
+        return false;
+    }
+    DecodeRequest request{};
+    request.codec = VideoCodec::kH263;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -1319,6 +1342,10 @@ void closeVideo() {
     stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
+    pending_h263_frame_valid = false;
+    pending_h263_frame = {};
+    pending_h263_decode_us = 0;
+    h263_dual_buffered = false;
     pending_bpv_frame_valid = false;
     ready_bpv_packet = {};
     ready_bpv_packet_valid = false;
@@ -1673,11 +1700,23 @@ bool openVideo() {
         }
     } else if (video_codec == VideoCodec::kH263) {
         h263_decoder = h263_3gp_decoder_create();
+        if (h263_decoder && player_settings::kUseDualCorePipeline) {
+            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 2);
+        }
         int result =
             h263_decoder
                 ? h263_3gp_decoder_open(
                       h263_decoder, video_file, &h263_info)
                 : H263_3GP_ERR_MEMORY;
+        if (result == H263_3GP_ERR_FRAME_MEMORY &&
+            player_settings::kUseDualCorePipeline && h263_decoder) {
+            ESP_LOGW(kTag,
+                     "H.263 second output buffer unavailable; "
+                     "falling back to sequential decode");
+            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 1);
+            result = h263_3gp_decoder_open(
+                h263_decoder, video_file, &h263_info);
+        }
         if (result == H263_3GP_OK &&
             (h263_info.fps_num > UINT16_MAX ||
              h263_info.fps_den > UINT16_MAX)) {
@@ -1736,6 +1775,14 @@ bool openVideo() {
                      : 0,
                  static_cast<unsigned>(
                      h263_3gp_decoder_memory_bytes(h263_decoder)));
+        h263_dual_buffered =
+            h263_3gp_decoder_output_buffer_count(h263_decoder) == 2;
+        if (h263_dual_buffered && !startDecodeWorker()) {
+            showStatus("Dual-core init failed",
+                       "cannot create CPU1 decoder task");
+            closeVideo();
+            return false;
+        }
     } else if (video_codec == VideoCodec::kMjpeg) {
         int result = mjpeg_decoder.begin(video_file, &mjpeg_info);
         if (result == MJPEG_AVI_OK &&
@@ -2635,6 +2682,71 @@ void playOneH263Frame() {
     }
 }
 
+void playOneH263FramePipelined() {
+    if (!pending_h263_frame_valid) {
+        if (!submitH263Decode()) {
+            failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+            return;
+        }
+        DecodeResult first{};
+        if (!waitDecode(&first) || first.codec != VideoCodec::kH263) {
+            failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+            return;
+        }
+        if (first.result == H263_3GP_EOF) {
+            finishVideoLoop();
+            return;
+        }
+        if (first.result == H263_3GP_ERR_IO) {
+            failSdCardRead("cannot read H.263 video");
+            return;
+        }
+        if (first.result != H263_3GP_OK) {
+            failPlayback("H.263 decode error", first.result);
+            return;
+        }
+        pending_h263_frame = first.h263_frame;
+        pending_h263_decode_us = first.decode_us;
+        pending_h263_frame_valid = true;
+    }
+
+    const H2633gpFrame frame = pending_h263_frame;
+    const uint32_t decode_us = pending_h263_decode_us;
+    pending_h263_frame_valid = false;
+    if (!submitH263Decode()) {
+        failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+        return;
+    }
+
+    const bool rendered = presentH263Frame(&frame, decode_us);
+    DecodeResult next{};
+    const bool received = waitDecode(&next);
+    if (!rendered) {
+        failPlayback("Display DMA error", H263_3GP_ERR_IO);
+        return;
+    }
+    if (!received || next.codec != VideoCodec::kH263) {
+        failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+        return;
+    }
+    if (next.result == H263_3GP_ERR_IO) {
+        failSdCardRead("cannot read H.263 video");
+        return;
+    }
+    if (next.result != H263_3GP_OK &&
+        next.result != H263_3GP_EOF) {
+        failPlayback("H.263 decode error", next.result);
+        return;
+    }
+    if (next.result == H263_3GP_OK) {
+        pending_h263_frame = next.h263_frame;
+        pending_h263_decode_us = next.decode_us;
+        pending_h263_frame_valid = true;
+    } else {
+        finishVideoLoop();
+    }
+}
+
 void playOneMpegFramePipelined() {
     if (!pending_mpeg_frame_valid) {
         if (!submitMpegDecode()) {
@@ -3046,7 +3158,12 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kH263 &&
             h263_decoder) {
-            playOneH263Frame();
+            if (player_settings::kUseDualCorePipeline &&
+                h263_dual_buffered) {
+                playOneH263FramePipelined();
+            } else {
+                playOneH263Frame();
+            }
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMjpeg &&

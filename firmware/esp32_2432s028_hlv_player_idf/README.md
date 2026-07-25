@@ -26,10 +26,12 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
 UART0 at 460800 remains enabled for compact per-frame diagnostics. The default
-dual-core pipeline pins ordered HLV, BPV or MPEG-1 decoding to APP CPU (CPU1),
-while the main task on PRO CPU (CPU0) converts the preceding frame to RGB565
-and queues its SPI DMA strips. Predictive P-frames are never decoded out of
-order. Dual-core mode cannot add the 8 KiB RTC Fast RAM to the heap. Slow
+dual-core pipeline pins ordered HLV, BPV, MPEG-1 or H.263 decoding to APP CPU
+(CPU1), while the main task on PRO CPU (CPU0) converts the preceding frame to
+RGB565 and queues its SPI DMA strips. H.263/3GP sample sizes and chunk offsets
+are cached at open time so the hot path reads compressed video sequentially.
+Predictive P-frames are never decoded out of order. Dual-core mode cannot add
+the 8 KiB RTC Fast RAM to the heap. Slow
 exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main`, `hlv1` and `bpv1` components explicitly use `-O3`.
@@ -282,9 +284,15 @@ display DMA timing.
   audio-only PL_MPEG instance. Packed planes use separate allocations. Files
   larger than 320x240 or containing B pictures are rejected by the saved
   profile.
+- H.263: two separately allocated YUV420 outputs in dual-core mode, allowing
+  CPU1 to decode frame N+1 while CPU0 presents frame N. The 320x240 pair uses
+  230,400 bytes without requiring either frame to be contiguous. If the
+  second custom-profile output cannot be allocated, playback automatically
+  uses the one-buffer sequential path. 3GP also retains compact sample-size
+  and 64-bit chunk-offset caches to avoid per-frame metadata seeks.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG uses
-  the sequential CPU0 path. Only frame descriptors cross cores in the
+  reader and two one-entry decode queues for HLV, BPV, MPEG-1 or H.263. MJPEG
+  uses the sequential CPU0 path. Only frame descriptors cross cores in the
   pipelined paths, so no frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
