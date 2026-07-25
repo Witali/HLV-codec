@@ -210,6 +210,8 @@ struct DecodeRequest {
     VideoCodec codec;
     const HLV1Packet *hlv_packet;
     const BPV1Packet *bpv_packet;
+    const uint8_t *divx3_packet;
+    size_t divx3_packet_size;
     FILE *bpv_file;
     bool bpv_prefetch;
 };
@@ -219,6 +221,7 @@ struct DecodeResult {
     int result;
     const HLV1Frame *hlv_frame;
     const BPV1Frame *bpv_frame;
+    Divx3Frame divx3_frame;
     H2633gpFrame h263_frame;
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
@@ -339,6 +342,8 @@ bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame{};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
+Divx3Frame pending_divx3_frame{};
+bool pending_divx3_frame_valid = false;
 H2633gpFrame pending_h263_frame{};
 bool pending_h263_frame_valid = false;
 uint32_t pending_h263_decode_us = 0;
@@ -437,6 +442,15 @@ void decodeTask(void *) {
         } else if (request.codec == VideoCodec::kBpv) {
             result.result =
                 bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
+        } else if (request.codec == VideoCodec::kDivx3) {
+            result.result =
+                divx3_decoder && request.divx3_packet &&
+                        request.divx3_packet_size
+                    ? divx3_decoder_decode(
+                          divx3_decoder, request.divx3_packet,
+                          request.divx3_packet_size,
+                          &result.divx3_frame)
+                    : DIVX3_ERR_ARGUMENT;
         } else if (request.codec == VideoCodec::kH263) {
             result.result =
                 h263_decoder && video_file
@@ -506,6 +520,21 @@ bool submitMpegDecode() {
     DecodeRequest request{};
     request.codec = VideoCodec::kMpeg1;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
+    decode_in_flight = true;
+    return true;
+}
+
+bool submitDivx3Decode(const uint8_t *packet, size_t packet_size) {
+    if (!decode_task_handle || decode_in_flight || !divx3_decoder ||
+        !packet || !packet_size) {
+        return false;
+    }
+    DecodeRequest request{};
+    request.codec = VideoCodec::kDivx3;
+    request.divx3_packet = packet;
+    request.divx3_packet_size = packet_size;
+    if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE)
+        return false;
     decode_in_flight = true;
     return true;
 }
@@ -1436,6 +1465,8 @@ void closeVideo() {
     stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
+    pending_divx3_frame = {};
+    pending_divx3_frame_valid = false;
     pending_h263_frame_valid = false;
     pending_h263_frame = {};
     pending_h263_decode_us = 0;
@@ -2001,6 +2032,12 @@ bool openVideo() {
                      divx3_decoder_memory_bytes(divx3_decoder)),
                  static_cast<unsigned>(
                      divx3_info.max_video_packet_size));
+        if (!startDecodeWorker()) {
+            showStatus("Dual-core init failed",
+                       "cannot create CPU1 decoder task");
+            closeVideo();
+            return false;
+        }
     } else if (video_codec == VideoCodec::kBpv) {
         const int result = bpv_decoder.begin(video_file, &bpv_header);
         if (result != BPV1_OK) {
@@ -3215,6 +3252,95 @@ void playOneDivx3Frame() {
     }
 }
 
+void playOneDivx3FramePipelined() {
+    size_t packet_size = 0;
+    const long retry_offset = std::ftell(video_file);
+    const int64_t read_start = microsNow();
+    int packet_result = divx3_avi_read_video_packet(
+        video_file, &divx3_info, divx3_packet,
+        divx3_info.max_video_packet_size, &packet_size);
+    if (packet_result == DIVX3_AVI_ERR_IO && retry_offset >= 0) {
+        for (unsigned attempt = 1; attempt <= 2; ++attempt) {
+            ESP_LOGW(kTag,
+                     "Recovering DivX 3 packet at %ld, attempt %u/2",
+                     retry_offset, attempt);
+            if (!reopenVideoAt(retry_offset)) break;
+            packet_result = divx3_avi_read_video_packet(
+                video_file, &divx3_info, divx3_packet,
+                divx3_info.max_video_packet_size, &packet_size);
+            if (packet_result == DIVX3_AVI_OK) {
+                ESP_LOGI(kTag, "DivX 3 packet recovered at %ld",
+                         retry_offset);
+                break;
+            }
+            if (packet_result != DIVX3_AVI_ERR_IO) break;
+        }
+    }
+    const uint32_t read_us =
+        static_cast<uint32_t>(microsNow() - read_start);
+    if (packet_result == DIVX3_AVI_EOF) {
+        if (pending_divx3_frame_valid) {
+            const plm_frame_t render_frame =
+                makeDivx3RenderFrame(pending_divx3_frame);
+            const bool rendered = presentDecodedFrame(
+                &render_frame, renderMpegOpaque, pending_read_us,
+                pending_decode_us);
+            pending_divx3_frame_valid = false;
+            if (!rendered) {
+                failPlayback("Display DMA error",
+                             DIVX3_ERR_BITSTREAM);
+                return;
+            }
+        }
+        finishVideoLoop();
+        return;
+    }
+    if (packet_result != DIVX3_AVI_OK) {
+        if (packet_result == DIVX3_AVI_ERR_IO) {
+            failSdCardRead("cannot read DivX 3 video");
+            return;
+        }
+        failPlayback("DivX 3 packet error", packet_result);
+        return;
+    }
+    if (!submitDivx3Decode(divx3_packet, packet_size)) {
+        failPlayback("DivX 3 decode pipeline error",
+                     DIVX3_ERR_BITSTREAM);
+        return;
+    }
+
+    bool rendered = true;
+    if (pending_divx3_frame_valid) {
+        const plm_frame_t render_frame =
+            makeDivx3RenderFrame(pending_divx3_frame);
+        rendered = presentDecodedFrame(
+            &render_frame, renderMpegOpaque, pending_read_us,
+            pending_decode_us);
+        pending_divx3_frame_valid = false;
+    }
+
+    DecodeResult result{};
+    const bool received = waitDecode(&result);
+    if (!rendered) {
+        failPlayback("Display DMA error", DIVX3_ERR_BITSTREAM);
+        return;
+    }
+    if (!received) {
+        failPlayback("DivX 3 decode pipeline error",
+                     DIVX3_ERR_BITSTREAM);
+        return;
+    }
+    if (result.codec != VideoCodec::kDivx3 ||
+        result.result != DIVX3_OK) {
+        failPlayback("DivX 3 decode error", result.result);
+        return;
+    }
+    pending_divx3_frame = result.divx3_frame;
+    pending_read_us = read_us;
+    pending_decode_us = result.decode_us;
+    pending_divx3_frame_valid = true;
+}
+
 void playOneBpvFrameSequential() {
     BPV1Packet packet{};
     const int64_t read_start = microsNow();
@@ -3510,7 +3636,11 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kDivx3 &&
             divx3_decoder && divx3_packet) {
-            playOneDivx3Frame();
+            if (player_settings::kUseDualCorePipeline) {
+                playOneDivx3FramePipelined();
+            } else {
+                playOneDivx3Frame();
+            }
             continue;
         }
         if (video_file && video_codec == VideoCodec::kBpv &&
