@@ -44,8 +44,10 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $testExe = Join-Path $OutputDirectory "test_divx3_decode.exe"
 $inputAvi = Join-Path $OutputDirectory "bbb_divx3_160x90.avi"
+$inputMp3Avi = Join-Path $OutputDirectory "bbb_divx3_mp3_160x90.avi"
 $referenceYuv = Join-Path $OutputDirectory "reference.yuv"
 $decodedYuv = Join-Path $OutputDirectory "decoded.yuv"
+$decodedMp3Yuv = Join-Path $OutputDirectory "decoded_mp3.yuv"
 $include = Join-Path $repo "codecs\divx3\include"
 $testSource = Join-Path $repo "codecs\divx3\tests\test_decode.c"
 $decoderSource = Join-Path $repo "codecs\divx3\src\divx3_decode.c"
@@ -87,5 +89,25 @@ if ($referenceHash -ne $decodedHash) {
     )
 }
 
+& $ffmpeg -hide_banner -loglevel error -y -ss 00:00:00 -t 1 `
+    -i $source -vf "fps=12,scale=160:90:flags=lanczos" `
+    -c:v msmpeg4 -q:v 4 -g 12 -bf 0 -vtag DIV3 `
+    -c:a mp3 -b:a 64k -ac 1 -ar 16000 $inputMp3Avi
+if ($LASTEXITCODE -ne 0) {
+    throw "FFmpeg failed while creating the DivX 3 + MP3 fixture."
+}
+$mp3DecoderResult = & $testExe $inputMp3Avi $decodedMp3Yuv
+if ($LASTEXITCODE -ne 0) {
+    throw "Portable decoder rejected a DivX 3 AVI with MP3 audio."
+}
+$decodedMp3Hash = (Get-FileHash -Algorithm SHA256 $decodedMp3Yuv).Hash
+if ($referenceHash -ne $decodedMp3Hash) {
+    throw (
+        "Ignoring unsupported MP3 audio changed decoded video pixels: " +
+        "reference=$referenceHash decoded=$decodedMp3Hash"
+    )
+}
+
 Write-Host $decoderResult
+Write-Host $mp3DecoderResult
 Write-Host "DivX 3 pixel-exact regression passed: $decodedHash"
