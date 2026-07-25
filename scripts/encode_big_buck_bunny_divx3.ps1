@@ -55,7 +55,7 @@ $ffprobe = Find-WorktreeFile $ffprobeRelative
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo (
-        "out\BigBuckBunny_1080p_divx3_q{0}_{1}fps_256x144.avi" -f
+        "out\BigBuckBunny_1080p_divx3_q{0}_{1}fps_320x240.avi" -f
         $Quality, $Fps
     )
 }
@@ -129,7 +129,11 @@ $arguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
     "-i", $source,
     "-map", "0:v:0", "-map", "0:a:0",
-    "-vf", "fps=$Fps,scale=256:144:flags=lanczos,setsar=1,format=yuv420p",
+    "-vf", (
+        "fps=$Fps,scale=320:240:force_original_aspect_ratio=decrease:" +
+        "flags=lanczos,pad=320:240:(ow-iw)/2:(oh-ih)/2:black," +
+        "setsar=1,format=yuv420p"
+    ),
     "-af", $audioFilter,
     "-fps_mode", "cfr",
     "-c:v", "msmpeg4",
@@ -149,7 +153,7 @@ if ($MaxFrames) {
 $arguments += @("-f", "avi", $OutputFile)
 
 Write-Host (
-    "Encoding DivX 3 AVI: 256x144, $Fps fps, q=$Quality, GOP $Gop, " +
+    "Encoding DivX 3 AVI: 320x240, $Fps fps, q=$Quality, GOP $Gop, " +
     "no B pictures, PCM_U8 mono 16 kHz..."
 )
 & $ffmpeg @arguments
@@ -167,7 +171,7 @@ $video = $videoProbe.streams[0]
 if ($LASTEXITCODE -ne 0 -or
     $video.codec_name -ne "msmpeg4v3" -or
     $video.codec_tag_string -ne "DIV3" -or
-    $video.width -ne 256 -or $video.height -ne 144 -or
+    $video.width -ne 320 -or $video.height -ne 240 -or
     $video.r_frame_rate -ne "$Fps/1") {
     throw "The output does not match the required DivX 3 video profile."
 }

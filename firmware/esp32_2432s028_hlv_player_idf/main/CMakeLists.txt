@@ -1,4 +1,21 @@
-if(HLV_QEMU_BENCHMARK)
+if(DIVX3_QEMU_BENCHMARK)
+    idf_component_register(
+        SRCS
+            "qemu_divx3_benchmark.cpp"
+        INCLUDE_DIRS "."
+        REQUIRES
+            compact_yuv420
+            divx3
+            esp_rom
+            esp_system
+            freertos
+            heap
+            log
+            vfs
+    )
+    target_add_binary_data(
+        ${COMPONENT_LIB} "qemu_divx3_benchmark.avi" BINARY)
+elseif(HLV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_benchmark.cpp"

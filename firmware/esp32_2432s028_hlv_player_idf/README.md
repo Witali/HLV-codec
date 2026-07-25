@@ -37,10 +37,11 @@ exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main`, `hlv1`, `bpv1` and `divx3` components explicitly use `-O3`.
 
-The initial DivX 3 profile is deliberately limited to 256x144 at 12 fps, I/P
-pictures, a maximum 96 KiB compressed packet, and no per-macroblock quantizer
-changes. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by this
-decoder.
+The DivX 3 profile is limited to 320x240 at 12 fps, I/P pictures, a maximum
+96 KiB compressed packet, and no per-macroblock quantizer changes. Its two
+references use packed Y6/U5/V5 samples with signed Q4 block-average
+corrections. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by
+this decoder.
 
 ## Build and flash
 
@@ -263,6 +264,20 @@ Espressif QEMU reports that its virtual flash cannot set the QE bit and
 continues in DIO; this is expected and does not invalidate decoder instruction
 comparisons.
 
+The DivX 3 benchmark embeds the first 60 frames of the validated QVGA AVI,
+creates the same compact Y6/U5/V5 decoder as the player and hashes its
+correction-adjusted visible samples:
+
+```powershell
+.\qemu-divx3-benchmark.ps1
+.\qemu-divx3-benchmark.ps1 -InputFile input.avi -Frames 60
+```
+
+It prints a `D` record with the same cycle percentiles, separate I/P timing,
+the reconstructed-frame hash, decoder allocation, free heap and largest free
+block. The wrapper verifies that the generated embedded clip remains
+`msmpeg4v3`/`DIV3`, 320x240 and contains the requested number of frames.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
@@ -276,8 +291,8 @@ display DMA timing.
   and releases the second allocation before creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1/H.263, 16 KiB for the other formats). HLV uses nine reusable
-  7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV uses nine
+  reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
   JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
   uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
   39,678 bytes for these three MJPEG allocations instead of a full-frame
@@ -290,10 +305,12 @@ display DMA timing.
   correction. BPV instead retains two 32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
-- DivX 3: two padded 8-bit YUV420 reference frames use 141,008 bytes at
-  256x144, plus one compressed packet capped at 96 KiB. The first profile is
-  decoded sequentially on CPU0; physical-board frame-time validation is still
-  required.
+- DivX 3: two packed Y6/U5/V5 reference frames, Q4 correction maps and rolling
+  DC/AC/MV predictor rows use 174,008 bytes at 320x240, versus 237,608 bytes
+  for the exact 8-bit decoder after the same predictor-row optimization. The
+  player also uses one 10 KiB display allocation, 4 KiB stdio read-ahead and
+  one compressed packet capped at 96 KiB. It is decoded sequentially on CPU0;
+  physical-board frame-time validation is still required.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded

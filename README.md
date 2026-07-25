@@ -18,9 +18,11 @@ native source frame rate, and muxes PCM_U8 audio through the same saved level
 curve as the HLV preset.
 
 [`DivX 3`](codecs/divx3/) support decodes the Microsoft MPEG-4 v3 bitstream
-found in `DIV3`/`MP43` AVI files. The first memory-bounded ESP32 profile is
-256x144 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. DivX 4
-and 5 use the different MPEG-4 Part 2 ASP format and are not yet supported.
+found in `DIV3`/`MP43` AVI files. The memory-bounded ESP32 profile accepts up
+to 320x240 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. It
+stores predictive references as Y6/U5/V5 with Q4 block-average corrections;
+the portable decoder retains a pixel-exact 8-bit validation mode. DivX 4 and
+5 use the different MPEG-4 Part 2 ASP format and are not yet supported.
 
 The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
 Stream with MPEG-1 Video and MP2 audio. Its ESP32 memory-bounded variant
@@ -119,6 +121,9 @@ Create the conservative DivX 3 AVI profile and its matching `play.txt`:
 ```powershell
 .\scripts\encode_big_buck_bunny_divx3.ps1
 ```
+
+The default profile is 320x240 at 12 fps, preserves the source aspect ratio
+with letterboxing, uses I/P pictures only and PCM_U8 mono audio at 16 kHz.
 
 ## Native Windows player
 

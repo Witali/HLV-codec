@@ -80,3 +80,43 @@ correction preserves each block's discarded average but cannot reconstruct
 every lost low bit. The current GOP length of 12 bounds temporal drift by
 resetting it at each I-frame; validation must still measure that drift across
 the full GOP.
+
+## Completed validation
+
+All implementation stages above are complete in the
+`codex/divx3-compact-yuv` worktree. No board was connected or flashed.
+
+- The common compact-YUV420 unit test passes.
+- HLV v12 host simulation remains byte-identical to `main`
+  (`c1c42ad1ab6c76c9` reconstruction hash).
+- MPEG-1 exact and compact regression hashes remain byte-identical to `main`
+  (`daf2015f46b89d2e` and `b4f0a2fe777fefc3`).
+- Exact DivX 3 output remains byte-identical before and after rolling
+  predictors. Full-file hashes are `dfa88cf6db4bd23b` for Big Buck Bunny
+  (7,158 frames) and `5e24bc69af1d82cf` for VID_20260522_181611
+  (1,343 frames).
+- Compact DivX 3 decodes both complete QVGA files. Their hashes are
+  `bc690c13d270e921` and `6051d1ab5b132596`, respectively.
+- Compact-versus-exact PSNR is 43.06 dB overall for Big Buck Bunny and
+  42.11 dB for VID_20260522_181611. The worst individual frames are
+  36.10 dB and 36.62 dB. Mean signed error is below 0.015 sample in
+  magnitude for both files.
+- On a 64-bit host, QVGA decoder-owned memory is 174,008 bytes in compact
+  mode and 237,608 bytes in exact mode. The original exact implementation
+  used 293,576 bytes, so rolling predictors plus compact references save
+  119,568 bytes (40.7%).
+- The normal ESP-IDF Player build succeeds. Its application image is
+  646,064 bytes and leaves 926,800 bytes free in the 1.5 MiB application
+  partition.
+- Espressif QEMU decodes the validated 60-frame 320x240 clip successfully.
+  The compact decoder is 173,920 bytes with 32-bit pointers. Average,
+  p50, p95 and maximum decode costs are 3,348,612, 3,512,087,
+  4,484,914 and 4,835,357 guest cycles. The decode-only rate calculated
+  at 240 MHz is 71.671 fps.
+- QEMU and the host compact decoder produce the same visible-frame hash,
+  `1463ec78314286a3`, for that clip.
+
+The Player now selects compact DivX 3 storage, accepts at most 320x240,
+uses one 10 KiB RGB565 display strip allocation and reduces DivX stdio
+read-ahead from 16 KiB to 4 KiB. Physical SD/display/audio timing remains
+the only deferred acceptance item.

@@ -47,8 +47,9 @@ constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
+constexpr size_t kDivx3VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
-constexpr uint32_t kDivx3MaximumMacroblocks = 144;
+constexpr uint32_t kDivx3MaximumMacroblocks = 300;
 constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
@@ -1659,7 +1660,8 @@ bool openVideo() {
         return false;
     }
     const bool use_double_display_buffer =
-        video_codec != VideoCodec::kH263;
+        video_codec != VideoCodec::kH263 &&
+        video_codec != VideoCodec::kDivx3;
     if (display.setDoubleBuffered(use_double_display_buffer) != ESP_OK) {
         showStatus("Not enough RAM", "display buffer allocation failed");
         closeVideo();
@@ -1668,9 +1670,11 @@ bool openVideo() {
     video_read_ahead_size =
         video_codec == VideoCodec::kMpeg1
             ? kMpegVideoReadAheadBytes
-            : (video_codec == VideoCodec::kH263
-                   ? kH263VideoReadAheadBytes
-                   : kVideoReadAheadBytes);
+            : (video_codec == VideoCodec::kDivx3
+                   ? kDivx3VideoReadAheadBytes
+                   : (video_codec == VideoCodec::kH263
+                          ? kH263VideoReadAheadBytes
+                          : kVideoReadAheadBytes));
     video_read_ahead = static_cast<uint8_t *>(
         heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
     if (!video_read_ahead) {
@@ -1897,12 +1901,13 @@ bool openVideo() {
             return false;
         }
         divx3_decoder =
-            divx3_decoder_create(divx3_info.width, divx3_info.height);
+            divx3_decoder_create_y6_u5_v5(
+                divx3_info.width, divx3_info.height);
         divx3_packet = static_cast<uint8_t *>(heap_caps_malloc(
             divx3_info.max_video_packet_size, MALLOC_CAP_8BIT));
         if (!divx3_decoder || !divx3_packet) {
             showStatus("Not enough RAM",
-                       "use at most the 256x144 DivX 3 profile");
+                       "use at most the 320x240 DivX 3 profile");
             reportHeap("DivX 3 decoder allocation failed");
             closeVideo();
             return false;
@@ -1923,7 +1928,8 @@ bool openVideo() {
         }
         ESP_LOGI(kTag,
                  "DivX 3/AVI: %ux%u, %u/%u fps, %u frames, "
-                 "PCM_U8 audio=%u Hz, decoder=%u bytes, packet=%u bytes",
+                 "PCM_U8 audio=%u Hz, compact decoder=%u bytes, "
+                 "packet=%u bytes",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
@@ -2072,8 +2078,8 @@ bool openVideo() {
                      : "native-centred");
     } else if (video_codec == VideoCodec::kDivx3) {
         ESP_LOGI(kTag,
-                 "Playing DivX 3 in %s mode, frame storage=two YUV420 "
-                 "reference frames",
+                 "Playing DivX 3 in %s mode, frame storage=two compact "
+                 "Y6/U5/V5 reference frames",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -3006,19 +3012,31 @@ plm_frame_t makeDivx3RenderFrame(const Divx3Frame &source) {
     plm_frame_t frame{};
     frame.width = source.width;
     frame.height = source.height;
-    frame.storage_mode = PLM_FRAME_STORAGE_YUV420;
+    frame.storage_mode =
+        source.storage_mode == DIVX3_FRAME_STORAGE_Y6_U5_V5
+            ? PLM_FRAME_STORAGE_Y6_U5_V5
+            : PLM_FRAME_STORAGE_YUV420;
     frame.y.width = source.width;
     frame.y.height = source.height;
     frame.y.stride = source.y_stride;
     frame.y.data = const_cast<uint8_t *>(source.y);
+    frame.y.correction_stride = source.correction_stride_y;
+    frame.y.correction =
+        const_cast<int8_t *>(source.correction_y);
     frame.cb.width = (source.width + 1U) / 2U;
     frame.cb.height = (source.height + 1U) / 2U;
     frame.cb.stride = source.c_stride;
     frame.cb.data = const_cast<uint8_t *>(source.cb);
+    frame.cb.correction_stride = source.correction_stride_c;
+    frame.cb.correction =
+        const_cast<int8_t *>(source.correction_cb);
     frame.cr.width = frame.cb.width;
     frame.cr.height = frame.cb.height;
     frame.cr.stride = source.c_stride;
     frame.cr.data = const_cast<uint8_t *>(source.cr);
+    frame.cr.correction_stride = source.correction_stride_c;
+    frame.cr.correction =
+        const_cast<int8_t *>(source.correction_cr);
     return frame;
 }
 

@@ -8,7 +8,8 @@ DAC GPIO26.
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
-- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
+- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, DivX 3
+  (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
@@ -21,13 +22,12 @@ DAC GPIO26.
   bounded strips (16 rows normally, 8 rows for compact H.263 playback),
   without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
-  stdio read-ahead buffer (4 KiB for MPEG-1/H.263 and 16 KiB otherwise); HLV then
+  stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263 and 16 KiB otherwise); HLV then
   fills nine reusable 7680-byte packet blocks (67.5 KiB total), while MJPEG
   and BPV use bounded maximum-frame packet buffers;
-- writes the ST7789 on the independent SPI2/HSPI bus using two alternating DMA
-  strips, overlapping conversion with transfer. Other codecs use two 320x16
-  allocations; H.263 divides one 320x16 allocation into two 320x8 strips to
-  release 10 KiB before its decoder is created;
+- writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
+  DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
+  two 320x8 strips. Other codecs use two 320x16 allocations;
 - decodes HLV, BPV or MPEG-1 frame N on CPU1 while CPU0 converts and queues
   frame N-1 for the display, without copying compressed packets or frame
   payloads;
