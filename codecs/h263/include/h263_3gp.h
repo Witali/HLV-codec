@@ -63,6 +63,7 @@ typedef struct H2633gpFrame {
 
 typedef struct H2633gpDecoder H2633gpDecoder;
 typedef struct H263AviPcmReader H263AviPcmReader;
+typedef void (*H263OutputRowGuard)(void *opaque, uint16_t first_y);
 
 typedef struct H263AviPcmFrame {
     uint8_t samples[H263_AVI_PCM_MAX_SAMPLES];
@@ -81,6 +82,14 @@ int h263_3gp_decoder_set_output_buffer_count(H2633gpDecoder *decoder,
                                               uint8_t count);
 uint8_t h263_3gp_decoder_output_buffer_count(
     const H2633gpDecoder *decoder);
+
+/*
+ * Installs an optional callback before each 16-pixel output row is written.
+ * This supports safe overlap between rendering and intra-frame decoding when
+ * only one output frame fits in memory. Call after open(); pass NULL to clear.
+ */
+void h263_3gp_decoder_set_output_row_guard(
+    H2633gpDecoder *decoder, H263OutputRowGuard guard, void *opaque);
 
 /*
  * Opens the first H.263 video track in either 3GP or AVI. The embedded

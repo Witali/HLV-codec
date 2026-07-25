@@ -147,6 +147,13 @@ PV_STATUS DecodeFrameCombinedMode(VideoDecData *video)
             video->mbnum = mbnum;
             video->mbnum_row = PV_GET_ROW(mbnum, nMBPerRow);
             video->mbnum_col = mbnum - video->mbnum_row * nMBPerRow;
+            if (video->mbnum_col == 0 &&
+                    video->videoDecControls->outputRowGuard)
+            {
+                video->videoDecControls->outputRowGuard(
+                    video->videoDecControls->outputRowGuardOpaque,
+                    (uint16)(video->mbnum_row << 4));
+            }
             /* assign slice number for each macroblocks */
             video->sliceNo[mbnum] = (uint8) slice_counter;
 

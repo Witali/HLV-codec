@@ -1069,6 +1069,13 @@ uint8_t h263_3gp_decoder_output_buffer_count(
     return decoder ? decoder->output_count : 0;
 }
 
+void h263_3gp_decoder_set_output_row_guard(
+    H2633gpDecoder *decoder, H263OutputRowGuard guard, void *opaque) {
+    if (!decoder) return;
+    decoder->controls.outputRowGuard = guard;
+    decoder->controls.outputRowGuardOpaque = opaque;
+}
+
 int h263_avi_probe(FILE *file, H2633gpInfo *info) {
     if (!file || !info) return H263_3GP_ERR_ARGUMENT;
     AviState avi{};
