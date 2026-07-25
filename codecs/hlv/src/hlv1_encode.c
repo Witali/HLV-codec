@@ -78,6 +78,7 @@ struct HLV1Encoder {
     double lambda_scale;
     double decode_cycle_weight;
     double ac_deadzone;
+    double ghost_weight;
     int luma_weight;
     int motion_candidates;
     int use_simd;
@@ -531,6 +532,51 @@ static uint64_t weighted_sse_sb8(const SB8 *a, const SB8 *b,
     return (uint64_t)luma_weight * y + u + v;
 }
 
+static uint64_t temporal_ghost_sse_mb(const HLV1Encoder *encoder,
+                                      const MB *source,
+                                      const MB *reconstructed,
+                                      int origin_x, int origin_y) {
+    uint64_t penalty = 0;
+    for (int y = 0; y < 16; ++y) {
+        const uint8_t *previous =
+            encoder->previous.y + (origin_y + y) * encoder->previous.stride_y +
+            origin_x;
+        for (int x = 0; x < 16; ++x) {
+            int source_value = source->y[y * 16 + x];
+            int drop = (int)previous[x] - source_value;
+            /* Ignore sub-visible quantization noise. A trail candidate must
+               follow a meaningful local brightness drop and remain at least
+               five luma levels too bright in the reconstruction. */
+            int excess =
+                (int)reconstructed->y[y * 16 + x] - source_value - 4;
+            if (drop > 16 && excess > 0)
+                penalty += (uint64_t)(excess * excess);
+        }
+    }
+    return penalty;
+}
+
+static uint64_t temporal_ghost_sse_sb8(const HLV1Encoder *encoder,
+                                       const SB8 *source,
+                                       const SB8 *reconstructed,
+                                       int origin_x, int origin_y) {
+    uint64_t penalty = 0;
+    for (int y = 0; y < 8; ++y) {
+        const uint8_t *previous =
+            encoder->previous.y + (origin_y + y) * encoder->previous.stride_y +
+            origin_x;
+        for (int x = 0; x < 8; ++x) {
+            int source_value = source->y[y * 8 + x];
+            int drop = (int)previous[x] - source_value;
+            int excess =
+                (int)reconstructed->y[y * 8 + x] - source_value - 4;
+            if (drop > 16 && excess > 0)
+                penalty += (uint64_t)(excess * excess);
+        }
+    }
+    return penalty;
+}
+
 /*
  * Conservative architecture-independent decoder estimate used by RDO.
  *
@@ -602,17 +648,21 @@ static void quantize_v14_reference_mb(MB *macroblock, int x, int y) {
 
 static double score_candidate(HLV1Encoder *encoder, const MB *source,
                               Candidate *candidate, double lambda_bits,
-                              int x, int y) {
+                              int x, int y, int temporal_rdo) {
     if (!candidate->reference_quantized) {
         quantize_v14_reference_mb(&candidate->rec, x, y);
         candidate->reference_quantized = 1;
     }
     candidate->estimated_decode_cycles =
         estimate_candidate_decode_cycles(candidate);
-    return (double)weighted_sse(source, &candidate->rec,
-                                encoder->luma_weight,
-                                encoder->use_simd,
-                                &encoder->stats.encoder_work) +
+    double distortion = (double)weighted_sse(
+        source, &candidate->rec, encoder->luma_weight,
+        encoder->use_simd, &encoder->stats.encoder_work);
+    if (temporal_rdo && encoder->ghost_weight > 0.0)
+        distortion += encoder->ghost_weight *
+                      (double)temporal_ghost_sse_mb(
+                          encoder, source, &candidate->rec, x, y);
+    return distortion +
            lambda_bits *
                ((double)candidate->bits.bit_count +
                 encoder->decode_cycle_weight *
@@ -2136,6 +2186,7 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
     e->lambda_scale = 1.0;
     e->decode_cycle_weight = 0.0;
     e->ac_deadzone = 0.5;
+    e->ghost_weight = 8.0;
     e->luma_weight = 4;
     e->motion_candidates = 1;
     e->use_simd = encoder_sse2_available();
@@ -2171,6 +2222,7 @@ HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
     dst->lambda_scale = src->lambda_scale;
     dst->decode_cycle_weight = src->decode_cycle_weight;
     dst->ac_deadzone = src->ac_deadzone;
+    dst->ghost_weight = src->ghost_weight;
     dst->luma_weight = src->luma_weight;
     dst->motion_candidates = src->motion_candidates;
     dst->use_simd = src->use_simd;
@@ -2280,6 +2332,13 @@ int hlv1_encoder_set_ac_deadzone(HLV1Encoder *e, double deadzone) {
     return HLV1_OK;
 }
 
+int hlv1_encoder_set_ghost_weight(HLV1Encoder *e, double weight) {
+    if (!e || !isfinite(weight) || weight < 0.0 || weight > 16.0)
+        return HLV1_ERR_ARGUMENT;
+    e->ghost_weight = weight;
+    return HLV1_OK;
+}
+
 int hlv1_encoder_set_motion_candidates(HLV1Encoder *e, int candidates) {
     if (!e || candidates < 1 || candidates > 8) return HLV1_ERR_ARGUMENT;
     e->motion_candidates = candidates;
@@ -2351,7 +2410,7 @@ static int encode_inter_mb_candidate(HLV1Encoder *e,
                          e->q_y, e->q_uv, e->ac_deadzone, NULL);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = score_candidate(e, src, out, lambda_bits, x, y);
+    out->score = score_candidate(e, src, out, lambda_bits, x, y, 1);
     return HLV1_OK;
 }
 
@@ -2392,6 +2451,10 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                                     e->use_simd,
                                     &e->stats.encoder_work) +
                                 lambda_bits * skip_bits.bit_count;
+            if (e->ghost_weight > 0.0)
+                skip_score += e->ghost_weight *
+                              (double)temporal_ghost_sse_sb8(
+                                  e, &src, &skip_rec, gx, gy);
 
             MotionChoice choices[12];
             int choice_count = collect_motion_choices(
@@ -2435,6 +2498,10 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                         &src, &trial_rec, e->luma_weight, e->use_simd,
                         &e->stats.encoder_work) +
                     lambda_bits * trial_bits.bit_count;
+                if (e->ghost_weight > 0.0)
+                    trial_score += e->ghost_weight *
+                                   (double)temporal_ghost_sse_sb8(
+                                       e, &src, &trial_rec, gx, gy);
                 if (trial_score < inter_score) {
                     hlv1_bw_free(&inter_bits);
                     inter_bits = trial_bits;
@@ -2540,7 +2607,7 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
             candidate_free(&trial);
             return r;
         }
-        trial.score = score_candidate(e, src_mb, &trial, lambda_bits, x, y);
+        trial.score = score_candidate(e, src_mb, &trial, lambda_bits, x, y, 1);
         if (trial.score < out->score) {
             candidate_free(out);
             *out = trial;
@@ -2804,7 +2871,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             for (int i = 0; i < count; ++i) {
                 if (c[i].bits.bit_count)
                     c[i].score = score_candidate(e, &src, &c[i],
-                                                 lambda_bits, x, y);
+                                                 lambda_bits, x, y, !key);
                 if (c[i].score < best->score) best = &c[i];
             }
             if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0) goto fail_mb;

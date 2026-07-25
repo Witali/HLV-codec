@@ -293,6 +293,15 @@ int hlv1_encoder_set_rd_parameters(HLV1Encoder *encoder,
                                    double lambda_scale, int luma_weight);
 
 /**
+ * Penalize positive luma error where the previous frame was brighter.
+ *
+ * This encoder-only temporal RDO term suppresses visible bright trails behind
+ * moving highlights. The default weight is 8.0. Zero disables it; the
+ * bitstream syntax is unchanged.
+ */
+int hlv1_encoder_set_ghost_weight(HLV1Encoder *encoder, double weight);
+
+/**
  * Add estimated decoder cycles to RDO as equivalent payload bits.
  *
  * The default value of zero preserves distortion/rate-only mode selection.

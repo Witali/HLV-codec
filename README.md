@@ -236,8 +236,12 @@ ffmpeg -i input.mp4 -vf "scale=320:240,fps=25,format=yuv420p" \
 The analysis compensates a small global translation before measuring motion,
 so a slow camera pan remains a high-quality scene. Static fine detail also
 stays sharp; detail lowers the target mainly when it moves. Trial encodes and
-RDO adjustments are encoder-only and do not change decoder complexity or the
-v12 bitstream.
+RDO adjustments are encoder-only and do not change the v14 bitstream syntax.
+
+HLV v14 also applies temporal RDO to suppress bright trails behind moving
+objects. It ignores small quantization fluctuations and penalizes a candidate
+that remains visibly brighter after a local brightness drop. The balanced
+default is `--ghost-weight 8`; use `--ghost-weight 0` for an A/B baseline.
 
 ## Optional adaptive K/P and GOP
 

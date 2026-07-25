@@ -66,6 +66,16 @@ int main(void) {
     HLV1Header h = test_header(), got;
     CHECK(test_bitwriter_append() == 0);
 
+    HLV1Encoder *parameter_encoder = hlv1_encoder_create(&h, 38.0);
+    CHECK(parameter_encoder != NULL);
+    CHECK(hlv1_encoder_set_ghost_weight(parameter_encoder, -1.0) ==
+          HLV1_ERR_ARGUMENT);
+    CHECK(hlv1_encoder_set_ghost_weight(parameter_encoder, 17.0) ==
+          HLV1_ERR_ARGUMENT);
+    CHECK(hlv1_encoder_set_ghost_weight(parameter_encoder, 0.0) == HLV1_OK);
+    CHECK(hlv1_encoder_set_ghost_weight(parameter_encoder, 8.0) == HLV1_OK);
+    hlv1_encoder_destroy(parameter_encoder);
+
     FILE *f = tmpfile();
     CHECK(f != NULL);
     CHECK(hlv1_header_write(f, &h) == HLV1_OK);

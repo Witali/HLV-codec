@@ -389,8 +389,20 @@ frames; their former reference MAE grew from 1.02 after a key frame to 1.94
 before the next key frame. Relative to the old mismatched ESP32 output at
 Y=64/UV=86, the normative stream costs 1.1% more bytes, improves PSNR by
 0.28 dB and SSIM by 0.00565, and reduces measured bright-trail energy by
-10.6%. This removes reference drift; temporal RDO/SKIP tuning remains a
-separate quality task. Compiling the accepted encoder and decoder hot paths
+10.6%. This removes reference drift.
+
+The encoder now uses asymmetric temporal RDO for P-frame macroblocks and each
+8x8 split decision. It charges reconstruction error only where luma has fallen
+by more than 16 levels since the reference and the candidate still exceeds the
+source by more than four levels. At the default `--ghost-weight 8`, the
+180-frame camera test reduced bright-trail energy from 0.4568 to 0.3138
+(-31.3%), while the stream grew 7.2% and the decoder work estimate grew 3.7%.
+Across two camera clips, Big Buck Bunny and a synthetic motion clip, measured
+trail energy fell 24-44%. The two real camera clips grew 7-11%; the deliberately
+hostile synthetic clip grew 26.6%. `--ghost-weight 0` retains a reproducible
+baseline, and the bitstream syntax is unchanged.
+
+Compiling the accepted encoder and decoder hot paths
 against constant syntax v14 lets the optimiser discard legacy branches and
 reduced the ESP32 application image from `0x5cfb0` to `0x581e0` bytes
 (19,920 bytes).
