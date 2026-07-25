@@ -301,6 +301,20 @@ typedef struct HLV1Stats {
     uint64_t estimated_decode_cycles;
 } HLV1Stats;
 
+/* Optional target-cycle profile. It is populated only when the decoder
+ * component is built with HLV1_ENABLE_STAGE_PROFILE=1. Keeping this separate
+ * from HLV1Stats lets release builds retain operation counters in host tools
+ * without putting timer reads in target hot loops. */
+typedef struct HLV1StageProfile {
+    uint64_t frames;
+    uint64_t total_cycles;
+    uint64_t crc_cycles;
+    uint64_t prediction_cycles;
+    uint64_t residual_cycles;
+    uint64_t inverse_wht_cycles;
+    uint64_t packing_cycles;
+} HLV1StageProfile;
+
 typedef struct HLV1Encoder HLV1Encoder;
 typedef struct HLV1Decoder HLV1Decoder;
 
@@ -451,6 +465,9 @@ int hlv1_decoder_decode_stream(HLV1Decoder *decoder,
                                HLV1Packet *packet_info,
                                const HLV1Frame **frame);
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *decoder);
+const HLV1StageProfile *hlv1_decoder_stage_profile(
+    const HLV1Decoder *decoder);
+void hlv1_decoder_stage_profile_reset(HLV1Decoder *decoder);
 
 /** Map the user-facing 1..100 scale to stable v1/v2 quantizer mantissas. */
 int hlv1_quality_to_qsteps(int quality, int *q_y, int *q_uv);

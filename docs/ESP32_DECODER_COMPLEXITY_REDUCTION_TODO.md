@@ -265,7 +265,7 @@ Average syntax work per frame:
 
 ### Ordered checklist
 
-- [ ] Add low-overhead, compile-time stage profiling for:
+- [x] Add low-overhead, compile-time stage profiling for:
   - streaming CRC;
   - entropy/VLC and residual parsing;
   - motion/intra prediction;
@@ -300,3 +300,22 @@ Average syntax work per frame:
 | Variant | Native us/frame | ESP32 decode us/frame | Hash | Decision |
 | --- | ---: | ---: | --- | --- |
 | Streaming baseline | 1,596.69 | 97,863.6 | `3fecc5b367d31b8c` | baseline |
+| Stage profiler, 30 frames | n/a | 105,057.9 | unchanged decoder | accepted as an opt-in diagnostic |
+
+The opt-in stage build uses `HLV1_STAGE_PROFILE=ON`; release builds leave every
+timer read compiled out. On the first 30 physical frames it reports:
+
+| Profiled stage | Average us/frame | P95 us/frame |
+| --- | ---: | ---: |
+| Streaming CRC | 1,439.6 | 2,842 |
+| Prediction | 59,422.8 | 77,968 |
+| Residual parsing/addition | 37,164.6 | 53,364 |
+| Inverse WHT, included in residual | 9,757.0 | 11,503 |
+| Compact packing | 9,373.5 | 10,713 |
+
+The profiler itself raises the externally measured decoder average by about
+7.4%, chiefly because it reads the cycle counter inside thousands of residual
+blocks. It is therefore a stage-share diagnostic, not a release-performance
+baseline. The profile makes prediction the first structural target. CRC is
+only about 1.4 ms/frame, so even eliminating it completely cannot close the
+30 fps gap.

@@ -51,6 +51,16 @@ class VideoRecord:
     frames: int
 
 
+@dataclass(frozen=True)
+class HlvProfileRecord:
+    total_cycles: int
+    crc_cycles: int
+    prediction_cycles: int
+    residual_cycles: int
+    inverse_wht_cycles: int
+    packing_cycles: int
+
+
 def percentile(values: list[int], percent: int) -> int:
     ordered = sorted(values)
     return ordered[max(0, math.ceil(len(ordered) * percent / 100) - 1)]
@@ -88,6 +98,17 @@ def parse_audio(line: str) -> AudioRecord | None:
     if len(values) == 11:
         values.append(0)
     return AudioRecord(*values)
+
+
+def parse_hlv_profile(line: str) -> HlvProfileRecord | None:
+    fields = line.split(",")
+    if len(fields) != 7 or fields[0] != "H":
+        return None
+    try:
+        values = [int(value) for value in fields[1:]]
+    except ValueError:
+        return None
+    return HlvProfileRecord(*values)
 
 
 def parse_video(line: str) -> VideoRecord | None:
@@ -133,6 +154,7 @@ def main() -> int:
 
     frames: list[FrameRecord] = []
     audio: list[AudioRecord] = []
+    hlv_profiles: list[HlvProfileRecord] = []
     video: VideoRecord | None = None
     statuses: list[str] = []
     recent_lines: collections.deque[str] = collections.deque(maxlen=40)
@@ -192,6 +214,10 @@ def main() -> int:
             audio_record = parse_audio(line)
             if audio_record is not None:
                 audio.append(audio_record)
+                continue
+            hlv_profile = parse_hlv_profile(line)
+            if hlv_profile is not None:
+                hlv_profiles.append(hlv_profile)
     finally:
         port.close()
 
@@ -262,6 +288,22 @@ def main() -> int:
         f"{sum(record.work_us > frame_period_us for record in frames)} "
         f"display_skips={sum(record.render_us == 0 for record in frames)}"
     )
+    if hlv_profiles:
+        selected_profiles = hlv_profiles[: len(frames)]
+
+        def profile_us(field: str) -> list[int]:
+            return [
+                round(getattr(record, field) / 240.0)
+                for record in selected_profiles
+            ]
+
+        print(f"hlv_profile_records={len(selected_profiles)} cpu_mhz=240")
+        print_metric("HLV total", profile_us("total_cycles"))
+        print_metric("HLV CRC", profile_us("crc_cycles"))
+        print_metric("HLV prediction", profile_us("prediction_cycles"))
+        print_metric("HLV residual", profile_us("residual_cycles"))
+        print_metric("HLV inverse-WHT", profile_us("inverse_wht_cycles"))
+        print_metric("HLV packing", profile_us("packing_cycles"))
 
     if not audio:
         print("no audio telemetry records received", file=sys.stderr)

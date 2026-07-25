@@ -141,6 +141,7 @@ struct DecodeResult {
     bool has_mpeg_frame;
     uint32_t decode_us;
     uint32_t hlv_read_us;
+    HLV1StageProfile hlv_profile;
     BPV1Packet bpv_next_packet;
     int bpv_read_result;
     uint32_t bpv_read_us;
@@ -270,7 +271,7 @@ void decodeTask(void *) {
         } else if (request.codec == VideoCodec::kHlv) {
             result.result = decoder.decodeNext(
                 request.hlv_file, &result.hlv_frame,
-                &result.hlv_read_us);
+                &result.hlv_read_us, &result.hlv_profile);
         } else if (request.codec == VideoCodec::kBpv) {
             result.result =
                 bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
@@ -284,6 +285,17 @@ void decodeTask(void *) {
                     result.hlv_read_us <= total_us
                 ? total_us - result.hlv_read_us
                 : total_us;
+        if (request.codec == VideoCodec::kHlv &&
+            result.hlv_profile.frames) {
+            esp_rom_printf(
+                "H,%llu,%llu,%llu,%llu,%llu,%llu\n",
+                result.hlv_profile.total_cycles,
+                result.hlv_profile.crc_cycles,
+                result.hlv_profile.prediction_cycles,
+                result.hlv_profile.residual_cycles,
+                result.hlv_profile.inverse_wht_cycles,
+                result.hlv_profile.packing_cycles);
+        }
         if (request.codec == VideoCodec::kBpv &&
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {

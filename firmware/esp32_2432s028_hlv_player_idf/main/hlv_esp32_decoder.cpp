@@ -131,14 +131,21 @@ int HlvEsp32Decoder::decode(const HLV1Packet *packet,
 }
 
 int HlvEsp32Decoder::decodeNext(FILE *file, const HLV1Frame **frame,
-                                uint32_t *read_us) {
+                                uint32_t *read_us,
+                                HLV1StageProfile *profile) {
     if (!ready() || !file || !frame || !read_us)
         return HLV1_ERR_ARGUMENT;
+    hlv1_decoder_stage_profile_reset(decoder_);
     StreamReadContext context{file, 0};
     HLV1Packet packet{};
     const int result = hlv1_decoder_decode_stream(
         decoder_, streamRead, &context, packet_blocks_,
         kPacketBlockCount, kPacketBlockBytes, &packet, frame);
     *read_us = context.read_us;
+    if (profile) {
+        const HLV1StageProfile *measured =
+            hlv1_decoder_stage_profile(decoder_);
+        *profile = measured ? *measured : HLV1StageProfile{};
+    }
     return result;
 }

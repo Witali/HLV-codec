@@ -13,6 +13,8 @@ set(HLV1_IRAM_BITREADER ON CACHE BOOL
     "Place the out-of-line ESP32 bitreader helpers in IRAM")
 set(HLV1_IRAM_INVERSE_WHT ON CACHE BOOL
     "Place the inverse-WHT add kernel in IRAM")
+set(HLV1_STAGE_PROFILE OFF CACHE BOOL
+    "Collect ESP32 cycle counts for HLV decoder stages")
 if(NOT "${HLV1_OPTIMIZATION}" MATCHES "^(O2|O3|Os)$")
     message(FATAL_ERROR "HLV1_OPTIMIZATION must be O2, O3 or Os")
 endif()
@@ -59,3 +61,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     HLV1_ENABLE_DECODER_STATS=0
     HLV1_FAST_32BIT_BITREADER=${HLV1_FAST_32BIT_BITREADER}
 )
+
+if(HLV1_STAGE_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV1_ENABLE_STAGE_PROFILE=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV1_ENABLE_STAGE_PROFILE=0
+    )
+endif()

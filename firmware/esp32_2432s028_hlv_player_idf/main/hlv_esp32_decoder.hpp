@@ -25,7 +25,8 @@ public:
     int readPacket(FILE *file, HLV1Packet *packet);
     int decode(const HLV1Packet *packet, const HLV1Frame **frame);
     int decodeNext(FILE *file, const HLV1Frame **frame,
-                   uint32_t *read_us);
+                   uint32_t *read_us,
+                   HLV1StageProfile *profile = nullptr);
 
 private:
     HLV1Decoder *decoder_ = nullptr;
