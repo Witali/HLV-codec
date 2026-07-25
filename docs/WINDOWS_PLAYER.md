@@ -2,7 +2,8 @@
 
 `hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
 v1 through v5, the constrained MPEG-1/MP2 profile, and the
-`176x144` QCIF H.263/AMR-NB 3GP profile. It uses the portable
+bounded H.263/AMR-NB 3GP profiles at `176x144` and intra-only H.263+ profiles
+at `256x144`, `256x192`, `320x180`, and `320x240`. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is

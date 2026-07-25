@@ -24,9 +24,10 @@ packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
 The standard [`3GP/H.263 profile`](codecs/h263/) uses baseline H.263 at
-`176x144` QCIF, a constant frame rate, and optional
+`176x144` QCIF or intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
+`320x240`, a constant frame rate, and optional
 [`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono (enabled by default by the
-encoder). The encoder keeps the source aspect ratio inside that canvas with
+encoder). The encoder keeps the source aspect ratio inside the selected canvas with
 black padding. Both players use the same bounded-table 3GP demultiplexers and
 pinned PacketVideo video/audio decoders.
 
@@ -129,7 +130,7 @@ headless full-file validation mode.
 ## ESP32-2432S028 playback
 
 The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1, the
-constrained MPEG-1/MP2 profile, or the QCIF 3GP/H.263 profile from a FAT32
+constrained MPEG-1/MP2 profile, or the bounded 3GP/H.263 profiles from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
 320x240 ST7789 over SPI2 DMA. HLV/MJPEG PCM_U8 and decoded MPEG MP2 play
 through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps

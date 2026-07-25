@@ -4,8 +4,9 @@ This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
 through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
-MPEG-1 Video/MP2 profile up to 320x240. It also supports baseline H.263 with
-optional 8 kHz mono AMR-NB audio in a 3GP container at `176x144` QCIF.
+MPEG-1 Video/MP2 profile up to 320x240. It also supports baseline H.263 at
+`176x144` and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
+`320x240`, with optional 8 kHz mono AMR-NB audio in a 3GP container.
 
 The only application components are:
 
@@ -253,11 +254,12 @@ display DMA timing.
 
 ## Resource choices
 
-- Display: ST7789 at configurable 80 MHz, two reusable 320x16 RGB565 DMA
-  strips.
+- Display: ST7789 at configurable 80 MHz. Normal playback uses two reusable
+  320x16 RGB565 DMA strips; H.263 reuses one allocation as two 320x8 strips
+  and releases the second allocation before creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1, 16 KiB for the other formats). HLV uses nine reusable
+  (4 KiB for MPEG-1/H.263, 16 KiB for the other formats). HLV uses nine reusable
   7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
   JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
   uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs

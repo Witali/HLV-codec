@@ -10,19 +10,24 @@ DAC GPIO26.
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
-  the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline H.263
-  with optional AMR-NB mono audio in a 3GP container at `176x144` QCIF;
+  the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
+  H.263/intra-only H.263+ with optional AMR-NB mono audio in a 3GP container
+  at `176x144`,
+  `256x144`, `256x192`, `320x180`, or `320x240`;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
 - converts HLV/MPEG YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
-  16-row strips, without a full RGB framebuffer;
+  bounded strips (16 rows normally, 8 rows for compact H.263 playback),
+  without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
-  stdio read-ahead buffer (4 KiB for MPEG-1 and 16 KiB otherwise); HLV then
+  stdio read-ahead buffer (4 KiB for MPEG-1/H.263 and 16 KiB otherwise); HLV then
   fills nine reusable 7680-byte packet blocks (67.5 KiB total), while MJPEG
   and BPV use bounded maximum-frame packet buffers;
-- writes the ST7789 on the independent SPI2/HSPI bus using two alternating
-  320x16 DMA strips, overlapping conversion with transfer;
+- writes the ST7789 on the independent SPI2/HSPI bus using two alternating DMA
+  strips, overlapping conversion with transfer. Other codecs use two 320x16
+  allocations; H.263 divides one 320x16 allocation into two 320x8 strips to
+  release 10 KiB before its decoder is created;
 - decodes HLV, BPV or MPEG-1 frame N on CPU1 while CPU0 converts and queues
   frame N-1 for the display, without copying compressed packets or frame
   payloads;
@@ -264,14 +269,25 @@ For the 3GP/H.263 profile with default AMR-NB audio:
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `
     -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.3gp
+    -OutputFile .\out\video.3gp `
+    -Profile 320x180
 ```
 
-The profile is fixed-rate baseline H.263 on the standardized `176x144` QCIF
-canvas. The encoder preserves aspect ratio with black padding and, when the
-source has audio, adds AMR-NB mono at 8 kHz and 12.2 kbit/s. Use `-NoAudio`
-for a silent file. Variable-rate timing, other H.263 profiles, other audio
-codecs, and other dimensions are outside this profile.
+The default profile is fixed-rate baseline H.263 on the standardized
+`176x144` QCIF canvas. `-Profile` also accepts H.263+ custom picture sizes
+`256x144` and `320x180` for 16:9, or `256x192` and `320x240` for 4:3.
+Custom profiles are encoded intra-only (effective GOP 1), allowing the ESP32
+to decode them with one padded YUV420 frame whose Y, U, and V planes are
+allocated separately. This avoids a single 115,200-byte allocation at
+320x240.
+The encoder preserves aspect ratio with black padding and, when the source has
+audio, adds AMR-NB mono at 8 kHz and 12.2 kbit/s. Use `-NoAudio` for a silent
+file. Variable-rate timing, other audio codecs, and other dimensions are
+outside these profiles.
+
+Status text uses an embedded 5x7 font covering every printable ASCII character
+from space (`0x20`) through tilde (`0x7e`), including all digits and
+punctuation.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
