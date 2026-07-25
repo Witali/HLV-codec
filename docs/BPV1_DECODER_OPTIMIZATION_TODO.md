@@ -106,12 +106,25 @@ changes are lower priority now that 320x240 native 30 fps is sustained.
   the working independent audio reader remains.
 - Increasing the stdio video read-ahead buffer from 16 KiB to 48 KiB changed
   observed playback from 15.881 to 15.789 fps at 10 MHz. It was reverted.
+- A two-packet ping-pong experiment let CPU1 fill the next packet while CPU0
+  decoded and rendered the current packet. Two 48,606-byte packet buffers did
+  not fit with the retained 16 KiB stdio read-ahead; unbuffered and 512-byte
+  read-ahead variants were much slower. An 8 KiB variant completed 900 frames
+  at 30.014 fps without gaps or audio errors, but that is the same native-rate
+  result as the retained one-packet pipeline. SD time was unchanged
+  (17,322 versus 17,313 us average), while decode time regressed from 5,223 to
+  6,156 us average and from 5,357 to 6,643 us p95 because decode moved onto
+  the display/audio core. The extra 48.6 KiB packet allocation and halved SD
+  cache therefore had no measured benefit, so the experiment was reverted.
+  A UART CRC close/reopen followed by another clean 300-frame run confirmed
+  that the experimental buffers had no lifetime leak.
 
 ## Not currently justified
 
-- A second maximum-size BPV payload buffer would cost about 48 KiB at
-  320x240. The retained pipeline reuses the decoder-owned packet buffer after
-  decode and already sustains 30 fps.
+- A second maximum-size BPV payload buffer costs about 48 KiB at 320x240.
+  The measured ping-pong experiment above did not improve playback, while the
+  retained pipeline reuses the decoder-owned packet buffer after decode and
+  already sustains 30 fps.
 - Larger memory banks do not remove the main costs. The decoder already fits
   in RAM, and the display transfer is limited primarily by SPI bandwidth.
 - Enabling byte-addressable IRAM is not a default optimization: byte accesses
