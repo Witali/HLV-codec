@@ -20,6 +20,8 @@ Current packages:
   supplied reference measurements.
 - [`h263/`](h263/) — the portable 3GP demultiplexer and baseline H.263 QCIF
   decoder shared by the Windows and ESP32 players.
+- [`divx3/`](divx3/) — a portable Microsoft MPEG-4 v3 (`DIV3`/`MP43`)
+  AVI decoder, Y4M command-line adapter, and pixel-exact regression path.
 
 When another codec is added, place it in `codecs/<codec-name>/` and expose a
 non-interactive encoder and decoder that the common benchmark adapter can
