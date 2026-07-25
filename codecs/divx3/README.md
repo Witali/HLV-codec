@@ -19,6 +19,17 @@ reference frames. At 160x90 it reserves about 59 KiB; at 320x180 it reserves
 about 235 KiB before the AVI packet buffer, so QVGA is not suitable for the
 original ESP32 board without a later compact-frame optimization.
 
+Create the validated 160x90, 12 fps, `q=4` Big Buck Bunny profile with mono
+PCM_U8 audio:
+
+```powershell
+.\scripts\encode_big_buck_bunny_divx3.ps1
+```
+
+The script always starts from the repository's approved 1080p MOV, rejects B
+pictures and video packets above the firmware's 96 KiB limit, decodes the
+complete result with FFmpeg, and writes the matching `out\play.txt`.
+
 ## Build and decode
 
 ```sh

@@ -2,17 +2,19 @@
 
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
-application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
-through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
-MPEG-1 Video/MP2 profile up to 320x240. It also supports baseline H.263 at
-`176x144` and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
-`320x240`, with optional 8 kHz mono AMR-NB audio in a 3GP container.
+application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
+MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v4
+with PCM_U8 audio and active per-GOP palettes, and the constrained MPEG-1
+Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
+and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
+optional 8 kHz mono AMR-NB audio in a 3GP container.
 
 The only application components are:
 
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
-- `bpv1`: the shared portable BPV decoder from `codecs/bpv`.
+- `bpv1`: the shared portable BPV decoder from `codecs/bpv`;
+- `divx3`: the shared portable Microsoft MPEG-4 v3 decoder and AVI reader;
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
 - `h263_3gp`: the shared bounded-table 3GP demultiplexer and PacketVideo
   H.263 decoder from `codecs/h263`.
@@ -31,7 +33,12 @@ and queues its SPI DMA strips. Predictive P-frames are never decoded out of
 order. Dual-core mode cannot add the 8 KiB RTC Fast RAM to the heap. Slow
 exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
-`main`, `hlv1` and `bpv1` components explicitly use `-O3`.
+`main`, `hlv1`, `bpv1` and `divx3` components explicitly use `-O3`.
+
+The initial DivX 3 profile is deliberately limited to 160x90 at 12 fps, I/P
+pictures, a maximum 96 KiB compressed packet, and no per-macroblock quantizer
+changes. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by this
+decoder.
 
 ## Build and flash
 
@@ -45,6 +52,13 @@ All generated dependencies are placed below this directory in `.tools`:
 ```
 
 ## Uploading videos to microSD over UART
+
+Prepare the validated DivX 3 profile from the approved 1080p Big Buck Bunny
+source. This also writes `out\play.txt`:
+
+```powershell
+.\scripts\encode_big_buck_bunny_divx3.ps1
+```
 
 The normal player listens for a binary upload command on the same UART0/CH340C
 connection used by the monitor. Close the serial monitor, leave the board in
@@ -157,10 +171,11 @@ V,width,height,fps_num,fps_den,audio_rate,frame_count
 F,1,540,18320,26740,45600,108220
 ```
 
-The `V` record comes from the active HLV, AVI, BPV or MPEG-1 sequence metadata. The
-collector uses its rational `fps_num/fps_den` value to calculate the work
-budget instead of assuming 15 fps. It also prints the observed decoded-frame
-cadence and counts late display transfers omitted by the real-time mode.
+The `V` record comes from the active HLV, AVI, DivX 3, BPV or MPEG-1 sequence
+metadata. The collector uses its rational `fps_num/fps_den` value to calculate
+the work budget instead of assuming 15 fps. It also prints the observed
+decoded-frame cadence and counts late display transfers omitted by the
+real-time mode.
 
 `work_us` is the sum of packet read, decode and render work. `present_us`
 measures presentation from entry through A/V-clock waiting and display
@@ -273,6 +288,10 @@ display DMA timing.
   correction. BPV instead retains two 32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
+- DivX 3: two padded 8-bit YUV420 reference frames use 58,856 bytes at 160x90,
+  plus one compressed packet capped at 96 KiB. The first profile is decoded
+  sequentially on CPU0; physical-board frame-time validation is still
+  required.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded
@@ -282,9 +301,9 @@ display DMA timing.
   larger than 320x240 or containing B pictures are rejected by the saved
   profile.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG uses
-  the sequential CPU0 path. Only frame descriptors cross cores in the
-  pipelined paths, so no frame or packet payload is copied.
+  reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG and
+  DivX 3 use the sequential CPU0 path. Only frame descriptors cross cores in
+  the pipelined paths, so no frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet

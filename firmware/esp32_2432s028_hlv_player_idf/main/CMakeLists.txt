@@ -27,6 +27,7 @@ else()
         REQUIRES
             amrnb_3gp
             bpv1
+            divx3
             h263_3gp
             hlv1
             esp_driver_dac
