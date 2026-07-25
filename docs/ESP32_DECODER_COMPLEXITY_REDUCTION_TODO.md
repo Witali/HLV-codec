@@ -273,6 +273,8 @@ Average syntax work per frame:
   - compact Y6/U5/V5 packing.
 - [x] Compare the current table CRC with the ESP32 ROM CRC32 implementation,
       an IRAM-resident loop and a bounded-memory word-at-a-time implementation.
+- [x] Cache compact correction division and tile lookup once per 8-pixel
+      span instead of once per reconstructed sample.
 - [ ] Fuse compact motion prediction and output:
   - generate prediction in four-pixel groups;
   - apply residuals in a 4x4 scratch block;
@@ -302,6 +304,7 @@ Average syntax work per frame:
 | Streaming baseline | 1,596.69 | 97,863.6 | `3fecc5b367d31b8c` | baseline |
 | Stage profiler, 30 frames | n/a | 105,057.9 | unchanged decoder | accepted as an opt-in diagnostic |
 | Four-byte unrolled CRC | hash pass | 103,557.7 | `3fecc5b367d31b8c` | accepted |
+| Per-tile compact correction | 1,403.35 | 85,797.1 | `3fecc5b367d31b8c` | accepted |
 
 The opt-in stage build uses `HLV1_STAGE_PROFILE=ON`; release builds leave every
 timer read compiled out. On the first 30 physical frames it reports:
@@ -333,3 +336,22 @@ CRC variants were compared over the same first-frame window:
 The retained loop adds no lookup tables or heap and preserves the complete
 streaming reconstruction hash. It saves about 0.6 ms/frame, so it is useful
 but deliberately not treated as a solution to the decoder bottleneck.
+
+The compact correction originally repeated a signed division, correction
+table lookup and tile-address calculation for every prediction or display
+sample. Processing each span up to the next 8x8 tile boundary reuses the
+quotient and remainder while preserving the exact 4x4 threshold phase.
+The complete 3,359-frame hash is unchanged. On the first 31 physical frames:
+
+| Metric | Four-byte CRC baseline | Per-tile correction | Change |
+| --- | ---: | ---: | ---: |
+| Decode average | 103,557.7 us | 85,797.1 us | -17.2% |
+| Prediction average | 57,973.7 us | 43,394.2 us | -25.1% |
+| Render average | 45,140.8 us | 37,228.5 us | -17.5% |
+| Observed presentation | 8.496 fps | 10.211 fps | +20.2% |
+
+The syntax profile also shows only 0.02 zero-residual macroblocks per frame.
+The existing SKIP representation is still valuable at 43.86 macroblocks per
+frame, but a new decode-oriented stream version does not need to spend a
+branch on optional residuals for the dense INTER/GLOBAL/SPLIT paths used by
+this source.

@@ -320,6 +320,12 @@ int main(int argc, char **argv) {
                stats.residual_blocks, stats.zero_residual_blocks,
                stats.dc_only_blocks, stats.single_coefficient_blocks,
                stats.two_coefficient_blocks, stats.inverse_wht_blocks);
+        printf("Zero-residual macroblocks: %.2f/frame; prediction samples/frame: "
+               "copy %.1f, H/V %.1f, bilinear %.1f\n",
+               (double)stats.zero_residual_macroblocks / stats.frames,
+               (double)stats.copied_samples / stats.frames,
+               (double)stats.interpolated_hv_samples / stats.frames,
+               (double)stats.interpolated_bilinear_samples / stats.frames);
     }
     if (guard == UINT64_MAX) fputc(0, stderr);
     packet_list_free(&list);

@@ -213,11 +213,32 @@ static inline void hlv1_frame_unpack_corrected_samples(
     const uint8_t *row, int x, int y, unsigned bits,
     const int8_t *correction, int correction_stride,
     uint8_t *output, int count) {
+    static const uint8_t threshold[16] = {
+        0, 8, 2, 10,
+        12, 4, 14, 6,
+        3, 11, 1, 9,
+        15, 7, 13, 5
+    };
     hlv1_frame_unpack_packed_samples(row, x, bits, output, count);
-    for (int i = 0; i < count; ++i) {
-        int value = output[i] + hlv1_frame_compact_correction(
-            correction, correction_stride, x + i, y);
-        output[i] = (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
+    int offset = 0;
+    while (offset < count) {
+        int sample_x = x + offset;
+        int span = 8 - (sample_x & 7);
+        if (span > count - offset) span = count - offset;
+        int q4 = correction[(y >> 3) * correction_stride +
+                            (sample_x >> 3)];
+        int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+        int fraction = q4 - whole * 16;
+        unsigned phase_y = ((unsigned)y & 3U) * 4U;
+        for (int i = 0; i < span; ++i) {
+            unsigned phase =
+                phase_y + ((unsigned)(sample_x + i) & 3U);
+            int value = output[offset + i] + whole +
+                        (threshold[phase] < fraction);
+            output[offset + i] =
+                (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
+        }
+        offset += span;
     }
 }
 
