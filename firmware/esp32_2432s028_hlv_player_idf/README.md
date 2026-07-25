@@ -9,6 +9,12 @@ Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
 and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
+AVI is the preferred H.263 container for this firmware. Its interleaved video
+and PCM chunks are streamed without retaining an AVI index in RAM. 3GP remains
+supported for AMR-NB and compatibility, but its sample-size and chunk-offset
+tables consume memory proportional to the number of samples, reducing the
+margin available for long or high-bitrate CIF playback.
+
 The only application components are:
 
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
@@ -339,8 +345,17 @@ display DMA timing.
   predictive decoding still runs so subsequent P-frames remain valid.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
-Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
-centred presentation or nearest-neighbour scaling to 320x240.
+H.263 CIF scaling has been removed. The player omits 16 coded columns from
+each side and 24 rows from the top and bottom of a 352x288 frame, converts the
+central 320x240 area into the DMA strips on CPU0, and copies it to the panel
+pixel-for-pixel. H.263 decompression runs concurrently on CPU1. There are no
+CIF scaling tables or scaled framebuffer. A 300-frame physical-board run of
+the 30 fps CIF AVI measured 29.993 fps with zero display skips or audio errors.
+The encoder scripts prepare the active area by cropping or padding the original
+large-resolution source to 4:3 and applying one anti-aliased Lanczos downscale
+to 320x240. They add the black 16/24-pixel CIF border without a SAR or DAR
+override. `kScaleVideoToDisplay` continues to control stretching for the
+other video codecs; CIF deliberately ignores it.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also

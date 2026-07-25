@@ -13,8 +13,9 @@ DAC GPIO26.
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
-  mono audio in AVI at `176x144`,
-  `256x144`, `256x192`, `320x180`, or `320x240`;
+  mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
+  `320x240`, or `352x288` CIF; the ESP32 copies CIF's central `320x240`
+  square-pixel coded area to the panel pixel-for-pixel without scaling;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -167,25 +168,21 @@ avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
 container layout. DAC writes use a finite timeout so stopping or reopening a
 video cannot strand an audio task and leak its stack.
 
-## Display scaling setting
+## CIF pixel-exact crop
 
-The compile-time flag `kScaleVideoToDisplay` is in
-`firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp`:
+H.263 CIF scaling has been removed from the ESP32 player. Every `352x288` CIF
+frame is cropped to its central `320x240` coded area: 16 columns are omitted
+from each side and 24 rows from the top and bottom. The remaining pixels are
+converted to RGB565 and copied to the panel one-for-one while preparing the
+small DMA output strips. There are no nearest-neighbour or bilinear scaling
+tables and no scaled framebuffer.
 
-```cpp
-constexpr bool kScaleVideoToDisplay = false;
-```
+On the physical ESP32, the 30 fps CIF AVI test completed 300 frames at
+29.993 fps with zero display skips, decode gaps, audio rebuffers, underrun
+samples, or silence chunks.
 
-- `false` draws the video at its native resolution in the centre. The complete
-  display is cleared once, then only the video rectangle is transferred over
-  SPI on each frame. A 320x180 frame is placed at (0, 30), leaving black
-  borders only above and below it.
-- `true` stretches each frame to 320x240 using nearest-neighbour sampling and
-  transfers the complete display on every frame.
-
-Both modes convert and send 16 rows at a time and do not allocate a full
-RGB framebuffer. The scaling mode adds only coordinate maps and one cached
-RGB row (1760 bytes in the current build).
+`kScaleVideoToDisplay` still controls nearest-neighbour stretching for
+non-CIF and non-H.263 playback. H.263 CIF deliberately ignores it.
 
 ## Prepare a video on Windows
 
@@ -264,7 +261,21 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 
-For the 3GP/H.263 profile with default AMR-NB audio:
+### Recommended H.263 container
+
+Prefer **AVI** for H.263 files intended for this ESP32 player. AVI video and
+PCM chunks are consumed sequentially through bounded buffers, and the reader
+does not retain the AVI index in RAM. This leaves more internal memory
+available for the maximum compressed packet, the CIF output frame, and decoder
+tables.
+
+The 3GP reader is supported, but it caches its sample-size and chunk-offset
+tables at open time. The extra memory grows with clip length and can prevent a
+long or high-bitrate CIF file from opening even when the same H.263 video
+works in AVI. Choose 3GP when AMR-NB audio or an existing 3GP workflow is more
+important than the ESP32 memory margin.
+
+For the supported 3GP/H.263 alternative with default AMR-NB audio:
 
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `
@@ -276,12 +287,18 @@ The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
 1536 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
 trellis encoder decisions, fills the canvas, and crops equal margins from the
 source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
-source with black padding. `-Profile` also accepts baseline H.263 `176x144`,
-H.263+ `256x144` and `320x180` for 16:9, or `256x192` for 4:3.
-Custom profiles are encoded intra-only (effective GOP 1), allowing the ESP32
-to decode them with one padded YUV420 frame whose Y, U, and V planes are
-allocated separately. This avoids a single 115,200-byte allocation at
-320x240.
+source with black padding. `-Profile` also accepts baseline H.263 `176x144`
+and intra-only `352x288` CIF, H.263+ `256x144` and `320x180` for 16:9, or
+`256x192` and `320x240` for 4:3. For CIF, the script crops or pads the source
+to 4:3 at its original large resolution and performs one anti-aliased Lanczos
+downscale to the active `320x240` area, with accurate rounding and full chroma
+interpolation. It pads that area to `352x288` with 16 black columns on each
+side and 24 black rows above and below. No SAR or DAR override is written. The
+ESP32 discards that border and copies the active centre without scaling. All
+profiles except predictive QCIF
+are encoded intra-only (effective GOP 1), allowing the ESP32 to decode them
+with one padded YUV420 frame whose Y, U, and V planes are allocated
+separately. This avoids a single 115,200-byte allocation at 320x240.
 When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
 12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
 audio codecs, and other dimensions are outside these profiles.

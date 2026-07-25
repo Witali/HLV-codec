@@ -91,6 +91,14 @@ typedef struct tagvideoDecControls
     uint8 *volbuf[2];           /* maximum of 2 layers for now */
     int32 volbuf_size[2];
 
+    /*
+     * Optional output hazard guard. Frame-based callers can use this to
+     * prevent a decoder from overwriting a macroblock row that another core
+     * is still consuming from a reused output buffer.
+     */
+    void (*outputRowGuard)(void *opaque, uint16 first_y);
+    void *outputRowGuardOpaque;
+
 } VideoDecControls;
 
 typedef enum

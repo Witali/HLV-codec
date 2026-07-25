@@ -43,6 +43,7 @@ namespace {
 constexpr char kTag[] = "hlv-player";
 constexpr int kScreenWidth = CydDisplay::kWidth;
 constexpr int kScreenHeight = CydDisplay::kHeight;
+constexpr int kMaximumH263Width = 352;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
@@ -264,9 +265,9 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
-int32_t mpeg_red_add[kScreenWidth / 2];
-int32_t mpeg_green_add[kScreenWidth / 2];
-int32_t mpeg_blue_add[kScreenWidth / 2];
+int32_t mpeg_red_add[kMaximumH263Width / 2];
+int32_t mpeg_green_add[kMaximumH263Width / 2];
+int32_t mpeg_blue_add[kMaximumH263Width / 2];
 constexpr std::array<int32_t, 256> makeLumaTable() {
     std::array<int32_t, 256> values{};
     for (int sample = 0; sample < 256; ++sample)
@@ -342,6 +343,10 @@ H2633gpFrame pending_h263_frame{};
 bool pending_h263_frame_valid = false;
 uint32_t pending_h263_decode_us = 0;
 bool h263_dual_buffered = false;
+bool h263_row_pipelined = false;
+int h263_rendered_source_rows = INT_MAX;
+int h263_row_pipeline_active = 0;
+uint32_t h263_row_guard_wait_us = 0;
 BPV1Frame pending_bpv_frame{};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet{};
@@ -357,6 +362,53 @@ int upload_progress_pixels = -1;
 int64_t microsNow() { return esp_timer_get_time(); }
 
 int64_t millisNow() { return microsNow() / 1000; }
+
+void waitForH263OutputRow(void *, uint16_t first_y) {
+    if (!__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE))
+        return;
+    const int source_height = sequence_header.height;
+    const int visible_height = std::min(source_height, kScreenHeight);
+    const int first_visible_y =
+        (source_height - visible_height) / 2;
+    const int visible_end_y = first_visible_y + visible_height;
+    const int row_end_y = std::min<int>(first_y + 16, visible_end_y);
+    if (row_end_y <= first_visible_y || first_y >= visible_end_y)
+        return;
+
+    const int64_t wait_start = microsNow();
+    while (__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&h263_rendered_source_rows, __ATOMIC_ACQUIRE) <
+               row_end_y) {
+        taskYIELD();
+    }
+    __atomic_fetch_add(
+        &h263_row_guard_wait_us,
+        static_cast<uint32_t>(microsNow() - wait_start),
+        __ATOMIC_RELAXED);
+}
+
+void beginH263RowPipeline() {
+    const int source_height = sequence_header.height;
+    const int visible_height = std::min(source_height, kScreenHeight);
+    __atomic_store_n(&h263_row_guard_wait_us, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(
+        &h263_rendered_source_rows,
+        (source_height - visible_height) / 2,
+        __ATOMIC_RELEASE);
+    __atomic_store_n(&h263_row_pipeline_active, 1, __ATOMIC_RELEASE);
+}
+
+void publishH263RenderedRows(int source_rows) {
+    if (__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(
+            &h263_rendered_source_rows, source_rows, __ATOMIC_RELEASE);
+    }
+}
+
+void endH263RowPipeline() {
+    __atomic_store_n(&h263_rendered_source_rows, INT_MAX, __ATOMIC_RELEASE);
+    __atomic_store_n(&h263_row_pipeline_active, 0, __ATOMIC_RELEASE);
+}
 
 void decodeTask(void *) {
     DecodeRequest request{};
@@ -434,7 +486,8 @@ bool startDecodeWorker() {
     }
     ESP_LOGI(kTag,
              "Playback pipeline: CPU0 render/main I/O, "
-             "CPU1 ordered decode/BPV prefetch, H.263 ping-pong");
+             "CPU1 ordered decode/BPV prefetch, "
+             "H.263 ping-pong/row pipeline");
     return true;
 }
 
@@ -1379,6 +1432,7 @@ void startAudio() {
 }
 
 void closeVideo() {
+    endH263RowPipeline();
     stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
@@ -1386,6 +1440,7 @@ void closeVideo() {
     pending_h263_frame = {};
     pending_h263_decode_us = 0;
     h263_dual_buffered = false;
+    h263_row_pipelined = false;
     pending_bpv_frame_valid = false;
     ready_bpv_packet = {};
     ready_bpv_packet_valid = false;
@@ -1838,7 +1893,15 @@ bool openVideo() {
                      h263_3gp_decoder_memory_bytes(h263_decoder)));
         h263_dual_buffered =
             h263_3gp_decoder_output_buffer_count(h263_decoder) == 2;
-        if (h263_dual_buffered && !startDecodeWorker()) {
+        h263_row_pipelined =
+            h263_info.container == H263_CONTAINER_AVI &&
+            h263_3gp_decoder_output_buffer_count(h263_decoder) == 1;
+        if (h263_row_pipelined) {
+            h263_3gp_decoder_set_output_row_guard(
+                h263_decoder, waitForH263OutputRow, nullptr);
+        }
+        if ((h263_dual_buffered || h263_row_pipelined) &&
+            !startDecodeWorker()) {
             showStatus("Dual-core init failed",
                        "cannot create CPU1 decoder task");
             closeVideo();
@@ -2011,11 +2074,17 @@ bool openVideo() {
             return false;
         }
     }
-    if (sequence_header.width > kScreenWidth ||
-        sequence_header.height > kScreenHeight) {
+    const bool is_cif_h263 =
+        video_codec == VideoCodec::kH263 &&
+        sequence_header.width == 352 &&
+        sequence_header.height == 288;
+    if ((sequence_header.width > kScreenWidth ||
+         sequence_header.height > kScreenHeight) &&
+        !is_cif_h263) {
         ESP_LOGE(kTag, "Unsupported dimensions: %ux%u",
                  sequence_header.width, sequence_header.height);
-        showStatus("Video is too large", "maximum size is 320x240");
+        showStatus("Video is too large",
+                   "use 320x240 or H.263 CIF");
         closeVideo();
         return false;
     }
@@ -2067,8 +2136,9 @@ bool openVideo() {
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",
-                 player_settings::kScaleVideoToDisplay
-                     ? "scale-to-320x240"
+                 sequence_header.width == 352 &&
+                         sequence_header.height == 288
+                     ? "pixel-exact central-320x240-crop"
                      : "native-centred");
     } else if (video_codec == VideoCodec::kMjpeg) {
         ESP_LOGI(kTag,
@@ -2170,7 +2240,8 @@ bool renderFrame(const HLV1Frame *frame) {
 }
 
 void convertMpegRow(const plm_frame_t *frame, int source_y,
-                    bool scaled, uint16_t *output, int output_width) {
+                    bool scaled, int first_source_x,
+                    uint16_t *output, int output_width) {
     const uint8_t *y_row =
         frame->y.data + static_cast<size_t>(source_y) * frame->y.stride;
     const int chroma_y = source_y >> 1;
@@ -2212,15 +2283,16 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     }
 
     if (!scaled) {
-        for (int source_x = 0; source_x < output_width; source_x += 2) {
+        for (int output_x = 0; output_x < output_width; output_x += 2) {
+            const int source_x = first_source_x + output_x;
             const int chroma_x = source_x >> 1;
             const int red_add = mpeg_red_add[chroma_x];
             const int green_add = mpeg_green_add[chroma_x];
             const int blue_add = mpeg_blue_add[chroma_x];
-            output[source_x] = yuvToRgb565(
+            output[output_x] = yuvToRgb565(
                 y_row[source_x], red_add, green_add, blue_add);
-            if (source_x + 1 < output_width) {
-                output[source_x + 1] = yuvToRgb565(
+            if (output_x + 1 < output_width) {
+                output[output_x + 1] = yuvToRgb565(
                     y_row[source_x + 1], red_add, green_add, blue_add);
             }
         }
@@ -2252,7 +2324,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
                 if (source_y != cached_source_y) {
-                    convertMpegRow(frame, source_y, true,
+                    convertMpegRow(frame, source_y, true, 0,
                                    scaled_rgb_row, kScreenWidth);
                     cached_source_y = source_y;
                 }
@@ -2268,8 +2340,12 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         return true;
     }
 
-    const int width = static_cast<int>(frame->width);
-    const int height = static_cast<int>(frame->height);
+    const int source_width = static_cast<int>(frame->width);
+    const int source_height = static_cast<int>(frame->height);
+    const int width = std::min(source_width, kScreenWidth);
+    const int height = std::min(source_height, kScreenHeight);
+    const int source_x = (source_width - width) / 2;
+    const int source_y = (source_height - height) / 2;
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
@@ -2277,7 +2353,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
-            convertMpegRow(frame, y0 + row, false,
+            convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
         if (display.drawBitmap(
@@ -2305,7 +2381,36 @@ bool renderH263Frame(const H2633gpFrame *frame) {
         static_cast<unsigned>(frame->width / 2),
         static_cast<unsigned>(frame->height / 2),
         frame->chroma_stride, const_cast<uint8_t *>(frame->v), 0, nullptr};
-    return renderMpegFrame(&adapted);
+    const int rows_per_transfer = display.rowsPerTransfer();
+    mpeg_cached_chroma_y = -1;
+    const int source_width = static_cast<int>(adapted.width);
+    const int source_height = static_cast<int>(adapted.height);
+    const int width = std::min(source_width, kScreenWidth);
+    const int height = std::min(source_height, kScreenHeight);
+    const int source_x = (source_width - width) / 2;
+    const int source_y = (source_height - height) / 2;
+    const int x_offset = (kScreenWidth - width) / 2;
+    const int y_offset = (kScreenHeight - height) / 2;
+    for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
+        const int rows = std::min(rows_per_transfer, height - y0);
+        uint16_t *pixels = display.acquireBuffer();
+        if (!pixels) {
+            endH263RowPipeline();
+            return false;
+        }
+        for (int row = 0; row < rows; ++row) {
+            convertMpegRow(
+                &adapted, source_y + y0 + row, false, source_x,
+                pixels + row * width, width);
+        }
+        publishH263RenderedRows(source_y + y0 + rows);
+        if (display.drawBitmap(
+                x_offset, y_offset + y0, width, rows, pixels) != ESP_OK) {
+            endH263RowPipeline();
+            return false;
+        }
+    }
+    return true;
 }
 
 struct MjpegRenderContext {
@@ -2544,10 +2649,6 @@ bool renderMpegOpaque(const void *frame) {
     return renderMpegFrame(static_cast<const plm_frame_t *>(frame));
 }
 
-bool renderH263Opaque(const void *frame) {
-    return renderH263Frame(static_cast<const H2633gpFrame *>(frame));
-}
-
 struct PresentationState {
     int64_t start_us = 0;
     bool render = true;
@@ -2698,7 +2799,17 @@ bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
 }
 
 bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
-    return presentDecodedFrame(frame, renderH263Opaque, 0, decode_us);
+    const PresentationState state = beginPresentation();
+    uint32_t render_us = 0;
+    if (state.render) {
+        const int64_t render_start = microsNow();
+        if (!renderH263Frame(frame)) return false;
+        render_us = static_cast<uint32_t>(microsNow() - render_start);
+    } else {
+        endH263RowPipeline();
+    }
+    finishPresentation(state, 0, decode_us, render_us);
+    return true;
 }
 
 uint32_t readPacket(HLV1Packet *packet, int *result) {
@@ -2843,7 +2954,9 @@ void playOneH263FramePipelined() {
     const H2633gpFrame frame = pending_h263_frame;
     const uint32_t decode_us = pending_h263_decode_us;
     pending_h263_frame_valid = false;
+    if (h263_row_pipelined) beginH263RowPipeline();
     if (!submitH263Decode()) {
+        endH263RowPipeline();
         failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
         return;
     }
@@ -2851,6 +2964,12 @@ void playOneH263FramePipelined() {
     const bool rendered = presentH263Frame(&frame, decode_us);
     DecodeResult next{};
     const bool received = waitDecode(&next);
+    if (h263_row_pipelined) {
+        endH263RowPipeline();
+        const uint32_t wait_us = __atomic_load_n(
+            &h263_row_guard_wait_us, __ATOMIC_RELAXED);
+        next.decode_us -= std::min(next.decode_us, wait_us);
+    }
     if (!rendered) {
         failPlayback("Display DMA error", H263_3GP_ERR_IO);
         return;
@@ -3377,7 +3496,7 @@ extern "C" void app_main(void) {
         if (video_file && video_codec == VideoCodec::kH263 &&
             h263_decoder) {
             if (player_settings::kUseDualCorePipeline &&
-                h263_dual_buffered) {
+                (h263_dual_buffered || h263_row_pipelined)) {
                 playOneH263FramePipelined();
             } else {
                 playOneH263Frame();

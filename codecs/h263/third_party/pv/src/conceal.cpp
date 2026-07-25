@@ -48,6 +48,13 @@ void ConcealTexture_I(VideoDecData *video, int32 startFirstPartition, int mb_sta
         video->mbnum = mbnum;
         video->mbnum_row = PV_GET_ROW(mbnum, video->nMBPerRow);
         video->mbnum_col = mbnum - video->mbnum_row * video->nMBPerRow;
+        if (video->mbnum_col == 0 &&
+                video->videoDecControls->outputRowGuard)
+        {
+            video->videoDecControls->outputRowGuard(
+                video->videoDecControls->outputRowGuardOpaque,
+                (uint16)(video->mbnum_row << 4));
+        }
         video->sliceNo[mbnum] = (uint8) slice_counter;
         QP = video->QPMB[mbnum];
         PV_VlcDecMCBPC_com_intra(stream);
@@ -92,6 +99,13 @@ void ConcealTexture_P(VideoDecData *video, int mb_start, int mb_stop, int slice_
         video->mbnum = mbnum;
         video->mbnum_row = PV_GET_ROW(mbnum, video->nMBPerRow);
         video->mbnum_col = mbnum - video->mbnum_row * video->nMBPerRow;
+        if (video->mbnum_col == 0 &&
+                video->videoDecControls->outputRowGuard)
+        {
+            video->videoDecControls->outputRowGuard(
+                video->videoDecControls->outputRowGuardOpaque,
+                (uint16)(video->mbnum_row << 4));
+        }
         video->sliceNo[mbnum] = (uint8) slice_counter;
         oscl_memset(video->mblock->block, 0, sizeof(typeMBStore));
         /*  to get rid of dark region caused by INTRA blocks */
@@ -125,6 +139,13 @@ void ConcealPacket(VideoDecData *video,
     int i;
     for (i = mb_start; i < mb_stop; i++)
     {
+        if (i % video->nMBPerRow == 0 &&
+                video->videoDecControls->outputRowGuard)
+        {
+            video->videoDecControls->outputRowGuard(
+                video->videoDecControls->outputRowGuardOpaque,
+                (uint16)(PV_GET_ROW(i, video->nMBPerRow) << 4));
+        }
         CopyVopMB(video->currVop, video->concealFrame, i, video->width, video->height);
         video->sliceNo[i] = (uint8) slice_counter;
         video->headerInfo.Mode[i] = MODE_SKIPPED;

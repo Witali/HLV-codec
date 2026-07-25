@@ -13,7 +13,8 @@ $profiles = @(
     "256x144",
     "256x192",
     "320x180",
-    "320x240"
+    "320x240",
+    "352x288"
 )
 
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
@@ -62,24 +63,29 @@ foreach ($profile in $profiles) {
     }
 }
 
-$avi = Join-Path $work "profile-320x240-pcm.avi"
-& (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
-    -InputFile $source `
-    -OutputFile $avi `
-    -Profile "320x240" `
-    -FitMode Contain `
-    -Fps 15 `
-    -VideoBitrateKbps 256 `
-    -VideoBufferKbps 512
-if ($LASTEXITCODE -ne 0) {
-    throw "The 320x240 H.263/AVI+PCM encoder smoke test failed."
-}
-$quotedAvi = '"' + $avi.Replace('"', '\"') + '"'
-$aviPlayerProcess = Start-Process -FilePath $Player `
-    -ArgumentList "--check $quotedAvi" `
-    -Wait -PassThru -WindowStyle Hidden
-if ($aviPlayerProcess.ExitCode -ne 0) {
-    throw "The project decoder rejected the H.263/AVI+PCM smoke test."
+foreach ($aviProfile in @("320x240", "352x288")) {
+    $avi = Join-Path $work "profile-$aviProfile-pcm.avi"
+    & (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
+        -InputFile $source `
+        -OutputFile $avi `
+        -Profile $aviProfile `
+        -FitMode Contain `
+        -Fps 15 `
+        -VideoBitrateKbps 256 `
+        -VideoBufferKbps 512
+    if ($LASTEXITCODE -ne 0) {
+        throw "The $aviProfile H.263/AVI+PCM encoder smoke test failed."
+    }
+    $quotedAvi = '"' + $avi.Replace('"', '\"') + '"'
+    $aviPlayerProcess = Start-Process -FilePath $Player `
+        -ArgumentList "--check $quotedAvi" `
+        -Wait -PassThru -WindowStyle Hidden
+    if ($aviPlayerProcess.ExitCode -ne 0) {
+        throw (
+            "The project decoder rejected the $aviProfile " +
+            "H.263/AVI+PCM smoke test."
+        )
+    }
 }
 
-Write-Host "All H.263/3GP profiles and H.263/AVI+PCM smoke tests passed."
+Write-Host "All H.263/3GP and H.263/AVI+PCM profile tests passed."

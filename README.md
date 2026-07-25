@@ -31,14 +31,29 @@ packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
 The standard [`H.263 profile`](codecs/h263/) uses baseline H.263 at
-`176x144` QCIF or intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
-`320x240` in either 3GP or AVI. 3GP uses optional
+`176x144` QCIF and intra-only `352x288` CIF, or intra-only H.263+ at
+`256x144`, `256x192`, `320x180`, or `320x240` in either 3GP or AVI. The CIF
+profile stores a square-pixel `352x288` frame with a central `320x240` active
+area. The ESP32 performs no CIF scaling: it copies that active area to the
+panel pixel-for-pixel. The Windows Player shows the complete bordered frame.
+3GP uses optional
 [`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono; AVI uses PCM S16LE mono at
 8 kHz. The encoder defaults to the hardware-verified `320x240`, 15 fps,
 1536 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas
 by cropping equal margins from the source. `-FitMode Contain` retains the
-complete source with black padding instead. Both players use the same
+complete source with black padding instead. For CIF, both fit modes crop or pad
+the large source to 4:3 before a single anti-aliased Lanczos downscale to the
+active `320x240` area. The script pads that area to `352x288` with 16 black
+pixels on each side and 24 above and below. No SAR or DAR override is written.
+Both players use the same
 bounded-table 3GP/AVI demultiplexer and pinned PacketVideo video decoder.
+
+**AVI is the preferred container for H.263 playback on the ESP32**, especially
+for CIF, long clips, and high-bitrate files. Its video and PCM audio chunks are
+read sequentially without retaining a per-frame AVI index in RAM. The 3GP
+reader must cache sample-size and chunk-offset tables at open time, leaving
+less internal memory for the compressed packet and decoded frame. Use 3GP
+primarily when AMR-NB audio or compatibility with a 3GP workflow is required.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion

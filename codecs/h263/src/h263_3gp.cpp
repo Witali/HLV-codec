@@ -29,7 +29,8 @@ constexpr size_t kInputPadding = 8;
 bool isSupportedGeometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
            (width == 256 && (height == 144 || height == 192)) ||
-           (width == 320 && (height == 180 || height == 240));
+           (width == 320 && (height == 180 || height == 240)) ||
+           (width == 352 && height == 288);
 }
 
 struct Box {
@@ -1068,6 +1069,13 @@ uint8_t h263_3gp_decoder_output_buffer_count(
     return decoder ? decoder->output_count : 0;
 }
 
+void h263_3gp_decoder_set_output_row_guard(
+    H2633gpDecoder *decoder, H263OutputRowGuard guard, void *opaque) {
+    if (!decoder) return;
+    decoder->controls.outputRowGuard = guard;
+    decoder->controls.outputRowGuardOpaque = opaque;
+}
+
 int h263_avi_probe(FILE *file, H2633gpInfo *info) {
     if (!file || !info) return H263_3GP_ERR_ARGUMENT;
     AviState avi{};
@@ -1175,12 +1183,16 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
             std::numeric_limits<size_t>::max() - kInputPadding) {
         result = H263_3GP_ERR_UNSUPPORTED;
     }
-    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result == H263_3GP_OK) {
         decoder->packet = static_cast<uint8_t *>(
             std::malloc(decoder->info.max_sample_size + kInputPadding));
         if (!decoder->packet) result = H263_3GP_ERR_PACKET_MEMORY;
     }
+    // Reserve the largest compressed block before the YUV planes and
+    // PacketVideo tables fragment the internal heap. This is especially
+    // important for intra-only CIF, where one decoded frame already occupies
+    // 152,064 bytes split across three allocations.
+    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result != H263_3GP_OK) {
         decoder->clear();
         return result;
