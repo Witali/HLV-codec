@@ -312,9 +312,9 @@ heap and physical ESP32 frame time.
 
 - [ ] Keep the frequently used SKIP mode as a direct packed reference copy.
       It averages 43.86 macroblocks/frame in the current source.
-- [ ] Remove the optional no-residual branch from dense INTER, GLOBAL and
-      SPLIT_INTER v14 modes. It is useful only 0.02 times/frame in this source;
-      use separate explicit no-residual mode tokens if another source needs it.
+- [x] Test removing the optional no-residual branch from dense INTER, GLOBAL
+      and SPLIT_INTER v14 modes. The physical-board result regressed, so the
+      branch remains in the accepted v14 syntax.
 - [x] Replace the multi-branch residual-mask syntax with one coefficient-mode
       bit and a directly readable 24-bit mask in experimental v14. Six-block
       split residuals use the same rule with a six-bit mask.
@@ -370,6 +370,15 @@ compact simulator uses the same 174,480-byte frame/row storage for both
 versions. The v14 reconstruction hash is `01403ecd59a4a84d`. This fixed-mask
 syntax is accepted as the first v14 experiment; v13 remains the default output
 until a full-length adaptive-quality encode is validated.
+
+Removing the outer `has_residual` bit and representing the rare empty residual
+with an all-zero fixed mask looked promising in simulation: 992.88 fell to
+962.75 us/frame. It was rejected after the physical ESP32 moved in the opposite
+direction: decode increased from 67,670.9 to 68,168.1 us/frame, residual time
+from 22,497.5 to 23,484.7 us/frame, and playback fell from 13.533 to 13.429 fps.
+Changing the syntax cost also changed the encoder's macroblock decisions, so a
+one-branch micro-optimization did not improve the complete system. The
+experiment was removed and the accepted fixed-mask stream keeps `has_residual`.
 
 ### Results
 
