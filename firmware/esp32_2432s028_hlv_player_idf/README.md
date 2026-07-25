@@ -6,7 +6,8 @@ application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
 through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
 MPEG-1 Video/MP2 profile up to 320x240. It also supports baseline H.263 at
 `176x144` and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
-`320x240`, with optional 8 kHz mono AMR-NB audio in a 3GP container.
+`320x240`, with optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio
+in AVI.
 
 The only application components are:
 
@@ -14,8 +15,8 @@ The only application components are:
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`.
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
-- `h263_3gp`: the shared bounded-table 3GP demultiplexer and PacketVideo
-  H.263 decoder from `codecs/h263`.
+- `h263_3gp`: the shared bounded-table 3GP/AVI demultiplexer, streaming AVI
+  PCM reader, and PacketVideo H.263 decoder from `codecs/h263`.
 - `amrnb_3gp`: the companion `samr` demultiplexer and PacketVideo AMR-NB
   decoder from `codecs/amrnb`.
 

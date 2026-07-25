@@ -23,15 +23,15 @@ accepts pictures up to 320x240, contains only I/P pictures, and stores two
 packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
-The standard [`3GP/H.263 profile`](codecs/h263/) uses baseline H.263 at
+The standard [`H.263 profile`](codecs/h263/) uses baseline H.263 at
 `176x144` QCIF or intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
-`320x240`, a constant frame rate, and optional
-[`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono (enabled by default by the
-encoder). The encoder defaults to the hardware-verified `320x240`, 15 fps,
+`320x240` in either 3GP or AVI. 3GP uses optional
+[`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono; AVI uses PCM S16LE mono at
+8 kHz. The encoder defaults to the hardware-verified `320x240`, 15 fps,
 1536 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas
 by cropping equal margins from the source. `-FitMode Contain` retains the
 complete source with black padding instead. Both players use the same
-bounded-table 3GP demultiplexers and pinned PacketVideo video/audio decoders.
+bounded-table 3GP/AVI demultiplexer and pinned PacketVideo video decoder.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
@@ -124,6 +124,7 @@ keyframe-aware timeline seeking, native-size centred display and drag-and-drop:
     .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
 .\build\msvc\hlvplay.exe .\out\video.mpg
 .\build\msvc\hlvplay.exe .\out\video.3gp
+.\build\msvc\hlvplay.exe .\out\video.avi
 ```
 
 See [`docs/WINDOWS_PLAYER.md`](docs/WINDOWS_PLAYER.md) for controls and the
@@ -132,10 +133,11 @@ headless full-file validation mode.
 ## ESP32-2432S028 playback
 
 The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1, the
-constrained MPEG-1/MP2 profile, or the bounded 3GP/H.263 profiles from a FAT32
+constrained MPEG-1/MP2 profile, or the bounded 3GP/AVI H.263 profiles from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
 320x240 ST7789 over SPI2 DMA. HLV/MJPEG PCM_U8 and decoded MPEG MP2 play
-through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps
+through DAC GPIO26 DMA and the onboard amplifier. AVI/H.263 PCM S16LE is
+converted to PCM_U8 while streaming. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
 DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX
@@ -173,6 +175,12 @@ Create the initial Big Buck Bunny 3GP from the required 1080p MOV source:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_h263_3gp.ps1
+```
+
+Create an H.263 AVI with PCM S16LE audio from any source:
+
+```powershell
+.\scripts\encode_h263_avi.ps1 -InputFile .\input.mp4
 ```
 
 The v13 literal/palette syntax and the decoder-cycle term used by RDO are

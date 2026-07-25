@@ -1,4 +1,4 @@
-# Encode a bounded 3GP/H.263 profile supported by both project players.
+# Encode a bounded H.263 profile in 3GP or AVI for both project players.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
@@ -6,6 +6,9 @@ param(
 
     [Parameter(Mandatory)]
     [string]$OutputFile,
+
+    [ValidateSet("Auto", "3gp", "avi")]
+    [string]$Container = "Auto",
 
     [ValidateSet("176x144", "256x144", "256x192",
         "320x180", "320x240")]
@@ -48,6 +51,23 @@ $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
 
 $InputFile = [IO.Path]::GetFullPath($InputFile)
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
+$outputExtension = [IO.Path]::GetExtension($OutputFile).ToLowerInvariant()
+if ($Container -eq "Auto") {
+    $Container = switch ($outputExtension) {
+        ".3gp" { "3gp" }
+        ".avi" { "avi" }
+        default {
+            throw "Output extension must be .3gp or .avi with -Container Auto."
+        }
+    }
+}
+$expectedExtension = ".$Container"
+if ($outputExtension -ne $expectedExtension) {
+    throw (
+        "Output extension '$outputExtension' does not match " +
+        "-Container $Container."
+    )
+}
 if (-not $ReportFile) {
     $ReportFile = [IO.Path]::ChangeExtension($OutputFile, ".json")
 }
@@ -57,6 +77,7 @@ $width = [int]$profileSize[0]
 $height = [int]$profileSize[1]
 $usesH263Plus = $Profile -ne "176x144"
 $effectiveGop = if ($usesH263Plus) { 1 } else { $Gop }
+$containerLabel = $Container.ToUpperInvariant()
 
 if (-not (Test-Path -LiteralPath $InputFile)) {
     throw "Input video is missing: $InputFile"
@@ -127,11 +148,15 @@ if ($MaxFrames) {
 
 Write-Host (
     "Encoding $(if ($usesH263Plus) { 'H.263+' } else { 'baseline H.263' })" +
-    "/3GP: $Profile, ${Fps} fps, " +
+    "/${containerLabel}: $Profile, ${Fps} fps, " +
     "${VideoBitrateKbps} kbps, VBV ${VideoBufferKbps}k, " +
     "$FitMode fit, GOP $effectiveGop, " +
     $(if ($NoAudio) { "video only" } else {
-        "AMR-NB mono 8 kHz at $AudioBitrate"
+        if ($Container -eq "avi") {
+            "PCM S16LE mono 8 kHz"
+        } else {
+            "AMR-NB mono 8 kHz at $AudioBitrate"
+        }
     }) + "..."
 )
 
@@ -160,29 +185,43 @@ if ($usesH263Plus) {
         $muxArguments += @(
             "-map", "0:v:0",
             "-c:v", "copy",
-            "-tag:v", "s263"
+            "-tag:v", $(if ($Container -eq "avi") {
+                "H263"
+            } else {
+                "s263"
+            })
         )
         if ($NoAudio) {
             $muxArguments += @("-an")
         } else {
-            $muxArguments += @(
-                "-map", "1:a:0?",
-                "-c:a", "libopencore_amrnb",
-                "-ar", "8000",
-                "-ac", "1",
-                "-b:a", $AudioBitrate,
-                "-shortest"
-            )
+            if ($Container -eq "avi") {
+                $muxArguments += @(
+                    "-map", "1:a:0?",
+                    "-c:a", "pcm_s16le",
+                    "-ar", "8000",
+                    "-ac", "1",
+                    "-shortest"
+                )
+            } else {
+                $muxArguments += @(
+                    "-map", "1:a:0?",
+                    "-c:a", "libopencore_amrnb",
+                    "-ar", "8000",
+                    "-ac", "1",
+                    "-b:a", $AudioBitrate,
+                    "-shortest"
+                )
+            }
         }
-        $muxArguments += @(
-            "-movflags", "+faststart",
-            "-f", "3gp", $OutputFile
-        )
+        if ($Container -eq "3gp") {
+            $muxArguments += @("-movflags", "+faststart")
+        }
+        $muxArguments += @("-f", $Container, $OutputFile)
         & $ffmpeg @muxArguments
         if ($LASTEXITCODE -ne 0) {
             throw (
-                "FFmpeg H.263+/3GP muxing failed with exit code {0}." -f
-                $LASTEXITCODE
+                "FFmpeg H.263+/$containerLabel muxing failed with " +
+                "exit code $LASTEXITCODE."
             )
         }
     } finally {
@@ -191,8 +230,19 @@ if ($usesH263Plus) {
     }
 } else {
     $arguments = $videoArguments
+    if ($Container -eq "avi") {
+        $arguments += @("-tag:v", "H263")
+    }
     if ($NoAudio) {
         $arguments += @("-an")
+    } elseif ($Container -eq "avi") {
+        $arguments += @(
+            "-map", "0:a:0?",
+            "-c:a", "pcm_s16le",
+            "-ar", "8000",
+            "-ac", "1",
+            "-shortest"
+        )
     } else {
         $arguments += @(
             "-map", "0:a:0?",
@@ -203,15 +253,15 @@ if ($usesH263Plus) {
             "-shortest"
         )
     }
-    $arguments += @(
-        "-movflags", "+faststart",
-        "-f", "3gp", $OutputFile
-    )
+    if ($Container -eq "3gp") {
+        $arguments += @("-movflags", "+faststart")
+    }
+    $arguments += @("-f", $Container, $OutputFile)
     & $ffmpeg @arguments
     if ($LASTEXITCODE -ne 0) {
         throw (
-            "FFmpeg H.263/3GP encoding failed with exit code {0}." -f
-            $LASTEXITCODE
+            "FFmpeg H.263/$containerLabel encoding failed with " +
+            "exit code $LASTEXITCODE."
         )
     }
 }
@@ -224,29 +274,41 @@ if ($LASTEXITCODE -ne 0) {
 $metadata = $report | ConvertFrom-Json
 $video = @($metadata.streams |
     Where-Object { $_.codec_type -eq "video" })
+$expectedVideoTag = if ($Container -eq "avi") { "H263" } else { "s263" }
 if ($video.Count -ne 1 -or $video[0].codec_name -ne "h263" -or
-    $video[0].codec_tag_string -ne "s263" -or
+    $video[0].codec_tag_string -ne $expectedVideoTag -or
     $video[0].width -ne $width -or $video[0].height -ne $height) {
-    throw "Output is not the supported $Profile H.263 profile."
+    throw (
+        "Output is not the supported $Profile H.263/$containerLabel " +
+        "profile."
+    )
 }
 $audio = @($metadata.streams |
     Where-Object { $_.codec_type -eq "audio" })
 if ($NoAudio -and $audio.Count) {
     throw "The -NoAudio output unexpectedly contains an audio track."
 }
-if ($audio.Count -gt 1 -or
-    ($audio.Count -eq 1 -and
-        ($audio[0].codec_name -ne "amr_nb" -or
-         $audio[0].sample_rate -ne "8000" -or
-         $audio[0].channels -ne 1))) {
-    throw "Output audio is not the supported mono AMR-NB 8 kHz profile."
+if ($audio.Count -gt 1) {
+    throw "Output unexpectedly contains more than one audio track."
+}
+if ($audio.Count -eq 1) {
+    $expectedAudioCodec =
+        if ($Container -eq "avi") { "pcm_s16le" } else { "amr_nb" }
+    if ($audio[0].codec_name -ne $expectedAudioCodec -or
+        $audio[0].sample_rate -ne "8000" -or
+        $audio[0].channels -ne 1) {
+        throw (
+            "Output audio is not the supported mono " +
+            "$expectedAudioCodec 8 kHz profile."
+        )
+    }
 }
 
-Write-Host "Decoding the complete H.263/3GP file with FFmpeg..."
+Write-Host "Decoding the complete H.263/$containerLabel file with FFmpeg..."
 & $ffmpeg -v error -xerror -i $OutputFile `
     -map 0:v:0 -map 0:a:0? -f null NUL
 if ($LASTEXITCODE -ne 0) {
-    throw "Full H.263/3GP validation failed."
+    throw "Full H.263/$containerLabel validation failed."
 }
 
 $report | Set-Content -LiteralPath $ReportFile -Encoding utf8
