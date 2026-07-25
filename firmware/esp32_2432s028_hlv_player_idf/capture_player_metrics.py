@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect normal-player video and audio telemetry from an ESP32 UART."""
+"""Collect normal-player video and optional audio telemetry from an ESP32 UART."""
 
 from __future__ import annotations
 
@@ -264,6 +264,9 @@ def main() -> int:
     )
 
     if not audio:
+        if video.audio_rate == 0:
+            print("audio=disabled")
+            return 0
         print("no audio telemetry records received", file=sys.stderr)
         return 5
     last = audio[-1]
