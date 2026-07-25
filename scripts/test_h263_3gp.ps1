@@ -41,8 +41,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "The H.263/3GP encoder smoke test failed."
 }
 
-& $Player --check $video
-if ($LASTEXITCODE -ne 0) {
+$quotedVideo = '"' + $video.Replace('"', '\"') + '"'
+$playerProcess = Start-Process -FilePath $Player `
+    -ArgumentList "--check $quotedVideo" `
+    -Wait -PassThru -WindowStyle Hidden
+if ($playerProcess.ExitCode -ne 0) {
     throw "The project H.263/3GP decoder rejected the smoke test."
 }
 

@@ -52,11 +52,41 @@ if ($ForceDownload -or -not (Test-Path -LiteralPath $ffmpeg) -or
 }
 
 $versionOutput = & $ffmpeg -version
+$ffmpegExitCode = $LASTEXITCODE
 $probeVersionOutput = & $ffprobe -version
-if ($LASTEXITCODE -ne 0 -or -not $versionOutput -or
-    -not $probeVersionOutput) {
+$ffprobeExitCode = $LASTEXITCODE
+if ($ffmpegExitCode -ne 0 -or $ffprobeExitCode -ne 0 -or
+    -not $versionOutput -or -not $probeVersionOutput) {
     throw "The project-local FFmpeg tools cannot be started."
 }
+
+function Assert-FfmpegCapability {
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$Pattern,
+        [Parameter(Mandatory)][string]$Description
+    )
+
+    $output = & $ffmpeg @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0 -or -not ($output -match $Pattern)) {
+        throw "The project-local FFmpeg build lacks $Description."
+    }
+}
+
+# H.263 source decoding is built into both project players. FFmpeg is needed
+# only to produce and inspect the constrained QCIF 3GP files, so reject a
+# stripped-down installation before an encode fails much later.
+Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
+    -Pattern '^\s*V\S*\s+h263(?:\s|$)' `
+    -Description "the H.263 encoder"
+Assert-FfmpegCapability -Arguments @("-hide_banner", "-muxers") `
+    -Pattern '^\s*E\s+3gp(?:\s|$)' `
+    -Description "the 3GP muxer"
+Assert-FfmpegCapability -Arguments @("-hide_banner", "-demuxers") `
+    -Pattern '^\s*D\s+mov,mp4,m4a,3gp(?:,|\s)' `
+    -Description "the MOV/MP4/3GP demuxer"
+
 $versionOutput | Select-Object -First 1
 Write-Host "Project-local FFmpeg is ready: $ffmpeg"
 Write-Host "Project-local FFprobe is ready: $ffprobe"
+Write-Host "H.263 encoder and 3GP mux/demux support are available."
