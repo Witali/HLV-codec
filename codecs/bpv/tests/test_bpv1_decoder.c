@@ -198,7 +198,7 @@ cleanup:
 static int write_active_frame(FILE *file, const uint8_t *palette,
                               const uint8_t *raw) {
     const uint32_t frame_bytes =
-        BPV1_MAX_PALETTE_BYTES + 1U + BPV1_RECORD_BYTES;
+        BPV1_MAX_PALETTE_BYTES + 1U + 2U;
     return write_u8(file, 1) ||
            write_u32(file, frame_bytes) ||
            write_u32(file, 1) ||
@@ -206,13 +206,13 @@ static int write_active_frame(FILE *file, const uint8_t *palette,
            fwrite(palette, 1, BPV1_MAX_PALETTE_BYTES, file) !=
                BPV1_MAX_PALETTE_BYTES ||
            write_u8(file, 4U << 5) ||
-           fwrite(raw, 1, BPV1_RECORD_BYTES, file) != BPV1_RECORD_BYTES;
+           fwrite(raw, 1, 2, file) != 2;
 }
 
 static int test_active_palettes(void) {
     uint8_t red_palette[BPV1_MAX_PALETTE_BYTES] = {0};
     uint8_t green_palette[BPV1_MAX_PALETTE_BYTES] = {0};
-    const uint8_t raw[BPV1_RECORD_BYTES] = {0};
+    const uint8_t raw[2] = {0};
     FILE *file = tmpfile();
     BPV1Header header;
     BPV1Decoder *decoder = NULL;
@@ -238,8 +238,8 @@ static int test_active_palettes(void) {
         header.version != BPV1_VERSION ||
         !(decoder = bpv1_decoder_create(&header)) ||
         bpv1_decoder_packet_capacity(decoder) !=
-            BPV1_MAX_PALETTE_BYTES + 10U) {
-        fprintf(stderr, "BPV1 v4 active-palette setup failed\n");
+            BPV1_MAX_PALETTE_BYTES + 8U) {
+        fprintf(stderr, "BPV1 v5 active-palette setup failed\n");
         goto cleanup;
     }
     for (frame_index = 0; frame_index < 2; ++frame_index) {
@@ -253,10 +253,69 @@ static int test_active_palettes(void) {
             row[0] != expected[frame_index][0] ||
             row[1] != expected[frame_index][1] ||
             row[2] != expected[frame_index][2]) {
-            fprintf(stderr, "BPV1 v4 active palette frame %d failed\n",
+            fprintf(stderr, "BPV1 v5 active palette frame %d failed\n",
                     frame_index);
             goto cleanup;
         }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_adaptive_raw_records(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t modes[2] = {0x92, 0x40};
+    const uint8_t payload[20] = {
+        0x00, 0x50,
+        0x41, 0x23, 0xaa, 0x55,
+        0x82, 0x45, 0x60, 0x18, 0x18, 0x18, 0x18,
+        0xc3, 0x78, 0x9a, 0x1b, 0x1b, 0x1b, 0x1b
+    };
+    const uint8_t expected[4][BPV1_RECORD_BYTES] = {
+        {0, 5, 0, 0, 0, 0, 0, 0, 0},
+        {1, 2, 3, 0, 0, 0x44, 0x44, 0x11, 0x11},
+        {2, 4, 5, 6, 0, 0x18, 0x18, 0x18, 0x18},
+        {3, 7, 8, 9, 10, 0x1b, 0x1b, 0x1b, 0x1b}
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    int result = 1;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_VERSION) ||
+        write_u16(file, 16) || write_u16(file, 4) ||
+        write_u32(file, 1) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 1) ||
+        write_u16(file, 8) || write_u16(file, 8) ||
+        write_u8(file, 0) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES +
+                         sizeof modes + sizeof payload) ||
+        write_u32(file, sizeof modes) ||
+        write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        fwrite(modes, 1, sizeof modes, file) != sizeof modes ||
+        fwrite(payload, 1, sizeof payload, file) != sizeof payload ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_packet_capacity(decoder) !=
+            BPV1_MAX_PALETTE_BYTES + 2U + 4U * 7U ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+        bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+        !frame ||
+        memcmp(frame->blocks, expected, sizeof expected)) {
+        fprintf(stderr, "BPV1 v5 adaptive RAW test failed\n");
+        goto cleanup;
     }
     result = 0;
 
@@ -391,6 +450,7 @@ int main(int argc, char **argv) {
     if (test_dictionary_eviction()) goto cleanup;
     if (test_audio_packet()) goto cleanup;
     if (test_active_palettes()) goto cleanup;
+    if (test_adaptive_raw_records()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

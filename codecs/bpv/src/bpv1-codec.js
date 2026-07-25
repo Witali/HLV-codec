@@ -7,7 +7,7 @@
   "use strict";
 
   const MAGIC = [0x42, 0x50, 0x56, 0x31]; // BPV1
-  const VERSION = 2;
+  const VERSION = 5;
   const AUDIO_VERSION = 3;
   const ACTIVE_PALETTE_VERSION = 4;
   const LEGACY_VERSION = 1;
@@ -50,11 +50,9 @@
     pushU16(output, maxPatternDictionary);
     pushU8(output, searchRadius);
     pushU8(output, 0);
-    for (const color of palette) {
-      pushU8(output, color.r);
-      pushU8(output, color.g);
-      pushU8(output, color.b);
-    }
+    pushU16(output, 0);
+    pushU8(output, 0);
+    pushU8(output, 0);
 
     let previousBlocks = null;
     let blockDictionary = [];
@@ -98,6 +96,7 @@
               patternIndex: patternRef,
               paletteIndex: block.paletteIndex,
               localColors: block.localColors,
+              pattern: block.pattern,
             };
           }
         }
@@ -124,13 +123,29 @@
       }
 
       const packedModes = packModes(modeBytes);
+      const paletteBytes = [];
+      if (keyframe) {
+        for (const color of palette) {
+          pushU8(paletteBytes, color.r);
+          pushU8(paletteBytes, color.g);
+          pushU8(paletteBytes, color.b);
+        }
+      }
       pushU8(output, keyframe ? 1 : 0);
-      pushU32(output, packedModes.length + encodedBlocks.length);
+      pushU32(
+        output,
+        paletteBytes.length + packedModes.length + encodedBlocks.length,
+      );
       pushU32(output, packedModes.length);
+      pushU32(output, 0);
+      pushBytes(output, paletteBytes);
       pushBytes(output, packedModes);
       pushBytes(output, encodedBlocks);
       previousBlocks = frame.blocks;
-      stats.frameBytes.push(9 + packedModes.length + encodedBlocks.length);
+      stats.frameBytes.push(
+        13 + paletteBytes.length + packedModes.length +
+        encodedBlocks.length,
+      );
     }
 
     const bytes = Uint8Array.from(output);
@@ -146,10 +161,7 @@
       if (bytes[offset++] !== MAGIC[i]) throw new RangeError("Invalid BPV1 magic");
     }
     const version = readU8(bytes, offset); offset += 1;
-    if (version !== ACTIVE_PALETTE_VERSION &&
-        version !== AUDIO_VERSION &&
-        version !== VERSION &&
-        version !== LEGACY_VERSION) {
+    if (version < LEGACY_VERSION || version > VERSION) {
       throw new RangeError(`Unsupported BPV1 version: ${version}`);
     }
     const paletteCount = version === LEGACY_VERSION ? LEGACY_PALETTE_COUNT : PALETTE_COUNT;
@@ -182,7 +194,7 @@
       throw new RangeError("Non-zero BPV1 reserved byte");
     }
     const palette = new Array(paletteCount * COLORS_PER_PALETTE);
-    if (version !== ACTIVE_PALETTE_VERSION) {
+    if (version < ACTIVE_PALETTE_VERSION) {
       for (let i = 0; i < palette.length; i += 1) {
         palette[i] = {
           r: bytes[offset++],
@@ -218,7 +230,7 @@
         previousBlocks = null;
         blockDictionary = [];
         patternDictionary = [];
-        if (version === ACTIVE_PALETTE_VERSION) {
+        if (version >= ACTIVE_PALETTE_VERSION) {
           activePalette =
             new Array(paletteCount * COLORS_PER_PALETTE);
           for (let i = 0; i < activePalette.length; i += 1) {
@@ -260,14 +272,60 @@
         } else if (mode === MODE_PATTERN_DICT) {
           const patternIndex = readU16(bytes, offset); offset += 2;
           if (patternIndex >= patternDictionary.length) throw new RangeError("Invalid pattern dictionary index");
-          const paletteIndex = readU8(bytes, offset++);
-          const localColors = [bytes[offset++], bytes[offset++], bytes[offset++], bytes[offset++]];
+          let paletteIndex;
+          let localColors;
+          if (version >= VERSION) {
+            const decodedPrefix = readPackedPrefix(
+              bytes,
+              offset,
+              patternColorCount(patternDictionary[patternIndex]),
+            );
+            paletteIndex = decodedPrefix.paletteIndex;
+            localColors = decodedPrefix.localColors;
+            offset = decodedPrefix.offset;
+          } else {
+            paletteIndex = readU8(bytes, offset++);
+            localColors = [
+              bytes[offset++], bytes[offset++],
+              bytes[offset++], bytes[offset++],
+            ];
+          }
           block = createBlock(paletteIndex, localColors, patternDictionary[patternIndex]);
           addUniqueBlock(blockDictionary, block, maxBlockDictionary);
         } else if (mode === MODE_RAW) {
-          const paletteIndex = readU8(bytes, offset++);
-          const localColors = [bytes[offset++], bytes[offset++], bytes[offset++], bytes[offset++]];
-          const pattern = bytes.slice(offset, offset + PATTERN_BYTES); offset += PATTERN_BYTES;
+          let paletteIndex;
+          let localColors;
+          let pattern;
+          let packedCount = 0;
+          if (version >= VERSION) {
+            const decodedPrefix = readPackedPrefix(bytes, offset, 0);
+            paletteIndex = decodedPrefix.paletteIndex;
+            localColors = decodedPrefix.localColors;
+            packedCount = decodedPrefix.count;
+            offset = decodedPrefix.offset;
+            if (decodedPrefix.count === 1) {
+              pattern = new Uint8Array(PATTERN_BYTES);
+            } else if (decodedPrefix.count === 2) {
+              pattern = expand1BitPattern(bytes, offset);
+              offset += 2;
+            } else {
+              pattern = bytes.slice(offset, offset + PATTERN_BYTES);
+              offset += PATTERN_BYTES;
+            }
+          } else {
+            paletteIndex = readU8(bytes, offset++);
+            localColors = [
+              bytes[offset++], bytes[offset++],
+              bytes[offset++], bytes[offset++],
+            ];
+            pattern = bytes.slice(offset, offset + PATTERN_BYTES);
+            offset += PATTERN_BYTES;
+          }
+          if (version >= VERSION &&
+              (patternColorCount(pattern) !== packedCount ||
+               patternUsedMask(pattern) !== (1 << packedCount) - 1)) {
+            throw new RangeError("Non-canonical BPV1 RAW pattern");
+          }
           block = createBlock(paletteIndex, localColors, pattern);
           addUniquePattern(patternDictionary, pattern, maxPatternDictionary);
           addUniqueBlock(blockDictionary, block, maxBlockDictionary);
@@ -287,7 +345,7 @@
     if (offset !== bytes.length) throw new RangeError("Trailing BPV1 data");
     return {
       width, height, frames,
-      palette: version === ACTIVE_PALETTE_VERSION
+      palette: version >= ACTIVE_PALETTE_VERSION
         ? frames[0].palette : palette,
       paletteCount,
       colorsPerPalette: COLORS_PER_PALETTE,
@@ -329,7 +387,7 @@
     const localColors = Array.from(block.localColors, (value) => normalizeInt(value, 0, 0, COLORS_PER_PALETTE - 1));
     const pattern = asUint8Array(block.pattern);
     if (pattern.length !== PATTERN_BYTES) throw new RangeError("pattern must contain four bytes");
-    return createBlock(paletteIndex, localColors, pattern);
+    return canonicalizeBlock(createBlock(paletteIndex, localColors, pattern));
   }
 
   function createBlock(paletteIndex, localColors, pattern) {
@@ -341,10 +399,18 @@
     if (record.mode === MODE_MOTION) { pushI8(output, record.dx); pushI8(output, record.dy); return; }
     if (record.mode === MODE_BLOCK_DICT) { pushU16(output, record.index); return; }
     if (record.mode === MODE_PATTERN_DICT) {
-      pushU16(output, record.patternIndex); pushU8(output, record.paletteIndex); pushBytes(output, record.localColors); return;
+      pushU16(output, record.patternIndex);
+      writePackedPrefix(output, record);
+      return;
     }
     if (record.mode === MODE_RAW) {
-      pushU8(output, record.paletteIndex); pushBytes(output, record.localColors); pushBytes(output, record.pattern); return;
+      const count = writePackedPrefix(output, record);
+      if (count === 2) {
+        pushBytes(output, pack1BitPattern(record.pattern));
+      } else if (count > 2) {
+        pushBytes(output, record.pattern);
+      }
+      return;
     }
     throw new RangeError("Unsupported block mode");
   }
@@ -413,6 +479,99 @@
     return value;
   }
   function read2Bit(pattern, position) { return readBits(pattern, position * 2, 2); }
+
+  function patternColorCount(pattern) {
+    let count = 1;
+    for (let position = 0; position < 16; position += 1) {
+      count = Math.max(count, read2Bit(pattern, position) + 1);
+    }
+    return count;
+  }
+
+  function patternUsedMask(pattern) {
+    let mask = 0;
+    for (let position = 0; position < 16; position += 1) {
+      mask |= 1 << read2Bit(pattern, position);
+    }
+    return mask;
+  }
+
+  function canonicalizeBlock(block) {
+    const used = [false, false, false, false];
+    for (let position = 0; position < 16; position += 1) {
+      used[read2Bit(block.pattern, position)] = true;
+    }
+    const mapping = [0, 0, 0, 0];
+    const localColors = [0, 0, 0, 0];
+    let count = 0;
+    for (let source = 0; source < LOCAL_COLORS; source += 1) {
+      if (!used[source]) continue;
+      mapping[source] = count;
+      localColors[count] = block.localColors[source];
+      count += 1;
+    }
+    const pattern = new Uint8Array(PATTERN_BYTES);
+    for (let position = 0; position < 16; position += 1) {
+      writeBits(
+        pattern,
+        position * 2,
+        mapping[read2Bit(block.pattern, position)],
+        2,
+      );
+    }
+    return createBlock(block.paletteIndex, localColors, pattern);
+  }
+
+  function writePackedPrefix(output, block) {
+    const count = patternColorCount(block.pattern);
+    pushU8(output, ((count - 1) << 6) | block.paletteIndex);
+    pushU8(output, (block.localColors[0] << 4) |
+      (count > 1 ? block.localColors[1] : 0));
+    if (count > 2) {
+      pushU8(output, (block.localColors[2] << 4) |
+        (count > 3 ? block.localColors[3] : 0));
+    }
+    return count;
+  }
+
+  function readPackedPrefix(bytes, offset, expectedCount) {
+    const tag = readU8(bytes, offset); offset += 1;
+    const count = (tag >>> 6) + 1;
+    const paletteIndex = tag & 63;
+    if (expectedCount && count !== expectedCount) {
+      throw new RangeError("BPV1 packed colour count mismatch");
+    }
+    const localColors = [0, 0, 0, 0];
+    const first = readU8(bytes, offset); offset += 1;
+    localColors[0] = first >>> 4;
+    if (count > 1) localColors[1] = first & 15;
+    if (count > 2) {
+      const second = readU8(bytes, offset); offset += 1;
+      localColors[2] = second >>> 4;
+      if (count > 3) localColors[3] = second & 15;
+    }
+    return { count, paletteIndex, localColors, offset };
+  }
+
+  function pack1BitPattern(pattern) {
+    const packed = new Uint8Array(2);
+    for (let position = 0; position < 16; position += 1) {
+      packed[position >> 3] |=
+        read2Bit(pattern, position) << (7 - (position & 7));
+    }
+    return packed;
+  }
+
+  function expand1BitPattern(bytes, offset) {
+    const pattern = new Uint8Array(PATTERN_BYTES);
+    for (let position = 0; position < 16; position += 1) {
+      const value =
+        (readU8(bytes, offset + (position >> 3)) >>
+          (7 - (position & 7))) & 1;
+      writeBits(pattern, position * 2, value, 2);
+    }
+    return pattern;
+  }
 
   function normalizePalette(palette) {
     if (!Array.isArray(palette) || palette.length !== PALETTE_COUNT * COLORS_PER_PALETTE) throw new RangeError("palette must contain 1024 colors (64 palettes × 16 colors)");

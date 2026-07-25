@@ -92,6 +92,7 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
         !header->keyframe_interval || !header->max_block_dictionary ||
         !header->max_pattern_dictionary ||
         (header->version != BPV1_VERSION &&
+         header->version != BPV1_ACTIVE_PALETTE_VERSION &&
          header->version != BPV1_AUDIO_VERSION &&
          header->version != BPV1_VIDEO_VERSION &&
          header->version != BPV1_LEGACY_VERSION) ||
@@ -121,9 +122,18 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
     *block_bytes = bytes;
     if (count > (uint64_t)(SIZE_MAX - 7U) / 3U) return BPV1_ERR_RANGE;
     *mode_bytes = (size_t)(count * 3U + 7U) / 8U;
-    if (*mode_bytes > SIZE_MAX - *block_bytes) return BPV1_ERR_RANGE;
-    *packet_capacity = *mode_bytes + *block_bytes;
-    if (header->version == BPV1_VERSION) {
+    {
+        size_t payload_bytes = *block_bytes;
+        if (header->version >= BPV1_VERSION &&
+            multiply_size((size_t)*block_count,
+                          BPV1_PACKED_RECORD_BYTES, &payload_bytes)) {
+            return BPV1_ERR_RANGE;
+        }
+        if (*mode_bytes > SIZE_MAX - payload_bytes)
+            return BPV1_ERR_RANGE;
+        *packet_capacity = *mode_bytes + payload_bytes;
+    }
+    if (header->version >= BPV1_ACTIVE_PALETTE_VERSION) {
         if (*packet_capacity > SIZE_MAX - BPV1_MAX_PALETTE_BYTES)
             return BPV1_ERR_RANGE;
         *packet_capacity += BPV1_MAX_PALETTE_BYTES;
@@ -322,6 +332,82 @@ static inline void copy_record(uint8_t *destination,
     destination[8] = source[8];
 }
 
+static unsigned pattern_color_count(const uint8_t *pattern) {
+    unsigned count = 1;
+    unsigned row;
+    for (row = 0; row < BPV1_PATTERN_BYTES; ++row) {
+        const uint8_t value = pattern[row];
+        unsigned shift;
+        for (shift = 0; shift < 8; shift += 2) {
+            const unsigned local = (value >> shift) & 3U;
+            if (local + 1U > count) count = local + 1U;
+        }
+    }
+    return count;
+}
+
+static unsigned pattern_used_mask(const uint8_t *pattern) {
+    unsigned mask = 0;
+    unsigned row;
+    for (row = 0; row < BPV1_PATTERN_BYTES; ++row) {
+        const uint8_t value = pattern[row];
+        unsigned shift;
+        for (shift = 0; shift < 8; shift += 2)
+            mask |= 1U << ((value >> shift) & 3U);
+    }
+    return mask;
+}
+
+static void unpack_local_colors(uint8_t *destination,
+                                const uint8_t *packed,
+                                unsigned count) {
+    unsigned index;
+    memset(destination, 0, 4);
+    for (index = 0; index < count; ++index) {
+        const uint8_t value = packed[index >> 1];
+        destination[index] = (uint8_t)(
+            index & 1U ? value & 15U : value >> 4);
+    }
+}
+
+static uint8_t expand_1bpp_nibble(uint8_t value) {
+    return (uint8_t)(((value & 8U) ? 0x40U : 0U) |
+                     ((value & 4U) ? 0x10U : 0U) |
+                     ((value & 2U) ? 0x04U : 0U) |
+                     ((value & 1U) ? 0x01U : 0U));
+}
+
+static void expand_1bpp_pattern(uint8_t *destination,
+                                const uint8_t *packed) {
+    destination[0] = expand_1bpp_nibble((uint8_t)(packed[0] >> 4));
+    destination[1] = expand_1bpp_nibble((uint8_t)(packed[0] & 15U));
+    destination[2] = expand_1bpp_nibble((uint8_t)(packed[1] >> 4));
+    destination[3] = expand_1bpp_nibble((uint8_t)(packed[1] & 15U));
+}
+
+static int decode_packed_prefix(const uint8_t **cursor,
+                                const uint8_t *payload_end,
+                                uint8_t *destination,
+                                unsigned expected_count) {
+    unsigned count;
+    unsigned local_bytes;
+    uint8_t tag;
+    if ((size_t)(payload_end - *cursor) < 2U) return BPV1_ERR_DECODE;
+    tag = *(*cursor)++;
+    count = (unsigned)(tag >> 6) + 1U;
+    if ((expected_count && count != expected_count) ||
+        (tag & 63U) >= BPV1_PALETTE_COUNT) {
+        return BPV1_ERR_DECODE;
+    }
+    local_bytes = (count + 1U) >> 1;
+    if ((size_t)(payload_end - *cursor) < local_bytes)
+        return BPV1_ERR_DECODE;
+    destination[0] = tag & 63U;
+    unpack_local_colors(destination + 1, *cursor, count);
+    *cursor += local_bytes;
+    return (int)count;
+}
+
 typedef struct {
     const uint8_t *cursor;
     uint32_t buffer;
@@ -407,7 +493,7 @@ int bpv1_header_read(FILE *file, BPV1Header *header) {
     }
     palette_bytes =
         (size_t)header->palette_count * BPV1_COLORS_PER_PALETTE * 3U;
-    if (header->version == BPV1_VERSION) return BPV1_OK;
+    if (header->version >= BPV1_ACTIVE_PALETTE_VERSION) return BPV1_OK;
     return read_exact(file, header->palette, palette_bytes);
 }
 
@@ -434,7 +520,8 @@ int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
         header->version >= BPV1_AUDIO_VERSION ? read_u32(bytes + 9) : 0;
     {
         const size_t palette_bytes =
-            header->version == BPV1_VERSION && info->keyframe
+            header->version >= BPV1_ACTIVE_PALETTE_VERSION &&
+                    info->keyframe
                 ? BPV1_MAX_PALETTE_BYTES
                 : 0U;
         if (palette_bytes > SIZE_MAX - info->mode_bytes ||
@@ -578,7 +665,8 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
         return BPV1_ERR_DECODE;
     if (packet->info.keyframe) reset_references(decoder);
     palette_bytes =
-        decoder->header.version == BPV1_VERSION && packet->info.keyframe
+        decoder->header.version >= BPV1_ACTIVE_PALETTE_VERSION &&
+                packet->info.keyframe
             ? BPV1_MAX_PALETTE_BYTES
             : 0U;
     if (palette_bytes > packet->size ||
@@ -635,25 +723,69 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
         } else if (mode == MODE_PATTERN_DICTIONARY) {
             uint8_t *pattern;
             uint16_t dictionary_index;
-            if ((size_t)(payload_end - cursor) < 7U)
+            if ((size_t)(payload_end - cursor) < 2U)
                 return BPV1_ERR_DECODE;
             dictionary_index = read_u16(cursor);
             cursor += 2;
             pattern = dictionary_entry(&decoder->patterns,
                                        dictionary_index);
             if (!pattern) return BPV1_ERR_DECODE;
-            memcpy(destination, cursor, PATTERN_OFFSET);
-            cursor += PATTERN_OFFSET;
-            memcpy(destination + PATTERN_OFFSET, pattern,
-                   BPV1_PATTERN_BYTES);
+            if (decoder->header.version >= BPV1_VERSION) {
+                const unsigned count = pattern_color_count(pattern);
+                if (decode_packed_prefix(&cursor, payload_end,
+                                         destination, count) < 0) {
+                    return BPV1_ERR_DECODE;
+                }
+                memcpy(destination + PATTERN_OFFSET, pattern,
+                       BPV1_PATTERN_BYTES);
+            } else {
+                if ((size_t)(payload_end - cursor) < PATTERN_OFFSET)
+                    return BPV1_ERR_DECODE;
+                memcpy(destination, cursor, PATTERN_OFFSET);
+                cursor += PATTERN_OFFSET;
+                memcpy(destination + PATTERN_OFFSET, pattern,
+                       BPV1_PATTERN_BYTES);
+            }
             if (validate_record(&decoder->header, destination))
                 return BPV1_ERR_DECODE;
             dictionary_add_unique(&decoder->blocks, destination);
         } else {
-            if ((size_t)(payload_end - cursor) < BPV1_RECORD_BYTES)
-                return BPV1_ERR_DECODE;
-            copy_record(destination, cursor);
-            cursor += BPV1_RECORD_BYTES;
+            if (decoder->header.version >= BPV1_VERSION) {
+                const int count = decode_packed_prefix(
+                    &cursor, payload_end, destination, 0);
+                if (count < 0) return BPV1_ERR_DECODE;
+                if (count == 1) {
+                    memset(destination + PATTERN_OFFSET, 0,
+                           BPV1_PATTERN_BYTES);
+                } else if (count == 2) {
+                    if ((size_t)(payload_end - cursor) < 2U)
+                        return BPV1_ERR_DECODE;
+                    expand_1bpp_pattern(destination + PATTERN_OFFSET,
+                                        cursor);
+                    cursor += 2;
+                } else {
+                    if ((size_t)(payload_end - cursor) <
+                        BPV1_PATTERN_BYTES) {
+                        return BPV1_ERR_DECODE;
+                    }
+                    memcpy(destination + PATTERN_OFFSET, cursor,
+                           BPV1_PATTERN_BYTES);
+                    cursor += BPV1_PATTERN_BYTES;
+                }
+                if (pattern_color_count(
+                        destination + PATTERN_OFFSET) !=
+                            (unsigned)count ||
+                    pattern_used_mask(
+                        destination + PATTERN_OFFSET) !=
+                            ((1U << count) - 1U)) {
+                    return BPV1_ERR_DECODE;
+                }
+            } else {
+                if ((size_t)(payload_end - cursor) < BPV1_RECORD_BYTES)
+                    return BPV1_ERR_DECODE;
+                copy_record(destination, cursor);
+                cursor += BPV1_RECORD_BYTES;
+            }
             if (validate_record(&decoder->header, destination))
                 return BPV1_ERR_DECODE;
             dictionary_add_unique(&decoder->patterns,

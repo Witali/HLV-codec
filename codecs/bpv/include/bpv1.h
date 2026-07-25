@@ -9,12 +9,14 @@
 extern "C" {
 #endif
 
-#define BPV1_VERSION 4
+#define BPV1_VERSION 5
+#define BPV1_ACTIVE_PALETTE_VERSION 4
 #define BPV1_AUDIO_VERSION 3
 #define BPV1_VIDEO_VERSION 2
 #define BPV1_LEGACY_VERSION 1
 #define BPV1_BLOCK_SIZE 4
 #define BPV1_RECORD_BYTES 9
+#define BPV1_PACKED_RECORD_BYTES 7
 #define BPV1_PATTERN_BYTES 4
 #define BPV1_COLORS_PER_PALETTE 16
 #define BPV1_PALETTE_COUNT 64
@@ -86,13 +88,13 @@ const char *bpv1_strerror(int result);
 
 /*
  * Read and validate the fixed header. Versions 1 through 3 store one palette
- * bank in the header; v4 carries a complete active bank in every keyframe.
+ * bank in the header; v4/v5 carry a complete active bank in every keyframe.
  */
 int bpv1_header_read(FILE *file, BPV1Header *header);
 
 /*
  * Read one frame header and leave the file positioned at its payload.  The
- * header occupies nine bytes in v1/v2 and thirteen bytes in v3/v4. This is
+ * header occupies nine bytes in v1/v2 and thirteen bytes in v3/v4/v5. This is
  * useful for seek-index construction.
  */
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,

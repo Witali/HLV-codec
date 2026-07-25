@@ -13,8 +13,10 @@ const LITERAL_BITMAP_BYTES = ACTIVE_PALETTES / 8;
 function collectPaletteStatistics(input) {
   const bytes = asUint8Array(input);
   const header = bpv1.parseHeader(bytes);
-  if (header.version !== bpv1.constants.ACTIVE_PALETTE_VERSION) {
-    throw new RangeError("Superpalette analysis requires a BPV1 v4 stream");
+  if (header.version < bpv1.constants.ACTIVE_PALETTE_VERSION) {
+    throw new RangeError(
+      "Superpalette analysis requires a BPV1 active-palette stream",
+    );
   }
 
   const blocksX = Math.ceil(header.width / 4);

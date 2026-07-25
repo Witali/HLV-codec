@@ -9,7 +9,7 @@ function usage() {
   return `Usage:
   node tools/bpv1dec.js <input.bpv1|-> <output.y4m|-> [--no-progress]
 
-The decoder validates every frame while converting BPV1 v1 through v4 to an
+The decoder validates every frame while converting BPV1 v1 through v5 to an
 8-bit YUV 4:2:0 Y4M stream.
 `;
 }

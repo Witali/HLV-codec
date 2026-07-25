@@ -16,9 +16,7 @@
   const PIXELS_PER_BLOCK = 16;
   const COLORS_PER_PALETTE = 16;
   const LOCAL_COLORS = 4;
-  const RAW_BITS = 72;
   const BLOCK_DICTIONARY_BITS = 16;
-  const PATTERN_DICTIONARY_BITS = 56;
 
   function compressRgbaVideoRateDistortion(video, options) {
     if (!codec || typeof codec.encodeVideo !== "function") throw new Error("Bpv1Codec is required");
@@ -65,13 +63,19 @@
         }
 
         for (const paletteIndex of paletteIndices) {
-          const candidate = quantizeBlock(pixels, paletteIndex, training.palette);
+          const candidate = quantizeBlock(
+            pixels,
+            paletteIndex,
+            training.palette,
+          );
           const bkey = blockKey(candidate.block);
           const pkey = patternKey(candidate.block.pattern);
-          let bits = RAW_BITS;
+          let bits = rawPayloadBits(candidate.block);
           if (previousBlocks && equalBlock(candidate.block, previousBlocks[blockIndex])) bits = 0;
           else if (blockSet.has(bkey)) bits = BLOCK_DICTIONARY_BITS;
-          else if (patternSet.has(pkey)) bits = PATTERN_DICTIONARY_BITS;
+          else if (patternSet.has(pkey)) {
+            bits = patternDictionaryPayloadBits(candidate.block);
+          }
           const score = candidate.error + lambda * bits;
           if (!best || score < best.score ||
               (score === best.score && bits < best.bits) ||
@@ -129,8 +133,8 @@
           skip: 0,
           motion: 16,
           blockDictionary: BLOCK_DICTIONARY_BITS,
-          patternDictionary: PATTERN_DICTIONARY_BITS,
-          raw: RAW_BITS,
+          patternDictionary: "32 or 40",
+          raw: "16, 32 or 56",
         },
         mse,
         psnrDb,
@@ -179,7 +183,14 @@
       error += distance;
       pattern[pixel >> 2] |= local << (6 - (pixel & 3) * 2);
     }
-    return { block: { paletteIndex, localColors: selected, pattern }, error };
+    return {
+      block: canonicalizeBlock({
+        paletteIndex,
+        localColors: selected,
+        pattern,
+      }),
+      error,
+    };
   }
 
   function blockSquaredError(pixels, block, palette) {
@@ -267,6 +278,45 @@
   }
   function blockKey(block) { return `${block.paletteIndex}:${Array.from(block.localColors).join(",")}:${patternKey(block.pattern)}`; }
   function patternKey(pattern) { return Array.from(pattern).join(","); }
+  function read2Bit(pattern, position) {
+    return (pattern[position >> 2] >> (6 - (position & 3) * 2)) & 3;
+  }
+  function patternColorCount(pattern) {
+    let count = 1;
+    for (let position = 0; position < PIXELS_PER_BLOCK; position += 1) {
+      count = Math.max(count, read2Bit(pattern, position) + 1);
+    }
+    return count;
+  }
+  function canonicalizeBlock(block) {
+    const used = [false, false, false, false];
+    for (let position = 0; position < PIXELS_PER_BLOCK; position += 1) {
+      used[read2Bit(block.pattern, position)] = true;
+    }
+    const mapping = [0, 0, 0, 0];
+    const localColors = [0, 0, 0, 0];
+    let count = 0;
+    for (let slot = 0; slot < LOCAL_COLORS; slot += 1) {
+      if (!used[slot]) continue;
+      mapping[slot] = count;
+      localColors[count] = block.localColors[slot];
+      count += 1;
+    }
+    const pattern = new Uint8Array(4);
+    for (let position = 0; position < PIXELS_PER_BLOCK; position += 1) {
+      pattern[position >> 2] |=
+        mapping[read2Bit(block.pattern, position)] <<
+        (6 - (position & 3) * 2);
+    }
+    return { paletteIndex: block.paletteIndex, localColors, pattern };
+  }
+  function rawPayloadBits(block) {
+    const count = patternColorCount(block.pattern);
+    return count === 1 ? 16 : count === 2 ? 32 : 56;
+  }
+  function patternDictionaryPayloadBits(block) {
+    return patternColorCount(block.pattern) <= 2 ? 32 : 40;
+  }
   function cloneBlock(block) { return { paletteIndex: block.paletteIndex, localColors: Array.from(block.localColors), pattern: Uint8Array.from(block.pattern) }; }
   function equalBlock(a, b) { return a.paletteIndex === b.paletteIndex && equalArray(a.localColors, b.localColors) && equalArray(a.pattern, b.pattern); }
   function equalArray(a, b) { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false; return true; }

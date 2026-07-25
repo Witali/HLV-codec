@@ -29,7 +29,7 @@ const encoded = codec.encodeVideo(video, { keyframeInterval: 30, searchRadius: 2
 const decoded = codec.decodeVideo(encoded.bytes);
 assert.equal(decoded.frames.length, 4);
 assert.equal(decoded.paletteCount, 64);
-assert.equal(codec.constants.VERSION, 2);
+assert.equal(codec.constants.VERSION, 5);
 assert.equal(codec.constants.PALETTE_COUNT, 64);
 assert.deepEqual(Array.from(decoded.frames[3].blocks[0].pattern), Array.from(c.pattern));
 assert.deepEqual(decoded.frames[3].blocks[0].localColors, c.localColors);
@@ -38,6 +38,45 @@ assert.ok(encoded.stats.modeCounts[codec.constants.MODE_MOTION] >= 2);
 assert.ok(encoded.stats.modeCounts[codec.constants.MODE_PATTERN_DICT] >= 1);
 assert.equal(codec.renderFrame(decoded, 0).length, 8 * 4 * 4);
 console.log("BPV1 tests passed", encoded.stats);
+
+const adaptiveBlocks = [
+  block(1, [5, 6, 7, 8], new Array(16).fill(0)),
+  block(2, [4, 9, 7, 8], Array.from(
+    { length: 16 },
+    (_, index) => index & 1,
+  )),
+  block(3, [2, 6, 10, 14], Array.from(
+    { length: 16 },
+    (_, index) => index % 3,
+  )),
+  block(4, [1, 5, 9, 13], Array.from(
+    { length: 16 },
+    (_, index) => index & 3,
+  )),
+];
+const adaptive = codec.encodeVideo({
+  width: 16,
+  height: 4,
+  palette,
+  frames: [{ blocks: adaptiveBlocks }],
+}, { keyframeInterval: 1 });
+assert.equal(
+  adaptive.bytes.length,
+  29 + 13 + 3072 + 2 + 2 + 4 + 7 + 7,
+  "RAW1/2/3/4 must occupy 2/4/7/7 bytes",
+);
+const adaptiveDecoded = codec.decodeVideo(adaptive.bytes);
+assert.deepEqual(
+  Array.from(codec.renderFrame(adaptiveDecoded, 0)),
+  Array.from(codec.renderFrame({
+    ...adaptiveDecoded,
+    frames: [{
+      ...adaptiveDecoded.frames[0],
+      blocks: adaptiveBlocks,
+    }],
+  }, 0)),
+);
+console.log("BPV1 adaptive RAW sizes passed");
 
 // A tiny hand-built legacy v1 stream verifies backward decoding.
 const legacy = [];

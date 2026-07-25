@@ -2472,12 +2472,12 @@ void playOneBpvFramePipelined() {
     ready_bpv_packet_valid = false;
 
     bool rendered = true;
-    // BPV v4 replaces the active palette at every keyframe. Finish using the
+    // BPV v4/v5 replaces the active palette at every keyframe. Finish using the
     // preceding palette before CPU1 starts changing it. Between keyframes the
     // decoder's two block arrays already provide safe zero-copy ping-pong
     // storage: CPU0 reads the previous array while CPU1 writes the current one.
     if (pending_bpv_frame_valid && packet.info.keyframe &&
-        bpv_header.version == BPV1_VERSION) {
+        bpv_header.version >= BPV1_ACTIVE_PALETTE_VERSION) {
         rendered =
             presentBpvFrame(&pending_bpv_frame, pending_read_us,
                             pending_decode_us);

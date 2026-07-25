@@ -59,7 +59,9 @@ function main() {
       throw new RangeError(`Unexpected positional argument: ${argument}`);
     }
   }
-  if (!input) throw new RangeError("An input BPV1 v4 file is required");
+  if (!input) {
+    throw new RangeError("An input BPV1 active-palette file is required");
+  }
   const inputBytes = fs.readFileSync(input);
   const report = superpalette.analyzeSuperpalettes(inputBytes, {
     bankSizes,

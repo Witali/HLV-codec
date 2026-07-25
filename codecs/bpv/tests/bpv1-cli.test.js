@@ -77,7 +77,7 @@ try {
     "--no-progress",
   ]);
   const info = JSON.parse(run("bpv1info.js", [encoded, "--json"]).stdout);
-  assert.equal(info.version, 2);
+  assert.equal(info.version, 5);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 3);

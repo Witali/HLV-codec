@@ -1,7 +1,7 @@
 "use strict";
 
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
-const VERSION = 2;
+const VERSION = 5;
 const AUDIO_VERSION = 3;
 const ACTIVE_PALETTE_VERSION = 4;
 const LEGACY_VERSION = 1;
@@ -12,6 +12,7 @@ const LEGACY_PALETTE_COUNT = 16;
 const COLORS_PER_PALETTE = 16;
 const BLOCK_SIZE = 4;
 const RECORD_BYTES = 9;
+const PATTERN_BYTES = 4;
 const PATTERN_OFFSET = 5;
 
 const MODE_SKIP = 0;
@@ -37,10 +38,7 @@ function parseHeader(input) {
     if (readU8(bytes, offset++) !== byte) throw new RangeError("Invalid BPV1 magic");
   }
   const version = readU8(bytes, offset); offset += 1;
-  if (version !== ACTIVE_PALETTE_VERSION &&
-      version !== AUDIO_VERSION &&
-      version !== VERSION &&
-      version !== LEGACY_VERSION) {
+  if (version < LEGACY_VERSION || version > VERSION) {
     throw new RangeError(`Unsupported BPV1 version: ${version}`);
   }
   const paletteCount = version === LEGACY_VERSION
@@ -85,7 +83,7 @@ function parseHeader(input) {
   }
   const paletteBytes = paletteCount * COLORS_PER_PALETTE * 3;
   let palette = new Uint8Array(paletteBytes);
-  if (version !== ACTIVE_PALETTE_VERSION) {
+  if (version < ACTIVE_PALETTE_VERSION) {
     requireBytes(bytes, offset, paletteBytes, "palette");
     palette = bytes.slice(offset, offset + paletteBytes);
     offset += paletteBytes;
@@ -125,6 +123,8 @@ function walkFrames(input, onFrame) {
   let patternDictionary = [];
   let offset = header.frameDataOffset;
   const modeCounts = new Array(MODE_NAMES.length).fill(0);
+  const rawColorCounts = [0, 0, 0, 0];
+  const patternDictionaryColorCounts = [0, 0, 0, 0];
   let minimumFrameBytes = Infinity;
   let maximumFrameBytes = 0;
   let totalFrameBytes = 0;
@@ -169,7 +169,7 @@ function walkFrames(input, onFrame) {
     if (frameIndex === 0 && !keyframe) {
       throw new RangeError("The first BPV1 frame must be a keyframe");
     }
-    if (header.version === ACTIVE_PALETTE_VERSION && keyframe) {
+    if (header.version >= ACTIVE_PALETTE_VERSION && keyframe) {
       const paletteBytes =
         header.paletteCount * COLORS_PER_PALETTE * 3;
       requireFrameBytes(offset, paletteBytes, frameEnd, frameIndex);
@@ -231,15 +231,41 @@ function walkFrames(input, onFrame) {
         }
         blocks.set(blockDictionary[index], destination);
       } else if (mode === MODE_PATTERN_DICT) {
-        requireFrameBytes(offset, 7, frameEnd, frameIndex);
+        requireFrameBytes(offset, 2, frameEnd, frameIndex);
         const patternIndex = readU16(bytes, offset);
         offset += 2;
         if (patternIndex >= patternDictionary.length) {
           throw new RangeError(`Invalid pattern dictionary index at ${frameIndex}:${blockIndex}`);
         }
-        blocks.set(bytes.subarray(offset, offset + PATTERN_OFFSET), destination);
-        offset += PATTERN_OFFSET;
-        blocks.set(patternDictionary[patternIndex], destination + PATTERN_OFFSET);
+        if (header.version >= VERSION) {
+          const count = patternColorCount(patternDictionary[patternIndex]);
+          const prefix = readPackedPrefix(
+            bytes,
+            offset,
+            frameEnd,
+            count,
+            frameIndex,
+          );
+          blocks.set(prefix.recordPrefix, destination);
+          offset = prefix.offset;
+          patternDictionaryColorCounts[prefix.count - 1] += 1;
+        } else {
+          requireFrameBytes(
+            offset,
+            PATTERN_OFFSET,
+            frameEnd,
+            frameIndex,
+          );
+          blocks.set(
+            bytes.subarray(offset, offset + PATTERN_OFFSET),
+            destination,
+          );
+          offset += PATTERN_OFFSET;
+        }
+        blocks.set(
+          patternDictionary[patternIndex],
+          destination + PATTERN_OFFSET,
+        );
         validateRecord(blocks, destination, header.paletteCount, frameIndex, blockIndex);
         addUnique(
           blockDictionary,
@@ -247,9 +273,62 @@ function walkFrames(input, onFrame) {
           header.maxBlockDictionary,
         );
       } else if (mode === MODE_RAW) {
-        requireFrameBytes(offset, RECORD_BYTES, frameEnd, frameIndex);
-        blocks.set(bytes.subarray(offset, offset + RECORD_BYTES), destination);
-        offset += RECORD_BYTES;
+        if (header.version >= VERSION) {
+          const prefix = readPackedPrefix(
+            bytes,
+            offset,
+            frameEnd,
+            0,
+            frameIndex,
+          );
+          blocks.set(prefix.recordPrefix, destination);
+          offset = prefix.offset;
+          rawColorCounts[prefix.count - 1] += 1;
+          if (prefix.count === 1) {
+            blocks.fill(
+              0,
+              destination + PATTERN_OFFSET,
+              destination + RECORD_BYTES,
+            );
+          } else if (prefix.count === 2) {
+            requireFrameBytes(offset, 2, frameEnd, frameIndex);
+            blocks.set(
+              expand1BitPattern(bytes, offset),
+              destination + PATTERN_OFFSET,
+            );
+            offset += 2;
+          } else {
+            requireFrameBytes(
+              offset,
+              PATTERN_BYTES,
+              frameEnd,
+              frameIndex,
+            );
+            blocks.set(
+              bytes.subarray(offset, offset + PATTERN_BYTES),
+              destination + PATTERN_OFFSET,
+            );
+            offset += PATTERN_BYTES;
+          }
+          const decodedPattern = blocks.subarray(
+            destination + PATTERN_OFFSET,
+            destination + RECORD_BYTES,
+          );
+          if (patternColorCount(decodedPattern) !== prefix.count ||
+              patternUsedMask(decodedPattern) !==
+                (1 << prefix.count) - 1) {
+            throw new RangeError(
+              `Non-canonical BPV1 RAW at ${frameIndex}:${blockIndex}`,
+            );
+          }
+        } else {
+          requireFrameBytes(offset, RECORD_BYTES, frameEnd, frameIndex);
+          blocks.set(
+            bytes.subarray(offset, offset + RECORD_BYTES),
+            destination,
+          );
+          offset += RECORD_BYTES;
+        }
         validateRecord(blocks, destination, header.paletteCount, frameIndex, blockIndex);
         addUnique(
           patternDictionary,
@@ -320,6 +399,8 @@ function walkFrames(input, onFrame) {
     audioBytes: totalAudioBytes,
     blockCount,
     modeCounts: Object.fromEntries(MODE_NAMES.map((name, index) => [name, modeCounts[index]])),
+    rawColorCounts,
+    patternDictionaryColorCounts,
     minimumFrameBytes,
     maximumFrameBytes,
     meanFrameBytes: totalFrameBytes / header.frameCount,
@@ -355,6 +436,68 @@ function renderFrameRgba(frame, header) {
     }
   }
   return rgba;
+}
+
+function patternColorCount(pattern) {
+  let count = 1;
+  for (let position = 0; position < 16; position += 1) {
+    const local = (
+      pattern[position >> 2] >> (6 - (position & 3) * 2)
+    ) & 3;
+    count = Math.max(count, local + 1);
+  }
+  return count;
+}
+
+function patternUsedMask(pattern) {
+  let mask = 0;
+  for (let position = 0; position < 16; position += 1) {
+    const local = (
+      pattern[position >> 2] >> (6 - (position & 3) * 2)
+    ) & 3;
+    mask |= 1 << local;
+  }
+  return mask;
+}
+
+function readPackedPrefix(
+  bytes,
+  offset,
+  frameEnd,
+  expectedCount,
+  frameIndex,
+) {
+  requireFrameBytes(offset, 2, frameEnd, frameIndex);
+  const tag = bytes[offset++];
+  const count = (tag >>> 6) + 1;
+  if (expectedCount && count !== expectedCount) {
+    throw new RangeError(
+      `BPV1 packed colour count mismatch in frame ${frameIndex}`,
+    );
+  }
+  const recordPrefix = new Uint8Array(PATTERN_OFFSET);
+  recordPrefix[0] = tag & 63;
+  const first = bytes[offset++];
+  recordPrefix[1] = first >>> 4;
+  if (count > 1) recordPrefix[2] = first & 15;
+  if (count > 2) {
+    requireFrameBytes(offset, 1, frameEnd, frameIndex);
+    const second = bytes[offset++];
+    recordPrefix[3] = second >>> 4;
+    if (count > 3) recordPrefix[4] = second & 15;
+  }
+  return { count, offset, recordPrefix };
+}
+
+function expand1BitPattern(bytes, offset) {
+  const pattern = new Uint8Array(PATTERN_BYTES);
+  for (let position = 0; position < 16; position += 1) {
+    const local =
+      (bytes[offset + (position >> 3)] >> (7 - (position & 7))) & 1;
+    pattern[position >> 2] |=
+      local << (6 - (position & 3) * 2);
+  }
+  return pattern;
 }
 
 function validateRecord(bytes, offset, paletteCount, frameIndex, blockIndex) {

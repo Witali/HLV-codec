@@ -156,7 +156,7 @@ try {
   );
 
   const info = bpv.walkFrames(bytes4);
-  assert.equal(info.version, 4);
+  assert.equal(info.version, 5);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 6);
@@ -176,7 +176,7 @@ try {
     fs.readFileSync(outputAudio),
     (frame) => audioFrames.push(frame.audio),
   );
-  assert.equal(audioInfo.version, 4);
+  assert.equal(audioInfo.version, 5);
   assert.equal(audioInfo.audioCodec, 1);
   assert.equal(audioInfo.audioSampleRate, 16000);
   assert.equal(audioInfo.audioChannels, 1);
@@ -187,8 +187,8 @@ try {
   );
 
   const fixedInfo = bpv.walkFrames(fs.readFileSync(outputFixed));
-  assert.equal(fixedInfo.version, 2);
-  assert.equal(fixedInfo.paletteUpdates, 0);
+  assert.equal(fixedInfo.version, 5);
+  assert.equal(fixedInfo.paletteUpdates, 2);
 
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
   assert.equal(report.encoder, "native C11");

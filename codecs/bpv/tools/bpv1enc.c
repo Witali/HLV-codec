@@ -11,9 +11,7 @@
 #include <threads.h>
 #include <time.h>
 
-#define BPV_VIDEO_VERSION 2
-#define BPV_AUDIO_VERSION 3
-#define BPV_ACTIVE_PALETTE_VERSION 4
+#define BPV_VERSION 5
 #define BLOCK_SIZE 4
 #define PIXELS_PER_BLOCK 16
 #define PALETTE_COUNT 64
@@ -166,8 +164,9 @@ static void usage(FILE *stream) {
         "  --no-progress                  suppress progress\n"
         "  -h, --help                     show help\n\n"
         "The input must be a seekable 8-bit YUV 4:2:0 Y4M file. In the default\n"
-        "BPV1 v4 mode every independent GOP trains and carries its own active\n"
-        "64x16 RGB palette bank. --fixed-palettes writes compatible v2/v3.\n");
+        "BPV1 v5 mode every independent GOP carries a 64x16 RGB palette bank\n"
+        "and uses adaptive 2/4/7-byte RAW records. --fixed-palettes repeats\n"
+        "one global bank in each GOP.\n");
 }
 
 static int buffer_reserve(Buffer *buffer, size_t extra) {
@@ -994,6 +993,94 @@ static uint64_t quantize_block(
     return total_error;
 }
 
+static unsigned canonicalize_block(Block *block) {
+    uint8_t used[LOCAL_COLORS] = {0};
+    uint8_t mapping[LOCAL_COLORS] = {0};
+    uint8_t colors[LOCAL_COLORS] = {0};
+    uint8_t pattern[PATTERN_BYTES] = {0};
+    unsigned count = 0;
+    int pixel;
+    int slot;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const int shift = 6 - ((pixel & 3) * 2);
+        used[(block->pattern[pixel >> 2] >> shift) & 3U] = 1;
+    }
+    for (slot = 0; slot < LOCAL_COLORS; ++slot) {
+        if (!used[slot]) continue;
+        mapping[slot] = (uint8_t)count;
+        colors[count++] = block->local_colors[slot];
+    }
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const int shift = 6 - ((pixel & 3) * 2);
+        const unsigned source =
+            (block->pattern[pixel >> 2] >> shift) & 3U;
+        pattern[pixel >> 2] |=
+            (uint8_t)(mapping[source] << shift);
+    }
+    memcpy(block->local_colors, colors, sizeof colors);
+    memcpy(block->pattern, pattern, sizeof pattern);
+    return count;
+}
+
+static unsigned block_color_count(const Block *block) {
+    unsigned count = 1;
+    int row;
+    for (row = 0; row < PATTERN_BYTES; ++row) {
+        unsigned shift;
+        for (shift = 0; shift < 8; shift += 2) {
+            const unsigned local = (block->pattern[row] >> shift) & 3U;
+            if (local + 1U > count) count = local + 1U;
+        }
+    }
+    return count;
+}
+
+static int raw_payload_bits(const Block *block) {
+    const unsigned count = block_color_count(block);
+    return count == 1 ? 16 : count == 2 ? 32 : 56;
+}
+
+static int pattern_dictionary_payload_bits(const Block *block) {
+    return block_color_count(block) <= 2 ? 32 : 40;
+}
+
+static int buffer_packed_prefix(Buffer *output, const Block *block,
+                                unsigned count) {
+    const uint8_t tag = (uint8_t)(
+        ((count - 1U) << 6) | block->palette_index);
+    const uint8_t first = (uint8_t)(
+        (block->local_colors[0] << 4) |
+        (count > 1 ? block->local_colors[1] : 0));
+    if (buffer_u8(output, tag) || buffer_u8(output, first))
+        return -1;
+    if (count > 2) {
+        const uint8_t second = (uint8_t)(
+            (block->local_colors[2] << 4) |
+            (count > 3 ? block->local_colors[3] : 0));
+        if (buffer_u8(output, second)) return -1;
+    }
+    return 0;
+}
+
+static int buffer_adaptive_raw(Buffer *output, const Block *block) {
+    const unsigned count = block_color_count(block);
+    if (buffer_packed_prefix(output, block, count)) return -1;
+    if (count == 1) return 0;
+    if (count == 2) {
+        uint8_t bitmap[2] = {0};
+        int pixel;
+        for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+            const int pattern_shift = 6 - ((pixel & 3) * 2);
+            const unsigned local =
+                (block->pattern[pixel >> 2] >> pattern_shift) & 3U;
+            bitmap[pixel >> 3] |=
+                (uint8_t)(local << (7 - (pixel & 7)));
+        }
+        return buffer_write(output, bitmap, sizeof bitmap);
+    }
+    return buffer_write(output, block->pattern, PATTERN_BYTES);
+}
+
 static void nearest_palettes(
     const float descriptor[6],
     const Training *training,
@@ -1170,14 +1257,18 @@ static int encode_gop(GopJob *job) {
                 uint64_t error = quantize_block(
                     pixels, palette_indices[palette_slot],
                     training, &candidate);
-                int bits = 72;
+                int bits;
                 double score;
+                canonicalize_block(&candidate);
+                bits = raw_payload_bits(&candidate);
                 if (frame_index > 0 &&
                     block_equal(&candidate, &previous[block_index])) bits = 0;
                 else if (block_dictionary_find(&shadow_blocks, &candidate) >= 0)
                     bits = 16;
                 else if (pattern_dictionary_find(
-                        &shadow_patterns, candidate.pattern) >= 0) bits = 56;
+                        &shadow_patterns, candidate.pattern) >= 0) {
+                    bits = pattern_dictionary_payload_bits(&candidate);
+                }
                 score = (double)error + options->lambda * bits;
                 if (best_score == HUGE_VAL ||
                     better_candidate(score, bits, error, &candidate,
@@ -1232,14 +1323,15 @@ static int encode_gop(GopJob *job) {
                                 best_block.pattern)) >= 0) {
                     modes[block_index] = MODE_PATTERN_DICT;
                     if (buffer_u16(&payload, (uint16_t)dictionary_index) ||
-                        buffer_write(&payload, &best_block, 5))
+                        buffer_packed_prefix(
+                            &payload, &best_block,
+                            block_color_count(&best_block)))
                         goto frame_fail;
                     block_dictionary_add(
                         &block_dictionary, &best_block);
                 } else {
                     modes[block_index] = MODE_RAW;
-                    if (buffer_write(&payload,
-                            &best_block, sizeof best_block))
+                    if (buffer_adaptive_raw(&payload, &best_block))
                         goto frame_fail;
                     pattern_dictionary_add(
                         &pattern_dictionary, best_block.pattern);
@@ -1252,9 +1344,7 @@ static int encode_gop(GopJob *job) {
         pack_modes(modes, block_count, packed_modes);
         {
             const size_t palette_bytes =
-                options->active_palettes && frame_index == 0
-                    ? sizeof training->palette
-                    : 0U;
+                frame_index == 0 ? sizeof training->palette : 0U;
             if (palette_bytes > UINT32_MAX - mode_bytes ||
                 payload.size > UINT32_MAX - mode_bytes - palette_bytes ||
                 buffer_u8(&job->output, frame_index == 0 ? 1 : 0) ||
@@ -1338,12 +1428,9 @@ static int write_bpv_header(
     uint32_t frame_count
 ) {
     const int has_audio = options->audio_path != NULL;
-    const int version = options->active_palettes
-        ? BPV_ACTIVE_PALETTE_VERSION
-        : has_audio ? BPV_AUDIO_VERSION : BPV_VIDEO_VERSION;
     if (!options->active_palettes && !training) return -1;
     if (fwrite("BPV1", 1, 4, output) != 4 ||
-        write_u8(output, (uint8_t)version) ||
+        write_u8(output, BPV_VERSION) ||
         write_u16(output, (uint16_t)info->width) ||
         write_u16(output, (uint16_t)info->height) ||
         write_u32(output, frame_count) ||
@@ -1354,14 +1441,10 @@ static int write_bpv_header(
         write_u16(output, (uint16_t)options->max_pattern_dictionary) ||
         write_u8(output, (uint8_t)options->search_radius) ||
         write_u8(output, has_audio ? 1 : 0) ||
-        (version >= BPV_AUDIO_VERSION &&
-         (write_u16(output,
-                    (uint16_t)(has_audio ? options->audio_rate : 0)) ||
-          write_u8(output, has_audio ? 1 : 0) ||
-          write_u8(output, 0))) ||
-        (!options->active_palettes &&
-         fwrite(training->palette, 1, sizeof training->palette, output) !=
-             sizeof training->palette)) return -1;
+        write_u16(output,
+                  (uint16_t)(has_audio ? options->audio_rate : 0)) ||
+        write_u8(output, has_audio ? 1 : 0) ||
+        write_u8(output, 0)) return -1;
     return 0;
 }
 
@@ -1490,7 +1573,7 @@ static int encode_all_gops(
                 worker_active[job_index] = 0;
             }
             if (jobs[job_index].result || worker_result) goto batch_fail;
-            if (options->active_palettes || (audio && audio->file)) {
+            {
                 size_t consumed = 0;
                 int frame;
                 for (frame = 0; frame < jobs[job_index].frame_count;
@@ -1505,13 +1588,6 @@ static int encode_all_gops(
                 }
                 if (consumed != jobs[job_index].output.size)
                     goto batch_fail;
-            } else {
-                if (fwrite(jobs[job_index].output.data, 1,
-                           jobs[job_index].output.size, output) !=
-                    jobs[job_index].output.size) {
-                    goto batch_fail;
-                }
-                *payload_bytes += jobs[job_index].output.size;
             }
             stats_add(stats, &jobs[job_index].stats);
             free(jobs[job_index].frames);
@@ -1638,13 +1714,10 @@ static int write_report(
     uint64_t file_bytes,
     double elapsed_seconds
 ) {
-    const int version = options->active_palettes
-        ? BPV_ACTIVE_PALETTE_VERSION
-        : options->audio_path ? BPV_AUDIO_VERSION : BPV_VIDEO_VERSION;
-    const uint32_t palette_updates = options->active_palettes
-        ? (frame_count + (uint32_t)options->gop - 1U) /
-              (uint32_t)options->gop
-        : 1U;
+    const int version = BPV_VERSION;
+    const uint32_t palette_updates =
+        (frame_count + (uint32_t)options->gop - 1U) /
+        (uint32_t)options->gop;
     double duration =
         frame_count * (double)info->fps_denominator / info->fps_numerator;
     double mse = stats->samples
@@ -1924,10 +1997,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "bpv1enc: cannot finalize %s\n", output_path);
         goto cleanup;
     }
-    file_bytes =
-        (options.active_palettes || options.audio_path ? 29U : 25U) +
-        (options.active_palettes ? 0U : sizeof training.palette) +
-        payload_bytes;
+    file_bytes = 29U + payload_bytes;
     if (options.report_path) {
         report = fopen(options.report_path, "wb");
         if (!report || write_report(report, input_path, output_path,
