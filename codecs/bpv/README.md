@@ -103,6 +103,20 @@ Inspect and fully validate a stream without allocating a framebuffer:
 node codecs/bpv/tools/bpv1info.js output.bpv1
 ```
 
+Analyze file-level 128/256/512-palette banks without modifying the stream:
+
+```sh
+node codecs/bpv/tools/bpv1superpalette.js output.bpv1 \
+  --bank-sizes 128,256,512 --output superpalette-report.json
+```
+
+The native encoder's `--active-palette-file FILE` option is an experimental
+test hook. `FILE` contains one consecutive 3,072-byte RGB888 bank for each
+GOP. The encoder uses those banks while still writing ordinary BPV1 v4, which
+allows controlled A/B tests without adding a production format version. The
+completed experiment and rejection measurements are recorded in
+[`../../docs/BPV1_SUPERPALETTE_TODO.md`](../../docs/BPV1_SUPERPALETTE_TODO.md).
+
 The older `tools/bpv1enc.js` remains as the compact reference/fallback
 pipeline. It learns one palette bank from all input frames and therefore keeps
 the normalized RGBA sequence in host memory. The command-line decoder does

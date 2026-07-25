@@ -67,45 +67,101 @@ dictionary, pattern dictionary or smaller RAW payloads).
 
 ### 1. Measure palette reuse without changing the bitstream
 
-- [ ] Extract every 64x16 active bank and colour-use histogram per GOP.
-- [ ] Count exact 48-byte palette reuse across GOPs.
-- [ ] Build deterministic 128-, 256- and 512-palette file-level banks.
-- [ ] Map each GOP palette to its nearest file-level palette.
-- [ ] Report file overhead, literal fallbacks and weighted RGB error.
-- [ ] Add automated tests for deterministic output and accounting.
+- [x] Extract every 64x16 active bank and colour-use histogram per GOP.
+- [x] Count exact 48-byte palette reuse across GOPs.
+- [x] Build deterministic 128-, 256- and 512-palette file-level banks.
+- [x] Map each GOP palette to its nearest file-level palette.
+- [x] Report file overhead, literal fallbacks and weighted RGB error.
+- [x] Add automated tests for deterministic output and accounting.
 
 ### 2. Test compression-quality trade-offs
 
-- [ ] Measure exact-only mapping, which must be pixel-identical.
-- [ ] Measure bounded approximate mappings at several RGB error limits.
-- [ ] Compare complete-file savings rather than palette-section savings.
-- [ ] Reject approximate mappings that spend image quality for less than a
+- [x] Measure exact-only mapping, which must be pixel-identical.
+- [x] Measure bounded approximate mappings at several RGB error limits.
+- [x] Compare complete-file savings rather than palette-section savings.
+- [x] Reject approximate mappings that spend image quality for less than a
       1% complete-file reduction.
 
 ### 3. Test interaction with block coding
 
-- [ ] Re-encode at least one short representative sequence using 64 palettes
+- [x] Re-encode at least one short representative sequence using 64 palettes
       selected from each candidate superbank.
-- [ ] Compare bytes, RGB PSNR and all five block-mode counts with the current
+- [x] Compare bytes, RGB PSNR and all five block-mode counts with the current
       per-GOP 64-palette trainer.
-- [ ] Check whether stable global palette identities increase exact temporal
+- [x] Check whether stable global palette identities increase exact temporal
       or dictionary matches.
 
 ### 4. Decide the format
 
-- [ ] If the acceptance gate passes, specify a backward-compatible BPV
-      version with keyframe-only mappings and literal fallback.
-- [ ] If it fails, record the measurements here and mark the experiment as
+- [x] Confirm that the acceptance gate did not pass, so no new BPV version is
+      specified.
+- [x] Record the measurements here and mark the experiment as
       rejected without changing the production bitstream.
 
 ### 5. Hardware validation, only after the format gate passes
 
-- [ ] Materialize selected palettes into the existing 64x16 RGB888/RGB565
-      active table before block decoding.
-- [ ] Verify unchanged per-block rendering and decoded-frame hashes.
-- [ ] Measure decoder memory, average cycles and tail latency on the ESP32.
+- [x] Do not implement or benchmark the decoder path because the format gate
+      failed before hardware validation.
 
-## Status
+## Full-file palette analysis
 
-The baseline and acceptance gate are established. No production BPV syntax
-has been changed yet.
+`codecs/bpv/tools/bpv1superpalette.js` scanned all 16.1 million decoded block
+records of the retained 320x240 stream. The result was:
+
+- all 4,480 active palette rows were used by at least one decoded pixel;
+- all 4,480 rows were byte-wise unique;
+- exact-only mapping made the file larger by 688, 816 and 1,162 bytes for
+  banks of 128, 256 and 512 palettes respectively;
+- allowing an additional 40 dB perturbation relative to the retained BPV
+  reconstruction saved only 44,820, 49,897 and 55,127 bytes;
+- the best complete-file saving was therefore 0.0379%, far below the 1% gate.
+
+The exact-only result is larger because every bank entry merely replaces one
+literal palette row, while the mapping bitmap and IDs remain as overhead.
+
+## Block-coding A/B test
+
+The source was the first 480 frames of the required repository source:
+
+`out/sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov`
+
+All variants used 320x180, native 24 fps, GOP 48, three candidate palettes,
+motion radius 2 and 256-entry block/pattern dictionaries. The baseline used
+the current per-GOP trainer. The experimental encoder consumed 64 mapped
+palette rows per GOP while writing an ordinary BPV1 v4 stream.
+
+Matched-quality results:
+
+| Palette training | Lambda | Bytes | RGB PSNR | Size vs baseline |
+| --- | ---: | ---: | ---: | ---: |
+| Current per-GOP 64 | 64 | 3,317,843 | 31.261883 dB | baseline |
+| Superbank 128 | 16 | 4,378,895 | 31.271768 dB | +31.98% |
+| Superbank 256 | 48 | 3,545,075 | 31.264993 dB | +6.85% |
+| Superbank 512 | 60 | 3,370,165 | 31.258813 dB | +1.58% |
+
+At the unchanged lambda 64, stable shared palettes did produce more exact
+reuse in the 128- and 256-palette cases, but only by accepting lower quality:
+
+| Superbank | Bytes vs baseline | PSNR change | SKIP change |
+| --- | ---: | ---: | ---: |
+| 128 | -2.13% | -1.035 dB | +17,407 |
+| 256 | -0.67% | -0.385 dB | +9,064 |
+| 512 | -0.16% | -0.113 dB | +2,181 |
+
+Restoring baseline quality required a lower lambda and more RAW data, making
+every superbank variant larger. All three resulting streams passed complete
+`bpv1info` validation. The native encoder/decoder compatibility suite and the
+JavaScript test suite also pass.
+
+## Decision
+
+**Rejected for the production BPV format.**
+
+The global palette identities improve exact temporal reuse, but not enough to
+pay for their loss of GOP-specific colour accuracy. The same-quality result
+is 1.58% to 31.98% larger, and palette-section-only compression cannot reach
+the 1% complete-file gate even with visible additional error.
+
+No new BPV version or ESP32 decoder state is justified. The analysis tool and
+the encoder's active-palette override remain useful for future palette
+experiments without changing the production bitstream.
