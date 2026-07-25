@@ -8,6 +8,6 @@ constexpr bool kScaleVideoToDisplay = false;
 
 // The CYD2USB microSD socket is connected to the otherwise unused VSPI bus.
 constexpr char kVideoPath[] = "/sdcard/video.hlv";
-constexpr int kSdClockKhz = 20000;
+constexpr int kSdClockKhz = 40000;
 
 }  // namespace player_settings
