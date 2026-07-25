@@ -191,6 +191,48 @@ static inline void compact_yuv420_pack_aligned_samples(
     unsigned shift;
     int i;
     if (count <= 0) return;
+    if (count == 8 &&
+        (bits == COMPACT_YUV420_LUMA_BITS ||
+         bits == COMPACT_YUV420_CHROMA_BITS)) {
+        unsigned code[8];
+        shift = 8U - bits;
+        for (i = 0; i < 8; ++i) {
+            uint8_t expanded;
+            code[i] = compact_yuv420_quantize_code(source[i], bits);
+            expanded = (uint8_t)(code[i] << shift);
+            if (residual_sum)
+                *residual_sum += (int)source[i] - expanded;
+            if (reconstructed) reconstructed[i] = expanded;
+        }
+        if (bits == COMPACT_YUV420_LUMA_BITS) {
+            destination[0] =
+                (uint8_t)(code[0] | code[1] << 6U);
+            destination[1] =
+                (uint8_t)(code[1] >> 2U | code[2] << 4U);
+            destination[2] =
+                (uint8_t)(code[2] >> 4U | code[3] << 2U);
+            destination[3] =
+                (uint8_t)(code[4] | code[5] << 6U);
+            destination[4] =
+                (uint8_t)(code[5] >> 2U | code[6] << 4U);
+            destination[5] =
+                (uint8_t)(code[6] >> 4U | code[7] << 2U);
+        } else {
+            destination[0] =
+                (uint8_t)(code[0] | code[1] << 5U);
+            destination[1] =
+                (uint8_t)(code[1] >> 3U | code[2] << 2U |
+                          code[3] << 7U);
+            destination[2] =
+                (uint8_t)(code[3] >> 1U | code[4] << 4U);
+            destination[3] =
+                (uint8_t)(code[4] >> 4U | code[5] << 1U |
+                          code[6] << 6U);
+            destination[4] =
+                (uint8_t)(code[6] >> 2U | code[7] << 3U);
+        }
+        return;
+    }
     bytes = ((size_t)count * bits + 7U) / 8U;
     memset(destination, 0, bytes);
     shift = 8U - bits;
