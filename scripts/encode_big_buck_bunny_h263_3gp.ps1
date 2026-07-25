@@ -2,7 +2,7 @@
 param(
     [string]$OutputFile,
     [ValidateSet("176x144", "256x144", "256x192",
-        "320x180", "320x240")]
+        "320x180", "320x240", "352x288")]
     [string]$Profile = "320x240",
     [ValidateSet("Crop", "Contain")]
     [string]$FitMode = "Crop",

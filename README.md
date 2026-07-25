@@ -29,8 +29,10 @@ packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
 The standard [`H.263 profile`](codecs/h263/) uses baseline H.263 at
-`176x144` QCIF or intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
-`320x240` in either 3GP or AVI. 3GP uses optional
+`176x144` QCIF and intra-only `352x288` CIF, or intra-only H.263+ at
+`256x144`, `256x192`, `320x180`, or `320x240` in either 3GP or AVI. The ESP32
+displays the centred `320x240` area of a CIF picture, while the Windows Player
+shows the complete frame. 3GP uses optional
 [`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono; AVI uses PCM S16LE mono at
 8 kHz. The encoder defaults to the hardware-verified `320x240`, 15 fps,
 1536 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas

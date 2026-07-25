@@ -11,7 +11,7 @@ param(
     [string]$Container = "Auto",
 
     [ValidateSet("176x144", "256x144", "256x192",
-        "320x180", "320x240")]
+        "320x180", "320x240", "352x288")]
     [string]$Profile = "320x240",
 
     [ValidateSet("Crop", "Contain")]
@@ -75,8 +75,9 @@ $ReportFile = [IO.Path]::GetFullPath($ReportFile)
 $profileSize = $Profile.Split("x")
 $width = [int]$profileSize[0]
 $height = [int]$profileSize[1]
-$usesH263Plus = $Profile -ne "176x144"
-$effectiveGop = if ($usesH263Plus) { 1 } else { $Gop }
+$usesH263Plus = $Profile -notin @("176x144", "352x288")
+$isIntraOnly = $Profile -ne "176x144"
+$effectiveGop = if ($isIntraOnly) { 1 } else { $Gop }
 $containerLabel = $Container.ToUpperInvariant()
 
 if (-not (Test-Path -LiteralPath $InputFile)) {
@@ -133,7 +134,7 @@ $videoArguments = @(
     "-pix_fmt", "yuv420p",
     "-threads", $Threads
 )
-if ($usesH263Plus) {
+if ($isIntraOnly) {
     # These encoder-side decisions improve intra-frame quality without
     # enabling H.263 tools that the embedded PacketVideo decoder lacks.
     $videoArguments += @(

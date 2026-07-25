@@ -29,7 +29,8 @@ constexpr size_t kInputPadding = 8;
 bool isSupportedGeometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
            (width == 256 && (height == 144 || height == 192)) ||
-           (width == 320 && (height == 180 || height == 240));
+           (width == 320 && (height == 180 || height == 240)) ||
+           (width == 352 && height == 288);
 }
 
 struct Box {

@@ -6,8 +6,9 @@ native Windows player and the ESP32-2432S028 firmware.
 The embedded profiles are intentionally bounded:
 
 - ISO Base Media/3GP with an `s263` video sample entry, or AVI with `H263`;
-- baseline H.263 at `176x144` QCIF or intra-only H.263+ custom picture format
-  at `256x144`, `256x192`, `320x180`, or `320x240`;
+- baseline H.263 at `176x144` QCIF or intra-only `352x288` CIF, plus
+  intra-only H.263+ custom picture format at `256x144`, `256x192`,
+  `320x180`, or `320x240`;
 - profile 0 in the `d263` sample description;
 - YUV 4:2:0 output;
 - AMR-NB mono audio at 8 kHz in 3GP, or PCM S16LE mono at 8 kHz in AVI;
@@ -53,12 +54,14 @@ complete source with black padding. The script adds AMR-NB audio when the
 source has audio, verifies the stream metadata, and fully decodes the result
 with FFmpeg. Use `-NoAudio` for a silent file.
 
-Custom H.263+ profiles use GOP 1 regardless of `-Gop`. In dual-core mode the
-ESP32 requests two YUV420 outputs so CPU1 can decode frame N+1 while CPU0
-converts and submits frame N. It automatically falls back to one output if
-the second allocation is unavailable. Y, U, and V are separate allocations,
-so 320x240 never requires one contiguous 115,200-byte block. Predictive QCIF
-also uses two outputs to preserve its reference frame.
+All profiles except predictive QCIF use GOP 1 regardless of `-Gop`. In
+dual-core mode the ESP32 requests two YUV420 outputs so CPU1 can decode frame
+N+1 while CPU0 converts and submits frame N. It automatically falls back to
+one output if the second allocation is unavailable. Y, U, and V are separate
+allocations, so 320x240 never requires one contiguous 115,200-byte block.
+Predictive QCIF also uses two outputs to preserve its reference frame. CIF is
+decoded at its native `352x288` size. The ESP32 displays its centred
+`320x240` area without scaling; the Windows Player displays the full frame.
 
 FFmpeg exposes custom picture sizes through its H.263+ encoder but its 3GP
 muxer accepts only the generic H.263 codec id. For the four custom profiles,

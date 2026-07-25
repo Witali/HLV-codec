@@ -12,8 +12,9 @@ DAC GPIO26.
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
-  mono audio in AVI at `176x144`,
-  `256x144`, `256x192`, `320x180`, or `320x240`;
+  mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
+  `320x240`, or `352x288` CIF; CIF is displayed as its centred `320x240`
+  area;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -276,12 +277,13 @@ The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
 1536 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
 trellis encoder decisions, fills the canvas, and crops equal margins from the
 source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
-source with black padding. `-Profile` also accepts baseline H.263 `176x144`,
-H.263+ `256x144` and `320x180` for 16:9, or `256x192` for 4:3.
-Custom profiles are encoded intra-only (effective GOP 1), allowing the ESP32
-to decode them with one padded YUV420 frame whose Y, U, and V planes are
-allocated separately. This avoids a single 115,200-byte allocation at
-320x240.
+source with black padding. `-Profile` also accepts baseline H.263 `176x144`
+and intra-only `352x288` CIF, H.263+ `256x144` and `320x180` for 16:9, or
+`256x192` for 4:3. CIF is decoded at full resolution and its centred
+`320x240` area is sent to the display. All profiles except predictive QCIF
+are encoded intra-only (effective GOP 1), allowing the ESP32 to decode them
+with one padded YUV420 frame whose Y, U, and V planes are allocated
+separately. This avoids a single 115,200-byte allocation at 320x240.
 When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
 12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
 audio codecs, and other dimensions are outside these profiles.

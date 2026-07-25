@@ -43,6 +43,7 @@ namespace {
 constexpr char kTag[] = "hlv-player";
 constexpr int kScreenWidth = CydDisplay::kWidth;
 constexpr int kScreenHeight = CydDisplay::kHeight;
+constexpr int kMaximumH263Width = 352;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
@@ -263,9 +264,9 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
-int32_t mpeg_red_add[kScreenWidth / 2];
-int32_t mpeg_green_add[kScreenWidth / 2];
-int32_t mpeg_blue_add[kScreenWidth / 2];
+int32_t mpeg_red_add[kMaximumH263Width / 2];
+int32_t mpeg_green_add[kMaximumH263Width / 2];
+int32_t mpeg_blue_add[kMaximumH263Width / 2];
 constexpr std::array<int32_t, 256> makeLumaTable() {
     std::array<int32_t, 256> values{};
     for (int sample = 0; sample < 256; ++sample)
@@ -2005,11 +2006,17 @@ bool openVideo() {
             return false;
         }
     }
-    if (sequence_header.width > kScreenWidth ||
-        sequence_header.height > kScreenHeight) {
+    const bool is_cif_h263 =
+        video_codec == VideoCodec::kH263 &&
+        sequence_header.width == 352 &&
+        sequence_header.height == 288;
+    if ((sequence_header.width > kScreenWidth ||
+         sequence_header.height > kScreenHeight) &&
+        !is_cif_h263) {
         ESP_LOGE(kTag, "Unsupported dimensions: %ux%u",
                  sequence_header.width, sequence_header.height);
-        showStatus("Video is too large", "maximum size is 320x240");
+        showStatus("Video is too large",
+                   "use 320x240 or H.263 CIF");
         closeVideo();
         return false;
     }
@@ -2164,7 +2171,8 @@ bool renderFrame(const HLV1Frame *frame) {
 }
 
 void convertMpegRow(const plm_frame_t *frame, int source_y,
-                    bool scaled, uint16_t *output, int output_width) {
+                    bool scaled, int first_source_x,
+                    uint16_t *output, int output_width) {
     const uint8_t *y_row =
         frame->y.data + static_cast<size_t>(source_y) * frame->y.stride;
     const int chroma_y = source_y >> 1;
@@ -2206,15 +2214,16 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     }
 
     if (!scaled) {
-        for (int source_x = 0; source_x < output_width; source_x += 2) {
+        for (int output_x = 0; output_x < output_width; output_x += 2) {
+            const int source_x = first_source_x + output_x;
             const int chroma_x = source_x >> 1;
             const int red_add = mpeg_red_add[chroma_x];
             const int green_add = mpeg_green_add[chroma_x];
             const int blue_add = mpeg_blue_add[chroma_x];
-            output[source_x] = yuvToRgb565(
+            output[output_x] = yuvToRgb565(
                 y_row[source_x], red_add, green_add, blue_add);
-            if (source_x + 1 < output_width) {
-                output[source_x + 1] = yuvToRgb565(
+            if (output_x + 1 < output_width) {
+                output[output_x + 1] = yuvToRgb565(
                     y_row[source_x + 1], red_add, green_add, blue_add);
             }
         }
@@ -2246,7 +2255,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
                 if (source_y != cached_source_y) {
-                    convertMpegRow(frame, source_y, true,
+                    convertMpegRow(frame, source_y, true, 0,
                                    scaled_rgb_row, kScreenWidth);
                     cached_source_y = source_y;
                 }
@@ -2262,8 +2271,12 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         return true;
     }
 
-    const int width = static_cast<int>(frame->width);
-    const int height = static_cast<int>(frame->height);
+    const int source_width = static_cast<int>(frame->width);
+    const int source_height = static_cast<int>(frame->height);
+    const int width = std::min(source_width, kScreenWidth);
+    const int height = std::min(source_height, kScreenHeight);
+    const int source_x = (source_width - width) / 2;
+    const int source_y = (source_height - height) / 2;
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
@@ -2271,7 +2284,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
-            convertMpegRow(frame, y0 + row, false,
+            convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
         if (display.drawBitmap(
