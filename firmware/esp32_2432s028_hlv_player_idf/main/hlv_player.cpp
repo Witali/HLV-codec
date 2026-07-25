@@ -40,6 +40,7 @@ constexpr int kScreenWidth = CydDisplay::kWidth;
 constexpr int kScreenHeight = CydDisplay::kHeight;
 constexpr int kRowsPerTransfer = CydDisplay::kRowsPerTransfer;
 constexpr uint32_t kRetryDelayMs = 2000;
+constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
@@ -190,6 +191,7 @@ alignas(4) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
+uint32_t consecutive_sd_read_failures = 0;
 StreamBufferHandle_t audio_stream = nullptr;
 StaticStreamBuffer_t audio_stream_state{};
 alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
@@ -1149,6 +1151,31 @@ void closeVideo() {
     active_video_path = nullptr;
 }
 
+void deinitializeSdCard() {
+    closeVideo();
+
+    if (sd_mounted && sd_card) {
+        const esp_err_t unmount_result =
+            esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
+        if (unmount_result != ESP_OK) {
+            ESP_LOGE(kTag, "microSD unmount failed: %s",
+                     esp_err_to_name(unmount_result));
+        }
+    }
+    sd_card = nullptr;
+    sd_mounted = false;
+
+    if (sd_bus_initialized) {
+        const esp_err_t bus_result = spi_bus_free(SPI3_HOST);
+        if (bus_result == ESP_OK) {
+            sd_bus_initialized = false;
+        } else {
+            ESP_LOGE(kTag, "SD SPI3 release failed: %s",
+                     esp_err_to_name(bus_result));
+        }
+    }
+}
+
 void reportHeap(const char *stage) {
     ESP_LOGI(kTag,
              "%s: heap=%u largest=%u, DMA=%u largest-DMA=%u",
@@ -1923,9 +1950,24 @@ void failPlayback(const char *title, int result) {
 }
 
 void failSdCardRead(const char *detail) {
-    ESP_LOGE(kTag, "SD card read failed: %s", detail);
-    showStatus("SD CARD READ ERROR", detail);
-    closeVideo();
+    if (consecutive_sd_read_failures < UINT32_MAX) {
+        ++consecutive_sd_read_failures;
+    }
+    const bool reinitialize =
+        consecutive_sd_read_failures >= kSdReadFailuresBeforeReinit;
+    ESP_LOGE(kTag, "SD card read failed (%u/%u): %s",
+             static_cast<unsigned>(consecutive_sd_read_failures),
+             static_cast<unsigned>(kSdReadFailuresBeforeReinit), detail);
+    showStatus(reinitialize ? "SD CARD REINIT"
+                            : "SD CARD READ ERROR",
+               detail);
+    if (reinitialize) {
+        ESP_LOGE(kTag, "Reinitializing FAT, SDSPI and SPI3");
+        deinitializeSdCard();
+        consecutive_sd_read_failures = 0;
+    } else {
+        closeVideo();
+    }
     last_retry_ms = millisNow();
 }
 
@@ -2067,6 +2109,7 @@ PresentationState beginPresentation() {
 void finishPresentation(const PresentationState &state, uint32_t read_us,
                         uint32_t decode_us, uint32_t render_us) {
     ++decoded_frames;
+    consecutive_sd_read_failures = 0;
 
     if (!audio_enabled) {
         advanceTimerDeadline();

@@ -189,6 +189,13 @@ section of ESP-IDF menuconfig:
 Clean builds default to an 80 MHz display clock and a 40 MHz SD-card clock.
 Reduce either value if the board or card shows transfer errors.
 
+After one or two consecutive SD read failures, the player closes and reopens
+the selected video after the normal two-second retry delay. A third failure
+before any successfully presented frame additionally unmounts FAT, removes
+the SDSPI device, releases SPI3 and recreates the complete storage stack on
+the next retry. The board has no software-controlled SD power switch, so this
+reinitializes the interface but does not power-cycle the card.
+
 Place the video and `play.txt` in the FAT16/FAT32 card's `/HLV` directory.
 Neither file is written to internal flash.
 
