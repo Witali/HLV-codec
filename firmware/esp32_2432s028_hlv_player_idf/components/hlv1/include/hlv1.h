@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "compact_yuv420.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -155,13 +157,7 @@ typedef struct HLV1Frame {
 
 static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
                                                 int x, unsigned bits) {
-    unsigned bit = (unsigned)x * bits;
-    unsigned byte = bit >> 3;
-    unsigned shift = bit & 7U;
-    unsigned value = row[byte];
-    if (shift + bits > 8U) value |= (unsigned)row[byte + 1] << 8;
-    value = (value >> shift) & ((1U << bits) - 1U);
-    return (uint8_t)(value << (8U - bits));
+    return compact_yuv420_packed_sample(row, x, bits);
 }
 
 /* The signed correction is a Q4 block average.  A fixed 4x4 threshold map
@@ -170,18 +166,8 @@ static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
 static inline int hlv1_frame_compact_correction(const int8_t *correction,
                                                  int correction_stride,
                                                  int x, int y) {
-    static const uint8_t threshold[16] = {
-         0,  8,  2, 10,
-        12,  4, 14,  6,
-         3, 11,  1,  9,
-        15,  7, 13,  5
-    };
-    if (!correction) return 0;
-    int q4 = correction[(y >> 3) * correction_stride + (x >> 3)];
-    int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
-    int fraction = q4 - whole * 16;
-    unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
-    return whole + (threshold[phase] < fraction);
+    return compact_yuv420_correction(
+        correction, correction_stride, x, y);
 }
 
 /* Expand a consecutive span without repeating bit-offset multiplication and
@@ -191,34 +177,16 @@ static inline void hlv1_frame_unpack_packed_samples(const uint8_t *row,
                                                      int x, unsigned bits,
                                                      uint8_t *output,
                                                      int count) {
-    if (count <= 0) return;
-    unsigned bit = (unsigned)x * bits;
-    const uint8_t *input = row + (bit >> 3);
-    unsigned cached = 8U - (bit & 7U);
-    unsigned window = (unsigned)*input++ >> (bit & 7U);
-    const unsigned mask = (1U << bits) - 1U;
-    const unsigned output_shift = 8U - bits;
-    for (int i = 0; i < count; ++i) {
-        if (cached < bits) {
-            window |= (unsigned)*input++ << cached;
-            cached += 8U;
-        }
-        output[i] = (uint8_t)((window & mask) << output_shift);
-        window >>= bits;
-        cached -= bits;
-    }
+    compact_yuv420_unpack_packed_samples(
+        row, x, bits, output, count);
 }
 
 static inline void hlv1_frame_unpack_corrected_samples(
     const uint8_t *row, int x, int y, unsigned bits,
     const int8_t *correction, int correction_stride,
     uint8_t *output, int count) {
-    hlv1_frame_unpack_packed_samples(row, x, bits, output, count);
-    for (int i = 0; i < count; ++i) {
-        int value = output[i] + hlv1_frame_compact_correction(
-            correction, correction_stride, x + i, y);
-        output[i] = (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
-    }
+    compact_yuv420_unpack_corrected_samples(
+        row, x, y, bits, correction, correction_stride, output, count);
 }
 
 static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,

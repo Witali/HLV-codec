@@ -145,6 +145,7 @@ See below for detailed the API documentation.
 
 #include <stddef.h>
 #include <stdint.h>
+#include "compact_yuv420.h"
 #ifndef PLM_NO_STDIO
 #include <stdio.h>
 #endif
@@ -202,22 +203,8 @@ typedef struct {
 static inline int plm_plane_compact_correction(
 	const plm_plane_t *plane, int x, int y
 ) {
-	static const uint8_t threshold[16] = {
-		 0,  8,  2, 10,
-		12,  4, 14,  6,
-		 3, 11,  1,  9,
-		15,  7, 13,  5
-	};
-	if (!plane->correction) {
-		return 0;
-	}
-	int q4 = plane->correction[
-		(unsigned)(y >> 3) * plane->correction_stride +
-		(unsigned)(x >> 3)];
-	int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
-	int fraction = q4 - whole * 16;
-	unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
-	return whole + (threshold[phase] < fraction);
+	return compact_yuv420_correction(
+		plane->correction, (int)plane->correction_stride, x, y);
 }
 
 // Internal sample storage used by a decoded frame. The ordinary mode stores
@@ -245,47 +232,19 @@ static inline uint8_t plm_plane_compact_sample(
 	const plm_plane_t *plane, int x, int y, unsigned bits
 ) {
 	const uint8_t *row = plane->data + (size_t)y * plane->stride;
-	unsigned bit = (unsigned)x * bits;
-	unsigned byte = bit >> 3;
-	unsigned shift = bit & 7U;
-	unsigned value = row[byte];
-	if (shift + bits > 8U) {
-		value |= (unsigned)row[byte + 1] << 8;
-	}
-	value = (value >> shift) & ((1U << bits) - 1U);
-	int corrected =
-		(int)(value << (8U - bits)) +
-		plm_plane_compact_correction(plane, x, y);
-	return (uint8_t)(
-		corrected < 0 ? 0 : (corrected > 255 ? 255 : corrected));
+	return compact_yuv420_corrected_sample(
+		row, x, y, bits, plane->correction,
+		(int)plane->correction_stride);
 }
 
 static inline void plm_plane_unpack_compact_samples(
 	const plm_plane_t *plane, int x, int y, unsigned bits,
 	uint8_t *output, int count
 ) {
-	if (count <= 0) {
-		return;
-	}
-	unsigned bit = (unsigned)x * bits;
-	const uint8_t *input =
-		plane->data + (size_t)y * plane->stride + (bit >> 3);
-	unsigned cached = 8U - (bit & 7U);
-	unsigned window = (unsigned)*input++ >> (bit & 7U);
-	const unsigned mask = (1U << bits) - 1U;
-	const unsigned output_shift = 8U - bits;
-	for (int i = 0; i < count; ++i) {
-		if (cached < bits) {
-			window |= (unsigned)*input++ << cached;
-			cached += 8U;
-		}
-		int value = (int)((window & mask) << output_shift);
-		value += plm_plane_compact_correction(plane, x + i, y);
-		output[i] = (uint8_t)(
-			value < 0 ? 0 : (value > 255 ? 255 : value));
-		window >>= bits;
-		cached -= bits;
-	}
+	const uint8_t *row = plane->data + (size_t)y * plane->stride;
+	compact_yuv420_unpack_corrected_samples(
+		row, x, y, bits, plane->correction,
+		(int)plane->correction_stride, output, count);
 }
 
 
@@ -3977,80 +3936,35 @@ void plm_video_process_macroblock(
 }
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-static uint8_t plm_video_compact_code(
-	uint8_t value, unsigned shift, unsigned maximum
-) {
-	unsigned code = ((unsigned)value + (1U << (shift - 1U))) >> shift;
-	return (uint8_t)(code > maximum ? maximum : code);
-}
-
 static int8_t plm_video_compact_error_q4(int sum) {
-	return (int8_t)(sum >= 0 ? (sum + 2) / 4 : -((-sum + 2) / 4));
+	return compact_yuv420_error_q4(sum);
 }
 
 static void plm_video_compact_store_luma16(
 	uint8_t *dest, const uint8_t *source, int error_sum[2]
 ) {
-	for (int x = 0; x < 16; x += 4) {
-		uint8_t a = plm_video_compact_code(source[x], 2, 63);
-		uint8_t b = plm_video_compact_code(source[x + 1], 2, 63);
-		uint8_t c = plm_video_compact_code(source[x + 2], 2, 63);
-		uint8_t d = plm_video_compact_code(source[x + 3], 2, 63);
-		int *sum = &error_sum[x >> 3];
-		*sum += (int)source[x] - ((int)a << 2);
-		*sum += (int)source[x + 1] - ((int)b << 2);
-		*sum += (int)source[x + 2] - ((int)c << 2);
-		*sum += (int)source[x + 3] - ((int)d << 2);
-		dest[0] = (uint8_t)(a | (b << 6));
-		dest[1] = (uint8_t)((b >> 2) | (c << 4));
-		dest[2] = (uint8_t)((c >> 4) | (d << 2));
-		dest += 3;
-	}
+	compact_yuv420_pack_aligned_samples(
+		dest, source, 8, COMPACT_YUV420_LUMA_BITS,
+		&error_sum[0], NULL);
+	compact_yuv420_pack_aligned_samples(
+		dest + 6, source + 8, 8, COMPACT_YUV420_LUMA_BITS,
+		&error_sum[1], NULL);
 }
 
 static void plm_video_compact_store_luma8(
 	uint8_t *dest, const uint8_t *source, int *error_sum
 ) {
-	for (int x = 0; x < 8; x += 4) {
-		uint8_t a = plm_video_compact_code(source[x], 2, 63);
-		uint8_t b = plm_video_compact_code(source[x + 1], 2, 63);
-		uint8_t c = plm_video_compact_code(source[x + 2], 2, 63);
-		uint8_t d = plm_video_compact_code(source[x + 3], 2, 63);
-		*error_sum += (int)source[x] - ((int)a << 2);
-		*error_sum += (int)source[x + 1] - ((int)b << 2);
-		*error_sum += (int)source[x + 2] - ((int)c << 2);
-		*error_sum += (int)source[x + 3] - ((int)d << 2);
-		dest[0] = (uint8_t)(a | (b << 6));
-		dest[1] = (uint8_t)((b >> 2) | (c << 4));
-		dest[2] = (uint8_t)((c >> 4) | (d << 2));
-		dest += 3;
-	}
+	compact_yuv420_pack_aligned_samples(
+		dest, source, 8, COMPACT_YUV420_LUMA_BITS,
+		error_sum, NULL);
 }
 
 static void plm_video_compact_store_chroma8(
 	uint8_t *dest, const uint8_t *source, int *error_sum
 ) {
-	uint8_t a = plm_video_compact_code(source[0], 3, 31);
-	uint8_t b = plm_video_compact_code(source[1], 3, 31);
-	uint8_t c = plm_video_compact_code(source[2], 3, 31);
-	uint8_t d = plm_video_compact_code(source[3], 3, 31);
-	uint8_t e = plm_video_compact_code(source[4], 3, 31);
-	uint8_t f = plm_video_compact_code(source[5], 3, 31);
-	uint8_t g = plm_video_compact_code(source[6], 3, 31);
-	uint8_t h = plm_video_compact_code(source[7], 3, 31);
-	*error_sum += (int)source[0] - ((int)a << 3);
-	*error_sum += (int)source[1] - ((int)b << 3);
-	*error_sum += (int)source[2] - ((int)c << 3);
-	*error_sum += (int)source[3] - ((int)d << 3);
-	*error_sum += (int)source[4] - ((int)e << 3);
-	*error_sum += (int)source[5] - ((int)f << 3);
-	*error_sum += (int)source[6] - ((int)g << 3);
-	*error_sum += (int)source[7] - ((int)h << 3);
-	dest[0] = (uint8_t)(a | (b << 5));
-	dest[1] = (uint8_t)((b >> 3) | (c << 2) | (d << 7));
-	dest[2] = (uint8_t)((d >> 1) | (e << 4));
-	dest[3] = (uint8_t)((e >> 4) | (f << 1) | (g << 6));
-	dest[4] = (uint8_t)((g >> 2) | (h << 3));
+	compact_yuv420_pack_aligned_samples(
+		dest, source, 8, COMPACT_YUV420_CHROMA_BITS,
+		error_sum, NULL);
 }
 
 void plm_video_compact_copy_macroblock(plm_video_t *self) {

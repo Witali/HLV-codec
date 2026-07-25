@@ -4,7 +4,7 @@ idf_component_register(
         "src/hlv1_decode.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "src"
-    REQUIRES newlib
+    REQUIRES compact_yuv420 newlib
 )
 
 set(HLV1_OPTIMIZATION "O3" CACHE STRING

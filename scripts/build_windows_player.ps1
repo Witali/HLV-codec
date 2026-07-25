@@ -14,6 +14,7 @@ $pv = Join-Path $h263 "third_party\pv"
 $amrnb = Join-Path $repo "codecs\amrnb"
 $amrPv = Join-Path $amrnb "third_party\pv"
 $plMpeg = Join-Path $repo "third_party\pl_mpeg"
+$compactInclude = Join-Path $repo "codecs\common\include"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not $SkipCompilerCheck) {
@@ -95,11 +96,11 @@ if ($LASTEXITCODE -ne 0) {
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ' +
-    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" /I"{8}" ' +
-    '"{9}" "{10}" "{11}" "{12}" "{13}" {14} "{15}" ' +
-    '/Fe:"{16}" /link /SUBSYSTEM:WINDOWS'
+    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" /I"{8}" /I"{9}" ' +
+    '"{10}" "{11}" "{12}" "{13}" "{14}" {15} "{16}" ' +
+    '/Fe:"{17}" /link /SUBSYSTEM:WINDOWS'
 $command = $commandTemplate -f $devcmd, $OutputDirectory, $include, `
-    $bpvInclude, $plMpeg, (Join-Path $h263 "include"), `
+    $bpvInclude, $plMpeg, $compactInclude, (Join-Path $h263 "include"), `
     (Join-Path $pv "include"), (Join-Path $pv "src"), `
     (Join-Path $amrnb "include"), $player, $common, $decoder, `
     $bpvDecoder, $mpegDecoder, $h263SourceArguments, $amrLibrary, $output

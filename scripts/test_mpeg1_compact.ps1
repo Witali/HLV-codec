@@ -28,6 +28,7 @@ $devcmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
 $testSource = Join-Path $repo "codecs\mpeg1\tests\test_decode.c"
 $decoderSource = Join-Path $repo "codecs\mpeg1\src\pl_mpeg.c"
 $include = Join-Path $repo "third_party\pl_mpeg"
+$compactInclude = Join-Path $repo "codecs\common\include"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 
@@ -41,8 +42,8 @@ function Build-DecoderTest {
     $command = (
         'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
         'cl /nologo /O2 /W4 /TC /D_CRT_SECURE_NO_WARNINGS {2} ' +
-        '/I"{3}" "{4}" "{5}" /Fe:"{6}"'
-    ) -f $devcmd, $OutputDirectory, $Defines, $include, `
+        '/I"{3}" /I"{4}" "{5}" "{6}" /Fe:"{7}"'
+    ) -f $devcmd, $OutputDirectory, $Defines, $include, $compactInclude, `
         $testSource, $decoderSource, $output
     & cmd.exe /d /c $command | ForEach-Object { Write-Host $_ }
     $buildExitCode = $LASTEXITCODE

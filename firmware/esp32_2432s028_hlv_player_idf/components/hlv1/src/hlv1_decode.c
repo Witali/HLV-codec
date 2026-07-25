@@ -136,58 +136,29 @@ static uint8_t *current_plane_ptr(HLV1Decoder *d, int plane,
 
 static uint8_t compact_quantize_code(uint8_t *value, unsigned shift,
                                      unsigned maximum) {
-    unsigned code = ((unsigned)*value + (1U << (shift - 1U))) >> shift;
-    if (code > maximum) code = maximum;
+    uint8_t code = compact_yuv420_quantize_code(*value, 8U - shift);
+    if (code > maximum) code = (uint8_t)maximum;
     *value = (uint8_t)(code << shift);
-    return (uint8_t)code;
+    return code;
 }
 
 static int8_t compact_error_q4(int sum) {
-    return (int8_t)(sum >= 0 ? (sum + 2) / 4 : -((-sum + 2) / 4));
+    return compact_yuv420_error_q4(sum);
 }
 
 static void compact_store_luma16(uint8_t *dst, uint8_t *src,
                                  int error_sum[2]) {
-    for (int x = 0; x < 16; x += 4) {
-        uint8_t oa = src[x];
-        uint8_t ob = src[x + 1];
-        uint8_t oc = src[x + 2];
-        uint8_t od = src[x + 3];
-        uint8_t a = compact_quantize_code(&src[x], 2, 63);
-        uint8_t b = compact_quantize_code(&src[x + 1], 2, 63);
-        uint8_t c = compact_quantize_code(&src[x + 2], 2, 63);
-        uint8_t d = compact_quantize_code(&src[x + 3], 2, 63);
-        int *sum = &error_sum[x >> 3];
-        *sum += (int)oa - src[x];
-        *sum += (int)ob - src[x + 1];
-        *sum += (int)oc - src[x + 2];
-        *sum += (int)od - src[x + 3];
-        dst[0] = (uint8_t)(a | (b << 6));
-        dst[1] = (uint8_t)((b >> 2) | (c << 4));
-        dst[2] = (uint8_t)((c >> 4) | (d << 2));
-        dst += 3;
-    }
+    compact_yuv420_pack_aligned_samples(
+        dst, src, 8, COMPACT_YUV420_LUMA_BITS, &error_sum[0], src);
+    compact_yuv420_pack_aligned_samples(
+        dst + 6, src + 8, 8, COMPACT_YUV420_LUMA_BITS,
+        &error_sum[1], src + 8);
 }
 
 static void compact_store_chroma8(uint8_t *dst, uint8_t *src,
                                   int *error_sum) {
-    uint8_t original[8];
-    memcpy(original, src, sizeof original);
-    uint8_t a = compact_quantize_code(&src[0], 3, 31);
-    uint8_t b = compact_quantize_code(&src[1], 3, 31);
-    uint8_t c = compact_quantize_code(&src[2], 3, 31);
-    uint8_t d = compact_quantize_code(&src[3], 3, 31);
-    uint8_t e = compact_quantize_code(&src[4], 3, 31);
-    uint8_t f = compact_quantize_code(&src[5], 3, 31);
-    uint8_t g = compact_quantize_code(&src[6], 3, 31);
-    uint8_t h = compact_quantize_code(&src[7], 3, 31);
-    for (int x = 0; x < 8; ++x)
-        *error_sum += (int)original[x] - src[x];
-    dst[0] = (uint8_t)(a | (b << 5));
-    dst[1] = (uint8_t)((b >> 3) | (c << 2) | (d << 7));
-    dst[2] = (uint8_t)((d >> 1) | (e << 4));
-    dst[3] = (uint8_t)((e >> 4) | (f << 1) | (g << 6));
-    dst[4] = (uint8_t)((g >> 2) | (h << 3));
+    compact_yuv420_pack_aligned_samples(
+        dst, src, 8, COMPACT_YUV420_CHROMA_BITS, error_sum, src);
 }
 
 static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
