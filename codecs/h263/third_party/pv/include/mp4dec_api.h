@@ -152,6 +152,8 @@ extern "C"
     OSCL_IMPORT_REF Bool    PVCleanUpVideoDecoder(VideoDecControls *decCtrl);
     Bool    PVResetVideoDecoder(VideoDecControls *decCtrl);
     OSCL_IMPORT_REF void    PVSetReferenceYUV(VideoDecControls *decCtrl, uint8 *refYUV);
+    OSCL_IMPORT_REF void    PVSetReferenceYUVPlanes(VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v);
+    OSCL_IMPORT_REF void    PVSetCurrentYUVPlanes(VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v);
     Bool    PVDecSetReference(VideoDecControls *decCtrl, uint8 *refYUV, uint32 timestamp);
     Bool    PVDecSetEnhReference(VideoDecControls *decCtrl, uint8 *refYUV, uint32 timestamp);
     OSCL_IMPORT_REF Bool    PVDecodeVideoFrame(VideoDecControls *decCtrl, uint8 *bitstream[], uint32 *timestamp, int32 *buffer_size, uint use_ext_timestamp[], uint8* currYUV);

@@ -1474,14 +1474,31 @@ Bool PVDecodeVopBody(VideoDecControls *decCtrl, int32 buffer_size[])
 #ifdef PV_MEMORY_POOL
 OSCL_EXPORT_REF void PVSetReferenceYUV(VideoDecControls *decCtrl, uint8 *YUV)
 {
+    PVSetReferenceYUVPlanes(decCtrl, YUV, YUV + decCtrl->size,
+                            YUV + decCtrl->size + (decCtrl->size >> 2));
+}
+
+OSCL_EXPORT_REF void PVSetReferenceYUVPlanes(
+    VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v)
+{
     VideoDecData *video = (VideoDecData *)decCtrl->videoDecoderData;
-    video->prevVop->yChan = (PIXEL *)YUV;
-    video->prevVop->uChan = (PIXEL *)YUV + video->size;
-    video->prevVop->vChan = (PIXEL *)video->prevVop->uChan + (decCtrl->size >> 2);
+    video->prevVop->yChan = (PIXEL *)y;
+    video->prevVop->uChan = (PIXEL *)u;
+    video->prevVop->vChan = (PIXEL *)v;
     oscl_memset(video->prevVop->yChan, 16, sizeof(uint8)*decCtrl->size);     /*  10/31/01 */
-    oscl_memset(video->prevVop->uChan, 128, sizeof(uint8)*decCtrl->size / 2);
+    oscl_memset(video->prevVop->uChan, 128, sizeof(uint8)*decCtrl->size / 4);
+    oscl_memset(video->prevVop->vChan, 128, sizeof(uint8)*decCtrl->size / 4);
     video->concealFrame = video->prevVop->yChan;               /*  07/07/2001 */
     decCtrl->outputFrame = video->prevVop->yChan;              /*  06/19/2002 */
+}
+
+OSCL_EXPORT_REF void PVSetCurrentYUVPlanes(
+    VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v)
+{
+    VideoDecData *video = (VideoDecData *)decCtrl->videoDecoderData;
+    video->currVop->yChan = (PIXEL *)y;
+    video->currVop->uChan = (PIXEL *)u;
+    video->currVop->vChan = (PIXEL *)v;
 }
 #endif
 

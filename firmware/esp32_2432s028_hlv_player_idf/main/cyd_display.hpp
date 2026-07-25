@@ -16,8 +16,10 @@ public:
 
     esp_err_t init();
     esp_err_t clear(uint16_t rgb565);
+    esp_err_t setDoubleBuffered(bool enabled);
+    int rowsPerTransfer() const { return rows_per_transfer_; }
 
-    // acquireBuffer waits only when both DMA buffers are still in flight.
+    // acquireBuffer waits when all currently enabled DMA buffers are in flight.
     // The caller fills no more than kWidth*kRowsPerTransfer pixels and submits
     // that exact same pointer with drawBitmap().
     uint16_t *acquireBuffer();
@@ -35,6 +37,10 @@ private:
     SemaphoreHandle_t transfer_done_ = nullptr;
     size_t transfers_in_flight_ = 0;
     size_t next_buffer_ = 0;
+    size_t dma_buffer_count_ = 2;
+    int rows_per_transfer_ = kRowsPerTransfer;
 
-    alignas(4) uint16_t dma_buffers_[2][kWidth * kRowsPerTransfer]{};
+    alignas(4) uint16_t primary_dma_buffer_[
+        kWidth * kRowsPerTransfer]{};
+    uint16_t *secondary_dma_buffer_ = nullptr;
 };

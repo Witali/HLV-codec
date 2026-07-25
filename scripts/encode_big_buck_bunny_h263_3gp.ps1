@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$OutputFile,
+    [ValidateSet("176x144", "256x144", "256x192",
+        "320x180", "320x240")]
+    [string]$Profile = "176x144",
     [ValidateRange(1, 30)]
     [int]$Fps = 15,
     [ValidateRange(16, 512)]
@@ -20,13 +23,14 @@ $source = Join-Path $repo (
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo (
         "out\BigBuckBunny_1080p_h263_${VideoBitrateKbps}k_" +
-        "${Fps}fps_176x144.3gp"
+        "${Fps}fps_${Profile}.3gp"
     )
 }
 
 & (Join-Path $PSScriptRoot "encode_h263_3gp.ps1") `
     -InputFile $source `
     -OutputFile $OutputFile `
+    -Profile $Profile `
     -Fps $Fps `
     -VideoBitrateKbps $VideoBitrateKbps `
     -Gop $Gop `

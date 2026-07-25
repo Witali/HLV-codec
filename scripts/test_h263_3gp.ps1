@@ -8,7 +8,13 @@ $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 $work = Join-Path $repo ".tmp\h263-3gp-test"
 $source = Join-Path $work "source.mkv"
-$video = Join-Path $work "qcif.3gp"
+$profiles = @(
+    "176x144",
+    "256x144",
+    "256x192",
+    "320x180",
+    "320x240"
+)
 
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
@@ -32,22 +38,26 @@ if ($LASTEXITCODE -ne 0) {
     throw "Could not generate the synthetic H.263 input."
 }
 
-& (Join-Path $PSScriptRoot "encode_h263_3gp.ps1") `
-    -InputFile $source `
-    -OutputFile $video `
-    -Fps 15 `
-    -VideoBitrateKbps 128 `
-    -Gop 15
-if ($LASTEXITCODE -ne 0) {
-    throw "The H.263/3GP encoder smoke test failed."
+foreach ($profile in $profiles) {
+    $video = Join-Path $work "profile-$profile.3gp"
+    & (Join-Path $PSScriptRoot "encode_h263_3gp.ps1") `
+        -InputFile $source `
+        -OutputFile $video `
+        -Profile $profile `
+        -Fps 15 `
+        -VideoBitrateKbps 256 `
+        -Gop 15
+    if ($LASTEXITCODE -ne 0) {
+        throw "The $profile H.263/3GP encoder smoke test failed."
+    }
+
+    $quotedVideo = '"' + $video.Replace('"', '\"') + '"'
+    $playerProcess = Start-Process -FilePath $Player `
+        -ArgumentList "--check $quotedVideo" `
+        -Wait -PassThru -WindowStyle Hidden
+    if ($playerProcess.ExitCode -ne 0) {
+        throw "The project decoder rejected the $profile smoke test."
+    }
 }
 
-$quotedVideo = '"' + $video.Replace('"', '\"') + '"'
-$playerProcess = Start-Process -FilePath $Player `
-    -ArgumentList "--check $quotedVideo" `
-    -Wait -PassThru -WindowStyle Hidden
-if ($playerProcess.ExitCode -ne 0) {
-    throw "The project H.263/3GP decoder rejected the smoke test."
-}
-
-Write-Host "H.263/3GP smoke test passed."
+Write-Host "All H.263/3GP profile smoke tests passed."

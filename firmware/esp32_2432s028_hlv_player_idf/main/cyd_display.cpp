@@ -7,6 +7,7 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_io_spi.h"
 #include "esp_lcd_panel_dev.h"
 #include "esp_lcd_panel_ops.h"
@@ -35,6 +36,8 @@ esp_err_t CydDisplay::init() {
     transfer_done_ = xSemaphoreCreateCounting(kDmaBufferCount, 0);
     ESP_RETURN_ON_FALSE(transfer_done_, ESP_ERR_NO_MEM, kTag,
                         "LCD completion semaphore allocation failed");
+    ESP_RETURN_ON_ERROR(setDoubleBuffered(true), kTag,
+                        "LCD secondary DMA buffer allocation failed");
 
     spi_bus_config_t bus{};
     bus.mosi_io_num = board::kTftMosi;
@@ -46,7 +49,7 @@ esp_err_t CydDisplay::init() {
     bus.data5_io_num = GPIO_NUM_NC;
     bus.data6_io_num = GPIO_NUM_NC;
     bus.data7_io_num = GPIO_NUM_NC;
-    bus.max_transfer_sz = sizeof dma_buffers_[0];
+    bus.max_transfer_sz = sizeof primary_dma_buffer_;
     ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO),
                         kTag, "LCD SPI2 DMA initialization failed");
 
@@ -106,15 +109,41 @@ esp_err_t CydDisplay::init() {
 }
 
 uint16_t *CydDisplay::acquireBuffer() {
-    if (transfers_in_flight_ == kDmaBufferCount) {
+    if (transfers_in_flight_ == dma_buffer_count_) {
         if (xSemaphoreTake(transfer_done_, portMAX_DELAY) != pdTRUE) {
             return nullptr;
         }
         --transfers_in_flight_;
     }
-    uint16_t *buffer = dma_buffers_[next_buffer_];
-    next_buffer_ = (next_buffer_ + 1) % kDmaBufferCount;
+    uint16_t *buffer = primary_dma_buffer_;
+    if (next_buffer_ != 0) {
+        buffer = secondary_dma_buffer_
+                     ? secondary_dma_buffer_
+                     : primary_dma_buffer_ +
+                           kWidth * (kRowsPerTransfer / 2);
+    }
+    next_buffer_ = (next_buffer_ + 1) % dma_buffer_count_;
     return buffer;
+}
+
+esp_err_t CydDisplay::setDoubleBuffered(bool enabled) {
+    ESP_RETURN_ON_ERROR(flush(), kTag,
+                        "LCD DMA flush before buffer change failed");
+    if (enabled && !secondary_dma_buffer_) {
+        secondary_dma_buffer_ = static_cast<uint16_t *>(heap_caps_malloc(
+            sizeof primary_dma_buffer_, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+        ESP_RETURN_ON_FALSE(secondary_dma_buffer_, ESP_ERR_NO_MEM, kTag,
+                            "LCD secondary DMA buffer unavailable");
+    } else if (!enabled && secondary_dma_buffer_) {
+        heap_caps_free(secondary_dma_buffer_);
+        secondary_dma_buffer_ = nullptr;
+    }
+    dma_buffer_count_ = 2;
+    rows_per_transfer_ =
+        secondary_dma_buffer_ ? kRowsPerTransfer
+                              : kRowsPerTransfer / 2;
+    next_buffer_ = 0;
+    return ESP_OK;
 }
 
 esp_err_t CydDisplay::drawBitmap(int x, int y, int width, int height,
@@ -139,8 +168,8 @@ esp_err_t CydDisplay::flush() {
 }
 
 esp_err_t CydDisplay::clear(uint16_t rgb565) {
-    for (int y = 0; y < kHeight; y += kRowsPerTransfer) {
-        const int rows = std::min(kRowsPerTransfer, kHeight - y);
+    for (int y = 0; y < kHeight; y += rows_per_transfer_) {
+        const int rows = std::min(rows_per_transfer_, kHeight - y);
         uint16_t *buffer = acquireBuffer();
         ESP_RETURN_ON_FALSE(buffer, ESP_ERR_NO_MEM, kTag,
                             "LCD DMA buffer unavailable");

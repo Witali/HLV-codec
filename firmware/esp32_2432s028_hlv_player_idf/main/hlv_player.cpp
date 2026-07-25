@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <climits>
 #include <cmath>
@@ -40,11 +41,11 @@ namespace {
 constexpr char kTag[] = "hlv-player";
 constexpr int kScreenWidth = CydDisplay::kWidth;
 constexpr int kScreenHeight = CydDisplay::kHeight;
-constexpr int kRowsPerTransfer = CydDisplay::kRowsPerTransfer;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
+constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -60,40 +61,111 @@ constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 constexpr int kUploadBarX = 16;
-constexpr int kUploadBarY = (kScreenHeight - 16) / 2;
 constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
-constexpr int kUploadBarHeight = 16;
+constexpr int kUploadBarHeight = CydDisplay::kRowsPerTransfer / 2;
+constexpr int kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2;
 constexpr int kUploadBarBorder = 2;
 constexpr uint16_t kUploadBarBorderColor = 0xffff;
 constexpr uint16_t kUploadBarEmptyColor = 0x2104;
 constexpr uint16_t kUploadBarFillColor = 0x07e0;
-constexpr uint8_t kStatusFont[26][7] = {
-    {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},  // A
-    {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e},  // B
-    {0x0f, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0f},  // C
-    {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e},  // D
-    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f},  // E
-    {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10},  // F
-    {0x0f, 0x10, 0x10, 0x17, 0x11, 0x11, 0x0f},  // G
-    {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},  // H
-    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f},  // I
-    {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0c},  // J
-    {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11},  // K
-    {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f},  // L
-    {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11},  // M
-    {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11},  // N
-    {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},  // O
-    {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10},  // P
-    {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d},  // Q
-    {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11},  // R
-    {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e},  // S
-    {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},  // T
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},  // U
-    {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04},  // V
-    {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a},  // W
-    {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11},  // X
-    {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04},  // Y
-    {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f},  // Z
+// Five column, seven row glyphs for printable ASCII 0x20 through 0x7e.
+// Bits run from the top row (bit 0) to the bottom row (bit 6).
+constexpr uint8_t kStatusFont[95][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00},  // space
+    {0x00, 0x00, 0x5f, 0x00, 0x00},  // !
+    {0x00, 0x07, 0x00, 0x07, 0x00},  // "
+    {0x14, 0x7f, 0x14, 0x7f, 0x14},  // #
+    {0x24, 0x2a, 0x7f, 0x2a, 0x12},  // $
+    {0x23, 0x13, 0x08, 0x64, 0x62},  // %
+    {0x36, 0x49, 0x55, 0x22, 0x50},  // &
+    {0x00, 0x05, 0x03, 0x00, 0x00},  // '
+    {0x00, 0x1c, 0x22, 0x41, 0x00},  // (
+    {0x00, 0x41, 0x22, 0x1c, 0x00},  // )
+    {0x14, 0x08, 0x3e, 0x08, 0x14},  // *
+    {0x08, 0x08, 0x3e, 0x08, 0x08},  // +
+    {0x00, 0x50, 0x30, 0x00, 0x00},  // ,
+    {0x08, 0x08, 0x08, 0x08, 0x08},  // -
+    {0x00, 0x60, 0x60, 0x00, 0x00},  // .
+    {0x20, 0x10, 0x08, 0x04, 0x02},  // /
+    {0x3e, 0x51, 0x49, 0x45, 0x3e},  // 0
+    {0x00, 0x42, 0x7f, 0x40, 0x00},  // 1
+    {0x42, 0x61, 0x51, 0x49, 0x46},  // 2
+    {0x21, 0x41, 0x45, 0x4b, 0x31},  // 3
+    {0x18, 0x14, 0x12, 0x7f, 0x10},  // 4
+    {0x27, 0x45, 0x45, 0x45, 0x39},  // 5
+    {0x3c, 0x4a, 0x49, 0x49, 0x30},  // 6
+    {0x01, 0x71, 0x09, 0x05, 0x03},  // 7
+    {0x36, 0x49, 0x49, 0x49, 0x36},  // 8
+    {0x06, 0x49, 0x49, 0x29, 0x1e},  // 9
+    {0x00, 0x36, 0x36, 0x00, 0x00},  // :
+    {0x00, 0x56, 0x36, 0x00, 0x00},  // ;
+    {0x08, 0x14, 0x22, 0x41, 0x00},  // <
+    {0x14, 0x14, 0x14, 0x14, 0x14},  // =
+    {0x00, 0x41, 0x22, 0x14, 0x08},  // >
+    {0x02, 0x01, 0x51, 0x09, 0x06},  // ?
+    {0x32, 0x49, 0x79, 0x41, 0x3e},  // @
+    {0x7e, 0x11, 0x11, 0x11, 0x7e},  // A
+    {0x7f, 0x49, 0x49, 0x49, 0x36},  // B
+    {0x3e, 0x41, 0x41, 0x41, 0x22},  // C
+    {0x7f, 0x41, 0x41, 0x22, 0x1c},  // D
+    {0x7f, 0x49, 0x49, 0x49, 0x41},  // E
+    {0x7f, 0x09, 0x09, 0x09, 0x01},  // F
+    {0x3e, 0x41, 0x49, 0x49, 0x7a},  // G
+    {0x7f, 0x08, 0x08, 0x08, 0x7f},  // H
+    {0x00, 0x41, 0x7f, 0x41, 0x00},  // I
+    {0x20, 0x40, 0x41, 0x3f, 0x01},  // J
+    {0x7f, 0x08, 0x14, 0x22, 0x41},  // K
+    {0x7f, 0x40, 0x40, 0x40, 0x40},  // L
+    {0x7f, 0x02, 0x0c, 0x02, 0x7f},  // M
+    {0x7f, 0x04, 0x08, 0x10, 0x7f},  // N
+    {0x3e, 0x41, 0x41, 0x41, 0x3e},  // O
+    {0x7f, 0x09, 0x09, 0x09, 0x06},  // P
+    {0x3e, 0x41, 0x51, 0x21, 0x5e},  // Q
+    {0x7f, 0x09, 0x19, 0x29, 0x46},  // R
+    {0x46, 0x49, 0x49, 0x49, 0x31},  // S
+    {0x01, 0x01, 0x7f, 0x01, 0x01},  // T
+    {0x3f, 0x40, 0x40, 0x40, 0x3f},  // U
+    {0x1f, 0x20, 0x40, 0x20, 0x1f},  // V
+    {0x3f, 0x40, 0x38, 0x40, 0x3f},  // W
+    {0x63, 0x14, 0x08, 0x14, 0x63},  // X
+    {0x07, 0x08, 0x70, 0x08, 0x07},  // Y
+    {0x61, 0x51, 0x49, 0x45, 0x43},  // Z
+    {0x00, 0x7f, 0x41, 0x41, 0x00},  // [
+    {0x02, 0x04, 0x08, 0x10, 0x20},  // backslash
+    {0x00, 0x41, 0x41, 0x7f, 0x00},  // ]
+    {0x04, 0x02, 0x01, 0x02, 0x04},  // ^
+    {0x40, 0x40, 0x40, 0x40, 0x40},  // _
+    {0x00, 0x01, 0x02, 0x04, 0x00},  // `
+    {0x20, 0x54, 0x54, 0x54, 0x78},  // a
+    {0x7f, 0x48, 0x44, 0x44, 0x38},  // b
+    {0x38, 0x44, 0x44, 0x44, 0x20},  // c
+    {0x38, 0x44, 0x44, 0x48, 0x7f},  // d
+    {0x38, 0x54, 0x54, 0x54, 0x18},  // e
+    {0x08, 0x7e, 0x09, 0x01, 0x02},  // f
+    {0x0c, 0x52, 0x52, 0x52, 0x3e},  // g
+    {0x7f, 0x08, 0x04, 0x04, 0x78},  // h
+    {0x00, 0x44, 0x7d, 0x40, 0x00},  // i
+    {0x20, 0x40, 0x44, 0x3d, 0x00},  // j
+    {0x7f, 0x10, 0x28, 0x44, 0x00},  // k
+    {0x00, 0x41, 0x7f, 0x40, 0x00},  // l
+    {0x7c, 0x04, 0x18, 0x04, 0x78},  // m
+    {0x7c, 0x08, 0x04, 0x04, 0x78},  // n
+    {0x38, 0x44, 0x44, 0x44, 0x38},  // o
+    {0x7c, 0x14, 0x14, 0x14, 0x08},  // p
+    {0x08, 0x14, 0x14, 0x18, 0x7c},  // q
+    {0x7c, 0x08, 0x04, 0x04, 0x08},  // r
+    {0x48, 0x54, 0x54, 0x54, 0x20},  // s
+    {0x04, 0x3f, 0x44, 0x40, 0x20},  // t
+    {0x3c, 0x40, 0x40, 0x20, 0x7c},  // u
+    {0x1c, 0x20, 0x40, 0x20, 0x1c},  // v
+    {0x3c, 0x40, 0x30, 0x40, 0x3c},  // w
+    {0x44, 0x28, 0x10, 0x28, 0x44},  // x
+    {0x0c, 0x50, 0x50, 0x50, 0x3c},  // y
+    {0x44, 0x64, 0x54, 0x4c, 0x44},  // z
+    {0x00, 0x08, 0x36, 0x41, 0x00},  // {
+    {0x00, 0x00, 0x7f, 0x00, 0x00},  // |
+    {0x00, 0x41, 0x36, 0x08, 0x00},  // }
+    {0x08, 0x04, 0x08, 0x10, 0x08},  // ~
 };
 
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
@@ -184,11 +256,26 @@ uint8_t native_v_row[kScreenWidth / 2];
 int32_t mpeg_red_add[kScreenWidth / 2];
 int32_t mpeg_green_add[kScreenWidth / 2];
 int32_t mpeg_blue_add[kScreenWidth / 2];
-int32_t yuv_luma[256];
-int32_t yuv_red_add[256];
-int32_t yuv_green_u_add[256];
-int32_t yuv_green_v_add[256];
-int32_t yuv_blue_add[256];
+constexpr std::array<int32_t, 256> makeLumaTable() {
+    std::array<int32_t, 256> values{};
+    for (int sample = 0; sample < 256; ++sample)
+        values[sample] = 298 * (sample > 16 ? sample - 16 : 0);
+    return values;
+}
+
+constexpr std::array<int32_t, 256> makeChromaTable(
+    int multiplier, int offset) {
+    std::array<int32_t, 256> values{};
+    for (int sample = 0; sample < 256; ++sample)
+        values[sample] = multiplier * (sample - 128) + offset;
+    return values;
+}
+
+constexpr auto yuv_luma = makeLumaTable();
+constexpr auto yuv_red_add = makeChromaTable(409, 128);
+constexpr auto yuv_green_u_add = makeChromaTable(-100, 0);
+constexpr auto yuv_green_v_add = makeChromaTable(-208, 128);
+constexpr auto yuv_blue_add = makeChromaTable(516, 128);
 int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
@@ -394,17 +481,6 @@ int clamp8(int value) {
     return value < 0 ? 0 : value > 255 ? 255 : value;
 }
 
-void initYuvTables() {
-    for (int sample = 0; sample < 256; ++sample) {
-        const int chroma = sample - 128;
-        yuv_luma[sample] = 298 * (sample > 16 ? sample - 16 : 0);
-        yuv_red_add[sample] = 409 * chroma + 128;
-        yuv_green_u_add[sample] = -100 * chroma;
-        yuv_green_v_add[sample] = -208 * chroma + 128;
-        yuv_blue_add[sample] = 516 * chroma + 128;
-    }
-}
-
 bool mpegFpsRational(double fps, uint16_t *numerator,
                      uint16_t *denominator) {
     struct Rate {
@@ -517,35 +593,29 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
 void drawStatusTitle(const char *title) {
     if (!title || !*title) return;
     const size_t length = std::min<size_t>(std::strlen(title), 52);
-    const int scale = length * 12U <= kScreenWidth ? 2 : 1;
+    const int available_rows = display.rowsPerTransfer();
+    const int scale =
+        length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
     const int glyph_advance = 6 * scale;
     const int width =
         static_cast<int>(length) * glyph_advance - scale;
     const int height = 7 * scale;
     uint16_t *pixels = display.acquireBuffer();
     if (!pixels || width <= 0 || width > kScreenWidth ||
-        height > kRowsPerTransfer) {
+        height > available_rows) {
         return;
     }
     std::fill_n(pixels, width * height, 0x0000);
 
     for (size_t index = 0; index < length; ++index) {
-        char character = title[index];
-        if (character >= 'a' && character <= 'z') {
-            character = static_cast<char>(character - 'a' + 'A');
-        }
-        const uint8_t *rows = nullptr;
-        uint8_t period[7] = {0, 0, 0, 0, 0, 0, 0x04};
-        if (character >= 'A' && character <= 'Z') {
-            rows = kStatusFont[character - 'A'];
-        } else if (character == '.') {
-            rows = period;
-        }
-        if (!rows) continue;
+        unsigned char character =
+            static_cast<unsigned char>(title[index]);
+        if (character < 0x20 || character > 0x7e) character = '?';
+        const uint8_t *columns = kStatusFont[character - 0x20];
         const int glyph_x = static_cast<int>(index) * glyph_advance;
         for (int source_y = 0; source_y < 7; ++source_y) {
             for (int source_x = 0; source_x < 5; ++source_x) {
-                if (!(rows[source_y] & (1U << (4 - source_x)))) continue;
+                if (!(columns[source_x] & (1U << source_y))) continue;
                 for (int dy = 0; dy < scale; ++dy) {
                     for (int dx = 0; dx < scale; ++dx) {
                         pixels[(source_y * scale + dy) * width +
@@ -1438,10 +1508,19 @@ bool openVideo() {
                    "missing or unsupported video");
         return false;
     }
+    const bool use_double_display_buffer =
+        video_codec != VideoCodec::kH263;
+    if (display.setDoubleBuffered(use_double_display_buffer) != ESP_OK) {
+        showStatus("Not enough RAM", "display buffer allocation failed");
+        closeVideo();
+        return false;
+    }
     video_read_ahead_size =
         video_codec == VideoCodec::kMpeg1
             ? kMpegVideoReadAheadBytes
-            : kVideoReadAheadBytes;
+            : (video_codec == VideoCodec::kH263
+                   ? kH263VideoReadAheadBytes
+                   : kVideoReadAheadBytes);
     video_read_ahead = static_cast<uint8_t *>(
         heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
     if (!video_read_ahead) {
@@ -1539,7 +1618,7 @@ bool openVideo() {
             result = H263_3GP_ERR_UNSUPPORTED;
         }
         if (result != H263_3GP_OK) {
-            showStatus("Invalid video.3gp", h263_3gp_strerror(result));
+            showStatus("Invalid 3GP video", h263_3gp_strerror(result));
             closeVideo();
             return false;
         }
@@ -1735,7 +1814,7 @@ bool openVideo() {
     } else if (video_codec == VideoCodec::kH263) {
         ESP_LOGI(kTag,
                  "Playing H.263/3GP in %s mode, "
-                 "frame storage=two QCIF YUV420 frames",
+                 "frame storage=bounded YUV420 frame buffers",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -1788,11 +1867,12 @@ void waitUntil(int64_t deadline) {
 }
 
 bool renderFrame(const HLV1Frame *frame) {
+    const int rows_per_transfer = display.rowsPerTransfer();
     if (player_settings::kScaleVideoToDisplay) {
         int cached_source_y = -1;
-        for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
+        for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
-                std::min(kRowsPerTransfer, kScreenHeight - y0);
+                std::min(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = display.acquireBuffer();
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -1814,8 +1894,8 @@ bool renderFrame(const HLV1Frame *frame) {
 
     const int x_offset = (kScreenWidth - frame->width) / 2;
     const int y_offset = (kScreenHeight - frame->height) / 2;
-    for (int y0 = 0; y0 < frame->height; y0 += kRowsPerTransfer) {
-        const int rows = std::min(kRowsPerTransfer, frame->height - y0);
+    for (int y0 = 0; y0 < frame->height; y0 += rows_per_transfer) {
+        const int rows = std::min(rows_per_transfer, frame->height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
@@ -1900,13 +1980,14 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
 
 bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
+    const int rows_per_transfer = display.rowsPerTransfer();
     mpeg_cached_chroma_y = -1;
     if (player_settings::kScaleVideoToDisplay) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight;
-             y0 += kRowsPerTransfer) {
+             y0 += rows_per_transfer) {
             const int rows =
-                std::min(kRowsPerTransfer, kScreenHeight - y0);
+                std::min(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = display.acquireBuffer();
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -1932,8 +2013,8 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     const int height = static_cast<int>(frame->height);
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
-    for (int y0 = 0; y0 < height; y0 += kRowsPerTransfer) {
-        const int rows = std::min(kRowsPerTransfer, height - y0);
+    for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
+        const int rows = std::min(rows_per_transfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
@@ -1981,6 +2062,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
     const int64_t render_start = microsNow();
     const int width = mjpeg_info.width;
     const int height = mjpeg_info.height;
+    const int rows_per_transfer = display.rowsPerTransfer();
     const int source_end = source_y + source_rows;
     if (source_end > height) return false;
 
@@ -1989,7 +2071,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                scaled_y_map[context->next_scaled_y] < source_end) {
             const int destination_y = context->next_scaled_y;
             int rows = 0;
-            while (rows < kRowsPerTransfer &&
+            while (rows < rows_per_transfer &&
                    destination_y + rows < kScreenHeight &&
                    scaled_y_map[destination_y + rows] < source_end) {
                 if (scaled_y_map[destination_y + rows] < source_y)
@@ -2049,11 +2131,12 @@ bool renderBpvFrame(const BPV1Frame *frame) {
     if (!frame) return false;
     const int width = frame->width;
     const int height = frame->height;
+    const int rows_per_transfer = display.rowsPerTransfer();
     if (player_settings::kScaleVideoToDisplay) {
         int cached_source_y = -1;
-        for (int y0 = 0; y0 < kScreenHeight; y0 += kRowsPerTransfer) {
+        for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
-                std::min(kRowsPerTransfer, kScreenHeight - y0);
+                std::min(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = display.acquireBuffer();
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -2083,8 +2166,8 @@ bool renderBpvFrame(const BPV1Frame *frame) {
 
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
-    for (int y0 = 0; y0 < height; y0 += kRowsPerTransfer) {
-        const int rows = std::min(kRowsPerTransfer, height - y0);
+    for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
+        const int rows = std::min(rows_per_transfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
         if (bpv1_frame_render_rgb565_rows(
@@ -2799,7 +2882,6 @@ void playOneFramePipelined() {
 
 extern "C" void app_main(void) {
     ESP_LOGI(kTag, "Multi-codec ESP-IDF SD player starting");
-    initYuvTables();
     const esp_err_t display_result = display.init();
     if (display_result != ESP_OK) {
         ESP_LOGE(kTag, "Display initialization failed: %s",

@@ -18,6 +18,9 @@ enum {
     H263_3GP_ERR_UNSUPPORTED = -4,
     H263_3GP_ERR_MEMORY = -5,
     H263_3GP_ERR_DECODE = -6,
+    H263_3GP_ERR_FRAME_MEMORY = -7,
+    H263_3GP_ERR_DECODER_MEMORY = -8,
+    H263_3GP_ERR_PACKET_MEMORY = -9,
 };
 
 typedef struct H2633gpInfo {
@@ -52,10 +55,11 @@ H2633gpDecoder *h263_3gp_decoder_create(void);
 void h263_3gp_decoder_destroy(H2633gpDecoder *decoder);
 
 /*
- * Opens the first H.263 video track. The initial embedded profile deliberately
- * accepts only the standard QCIF geometry (176x144) and baseline profile 0.
- * Other tracks are ignored here; the companion AMR-NB decoder opens `samr`
- * audio through an independent file cursor.
+ * Opens the first H.263 video track. The embedded profiles accept 176x144
+ * QCIF plus intra-only H.263+ custom sizes 256x144, 256x192, 320x180, and
+ * 320x240, all signalled as profile 0 in the 3GP sample description. Other
+ * tracks are ignored here; the companion AMR-NB decoder opens `samr` audio
+ * through an independent file cursor.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);

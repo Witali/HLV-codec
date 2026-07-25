@@ -17,9 +17,13 @@ constexpr uint32_t fourcc(char a, char b, char c, char d) {
            static_cast<uint32_t>(static_cast<uint8_t>(d));
 }
 
-constexpr uint16_t kProfileWidth = 176;
-constexpr uint16_t kProfileHeight = 144;
 constexpr size_t kInputPadding = 8;
+
+bool isSupportedGeometry(uint16_t width, uint16_t height) {
+    return (width == 176 && height == 144) ||
+           (width == 256 && (height == 144 || height == 192)) ||
+           (width == 320 && (height == 180 || height == 240));
+}
 
 struct Box {
     uint32_t type = 0;
@@ -153,8 +157,14 @@ struct H2633gpDecoder {
     VideoDecControls controls{};
     H2633gpInfo info{};
     uint8_t *packet = nullptr;
-    uint8_t *outputs[2]{};
+    uint8_t *output_y[2]{};
+    uint8_t *output_u[2]{};
+    uint8_t *output_v[2]{};
     size_t output_bytes = 0;
+    uint8_t output_count = 0;
+    uint16_t buffer_width = 0;
+    uint16_t buffer_height = 0;
+    bool intra_only = false;
     bool pv_ready = false;
 
     uint64_t stsz_entries = 0;
@@ -182,10 +192,14 @@ struct H2633gpDecoder {
         pv_ready = false;
         std::free(packet);
         packet = nullptr;
-        std::free(outputs[0]);
-        std::free(outputs[1]);
-        outputs[0] = nullptr;
-        outputs[1] = nullptr;
+        for (uint8_t i = 0; i < 2; ++i) {
+            std::free(output_y[i]);
+            std::free(output_u[i]);
+            std::free(output_v[i]);
+            output_y[i] = nullptr;
+            output_u[i] = nullptr;
+            output_v[i] = nullptr;
+        }
         std::free(stsc);
         stsc = nullptr;
         std::free(stts);
@@ -448,8 +462,7 @@ int parseContainer(FILE *file, H2633gpDecoder *decoder) {
         cursor = child.end;
     }
     if (!saw_video) return H263_3GP_ERR_UNSUPPORTED;
-    if (decoder->info.width != kProfileWidth ||
-        decoder->info.height != kProfileHeight ||
+    if (!isSupportedGeometry(decoder->info.width, decoder->info.height) ||
         decoder->info.profile != 0) {
         return H263_3GP_ERR_UNSUPPORTED;
     }
@@ -497,30 +510,64 @@ int beginChunk(FILE *file, H2633gpDecoder *decoder) {
 }
 
 int initializeDecoder(H2633gpDecoder *decoder) {
+    const int32 expected_width =
+        (static_cast<int32>(decoder->info.width) + 15) & -16;
+    const int32 expected_height =
+        (static_cast<int32>(decoder->info.height) + 15) & -16;
+    decoder->buffer_width = static_cast<uint16_t>(expected_width);
+    decoder->buffer_height = static_cast<uint16_t>(expected_height);
+    decoder->output_bytes =
+        static_cast<size_t>(expected_width) * expected_height * 3 / 2;
+    decoder->intra_only = decoder->info.width != 176;
+    decoder->output_count = decoder->intra_only ? 1 : 2;
+
+    // Reserve the frame planes before PacketVideo makes its smaller table
+    // allocations. Separate Y/U/V blocks avoid requiring one contiguous
+    // 115,200-byte allocation at 320x240. H.263+ profiles are intra-only, so
+    // one set of planes can serve as current output and nominal reference.
+    const size_t y_bytes =
+        static_cast<size_t>(expected_width) * expected_height;
+    const size_t chroma_bytes = y_bytes / 4;
+    for (uint8_t i = 0; i < decoder->output_count; ++i) {
+        decoder->output_y[i] =
+            static_cast<uint8_t *>(std::malloc(y_bytes));
+        decoder->output_u[i] =
+            static_cast<uint8_t *>(std::malloc(chroma_bytes));
+        decoder->output_v[i] =
+            static_cast<uint8_t *>(std::malloc(chroma_bytes));
+        if (!decoder->output_y[i] || !decoder->output_u[i] ||
+            !decoder->output_v[i]) {
+            return H263_3GP_ERR_FRAME_MEMORY;
+        }
+        std::memset(decoder->output_y[i], 0, y_bytes);
+        std::memset(decoder->output_u[i], 0, chroma_bytes);
+        std::memset(decoder->output_v[i], 0, chroma_bytes);
+    }
+
     uint8 *vol_data[1] = {nullptr};
     int32 vol_size[1] = {0};
     if (!PVInitVideoDecoder(&decoder->controls, vol_data, vol_size, 1,
                             decoder->info.width, decoder->info.height,
                             H263_MODE)) {
-        return H263_3GP_ERR_MEMORY;
+        return H263_3GP_ERR_DECODER_MEMORY;
     }
     decoder->pv_ready = true;
     PVSetPostProcType(&decoder->controls, PV_NO_POST_PROC);
-    if (decoder->controls.size !=
-        static_cast<int32>(decoder->info.width * decoder->info.height)) {
+    int32 buffer_width = 0;
+    int32 buffer_height = 0;
+    PVGetBufferDimensions(&decoder->controls, &buffer_width, &buffer_height);
+    if (buffer_width != expected_width ||
+        buffer_height != expected_height ||
+        decoder->controls.size != buffer_width * buffer_height ||
+        buffer_width > UINT16_MAX || buffer_height > UINT16_MAX) {
         return H263_3GP_ERR_UNSUPPORTED;
     }
-    decoder->output_bytes =
-        static_cast<size_t>(decoder->controls.size) * 3 / 2;
-    decoder->outputs[0] =
-        static_cast<uint8_t *>(std::malloc(decoder->output_bytes));
-    decoder->outputs[1] =
-        static_cast<uint8_t *>(std::malloc(decoder->output_bytes));
-    if (!decoder->outputs[0] || !decoder->outputs[1])
-        return H263_3GP_ERR_MEMORY;
-    std::memset(decoder->outputs[0], 0, decoder->output_bytes);
-    std::memset(decoder->outputs[1], 0, decoder->output_bytes);
-    PVSetReferenceYUV(&decoder->controls, decoder->outputs[1]);
+    const uint8_t reference = decoder->output_count - 1;
+    PVSetReferenceYUVPlanes(
+        &decoder->controls,
+        decoder->output_y[reference],
+        decoder->output_u[reference],
+        decoder->output_v[reference]);
     return H263_3GP_OK;
 }
 
@@ -548,12 +595,12 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
             std::numeric_limits<size_t>::max() - kInputPadding) {
         result = H263_3GP_ERR_UNSUPPORTED;
     }
+    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result == H263_3GP_OK) {
         decoder->packet = static_cast<uint8_t *>(
             std::malloc(decoder->info.max_sample_size + kInputPadding));
-        if (!decoder->packet) result = H263_3GP_ERR_MEMORY;
+        if (!decoder->packet) result = H263_3GP_ERR_PACKET_MEMORY;
     }
-    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result != H263_3GP_OK) {
         decoder->clear();
         return result;
@@ -589,12 +636,23 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         std::min<uint64_t>(decoder->timestamp, UINT32_MAX));
     uint use_external_timestamp = 1;
     VopHeaderInfo header{};
-    uint8_t *output = decoder->outputs[decoder->sample_index & 1U];
+    const uint8_t output_index =
+        decoder->output_count == 1
+            ? 0
+            : (decoder->sample_index & 1U);
+    uint8_t *output = decoder->output_y[output_index];
     if (!PVDecodeVopHeader(&decoder->controls, &bitstream, &timestamp,
                            &input_size, &header, &use_external_timestamp,
                            output)) {
         return H263_3GP_ERR_DECODE;
     }
+    if (decoder->intra_only && header.frameType != MP4_I_FRAME)
+        return H263_3GP_ERR_UNSUPPORTED;
+    PVSetCurrentYUVPlanes(
+        &decoder->controls,
+        decoder->output_y[output_index],
+        decoder->output_u[output_index],
+        decoder->output_v[output_index]);
     int32 width = 0;
     int32 height = 0;
     PVGetVideoDimensions(&decoder->controls, &width, &height);
@@ -605,13 +663,13 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
 
     const uint32_t duration =
         decoder->stts[decoder->stts_index].sample_delta;
-    frame->y = output;
-    frame->u = output + decoder->controls.size;
-    frame->v = frame->u + decoder->controls.size / 4;
+    frame->y = decoder->output_y[output_index];
+    frame->u = decoder->output_u[output_index];
+    frame->v = decoder->output_v[output_index];
     frame->width = decoder->info.width;
     frame->height = decoder->info.height;
-    frame->y_stride = decoder->info.width;
-    frame->chroma_stride = decoder->info.width / 2;
+    frame->y_stride = decoder->buffer_width;
+    frame->chroma_stride = decoder->buffer_width / 2;
     frame->timestamp_ticks = decoder->timestamp;
     frame->duration_ticks = duration;
     frame->index = decoder->sample_index;
@@ -636,7 +694,7 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {
     if (!decoder) return 0;
     return sizeof(*decoder) + decoder->info.max_sample_size + kInputPadding +
-           decoder->output_bytes * 2 +
+           decoder->output_bytes * decoder->output_count +
            static_cast<size_t>(decoder->stsc_count) * sizeof(StscEntry) +
            static_cast<size_t>(decoder->stts_count) * sizeof(SttsEntry) +
            (decoder->pv_ready
@@ -661,6 +719,12 @@ const char *h263_3gp_strerror(int result) {
             return "unsupported 3GP/H.263 profile";
         case H263_3GP_ERR_MEMORY:
             return "out of memory";
+        case H263_3GP_ERR_FRAME_MEMORY:
+            return "frame buffer memory";
+        case H263_3GP_ERR_DECODER_MEMORY:
+            return "decoder table memory";
+        case H263_3GP_ERR_PACKET_MEMORY:
+            return "compressed packet memory";
         case H263_3GP_ERR_DECODE:
             return "H.263 decode error";
         default:
