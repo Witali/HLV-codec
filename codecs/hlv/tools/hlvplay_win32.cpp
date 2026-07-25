@@ -11,6 +11,7 @@
 
 #include "hlv1.h"
 #include "bpv1.h"
+#include "h263_3gp.h"
 #include "pl_mpeg.h"
 
 #include <algorithm>
@@ -89,7 +90,8 @@ enum class VideoCodec {
     kNone,
     kHlv,
     kBpv,
-    kMpeg1
+    kMpeg1,
+    kH263
 };
 
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
@@ -171,6 +173,20 @@ void convert_mpeg_frame(plm_frame_t *source, VideoFrame &destination) {
             output[x * 2U + 1U] = cr[x];
         }
     }
+}
+
+void convert_h263_frame(const H2633gpFrame *source,
+                        VideoFrame &destination) {
+    HLV1Frame adapted = {};
+    adapted.width = source->width;
+    adapted.height = source->height;
+    adapted.stride_y = source->y_stride;
+    adapted.stride_u = source->chroma_stride;
+    adapted.stride_v = source->chroma_stride;
+    adapted.y = const_cast<uint8_t *>(source->y);
+    adapted.u = const_cast<uint8_t *>(source->u);
+    adapted.v = const_cast<uint8_t *>(source->v);
+    convert_frame(&adapted, destination);
 }
 
 bool mpeg_fps_rational(double fps, uint16_t *numerator,
@@ -819,7 +835,7 @@ public:
         if (_wfopen_s(&file_, path.c_str(), L"rb") != 0 || !file_)
             return fail(L"Cannot open the selected file");
 
-        uint8_t signature[4] = {};
+        uint8_t signature[8] = {};
         if (std::fread(signature, 1, sizeof signature, file_) !=
                 sizeof signature ||
             _fseeki64(file_, 0, SEEK_SET) != 0) {
@@ -889,14 +905,42 @@ public:
                     static_cast<uint16_t>(sample_rate);
                 header_.audio_channels = 1;
             }
+        } else if (!std::memcmp(signature + 4, "ftyp", 4)) {
+            codec_ = VideoCodec::kH263;
+            h263_decoder_ = h263_3gp_decoder_create();
+            const int result =
+                h263_decoder_
+                    ? h263_3gp_decoder_open(
+                          h263_decoder_, file_, &h263_info_)
+                    : H263_3GP_ERR_MEMORY;
+            if (result != H263_3GP_OK) {
+                return fail(L"Invalid H.263/3GP video: " +
+                            widen_ascii(h263_3gp_strerror(result)));
+            }
+            if (h263_info_.fps_num > UINT16_MAX ||
+                h263_info_.fps_den > UINT16_MAX) {
+                return fail(L"The H.263/3GP frame rate is unsupported");
+            }
+            header_ = {};
+            header_.width = h263_info_.width;
+            header_.height = h263_info_.height;
+            header_.fps_num =
+                static_cast<uint16_t>(h263_info_.fps_num);
+            header_.fps_den =
+                static_cast<uint16_t>(h263_info_.fps_den);
+            header_.frame_count = h263_info_.frame_count;
         } else {
             return fail(
-                L"Unsupported video signature; expected HLV1, BPV1 or MPEG-PS");
+                L"Unsupported video signature; expected HLV1, BPV1, "
+                L"MPEG-PS or 3GP/H.263");
         }
         if (header_.width > 8192 || header_.height > 8192)
             return fail(L"The video dimensions are too large for this player");
         first_packet_offset_ =
-            codec_ == VideoCodec::kMpeg1 ? 0 : _ftelli64(file_);
+            codec_ == VideoCodec::kMpeg1 ||
+                    codec_ == VideoCodec::kH263
+                ? 0
+                : _ftelli64(file_);
         if (first_packet_offset_ < 0)
             return fail(L"Cannot determine the first video packet offset");
 
@@ -970,6 +1014,10 @@ public:
             plm_destroy(mpeg_);
             mpeg_ = nullptr;
         }
+        if (h263_decoder_) {
+            h263_3gp_decoder_destroy(h263_decoder_);
+            h263_decoder_ = nullptr;
+        }
         if (file_) {
             fclose(file_);
             file_ = nullptr;
@@ -980,6 +1028,7 @@ public:
         seek_index_.clear();
         std::memset(&header_, 0, sizeof header_);
         std::memset(&bpv_header_, 0, sizeof bpv_header_);
+        std::memset(&h263_info_, 0, sizeof h263_info_);
         mpeg_audio_samples_ = 0;
         codec_ = VideoCodec::kNone;
         first_packet_offset_ = 0;
@@ -1266,14 +1315,15 @@ private:
 
     bool build_seek_index() {
         seek_index_.clear();
-        if (codec_ == VideoCodec::kMpeg1) {
+        if (codec_ == VideoCodec::kMpeg1 ||
+            codec_ == VideoCodec::kH263) {
             for (uint32_t frame = 0; frame < header_.frame_count; ++frame)
                 seek_index_.push_back({0, 0});
             if (seek_index_.empty()) {
-                error_ = L"The MPEG-1 stream contains no video frames";
+                error_ = L"The stream contains no video frames";
                 return false;
             }
-            plm_rewind(mpeg_);
+            if (codec_ == VideoCodec::kMpeg1) plm_rewind(mpeg_);
             return true;
         }
         if (_fseeki64(file_, first_packet_offset_, SEEK_SET) != 0) {
@@ -1468,6 +1518,28 @@ private:
                 return false;
             }
             mpeg_audio_samples_ = 0;
+        } else if (codec_ == VideoCodec::kH263) {
+            if (h263_decoder_) {
+                h263_3gp_decoder_destroy(h263_decoder_);
+                h263_decoder_ = nullptr;
+            }
+            if (_fseeki64(file_, 0, SEEK_SET) != 0) {
+                error_ = L"Cannot rewind the H.263/3GP stream";
+                return false;
+            }
+            H2633gpInfo info = {};
+            h263_decoder_ = h263_3gp_decoder_create();
+            const int result =
+                h263_decoder_
+                    ? h263_3gp_decoder_open(h263_decoder_, file_, &info)
+                    : H263_3GP_ERR_MEMORY;
+            if (result != H263_3GP_OK ||
+                info.width != h263_info_.width ||
+                info.height != h263_info_.height ||
+                info.frame_count != h263_info_.frame_count) {
+                error_ = L"Cannot reset the H.263/3GP decoder for seeking";
+                return false;
+            }
         } else if (codec_ == VideoCodec::kBpv) {
             if (!bpv_decoder_) {
                 error_ = L"The BPV1 decoder is unavailable";
@@ -1483,8 +1555,12 @@ private:
             }
         }
 
-        const uint64_t keyframe = seek_index_[target].keyframe_index;
+        const uint64_t keyframe =
+            codec_ == VideoCodec::kH263
+                ? 0
+                : seek_index_[target].keyframe_index;
         if (codec_ != VideoCodec::kMpeg1 &&
+            codec_ != VideoCodec::kH263 &&
             _fseeki64(file_, seek_index_[keyframe].packet_offset,
                       SEEK_SET) != 0) {
                 error_ = L"Cannot seek to the selected video keyframe";
@@ -1551,6 +1627,33 @@ private:
     }
 
     bool decode_one(bool queue_video = true, bool queue_audio = true) {
+        if (codec_ == VideoCodec::kH263) {
+            H2633gpFrame decoded = {};
+            const int result = h263_3gp_decoder_decode_next(
+                h263_decoder_, file_, &decoded);
+            if (result == H263_3GP_EOF) {
+                end_of_file_ = true;
+                return true;
+            }
+            if (result != H263_3GP_OK) {
+                error_ = L"H.263 frame " +
+                         std::to_wstring(decoded_frames_) +
+                         L" failed to decode: " +
+                         widen_ascii(h263_3gp_strerror(result));
+                return false;
+            }
+            if (queue_video) {
+                VideoFrame output;
+                if (!recycled_.empty()) {
+                    output = std::move(recycled_.back());
+                    recycled_.pop_back();
+                }
+                convert_h263_frame(&decoded, output);
+                ready_.push_back(std::move(output));
+            }
+            ++decoded_frames_;
+            return true;
+        }
         if (codec_ == VideoCodec::kMpeg1) {
             plm_frame_t *decoded = plm_decode_video(mpeg_);
             if (!decoded) {
@@ -1734,7 +1837,7 @@ private:
     }
 
     void update_title() const {
-        std::wstring title = L"HLV/BPV/MPEG-1 Player";
+        std::wstring title = L"HLV/BPV/MPEG-1/H.263 Player";
         if (!path_.empty()) title += L" - " + file_name(path_);
         if (loaded_) {
             title += L" [";
@@ -1755,8 +1858,10 @@ private:
     HLV1Decoder *decoder_ = nullptr;
     BPV1Decoder *bpv_decoder_ = nullptr;
     plm_t *mpeg_ = nullptr;
+    H2633gpDecoder *h263_decoder_ = nullptr;
     HLV1Header header_ = {};
     BPV1Header bpv_header_ = {};
+    H2633gpInfo h263_info_ = {};
     VideoCodec codec_ = VideoCodec::kNone;
     AudioOutput audio_;
     D3DVideoRenderer video_renderer_;
@@ -1792,11 +1897,12 @@ std::wstring choose_file(HWND owner) {
     dialog.lStructSize = sizeof dialog;
     dialog.hwndOwner = owner;
     dialog.lpstrFilter =
-        L"Supported video (*.hlv;*.bpv1;*.mpg;*.mpeg)\0"
-            L"*.hlv;*.bpv1;*.mpg;*.mpeg\0"
+        L"Supported video (*.hlv;*.bpv1;*.mpg;*.mpeg;*.3gp)\0"
+            L"*.hlv;*.bpv1;*.mpg;*.mpeg;*.3gp\0"
         L"HLV video (*.hlv)\0*.hlv\0"
         L"BPV1 video (*.bpv1)\0*.bpv1\0"
         L"MPEG-1 Program Stream (*.mpg;*.mpeg)\0*.mpg;*.mpeg\0"
+        L"H.263 3GP video (*.3gp)\0*.3gp\0"
         L"All files (*.*)\0*.*\0\0";
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
@@ -1902,7 +2008,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message,
 int check_file(const wchar_t *path) {
     FILE *file = nullptr;
     if (_wfopen_s(&file, path, L"rb") != 0 || !file) return 1;
-    uint8_t signature[4] = {};
+    uint8_t signature[8] = {};
     if (std::fread(signature, 1, sizeof signature, file) !=
             sizeof signature ||
         _fseeki64(file, 0, SEEK_SET) != 0) {
@@ -1999,6 +2105,29 @@ int check_file(const wchar_t *path) {
         valid = result == BPV1_EOF && frames == header.frame_count;
         label = "BPV1";
         bpv1_decoder_destroy(decoder);
+    } else if (!std::memcmp(signature + 4, "ftyp", 4)) {
+        H2633gpInfo info = {};
+        H2633gpDecoder *decoder = h263_3gp_decoder_create();
+        int result =
+            decoder
+                ? h263_3gp_decoder_open(decoder, file, &info)
+                : H263_3GP_ERR_MEMORY;
+        while (result == H263_3GP_OK) {
+            H2633gpFrame frame = {};
+            result = h263_3gp_decoder_decode_next(
+                decoder, file, &frame);
+            if (result != H263_3GP_OK) break;
+            convert_h263_frame(&frame, converted);
+            for (uint32_t pixel : converted.pixels) {
+                checksum ^= pixel;
+                checksum *= UINT64_C(1099511628211);
+            }
+            ++frames;
+        }
+        valid = result == H263_3GP_EOF &&
+                frames == info.frame_count;
+        label = "H.263/3GP";
+        h263_3gp_decoder_destroy(decoder);
     } else if (signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {
         plm_t *mpeg = plm_create_with_file(file, FALSE);

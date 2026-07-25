@@ -23,6 +23,11 @@ accepts pictures up to 320x240, contains only I/P pictures, and stores two
 packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
+The standard [`3GP/H.263 profile`](codecs/h263/) starts with video-only
+baseline H.263 at `176x144` QCIF and a constant frame rate. The encoder keeps
+the source aspect ratio inside that canvas with black padding. Both players
+use the same portable 3GP demultiplexer and Apache-2.0 PacketVideo decoder.
+
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
 and block/pattern dictionaries. The package includes a bounded-memory,
@@ -101,7 +106,7 @@ native 24 fps. The script uses eight C GOP workers by default:
 ## Native Windows player
 
 The desktop build produces `build\msvc\hlvplay.exe`, a native
-HLV/BPV/MPEG-1 player
+HLV/BPV/MPEG-1/H.263 player
 that uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg
 and external codec packs are not needed at runtime. It plays embedded HLV
 PCM_U8 mono, preserves the video aspect ratio, and supports pause/resume,
@@ -113,6 +118,7 @@ keyframe-aware timeline seeking, native-size centred display and drag-and-drop:
 .\build\msvc\hlvplay.exe `
     .\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1
 .\build\msvc\hlvplay.exe .\out\video.mpg
+.\build\msvc\hlvplay.exe .\out\video.3gp
 ```
 
 See [`docs/WINDOWS_PLAYER.md`](docs/WINDOWS_PLAYER.md) for controls and the
@@ -120,8 +126,8 @@ headless full-file validation mode.
 
 ## ESP32-2432S028 playback
 
-The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1 or the
-constrained MPEG-1/MP2 profile from a FAT32
+The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1, the
+constrained MPEG-1/MP2 profile, or the QCIF 3GP/H.263 profile from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
 320x240 ST7789 over SPI2 DMA. HLV/MJPEG PCM_U8 and decoded MPEG MP2 play
 through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps
@@ -142,8 +148,8 @@ firmware project directory:
 ```
 
 The player reads one filename from `/sdcard/HLV/play.txt`; it never guesses a
-fallback video. The selected `.hlv` or MJPEG `.avi` file must be in the same
-directory; video-only `.bpv1` is accepted as well. With the firmware running
+fallback video. The selected `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg`, or
+`.3gp` file must be in the same directory. With the firmware running
 normally, the video and selection file can be copied over the CH340C UART
 without removing the card:
 
@@ -157,6 +163,12 @@ See [`docs/ESP32_PLAYER.md`](docs/ESP32_PLAYER.md) for the SD-card and upload
 instructions. The measured MJPEG decoder backlog and hardware acceptance
 criteria are tracked in
 [`docs/MJPEG_DECODER_OPTIMIZATION_TODO.md`](docs/MJPEG_DECODER_OPTIMIZATION_TODO.md).
+
+Create the initial Big Buck Bunny 3GP from the required 1080p MOV source:
+
+```powershell
+.\scripts\encode_big_buck_bunny_h263_3gp.ps1
+```
 
 The v13 literal/palette syntax and the decoder-cycle term used by RDO are
 described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).

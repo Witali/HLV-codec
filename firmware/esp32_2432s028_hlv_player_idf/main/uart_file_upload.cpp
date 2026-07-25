@@ -74,6 +74,7 @@ bool validFilename(const char *filename) {
         return true;
     };
     return endsWith(".hlv") || endsWith(".avi") ||
+           endsWith(".3gp") ||
            endsWith(".bpv1") || endsWith(".mpg") ||
            endsWith(".mpeg") || endsWith(".txt");
 }

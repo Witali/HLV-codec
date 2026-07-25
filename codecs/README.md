@@ -18,6 +18,8 @@ Current packages:
 - [`bpv/`](bpv/) — the BPV1 v2 BPAL-derived reference encoder/decoder,
   automatic 64-palette training, RD selection, Y4M CLI adapters, tests, and
   supplied reference measurements.
+- [`h263/`](h263/) — the portable 3GP demultiplexer and baseline H.263 QCIF
+  decoder shared by the Windows and ESP32 players.
 
 When another codec is added, place it in `codecs/<codec-name>/` and expose a
 non-interactive encoder and decoder that the common benchmark adapter can

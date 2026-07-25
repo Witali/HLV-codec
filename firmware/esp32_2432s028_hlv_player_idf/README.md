@@ -4,7 +4,8 @@ This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
 through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
-MPEG-1 Video/MP2 profile up to 320x240.
+MPEG-1 Video/MP2 profile up to 320x240. It also supports video-only baseline
+H.263 in a 3GP container at `176x144` QCIF.
 
 The only application components are:
 
@@ -12,6 +13,8 @@ The only application components are:
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`.
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
+- `h263_3gp`: the shared bounded-table 3GP demultiplexer and PacketVideo
+  H.263 decoder from `codecs/h263`.
 
 `MINIMAL_BUILD` in `CMakeLists.txt` admits only their transitive ESP-IDF
 dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
@@ -86,7 +89,8 @@ Set-Content play.txt "clip.avi" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
-Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg` or `.txt`,
+Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg`, `.3gp` or
+`.txt`,
 and are at most 48
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.

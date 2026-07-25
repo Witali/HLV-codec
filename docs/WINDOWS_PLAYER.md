@@ -1,7 +1,8 @@
-# Native Windows HLV/BPV/MPEG-1 player
+# Native Windows HLV/BPV/MPEG-1/H.263 player
 
 `hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
-v1 through v4, and the constrained MPEG-1/MP2 profile. It uses the portable
+v1 through v4, the constrained MPEG-1/MP2 profile, and the video-only
+`176x144` QCIF 3GP/H.263 profile. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
@@ -42,6 +43,7 @@ Open a file from PowerShell:
 .\build\msvc\hlvplay.exe .\out\video.hlv
 .\build\msvc\hlvplay.exe .\out\video.bpv1
 .\build\msvc\hlvplay.exe .\out\video.mpg
+.\build\msvc\hlvplay.exe .\out\video.3gp
 ```
 
 The player also accepts files through **File > Open** and drag-and-drop.
@@ -65,7 +67,8 @@ compact frame-to-keyframe index. A seek starts at the nearest preceding
 keyframe, decodes dependent frames without presenting them, then displays the
 selected frame. HLV/BPV audio restarts from the matching packet. MPEG seeking
 reopens its bounded decoder and decodes video and MP2 forward from the start to
-keep both streams aligned.
+keep both streams aligned. H.263 seeking likewise reopens the bounded 3GP
+decoder and decodes forward from the start.
 Seeking while paused preserves the paused state. HLV files whose header has a
 streaming `frame_count=0` remain seekable because their local index uses the
 actual packet count. BPV indexing also rejects truncated frames and bytes
@@ -91,6 +94,7 @@ BGRA result:
 .\build\msvc\hlvplay.exe --check .\out\video.hlv
 .\build\msvc\hlvplay.exe --check .\out\video.bpv1
 .\build\msvc\hlvplay.exe --check .\out\video.mpg
+.\build\msvc\hlvplay.exe --check .\out\video.3gp
 if ($LASTEXITCODE -ne 0) { throw "Video validation failed" }
 ```
 
