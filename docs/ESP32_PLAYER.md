@@ -274,7 +274,21 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 
-For the 3GP/H.263 profile with default AMR-NB audio:
+### Recommended H.263 container
+
+Prefer **AVI** for H.263 files intended for this ESP32 player. AVI video and
+PCM chunks are consumed sequentially through bounded buffers, and the reader
+does not retain the AVI index in RAM. This leaves more internal memory
+available for the maximum compressed packet, the CIF output frame, and decoder
+tables.
+
+The 3GP reader is supported, but it caches its sample-size and chunk-offset
+tables at open time. The extra memory grows with clip length and can prevent a
+long or high-bitrate CIF file from opening even when the same H.263 video
+works in AVI. Choose 3GP when AMR-NB audio or an existing 3GP workflow is more
+important than the ESP32 memory margin.
+
+For the supported 3GP/H.263 alternative with default AMR-NB audio:
 
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `

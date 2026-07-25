@@ -31,14 +31,22 @@ play in the native Windows application with ordinary 8-bit YUV frames.
 The standard [`H.263 profile`](codecs/h263/) uses baseline H.263 at
 `176x144` QCIF and intra-only `352x288` CIF, or intra-only H.263+ at
 `256x144`, `256x192`, `320x180`, or `320x240` in either 3GP or AVI. The ESP32
-displays the centred `320x240` area of a CIF picture, while the Windows Player
-shows the complete frame. 3GP uses optional
+defaults to showing the complete CIF picture as an aspect-preserving
+`293x240` image and can instead show the centred `320x240` area. The Windows
+Player always shows the complete frame. 3GP uses optional
 [`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono; AVI uses PCM S16LE mono at
 8 kHz. The encoder defaults to the hardware-verified `320x240`, 15 fps,
 1536 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas
 by cropping equal margins from the source. `-FitMode Contain` retains the
 complete source with black padding instead. Both players use the same
 bounded-table 3GP/AVI demultiplexer and pinned PacketVideo video decoder.
+
+**AVI is the preferred container for H.263 playback on the ESP32**, especially
+for CIF, long clips, and high-bitrate files. Its video and PCM audio chunks are
+read sequentially without retaining a per-frame AVI index in RAM. The 3GP
+reader must cache sample-size and chunk-offset tables at open time, leaving
+less internal memory for the compressed packet and decoded frame. Use 3GP
+primarily when AMR-NB audio or compatibility with a 3GP workflow is required.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
