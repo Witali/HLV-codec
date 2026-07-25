@@ -501,14 +501,16 @@ static int dequantize(int level, int quantizer) {
 }
 
 static int predict_dc(const int16_t *grid, unsigned width,
-                      unsigned x, unsigned y, int default_value,
+                      unsigned rows, unsigned x, unsigned y, int default_value,
                       int *from_left) {
+    unsigned row = y % rows;
+    unsigned top_row = (y - 1U) % rows;
     int left = default_value;
     int top_left = default_value;
     int top = default_value;
-    if (x) left = grid[y * width + x - 1];
-    if (x && y) top_left = grid[(y - 1) * width + x - 1];
-    if (y) top = grid[(y - 1) * width + x];
+    if (x) left = grid[row * width + x - 1U];
+    if (x && y) top_left = grid[top_row * width + x - 1U];
+    if (y) top = grid[top_row * width + x];
     *from_left = abs_int(left - top_left) > abs_int(top_left - top);
     return *from_left ? left : top;
 }
@@ -591,6 +593,7 @@ static int decode_intra_block(
     int16_t *ac_row;
     int16_t *ac_column;
     unsigned grid_width;
+    unsigned grid_rows;
     unsigned gx, gy;
     int default_value;
     int dc_scale;
@@ -605,6 +608,7 @@ static int decode_intra_block(
 
     if (block < 4) {
         grid_width = decoder->mb_width * 2U;
+        grid_rows = 3U;
         gx = mb_x * 2U + (block & 1U);
         gy = mb_y * 2U + block / 2U;
         dc_grid = decoder->dc_luma;
@@ -616,6 +620,7 @@ static int decode_intra_block(
             return DIVX3_ERR_BITSTREAM;
     } else {
         grid_width = decoder->mb_width;
+        grid_rows = 2U;
         gx = mb_x;
         gy = mb_y;
         dc_grid = block == 4 ? decoder->dc_cb : decoder->dc_cr;
@@ -628,13 +633,14 @@ static int decode_intra_block(
             return DIVX3_ERR_BITSTREAM;
     }
     default_value = (2048 + dc_scale) / (2 * dc_scale);
-    predictor = predict_dc(dc_grid, grid_width, gx, gy,
+    predictor = predict_dc(dc_grid, grid_width, grid_rows, gx, gy,
                            default_value, &from_left);
     if (difference < INT16_MIN - predictor ||
         difference > INT16_MAX - predictor)
         return DIVX3_ERR_BITSTREAM;
     quantized[0] = predictor + difference;
-    dc_grid[gy * grid_width + gx] = (int16_t)quantized[0];
+    dc_grid[(gy % grid_rows) * grid_width + gx] =
+        (int16_t)quantized[0];
 
     if (coded) {
         if (ac_prediction)
@@ -646,12 +652,14 @@ static int decode_intra_block(
     if (ac_prediction) {
         if (from_left && gx) {
             const int16_t *source =
-                ac_column + ((gy * grid_width + gx - 1U) * 8U);
+                ac_column +
+                ((((gy % grid_rows) * grid_width) + gx - 1U) * 8U);
             for (index = 1; index < 8; ++index)
                 quantized[index * 8U] += source[index];
         } else if (!from_left && gy) {
             const int16_t *source =
-                ac_row + (((gy - 1U) * grid_width + gx) * 8U);
+                ac_row +
+                (((((gy - 1U) % grid_rows) * grid_width) + gx) * 8U);
             for (index = 1; index < 8; ++index)
                 quantized[index] += source[index];
         }
@@ -662,9 +670,9 @@ static int decode_intra_block(
         if (row_value < INT16_MIN || row_value > INT16_MAX ||
             column_value < INT16_MIN || column_value > INT16_MAX)
             return DIVX3_ERR_BITSTREAM;
-        ac_row[(gy * grid_width + gx) * 8U + index] =
+        ac_row[(((gy % grid_rows) * grid_width + gx) * 8U) + index] =
             (int16_t)row_value;
-        ac_column[(gy * grid_width + gx) * 8U + index] =
+        ac_column[(((gy % grid_rows) * grid_width + gx) * 8U) + index] =
             (int16_t)column_value;
     }
     coefficients[0] = quantized[0] * dc_scale;
@@ -677,10 +685,8 @@ static int decode_intra_block(
 }
 
 static void reset_prediction_grids(Divx3Decoder *decoder, int quantizer) {
-    size_t luma_blocks =
-        (size_t)decoder->mb_width * decoder->mb_height * 4U;
-    size_t chroma_blocks =
-        (size_t)decoder->mb_width * decoder->mb_height;
+    size_t luma_blocks = (size_t)decoder->mb_width * 6U;
+    size_t chroma_blocks = (size_t)decoder->mb_width * 2U;
     int16_t luma_default =
         (int16_t)((2048 + luma_dc_scaler(quantizer)) /
                   (2 * luma_dc_scaler(quantizer)));
@@ -707,6 +713,45 @@ static void reset_prediction_grids(Divx3Decoder *decoder, int quantizer) {
     memset(decoder->ac_cr_col, 0,
            chroma_blocks * 8U * sizeof(*decoder->ac_cr_col));
     memset(decoder->coded_luma, 0, luma_blocks);
+}
+
+static void clear_prediction_macroblock(Divx3Decoder *decoder,
+                                        unsigned mb_x, unsigned mb_y,
+                                        int quantizer) {
+    unsigned luma_width = decoder->mb_width * 2U;
+    unsigned chroma_width = decoder->mb_width;
+    int16_t luma_default =
+        (int16_t)((2048 + luma_dc_scaler(quantizer)) /
+                  (2 * luma_dc_scaler(quantizer)));
+    int16_t chroma_default =
+        (int16_t)((2048 + chroma_dc_scaler(quantizer)) /
+                  (2 * chroma_dc_scaler(quantizer)));
+    unsigned block;
+    for (block = 0; block < 4; ++block) {
+        unsigned gx = mb_x * 2U + (block & 1U);
+        unsigned gy = mb_y * 2U + block / 2U;
+        size_t index = (size_t)(gy % 3U) * luma_width + gx;
+        decoder->dc_luma[index] = luma_default;
+        memset(decoder->ac_luma_row + index * 8U, 0,
+               8U * sizeof(*decoder->ac_luma_row));
+        memset(decoder->ac_luma_col + index * 8U, 0,
+               8U * sizeof(*decoder->ac_luma_col));
+        decoder->coded_luma[index] = 0;
+    }
+    {
+        size_t index =
+            (size_t)(mb_y & 1U) * chroma_width + mb_x;
+        decoder->dc_cb[index] = chroma_default;
+        decoder->dc_cr[index] = chroma_default;
+        memset(decoder->ac_cb_row + index * 8U, 0,
+               8U * sizeof(*decoder->ac_cb_row));
+        memset(decoder->ac_cb_col + index * 8U, 0,
+               8U * sizeof(*decoder->ac_cb_col));
+        memset(decoder->ac_cr_row + index * 8U, 0,
+               8U * sizeof(*decoder->ac_cr_row));
+        memset(decoder->ac_cr_col + index * 8U, 0,
+               8U * sizeof(*decoder->ac_cr_col));
+    }
 }
 
 static int decode_intra_picture(Divx3Decoder *decoder,
@@ -753,21 +798,21 @@ static int decode_intra_picture(Divx3Decoder *decoder,
                 unsigned bx = mb_x * 2U + (block & 1U);
                 unsigned by = mb_y * 2U + block / 2U;
                 unsigned grid_width = decoder->mb_width * 2U;
-                int left = bx ? decoder->coded_luma[by * grid_width +
+                unsigned row = by % 3U;
+                unsigned top_row = (by - 1U) % 3U;
+                int left = bx ? decoder->coded_luma[row * grid_width +
                                                      bx - 1U]
                               : 0;
                 int top_left =
-                    bx && by ? decoder->coded_luma[(by - 1U) *
-                                                       grid_width +
+                    bx && by ? decoder->coded_luma[top_row * grid_width +
                                                    bx - 1U]
                              : 0;
-                int top = by ? decoder->coded_luma[(by - 1U) *
-                                                       grid_width +
+                int top = by ? decoder->coded_luma[top_row * grid_width +
                                                    bx]
                              : 0;
                 int prediction = top_left == top ? left : top;
                 cbp[block] ^= (uint8_t)prediction;
-                decoder->coded_luma[by * grid_width + bx] = cbp[block];
+                decoder->coded_luma[row * grid_width + bx] = cbp[block];
             }
             ac_prediction = bit_read(reader);
             for (block = 0; block < 6; ++block) {
@@ -899,18 +944,25 @@ static int decode_inter_picture(Divx3Decoder *decoder,
     }
     memcpy(frame, reference, decoder->frame_bytes);
     reset_prediction_grids(decoder, quantizer);
-    memset(decoder->mv_x, 0,
-           (size_t)decoder->mb_width * decoder->mb_height);
-    memset(decoder->mv_y, 0,
-           (size_t)decoder->mb_width * decoder->mb_height);
+    memset(decoder->mv_x, 0, (size_t)decoder->mb_width * 2U);
+    memset(decoder->mv_y, 0, (size_t)decoder->mb_width * 2U);
 
     for (mb_y = 0; mb_y < decoder->mb_height; ++mb_y) {
         for (mb_x = 0; mb_x < decoder->mb_width; ++mb_x) {
-            size_t mb_index = (size_t)mb_y * decoder->mb_width + mb_x;
+            size_t mb_index =
+                (size_t)(mb_y & 1U) * decoder->mb_width + mb_x;
+            size_t top_index =
+                (size_t)((mb_y - 1U) & 1U) * decoder->mb_width + mb_x;
             int intra;
             int cbp;
             unsigned block;
-            if (use_skip && bit_read(reader)) continue;
+            if (use_skip && bit_read(reader)) {
+                clear_prediction_macroblock(
+                    decoder, mb_x, mb_y, quantizer);
+                decoder->mv_x[mb_index] = 0;
+                decoder->mv_y[mb_index] = 0;
+                continue;
+            }
             if (decode_mb(reader, &intra, &cbp) != DIVX3_OK)
                 return DIVX3_ERR_BITSTREAM;
             if (intra) {
@@ -931,16 +983,16 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                 int left_x = mb_x ? decoder->mv_x[mb_index - 1U] : 0;
                 int left_y = mb_x ? decoder->mv_y[mb_index - 1U] : 0;
                 int top_x =
-                    mb_y ? decoder->mv_x[mb_index - decoder->mb_width] : 0;
+                    mb_y ? decoder->mv_x[top_index] : 0;
                 int top_y =
-                    mb_y ? decoder->mv_y[mb_index - decoder->mb_width] : 0;
+                    mb_y ? decoder->mv_y[top_index] : 0;
                 int right_x =
                     mb_y && mb_x + 1U < decoder->mb_width
-                        ? decoder->mv_x[mb_index - decoder->mb_width + 1U]
+                        ? decoder->mv_x[top_index + 1U]
                         : 0;
                 int right_y =
                     mb_y && mb_x + 1U < decoder->mb_width
-                        ? decoder->mv_y[mb_index - decoder->mb_width + 1U]
+                        ? decoder->mv_y[top_index + 1U]
                         : 0;
                 int motion_x;
                 int motion_y;
@@ -966,6 +1018,8 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                     motion_y -= 64;
                 decoder->mv_x[mb_index] = (int8_t)motion_x;
                 decoder->mv_y[mb_index] = (int8_t)motion_y;
+                clear_prediction_macroblock(
+                    decoder, mb_x, mb_y, quantizer);
 
                 for (block = 0; block < 6; ++block) {
                     const uint8_t *source;
@@ -1026,10 +1080,9 @@ static int decode_inter_picture(Divx3Decoder *decoder,
 }
 
 static int allocate_decoder_buffers(Divx3Decoder *decoder) {
-    size_t macroblocks =
-        (size_t)decoder->mb_width * decoder->mb_height;
-    size_t luma_blocks = macroblocks * 4U;
-    size_t chroma_blocks = macroblocks;
+    size_t macroblock_rows = (size_t)decoder->mb_width * 2U;
+    size_t luma_blocks = (size_t)decoder->mb_width * 6U;
+    size_t chroma_blocks = macroblock_rows;
     size_t ac_luma_values = luma_blocks * 8U;
     size_t ac_chroma_values = chroma_blocks * 8U;
 
@@ -1050,8 +1103,8 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     decoder->ac_cr_col =
         (int16_t *)malloc(ac_chroma_values * sizeof(int16_t));
     decoder->coded_luma = (uint8_t *)malloc(luma_blocks);
-    decoder->mv_x = (int8_t *)malloc(macroblocks);
-    decoder->mv_y = (int8_t *)malloc(macroblocks);
+    decoder->mv_x = (int8_t *)malloc(macroblock_rows);
+    decoder->mv_y = (int8_t *)malloc(macroblock_rows);
     if (!decoder->frame_storage || !decoder->dc_luma ||
         !decoder->dc_cb || !decoder->dc_cr ||
         !decoder->ac_luma_row || !decoder->ac_luma_col ||
@@ -1066,7 +1119,7 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
         (luma_blocks + chroma_blocks * 2U) * sizeof(int16_t) +
         (ac_luma_values * 2U + ac_chroma_values * 4U) *
             sizeof(int16_t) +
-        luma_blocks + macroblocks * 2U;
+        luma_blocks + macroblock_rows * 2U;
     return DIVX3_OK;
 }
 
