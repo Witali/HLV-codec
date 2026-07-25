@@ -19,29 +19,10 @@ enum class AvSyncMode {
     kDropThenLoopAudio,
 };
 
-enum class H263CifPresentationMode {
-    // Preserve the existing behaviour: show the central 320x240 source area.
-    kCenterCrop,
-
-    // Preserve aspect ratio and shrink the complete CIF frame to the display.
-    kFit,
-};
-
-enum class H263ScalingFilter {
-    kNearestNeighbor,
-    kBilinear,
-};
-
-// CIF contains 352x288 coded samples with a 12:11 sample aspect ratio, so its
-// display geometry is 384x288 (4:3). Fit presents the complete frame over the
-// full 320x240 display. CenterCrop retains the former central 320x240 view.
-constexpr H263CifPresentationMode kH263CifPresentationMode =
-    H263CifPresentationMode::kFit;
-constexpr H263ScalingFilter kH263ScalingFilter =
-    H263ScalingFilter::kNearestNeighbor;
-
 // false: draw at native resolution in the centre with black borders.
 // true: stretch every frame to the complete 320x240 display.
+// H.263 CIF always ignores this setting and copies its central 320x240 area
+// pixel-for-pixel.
 constexpr bool kScaleVideoToDisplay = false;
 
 // Store both predictive YUV420 frames as packed Y6/U5/V5 planes with one Q4

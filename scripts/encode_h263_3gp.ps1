@@ -75,6 +75,7 @@ $ReportFile = [IO.Path]::GetFullPath($ReportFile)
 $profileSize = $Profile.Split("x")
 $width = [int]$profileSize[0]
 $height = [int]$profileSize[1]
+$isCif = $Profile -eq "352x288"
 $usesH263Plus = $Profile -notin @("176x144", "352x288")
 $isIntraOnly = $Profile -ne "176x144"
 $effectiveGop = if ($isIntraOnly) { 1 } else { $Gop }
@@ -99,10 +100,36 @@ New-Item -ItemType Directory -Force -Path (
     Split-Path $ReportFile -Parent
 ) | Out-Null
 
-# Preserve source aspect ratio without stretching. Crop fills the canvas and
-# removes equal margins from opposite sides; Contain retains the whole source
-# and pads the unused canvas area with black.
-$videoFilter = if ($FitMode -eq "Crop") {
+# Preserve source aspect ratio without stretching. For CIF, crop or pad the
+# source to 4:3 at its original large resolution, perform one anti-aliased
+# Lanczos downscale to the active 320x240 display area, then add the black CIF
+# border: 16 coded pixels on each side and 24 above and below. The ESP32 can
+# copy the active centre pixel-for-pixel without scaling.
+$videoFilter = if ($isCif -and $FitMode -eq "Crop") {
+    (
+        "fps=${Fps}," +
+        "crop=" +
+        "'trunc(min(iw\,ih*4/3)/2)*2':" +
+        "'trunc(min(ih\,iw*3/4)/2)*2':" +
+        "(iw-ow)/2:(ih-oh)/2," +
+        "scale=320:240:" +
+        "flags=lanczos+accurate_rnd+full_chroma_int," +
+        "pad=${width}:${height}:16:24:black," +
+        "setsar=1,format=yuv420p"
+    )
+} elseif ($isCif) {
+    (
+        "fps=${Fps}," +
+        "pad=" +
+        "'ceil(max(iw\,ih*4/3)/2)*2':" +
+        "'ceil(max(ih\,iw*3/4)/2)*2':" +
+        "(ow-iw)/2:(oh-ih)/2:black," +
+        "scale=320:240:" +
+        "flags=lanczos+accurate_rnd+full_chroma_int," +
+        "pad=${width}:${height}:16:24:black," +
+        "setsar=1,format=yuv420p"
+    )
+} elseif ($FitMode -eq "Crop") {
     (
         "fps=${Fps}," +
         "scale=${width}:${height}:force_original_aspect_ratio=increase:" +
@@ -151,7 +178,9 @@ Write-Host (
     "Encoding $(if ($usesH263Plus) { 'H.263+' } else { 'baseline H.263' })" +
     "/${containerLabel}: $Profile, ${Fps} fps, " +
     "${VideoBitrateKbps} kbps, VBV ${VideoBufferKbps}k, " +
-    "$FitMode fit, GOP $effectiveGop, " +
+    "$FitMode fit$(if ($isCif) {
+        ', native-resolution 4:3 fit -> 320x240 active + CIF border'
+    }), GOP $effectiveGop, " +
     $(if ($NoAudio) { "video only" } else {
         if ($Container -eq "avi") {
             "PCM S16LE mono 8 kHz"

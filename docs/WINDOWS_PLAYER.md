@@ -5,8 +5,7 @@ v1 through v5, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
 intra-only baseline `352x288` CIF, and intra-only H.263+ profiles at
 `256x144`, `256x192`, `320x180`, and `320x240`. CIF playback retains the
-complete coded `352x288` frame and displays it as `384x288` (4:3), using a
-12:11 sample aspect ratio. It uses the portable
+complete square-pixel `352x288` bordered frame. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
@@ -20,6 +19,14 @@ active per-GOP palettes and PCM_U8 audio; video-only files use the
 high-resolution frame timer without opening audio. BPV1 v5 additionally uses adaptive
 2/4/7-byte RAW records and packed local palette indices.
 No FFmpeg, codec pack or third-party runtime DLL is required.
+
+The repository encoder treats CIF as anamorphic during preparation as well as
+playback. It crops or pads the source to 4:3 at the original large resolution,
+then performs one Lanczos downscale to the central `320x240` active area. It
+pads that area to the coded `352x288` grid with 16 black columns on each side
+and 24 black rows above and below. It does not write a SAR or DAR override.
+Unlike the ESP32, the Windows Player retains and displays this complete
+bordered frame.
 
 ## Setup and build
 

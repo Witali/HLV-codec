@@ -13,8 +13,8 @@ DAC GPIO26.
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
   mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
-  `320x240`, or `352x288` CIF; CIF is interpreted as a `384x288` (4:3)
-  picture and scaled to fill the complete `320x240` display by default;
+  `320x240`, or `352x288` CIF; the ESP32 copies CIF's central `320x240`
+  square-pixel coded area to the panel pixel-for-pixel without scaling;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -168,38 +168,21 @@ avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
 container layout. DAC writes use a finite timeout so stopping or reopening a
 video cannot strand an audio task and leak its stack.
 
-## Display scaling settings
+## CIF pixel-exact crop
 
-The H.263 CIF presentation settings are in
-`firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp`:
+H.263 CIF scaling has been removed from the ESP32 player. Every `352x288` CIF
+frame is cropped to its central `320x240` coded area: 16 columns are omitted
+from each side and 24 rows from the top and bottom. The remaining pixels are
+converted to RGB565 and copied to the panel one-for-one while preparing the
+small DMA output strips. There are no nearest-neighbour or bilinear scaling
+tables and no scaled framebuffer.
 
-```cpp
-constexpr H263CifPresentationMode kH263CifPresentationMode =
-    H263CifPresentationMode::kFit;
-constexpr H263ScalingFilter kH263ScalingFilter =
-    H263ScalingFilter::kNearestNeighbor;
-```
+On the physical ESP32, the 30 fps CIF AVI test completed 300 frames at
+29.993 fps with zero display skips, decode gaps, audio rebuffers, underrun
+samples, or silence chunks.
 
-`H263CifPresentationMode::kCenterCrop` retains the central 320x240 coded
-region. `H263CifPresentationMode::kFit` interprets the 352x288 CIF samples with
-a 12:11 sample aspect ratio, giving a 384x288 (4:3) display picture. It scales
-the complete coded frame to 320x240, filling the panel without borders or
-cropping.
-
-The fit path offers `H263ScalingFilter::kNearestNeighbor` and
-`H263ScalingFilter::kBilinear`. Bilinear interpolation is performed in the
-Y/U/V planes before RGB565 conversion. It uses small row buffers rather than a
-full RGB framebuffer. For the fixed CIF-to-panel conversion, source indices and
-Q12 interpolation weights are compile-time tables, so the output-strip hot path
-does not recalculate coordinates, clamps, or coefficients. Nearest-neighbour is
-the default real-time setting: the physical ESP32 measured 29.3 fps with 4
-display skips over 300 frames on the 30 fps CIF AVI test. Bilinear is a
-quality-first option and measured 16.1 fps with 54 display skips while filling
-the complete 320x240 panel on the same file and board.
-
-The older `kScaleVideoToDisplay` flag still controls nearest-neighbour
-stretching for non-CIF and non-H.263 playback. When disabled, those videos are
-drawn at native resolution in the centre.
+`kScaleVideoToDisplay` still controls nearest-neighbour stretching for
+non-CIF and non-H.263 playback. H.263 CIF deliberately ignores it.
 
 ## Prepare a video on Windows
 
@@ -306,8 +289,13 @@ trellis encoder decisions, fills the canvas, and crops equal margins from the
 source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
 source with black padding. `-Profile` also accepts baseline H.263 `176x144`
 and intra-only `352x288` CIF, H.263+ `256x144` and `320x180` for 16:9, or
-`256x192` for 4:3. CIF is decoded at full resolution and its centred
-`320x240` area is sent to the display. All profiles except predictive QCIF
+`256x192` and `320x240` for 4:3. For CIF, the script crops or pads the source
+to 4:3 at its original large resolution and performs one anti-aliased Lanczos
+downscale to the active `320x240` area, with accurate rounding and full chroma
+interpolation. It pads that area to `352x288` with 16 black columns on each
+side and 24 black rows above and below. No SAR or DAR override is written. The
+ESP32 discards that border and copies the active centre without scaling. All
+profiles except predictive QCIF
 are encoded intra-only (effective GOP 1), allowing the ESP32 to decode them
 with one padded YUV420 frame whose Y, U, and V planes are allocated
 separately. This avoids a single 115,200-byte allocation at 320x240.

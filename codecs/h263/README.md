@@ -54,17 +54,23 @@ complete source with black padding. The script adds AMR-NB audio when the
 source has audio, verifies the stream metadata, and fully decodes the result
 with FFmpeg. Use `-NoAudio` for a silent file.
 
+For the CIF profile, the active ESP32 picture is the central `320x240` coded
+area. To avoid aliasing and unnecessary resampling, the scripts crop or pad the
+source to 4:3 at its original large resolution and then perform one Lanczos
+downscale to `320x240`, with accurate rounding and full chroma interpolation.
+They add 16 black coded pixels on the left and right and 24 above and below to
+form the required `352x288` CIF frame. The output remains square-pixel and does
+not carry a SAR or DAR override.
+
 All profiles except predictive QCIF use GOP 1 regardless of `-Gop`. In
 dual-core mode the ESP32 requests two YUV420 outputs so CPU1 can decode frame
 N+1 while CPU0 converts and submits frame N. It automatically falls back to
 one output if the second allocation is unavailable. Y, U, and V are separate
 allocations, so 320x240 never requires one contiguous 115,200-byte block.
 Predictive QCIF also uses two outputs to preserve its reference frame. CIF is
-decoded at its native `352x288` coded size. Those samples represent a
-`384x288` (4:3) display picture using a 12:11 sample aspect ratio. The ESP32
-scales the complete frame to fill its `320x240` display by default; its
-optional crop mode displays the centred
-`320x240` area without scaling; the Windows Player displays the full frame.
+decoded at its native square-pixel `352x288` coded size. The ESP32 always
+copies the centred `320x240` coded area pixel-for-pixel and performs no CIF
+scaling. The Windows Player displays the full bordered frame.
 
 FFmpeg exposes custom picture sizes through its H.263+ encoder but its 3GP
 muxer accepts only the generic H.263 codec id. For the four custom profiles,

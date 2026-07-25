@@ -328,18 +328,17 @@ display DMA timing.
   predictive decoding still runs so subsequent P-frames remain valid.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
-`kH263CifPresentationMode` in `main/player_settings.hpp` selects the central
-320x240 coded crop or display of the complete 352x288 CIF frame. CIF uses a
-12:11 sample aspect ratio, so the complete frame represents a 384x288 (4:3)
-picture and fills the 320x240 panel. `kH263ScalingFilter` selects
-nearest-neighbour or bilinear filtering. The bilinear CIF path uses
-compile-time source-index and Q12 coefficient tables while preparing each
-output strip on CPU0, without allocating a scaled framebuffer. H.263
-decompression runs concurrently on CPU1. Nearest-neighbour is the default; the
-full-panel physical-board test measured 29.3 fps, while bilinear measured
-16.1 fps and prioritizes smoothness over frame rate.
-The older `kScaleVideoToDisplay` setting continues to control stretching for
-the other video codecs.
+H.263 CIF scaling has been removed. The player omits 16 coded columns from
+each side and 24 rows from the top and bottom of a 352x288 frame, converts the
+central 320x240 area into the DMA strips on CPU0, and copies it to the panel
+pixel-for-pixel. H.263 decompression runs concurrently on CPU1. There are no
+CIF scaling tables or scaled framebuffer. A 300-frame physical-board run of
+the 30 fps CIF AVI measured 29.993 fps with zero display skips or audio errors.
+The encoder scripts prepare the active area by cropping or padding the original
+large-resolution source to 4:3 and applying one anti-aliased Lanczos downscale
+to 320x240. They add the black 16/24-pixel CIF border without a SAR or DAR
+override. `kScaleVideoToDisplay` continues to control stretching for the
+other video codecs; CIF deliberately ignores it.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also

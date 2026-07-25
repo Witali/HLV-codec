@@ -83,8 +83,6 @@ std::wstring multimedia_error(MMRESULT result) {
 struct VideoFrame {
     int width = 0;
     int height = 0;
-    int display_width = 0;
-    int display_height = 0;
     std::vector<uint32_t> pixels;
     std::vector<uint8_t> nv12;
 };
@@ -100,8 +98,6 @@ enum class VideoCodec {
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
     destination.width = source->width;
     destination.height = source->height;
-    destination.display_width = source->width;
-    destination.display_height = source->height;
     destination.pixels.resize(static_cast<size_t>(source->width) * source->height);
     const size_t luma_size =
         static_cast<size_t>(source->width) * source->height;
@@ -151,8 +147,6 @@ void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
 void convert_mpeg_frame(plm_frame_t *source, VideoFrame &destination) {
     destination.width = static_cast<int>(source->width);
     destination.height = static_cast<int>(source->height);
-    destination.display_width = destination.width;
-    destination.display_height = destination.height;
     const size_t luma_size =
         static_cast<size_t>(source->width) * source->height;
     destination.pixels.resize(luma_size);
@@ -194,10 +188,6 @@ void convert_h263_frame(const H2633gpFrame *source,
     adapted.u = const_cast<uint8_t *>(source->u);
     adapted.v = const_cast<uint8_t *>(source->v);
     convert_frame(&adapted, destination);
-    if (source->width == 352 && source->height == 288) {
-        destination.display_width = 384;
-        destination.display_height = 288;
-    }
 }
 
 bool mpeg_fps_rational(double fps, uint16_t *numerator,
@@ -252,8 +242,6 @@ bool convert_bpv_frame(const BPV1Header *header, const BPV1Frame *source,
     if (!header || !source) return false;
     destination.width = source->width;
     destination.height = source->height;
-    destination.display_width = source->width;
-    destination.display_height = source->height;
     const size_t luma_size =
         static_cast<size_t>(source->width) * source->height;
     destination.pixels.resize(luma_size);
@@ -522,24 +510,19 @@ public:
         RECT target_rect = {0, 0, static_cast<LONG>(width),
                             static_cast<LONG>(height)};
         RECT destination_rect = target_rect;
-        const int display_width =
-            frame.display_width > 0 ? frame.display_width : frame.width;
-        const int display_height =
-            frame.display_height > 0 ? frame.display_height : frame.height;
-        int draw_width = display_width;
-        int draw_height = display_height;
+        int draw_width = frame.width;
+        int draw_height = frame.height;
         if (fit_to_window) {
-            if (static_cast<int64_t>(width) * display_height <=
-                static_cast<int64_t>(video_height) * display_width) {
+            if (static_cast<int64_t>(width) * frame.height <=
+                static_cast<int64_t>(video_height) * frame.width) {
                 draw_width = static_cast<int>(width);
                 draw_height = static_cast<int>(
-                    static_cast<int64_t>(width) * display_height /
-                    display_width);
+                    static_cast<int64_t>(width) * frame.height / frame.width);
             } else {
                 draw_height = static_cast<int>(video_height);
                 draw_width = static_cast<int>(
                     static_cast<int64_t>(video_height) *
-                    display_width / display_height);
+                    frame.width / frame.height);
             }
         }
         destination_rect.left =
@@ -1270,26 +1253,20 @@ public:
             DrawTextW(target, message, -1, &text_rect,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         } else {
-            const int display_width = current_.display_width > 0
-                ? current_.display_width
-                : current_.width;
-            const int display_height = current_.display_height > 0
-                ? current_.display_height
-                : current_.height;
-            int draw_width = display_width;
-            int draw_height = display_height;
+            int draw_width = current_.width;
+            int draw_height = current_.height;
             if (fit_to_window_ && client_width > 0 && video_height > 0) {
-                if (static_cast<int64_t>(client_width) * display_height <=
-                    static_cast<int64_t>(video_height) * display_width) {
+                if (static_cast<int64_t>(client_width) * current_.height <=
+                    static_cast<int64_t>(video_height) * current_.width) {
                     draw_width = client_width;
                     draw_height = static_cast<int>(
-                        static_cast<int64_t>(client_width) * display_height /
-                        display_width);
+                        static_cast<int64_t>(client_width) * current_.height /
+                        current_.width);
                 } else {
                     draw_height = video_height;
                     draw_width = static_cast<int>(
-                        static_cast<int64_t>(video_height) * display_width /
-                        display_height);
+                        static_cast<int64_t>(video_height) * current_.width /
+                        current_.height);
                 }
             }
             const int draw_x = (client_width - draw_width) / 2;
