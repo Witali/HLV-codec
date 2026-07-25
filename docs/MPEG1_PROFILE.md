@@ -9,6 +9,10 @@ or `.mpeg`) containing:
 - one optional MPEG-1 Audio Layer II stream, decoded to mono PCM_U8 at
   playback time.
 
+The project does not extend MPEG with custom wrappers or appended/private
+PCM tracks. Device optimization results and rejected experiments are tracked
+in [MPEG1_DECODER_OPTIMIZATION_TODO.md](MPEG1_DECODER_OPTIMIZATION_TODO.md).
+
 The ESP32 limit is deliberate. At 320x240, each packed Y6/U5/V5 reference
 frame occupies 81,600 bytes. The no-B decoder stores two such frames plus one
 7,680-byte 8-bit macroblock-row work area, for 170,880 bytes total. The six
