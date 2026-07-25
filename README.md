@@ -19,7 +19,7 @@ curve as the HLV preset.
 
 [`DivX 3`](codecs/divx3/) support decodes the Microsoft MPEG-4 v3 bitstream
 found in `DIV3`/`MP43` AVI files. The first memory-bounded ESP32 profile is
-160x90 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. DivX 4
+256x144 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. DivX 4
 and 5 use the different MPEG-4 Part 2 ASP format and are not yet supported.
 
 The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program

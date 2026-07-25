@@ -43,8 +43,8 @@ $devcmd = Join-Path $installation "Common7\Tools\VsDevCmd.bat"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $testExe = Join-Path $OutputDirectory "test_divx3_decode.exe"
-$inputAvi = Join-Path $OutputDirectory "bbb_divx3_160x90.avi"
-$inputMp3Avi = Join-Path $OutputDirectory "bbb_divx3_mp3_160x90.avi"
+$inputAvi = Join-Path $OutputDirectory "bbb_divx3_256x144.avi"
+$inputMp3Avi = Join-Path $OutputDirectory "bbb_divx3_mp3_256x144.avi"
 $referenceYuv = Join-Path $OutputDirectory "reference.yuv"
 $decodedYuv = Join-Path $OutputDirectory "decoded.yuv"
 $decodedMp3Yuv = Join-Path $OutputDirectory "decoded_mp3.yuv"
@@ -65,7 +65,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & $ffmpeg -hide_banner -loglevel error -y -ss 00:00:00 -t 1 `
-    -i $source -vf "fps=12,scale=160:90:flags=lanczos" -an `
+    -i $source -vf "fps=12,scale=256:144:flags=lanczos" -an `
     -c:v msmpeg4 -q:v 4 -g 12 -bf 0 -vtag DIV3 $inputAvi
 if ($LASTEXITCODE -ne 0) {
     throw "FFmpeg failed while creating the DivX 3 fixture."
@@ -90,7 +90,7 @@ if ($referenceHash -ne $decodedHash) {
 }
 
 & $ffmpeg -hide_banner -loglevel error -y -ss 00:00:00 -t 1 `
-    -i $source -vf "fps=12,scale=160:90:flags=lanczos" `
+    -i $source -vf "fps=12,scale=256:144:flags=lanczos" `
     -c:v msmpeg4 -q:v 4 -g 12 -bf 0 -vtag DIV3 `
     -c:a mp3 -b:a 64k -ac 1 -ar 16000 $inputMp3Avi
 if ($LASTEXITCODE -ne 0) {

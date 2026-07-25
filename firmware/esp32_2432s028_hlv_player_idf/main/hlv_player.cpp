@@ -48,7 +48,7 @@ constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
 constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
-constexpr uint32_t kDivx3MaximumMacroblocks = 80;
+constexpr uint32_t kDivx3MaximumMacroblocks = 144;
 constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
@@ -1770,7 +1770,7 @@ bool openVideo() {
             divx3_info.max_video_packet_size, MALLOC_CAP_8BIT));
         if (!divx3_decoder || !divx3_packet) {
             showStatus("Not enough RAM",
-                       "use at most the 160x120 DivX 3 profile");
+                       "use at most the 256x144 DivX 3 profile");
             reportHeap("DivX 3 decoder allocation failed");
             closeVideo();
             return false;
