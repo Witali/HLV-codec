@@ -39,6 +39,7 @@ function runEncoder(
   threads,
   audio = null,
   activePalettes = true,
+  activePaletteFile = null,
 ) {
   const arguments_ = [
     input,
@@ -56,6 +57,9 @@ function runEncoder(
     "--force",
   ];
   arguments_.push(activePalettes ? "--active-palettes" : "--fixed-palettes");
+  if (activePaletteFile) {
+    arguments_.push("--active-palette-file", activePaletteFile);
+  }
   if (audio) {
     arguments_.push("--audio-u8", audio, "--audio-rate", "16000");
   }
@@ -88,6 +92,11 @@ try {
   const reportAudio = path.join(temporary, "report-audio.json");
   const outputFixed = path.join(temporary, "output-fixed.bpv1");
   const reportFixed = path.join(temporary, "report-fixed.json");
+  const activePaletteFile = path.join(temporary, "active-palettes.rgb");
+  const outputOverride1 = path.join(temporary, "output-override-1.bpv1");
+  const outputOverride4 = path.join(temporary, "output-override-4.bpv1");
+  const reportOverride1 = path.join(temporary, "report-override-1.json");
+  const reportOverride4 = path.join(temporary, "report-override-4.json");
   const width = 64;
   const height = 64;
   const parts = [y4m.y4mHeader(width, height, 24, 1)];
@@ -110,10 +119,40 @@ try {
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
+  const activeBanks = [];
+  bpv.walkFrames(bytes1, (frame) => {
+    if (frame.keyframe) activeBanks.push(Buffer.from(frame.palette));
+  });
+  fs.writeFileSync(activePaletteFile, Buffer.concat(activeBanks));
+  runEncoder(
+    input,
+    outputOverride1,
+    reportOverride1,
+    1,
+    null,
+    true,
+    activePaletteFile,
+  );
+  runEncoder(
+    input,
+    outputOverride4,
+    reportOverride4,
+    4,
+    null,
+    true,
+    activePaletteFile,
+  );
   assert.equal(
     crypto.createHash("sha256").update(bytes1).digest("hex"),
     crypto.createHash("sha256").update(bytes4).digest("hex"),
     "parallel GOP scheduling must not change the BPV1 bitstream",
+  );
+  assert.equal(
+    crypto.createHash("sha256")
+      .update(fs.readFileSync(outputOverride1)).digest("hex"),
+    crypto.createHash("sha256")
+      .update(fs.readFileSync(outputOverride4)).digest("hex"),
+    "active palette overrides must be deterministic across worker counts",
   );
 
   const info = bpv.walkFrames(bytes4);
@@ -159,6 +198,9 @@ try {
   assert.equal(report.paletteUpdates, 2);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
+  const overrideReport =
+    JSON.parse(fs.readFileSync(reportOverride4, "utf8"));
+  assert.equal(overrideReport.paletteMode, "active-override");
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }

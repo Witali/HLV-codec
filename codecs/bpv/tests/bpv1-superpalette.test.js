@@ -74,5 +74,18 @@ assert.equal(
   evaluation.variants[0].paletteSectionBytes,
   2 * PALETTE_BYTES + 2 * 8 + 2 * 8,
 );
+const all = evaluation.variants.at(-1);
+assert.equal(all.targetPsnrDb, "all");
+assert.equal(all.references, sources.length);
+const mapped = superpalette.materializeNearestActiveBanks(statistics, first);
+assert.equal(mapped.length, 2 * ACTIVE_PALETTES * PALETTE_BYTES);
+for (let offset = 0; offset < mapped.length; offset += PALETTE_BYTES) {
+  assert.ok(
+    first.some((entry) =>
+      Buffer.from(entry).equals(
+        Buffer.from(mapped.subarray(offset, offset + PALETTE_BYTES)),
+      )),
+  );
+}
 
 console.log("BPV1 superpalette analysis tests passed");

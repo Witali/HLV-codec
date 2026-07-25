@@ -141,29 +141,17 @@ function evaluateSuperpalette(statistics, bank, targetPsnrValues) {
     throw new RangeError("Superpalette bank must not be empty");
   }
   const bitsPerId = Math.max(1, Math.ceil(Math.log2(bank.length)));
-  const mappings = statistics.sources.map((source) => {
-    let bestIndex = 0;
-    let bestError = weightedPaletteError(source, bank[0]);
-    for (let index = 1; index < bank.length; index += 1) {
-      const error = weightedPaletteError(source, bank[index]);
-      if (error < bestError) {
-        bestError = error;
-        bestIndex = index;
-      }
-    }
-    return {
-      gopIndex: source.gopIndex,
-      slot: source.slot,
-      bankIndex: bestIndex,
-      error: bestError,
-    };
-  });
+  const mappings = nearestMappings(statistics, bank);
   mappings.sort((left, right) =>
     left.error - right.error ||
     left.gopIndex - right.gopIndex ||
     left.slot - right.slot);
 
-  const targets = [Infinity, ...Array.from(targetPsnrValues || [])];
+  const targets = [
+    Infinity,
+    ...Array.from(targetPsnrValues || []),
+    -Infinity,
+  ];
   return {
     bankSize: bank.length,
     bankBytes: bank.length * PALETTE_BYTES,
@@ -171,6 +159,22 @@ function evaluateSuperpalette(statistics, bank, targetPsnrValues) {
     variants: targets.map((targetPsnr) =>
       evaluateTarget(statistics, mappings, bank.length, bitsPerId, targetPsnr)),
   };
+}
+
+function materializeNearestActiveBanks(statistics, bank) {
+  if (!Array.isArray(bank) || bank.length === 0) {
+    throw new RangeError("Superpalette bank must not be empty");
+  }
+  const mappings = nearestMappings(statistics, bank);
+  const output = new Uint8Array(
+    statistics.paletteUpdates * ACTIVE_PALETTES * PALETTE_BYTES,
+  );
+  for (const mapping of mappings) {
+    const destination =
+      (mapping.gopIndex * ACTIVE_PALETTES + mapping.slot) * PALETTE_BYTES;
+    output.set(bank[mapping.bankIndex], destination);
+  }
+  return output;
 }
 
 function analyzeSuperpalettes(input, options) {
@@ -211,7 +215,7 @@ function evaluateTarget(
 ) {
   const maximumError = Number.isFinite(targetPsnr)
     ? statistics.totalRgbSamples * 65025 / Math.pow(10, targetPsnr / 10)
-    : 0;
+    : targetPsnr === -Infinity ? Infinity : 0;
   const referencesPerGop = new Uint16Array(statistics.paletteUpdates);
   let error = 0;
   let references = 0;
@@ -235,7 +239,9 @@ function evaluateTarget(
     paletteSectionBytes;
   const mse = error === 0 ? 0 : error / statistics.totalRgbSamples;
   return {
-    targetPsnrDb: Number.isFinite(targetPsnr) ? targetPsnr : "exact",
+    targetPsnrDb: Number.isFinite(targetPsnr)
+      ? targetPsnr
+      : targetPsnr === -Infinity ? "all" : "exact",
     references,
     literalPalettes,
     superpaletteBytes,
@@ -253,6 +259,26 @@ function evaluateTarget(
       ? "infinite"
       : 10 * Math.log10(65025 / mse),
   };
+}
+
+function nearestMappings(statistics, bank) {
+  return statistics.sources.map((source) => {
+    let bestIndex = 0;
+    let bestError = weightedPaletteError(source, bank[0]);
+    for (let index = 1; index < bank.length; index += 1) {
+      const error = weightedPaletteError(source, bank[index]);
+      if (error < bestError) {
+        bestError = error;
+        bestIndex = index;
+      }
+    }
+    return {
+      gopIndex: source.gopIndex,
+      slot: source.slot,
+      bankIndex: bestIndex,
+      error: bestError,
+    };
+  });
 }
 
 function combineExactSources(sources) {
@@ -365,6 +391,7 @@ module.exports = {
   buildSuperpalette,
   collectPaletteStatistics,
   evaluateSuperpalette,
+  materializeNearestActiveBanks,
   constants: {
     ACTIVE_PALETTES,
     COLORS_PER_PALETTE,

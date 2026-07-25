@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,6 +94,7 @@ typedef struct {
     const char *audio_path;
     int audio_rate;
     int active_palettes;
+    const char *active_palette_path;
 } Options;
 
 typedef struct {
@@ -157,6 +159,7 @@ static void usage(FILE *stream) {
         "  --audio-u8 FILE                mux unsigned 8-bit mono raw PCM\n"
         "  --audio-rate N                 PCM sample rate (default 16000)\n"
         "  --active-palettes              train/transmit one bank per GOP (default)\n"
+        "  --active-palette-file FILE     use consecutive 64x16 RGB banks per GOP\n"
         "  --fixed-palettes               use one legacy bank for the whole file\n"
         "  --report FILE                  write JSON metrics\n"
         "  --force                        replace output\n"
@@ -379,6 +382,37 @@ static void describe_pixels(
         descriptor[channel + 3] =
             (float)sqrt(variance[channel] / PIXELS_PER_BLOCK);
     }
+}
+
+static int load_active_palette(
+    const Options *options,
+    int first_frame,
+    Training *training
+) {
+    FILE *file;
+    size_t gop_index;
+    size_t offset;
+    int palette;
+    if (!options->active_palette_path || !training || first_frame < 0)
+        return -1;
+    gop_index = (size_t)first_frame / (size_t)options->gop;
+    if (gop_index > SIZE_MAX / sizeof training->palette) return -1;
+    offset = gop_index * sizeof training->palette;
+    if (offset > LONG_MAX) return -1;
+    file = fopen(options->active_palette_path, "rb");
+    if (!file) return -1;
+    if (fseek(file, (long)offset, SEEK_SET) ||
+        fread(training->palette, 1, sizeof training->palette, file) !=
+            sizeof training->palette) {
+        fclose(file);
+        return -1;
+    }
+    if (fclose(file)) return -1;
+    for (palette = 0; palette < PALETTE_COUNT; ++palette)
+        describe_pixels(
+            training->palette[palette],
+            training->block_centers[palette]);
+    return 0;
 }
 
 static uint64_t random_next(uint64_t *state) {
@@ -1072,8 +1106,11 @@ static int encode_gop(GopJob *job) {
     PatternDictionary pattern_dictionary = {0}, shadow_patterns = {0};
     int frame_index;
     if (options->active_palettes) {
-        if (train_gop_palette(job->frames, job->frame_count,
-                job->first_frame, info, options, &active_training)) {
+        if (options->active_palette_path
+                ? load_active_palette(
+                    options, job->first_frame, &active_training)
+                : train_gop_palette(job->frames, job->frame_count,
+                    job->first_frame, info, options, &active_training)) {
             goto fail;
         }
         training = &active_training;
@@ -1673,7 +1710,8 @@ static int write_report(
         options->audio_path ? 1 : 0,
         options->threads, options->gop, options->lambda,
         options->candidate_palettes, options->search_radius,
-        options->active_palettes ? "active-gop" : "fixed-global",
+        options->active_palette_path ? "active-override" :
+            options->active_palettes ? "active-gop" : "fixed-global",
         palette_updates,
         options->maximum_sample_blocks,
         options->sample_blocks_per_frame,
@@ -1690,7 +1728,7 @@ static int write_report(
 int main(int argc, char **argv) {
     Options options = {
         8, 48, 64.0, 3, 2, 256, 256, 32768, 16, 10, 10, 8192,
-        0, NULL, 0, 1, NULL, 16000, 1
+        0, NULL, 0, 1, NULL, 16000, 1, NULL
     };
     const char *input_path = NULL;
     const char *output_path = NULL;
@@ -1778,6 +1816,10 @@ int main(int argc, char **argv) {
             index++;
         } else if (!strcmp(argument, "--active-palettes")) {
             options.active_palettes = 1;
+        } else if (!strcmp(argument, "--active-palette-file") && value) {
+            options.active_palette_path = value;
+            options.active_palettes = 1;
+            index++;
         } else if (!strcmp(argument, "--fixed-palettes")) {
             options.active_palettes = 0;
         } else if (!strcmp(argument, "--report") && value) {
@@ -1803,6 +1845,11 @@ int main(int argc, char **argv) {
         usage(stderr);
         return 2;
     }
+    if (options.active_palette_path && !options.active_palettes) {
+        fprintf(stderr,
+            "bpv1enc: --active-palette-file requires active palettes\n");
+        return 2;
+    }
     if (!options.force && file_exists(output_path)) {
         fprintf(stderr, "bpv1enc: output exists; use --force: %s\n",
             output_path);
@@ -1826,6 +1873,24 @@ int main(int argc, char **argv) {
             options.active_palettes ? NULL : &training, &frame_count)) {
         fprintf(stderr, "bpv1enc: input scan failed\n");
         goto cleanup;
+    }
+    if (options.active_palette_path) {
+        FILE *palette_file = fopen(options.active_palette_path, "rb");
+        uint64_t gop_count =
+            ((uint64_t)frame_count + (uint64_t)options.gop - 1) /
+            (uint64_t)options.gop;
+        uint64_t expected = gop_count * sizeof training.palette;
+        long actual;
+        if (!palette_file || fseek(palette_file, 0, SEEK_END) ||
+            (actual = ftell(palette_file)) < 0 ||
+            (uint64_t)actual != expected) {
+            if (palette_file) fclose(palette_file);
+            fprintf(stderr,
+                "bpv1enc: active palette file must contain exactly "
+                "%" PRIu64 " bytes\n", expected);
+            goto cleanup;
+        }
+        fclose(palette_file);
     }
     if (options.audio_path) {
         audio.file = fopen(options.audio_path, "rb");

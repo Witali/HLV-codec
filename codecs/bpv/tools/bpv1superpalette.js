@@ -13,6 +13,9 @@ Options:
   --bank-sizes LIST   comma-separated sizes (default 128,256,512)
   --target-psnr LIST  perturbation PSNR limits (default 60,50,45,40)
   --output FILE       write JSON report to FILE instead of stdout
+  --emit-nearest-active-palettes FILE
+                      write 64 mapped palette rows per GOP for an encoder
+                      experiment; requires exactly one bank size
   -h, --help          show this help
 
 The tool does not modify the BPV stream. It measures deterministic
@@ -29,6 +32,7 @@ function main() {
   }
   let input = null;
   let output = null;
+  let activePaletteOutput = null;
   let bankSizes = [128, 256, 512];
   let targetPsnr = [60, 50, 45, 40];
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -40,6 +44,13 @@ function main() {
     } else if (argument === "--output") {
       output = arguments_[++index];
       if (!output) throw new RangeError("--output requires a path");
+    } else if (argument === "--emit-nearest-active-palettes") {
+      activePaletteOutput = arguments_[++index];
+      if (!activePaletteOutput) {
+        throw new RangeError(
+          "--emit-nearest-active-palettes requires a path",
+        );
+      }
     } else if (argument.startsWith("-")) {
       throw new RangeError(`Unknown option: ${argument}`);
     } else if (input === null) {
@@ -49,11 +60,28 @@ function main() {
     }
   }
   if (!input) throw new RangeError("An input BPV1 v4 file is required");
-  const report = superpalette.analyzeSuperpalettes(
-    fs.readFileSync(input),
-    { bankSizes, targetPsnr },
-  );
+  const inputBytes = fs.readFileSync(input);
+  const report = superpalette.analyzeSuperpalettes(inputBytes, {
+    bankSizes,
+    targetPsnr,
+  });
   report.input = path.resolve(input);
+  if (activePaletteOutput) {
+    if (bankSizes.length !== 1) {
+      throw new RangeError(
+        "--emit-nearest-active-palettes requires one --bank-sizes value",
+      );
+    }
+    const statistics =
+      superpalette.collectPaletteStatistics(inputBytes);
+    const bank =
+      superpalette.buildSuperpalette(statistics, bankSizes[0]);
+    fs.writeFileSync(
+      activePaletteOutput,
+      superpalette.materializeNearestActiveBanks(statistics, bank),
+    );
+    report.nearestActivePalettes = path.resolve(activePaletteOutput);
+  }
   const json = `${JSON.stringify(report, null, 2)}\n`;
   if (output) fs.writeFileSync(output, json);
   else process.stdout.write(json);
