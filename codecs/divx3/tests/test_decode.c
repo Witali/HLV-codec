@@ -76,8 +76,11 @@ int main(int argc, char **argv) {
             &packet_size);
         if (result == DIVX3_AVI_EOF) break;
         if (result != DIVX3_AVI_OK) {
-            fprintf(stderr, "packet %u failed: %s\n", frames,
-                    divx3_avi_strerror(result));
+            fprintf(stderr,
+                    "packet %u failed: %s "
+                    "(packet=%zu capacity=%u)\n",
+                    frames, divx3_avi_strerror(result), packet_size,
+                    info.max_video_packet_size);
             return 1;
         }
         result = divx3_decoder_decode(
@@ -99,9 +102,11 @@ int main(int argc, char **argv) {
         ++frames;
     }
     printf("width=%u height=%u fps=%u/%u frames=%u memory=%zu "
+           "max_packet=%u "
            "checksum=%016" PRIx64 "\n",
            info.width, info.height, info.fps_num, info.fps_den,
-           frames, divx3_decoder_memory_bytes(decoder), checksum);
+           frames, divx3_decoder_memory_bytes(decoder),
+           info.max_video_packet_size, checksum);
     free(packet);
     divx3_decoder_destroy(decoder);
     fclose(output);

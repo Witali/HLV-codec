@@ -49,6 +49,19 @@ def emit_array(
     out.append("")
 
 
+def emit_mcbpc(
+    out: list[str], name: str, entries: list[tuple[int, ...]]
+) -> None:
+    out.append(f"static const Divx3McbpcVlc {name}[] = {{")
+    for length, code, *cbp in entries:
+        out.append(
+            f"    {{{length}, {code}, "
+            "{" + ", ".join(str(value) for value in cbp) + "}},"
+        )
+    out.append("};")
+    out.append("")
+
+
 def parse_dc(root: pathlib.Path) -> dict[str, list[tuple[int, int, int]]]:
     text = (root / "dc_table.go").read_text(encoding="utf-8")
     result: dict[str, list[tuple[int, int, int]]] = {}
@@ -223,7 +236,7 @@ def generate(root: pathlib.Path) -> str:
     for name, entries in motion.items():
         emit_array(out, "Divx3MotionVlc", f"k{name}", entries)
     emit_array(out, "Divx3MbVlc", "kMbNonIntraVlc", mb)
-    emit_array(out, "Divx3McbpcVlc", "kMcbpcVlc", mcbpc)
+    emit_mcbpc(out, "kMcbpcVlc", mcbpc)
 
     set_specs = {
         "kLumaSets": (

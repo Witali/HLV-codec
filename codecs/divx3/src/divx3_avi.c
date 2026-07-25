@@ -193,13 +193,16 @@ static int parse_stream_list(FILE *file, long end, uint8_t stream_index,
         info->frame_count = stream.length;
         info->max_video_packet_size = stream.suggested_buffer;
     } else if (stream.type == fourcc('a', 'u', 'd', 's')) {
-        if (format_size < 16 || read_le16(format) != 1)
-            return DIVX3_AVI_ERR_FORMAT;
-        info->audio_stream = stream_index;
-        info->audio_channels = (uint8_t)read_le16(format + 2);
-        info->audio_sample_rate = read_le32(format + 4);
-        info->audio_bits_per_sample =
-            (uint8_t)read_le16(format + 14);
+        if (format_size < 16) return DIVX3_AVI_ERR_FORMAT;
+        if (read_le16(format) == 1 &&
+            read_le16(format + 2) == 1 &&
+            read_le16(format + 14) == 8 &&
+            read_le32(format + 4) != 0) {
+            info->audio_stream = stream_index;
+            info->audio_channels = 1;
+            info->audio_sample_rate = read_le32(format + 4);
+            info->audio_bits_per_sample = 8;
+        }
     }
     return DIVX3_AVI_OK;
 }
@@ -273,6 +276,11 @@ static int next_payload(FILE *file, const Divx3AviInfo *info,
         }
         wanted = video ? is_video_chunk(id, info->video_stream)
                        : is_audio_chunk(id, info->audio_stream);
+        if (wanted && !*size) {
+            if (!skip_chunk(file, data_start, 0))
+                return DIVX3_AVI_ERR_IO;
+            continue;
+        }
         if (wanted) return DIVX3_AVI_OK;
         if (!skip_chunk(file, data_start, *size))
             return DIVX3_AVI_ERR_IO;
@@ -335,11 +343,6 @@ int divx3_avi_read_info(FILE *file, Divx3AviInfo *info) {
         !info->fps_num || !info->fps_den || !info->movi_start ||
         info->movi_end <= info->movi_start)
         return DIVX3_AVI_ERR_FORMAT;
-    if (info->audio_stream != 0xff &&
-        (info->audio_channels != 1 ||
-         info->audio_bits_per_sample != 8 ||
-         !info->audio_sample_rate))
-        return DIVX3_AVI_ERR_FORMAT;
     if (!info->max_video_packet_size)
         info->max_video_packet_size = DIVX3_AVI_FALLBACK_PACKET_BYTES;
     if (info->max_video_packet_size > DIVX3_AVI_MAX_PACKET_BYTES)
@@ -360,6 +363,7 @@ int divx3_avi_read_video_packet(FILE *file, const Divx3AviInfo *info,
         return DIVX3_AVI_ERR_ARGUMENT;
     result = next_payload(file, info, 1, &size);
     if (result != DIVX3_AVI_OK) return result;
+    *packet_size = size;
     payload_start = ftell(file);
     if (payload_start < 0) return DIVX3_AVI_ERR_IO;
     if (!size || size > capacity) return DIVX3_AVI_ERR_RANGE;
@@ -368,7 +372,6 @@ int divx3_avi_read_video_packet(FILE *file, const Divx3AviInfo *info,
     if (next_position > LONG_MAX ||
         !seek_absolute(file, (long)next_position))
         return DIVX3_AVI_ERR_IO;
-    *packet_size = size;
     return DIVX3_AVI_OK;
 }
 
