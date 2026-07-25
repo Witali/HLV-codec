@@ -312,11 +312,14 @@ display DMA timing.
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
 - DivX 3: two packed Y6/U5/V5 reference frames, Q4 correction maps and rolling
-  DC/AC/MV predictor rows use 174,008 bytes at 320x240, versus 237,608 bytes
-  for the exact 8-bit decoder after the same predictor-row optimization. The
-  player also uses one 10 KiB display allocation, 4 KiB stdio read-ahead and
-  one compressed packet capped at 96 KiB. It is decoded sequentially on CPU0;
-  physical-board frame-time validation is still required.
+  DC/AC/MV predictor rows use 174,000 bytes at 320x240, versus 237,600 bytes
+  for the exact 8-bit decoder after the same predictor-row optimization.
+  Each reference is allocated independently, limiting the largest frame
+  request to 83,400 bytes. The player also uses one 10 KiB display allocation,
+  4 KiB stdio read-ahead and one compressed packet capped at 96 KiB. It is
+  decoded sequentially on CPU0. Physical 300-frame tests completed without
+  sequence gaps or audio underruns, but q4 material reached only 8.06 observed
+  fps at 320x180 and 6.64 fps at 320x240 versus the saved 12 fps.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded

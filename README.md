@@ -21,8 +21,12 @@ curve as the HLV preset.
 found in `DIV3`/`MP43` AVI files. The memory-bounded ESP32 profile accepts up
 to 320x240 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. It
 stores predictive references as Y6/U5/V5 with Q4 block-average corrections;
-the portable decoder retains a pixel-exact 8-bit validation mode. DivX 4 and
-5 use the different MPEG-4 Part 2 ASP format and are not yet supported.
+the two references are allocated independently so QVGA fits fragmented
+internal RAM. The portable decoder retains a pixel-exact 8-bit validation
+mode. Physical-board tests decode both 320x180 and 320x240 without sequence or
+audio errors, although the current q4 files do not sustain their saved 12 fps.
+DivX 4 and 5 use the different MPEG-4 Part 2 ASP format and are not yet
+supported.
 
 The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
 Stream with MPEG-1 Video and MP2 audio. Its ESP32 memory-bounded variant

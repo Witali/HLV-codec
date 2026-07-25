@@ -83,7 +83,6 @@ struct Divx3Decoder {
     uint16_t c_stride;
     uint16_t correction_stride_y;
     uint16_t correction_stride_c;
-    uint8_t *frame_storage;
     uint8_t *frames[2];
     int16_t *dc_luma;
     int16_t *dc_cb;
@@ -1204,7 +1203,14 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     size_t ac_luma_values = luma_blocks * 8U;
     size_t ac_chroma_values = chroma_blocks * 8U;
 
-    decoder->frame_storage = (uint8_t *)malloc(decoder->frame_bytes * 2U);
+    /*
+     * Keep the two predictive frames independent. On ESP32 the total free
+     * heap can be sufficient while no single block is large enough for both
+     * frames. Separate allocations halve the largest contiguous request
+     * without changing the frame representation or decoder output.
+     */
+    decoder->frames[0] = (uint8_t *)malloc(decoder->frame_bytes);
+    decoder->frames[1] = (uint8_t *)malloc(decoder->frame_bytes);
     decoder->dc_luma = (int16_t *)malloc(luma_blocks * sizeof(int16_t));
     decoder->dc_cb = (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
     decoder->dc_cr = (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
@@ -1223,15 +1229,14 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     decoder->coded_luma = (uint8_t *)malloc(luma_blocks);
     decoder->mv_x = (int8_t *)malloc(macroblock_rows);
     decoder->mv_y = (int8_t *)malloc(macroblock_rows);
-    if (!decoder->frame_storage || !decoder->dc_luma ||
+    if (!decoder->frames[0] || !decoder->frames[1] ||
+        !decoder->dc_luma ||
         !decoder->dc_cb || !decoder->dc_cr ||
         !decoder->ac_luma_row || !decoder->ac_luma_col ||
         !decoder->ac_cb_row || !decoder->ac_cb_col ||
         !decoder->ac_cr_row || !decoder->ac_cr_col ||
         !decoder->coded_luma || !decoder->mv_x || !decoder->mv_y)
         return DIVX3_ERR_MEMORY;
-    decoder->frames[0] = decoder->frame_storage;
-    decoder->frames[1] = decoder->frame_storage + decoder->frame_bytes;
     decoder->memory_bytes =
         sizeof(*decoder) + decoder->frame_bytes * 2U +
         (luma_blocks + chroma_blocks * 2U) * sizeof(int16_t) +
@@ -1331,7 +1336,8 @@ Divx3Decoder *divx3_decoder_create_y6_u5_v5(
 
 void divx3_decoder_destroy(Divx3Decoder *decoder) {
     if (!decoder) return;
-    free(decoder->frame_storage);
+    free(decoder->frames[0]);
+    free(decoder->frames[1]);
     free(decoder->dc_luma);
     free(decoder->dc_cb);
     free(decoder->dc_cr);

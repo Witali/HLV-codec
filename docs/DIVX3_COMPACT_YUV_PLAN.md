@@ -6,9 +6,8 @@ Play the existing 320x240 DivX 3 profile on the ESP32-2432S028 without
 PSRAM by reusing the Y6/U5/V5 frame representation already used by the HLV
 and MPEG-1 decoders.
 
-Physical-board flashing and measurements are intentionally excluded until
-the board is available. Host tests and the ESP32 QEMU build are the current
-acceptance environment.
+The initial acceptance environment was the host and ESP32 QEMU. Physical-board
+measurements were added after the board became available.
 
 ## Compact frame representation
 
@@ -68,7 +67,7 @@ reference frames therefore shrink from 230,400 to 166,800 bytes.
 - Compact mode uses no more than 175 KiB for decoder-owned frame and
   predictor storage at 320x240.
 - The firmware accepts 320x240 DivX 3 files and builds successfully.
-- No physical board is flashed.
+- Physical-board validation is deferred until hardware becomes available.
 - Quality and QEMU performance results are recorded before the compact mode
   becomes the Player default.
 
@@ -83,8 +82,8 @@ the full GOP.
 
 ## Completed validation
 
-All implementation stages above are complete in the
-`codex/divx3-compact-yuv` worktree. No board was connected or flashed.
+All implementation stages above are complete. The initial validation was
+performed on the host and in QEMU before a board became available.
 
 - The common compact-YUV420 unit test passes.
 - HLV v12 host simulation remains byte-identical to `main`
@@ -101,22 +100,42 @@ All implementation stages above are complete in the
   42.11 dB for VID_20260522_181611. The worst individual frames are
   36.10 dB and 36.62 dB. Mean signed error is below 0.015 sample in
   magnitude for both files.
-- On a 64-bit host, QVGA decoder-owned memory is 174,008 bytes in compact
-  mode and 237,608 bytes in exact mode. The original exact implementation
+- On a 64-bit host, QVGA decoder-owned memory is 174,000 bytes in compact
+  mode and 237,600 bytes in exact mode. The original exact implementation
   used 293,576 bytes, so rolling predictors plus compact references save
   119,568 bytes (40.7%).
 - The normal ESP-IDF Player build succeeds. Its application image is
-  646,064 bytes and leaves 926,800 bytes free in the 1.5 MiB application
+  647,136 bytes and leaves 925,728 bytes free in the 1.5 MiB application
   partition.
 - Espressif QEMU decodes the validated 60-frame 320x240 clip successfully.
-  The compact decoder is 173,920 bytes with 32-bit pointers. Average,
-  p50, p95 and maximum decode costs are 3,348,612, 3,512,087,
-  4,484,914 and 4,835,357 guest cycles. The decode-only rate calculated
+  The compact decoder is 173,916 bytes with 32-bit pointers. Average,
+  p50, p95 and maximum decode costs are 3,348,621, 3,512,118,
+  4,484,926 and 4,835,351 guest cycles. The decode-only rate calculated
   at 240 MHz is 71.671 fps.
 - QEMU and the host compact decoder produce the same visible-frame hash,
   `1463ec78314286a3`, for that clip.
 
-The Player now selects compact DivX 3 storage, accepts at most 320x240,
-uses one 10 KiB RGB565 display strip allocation and reduces DivX stdio
-read-ahead from 16 KiB to 4 KiB. Physical SD/display/audio timing remains
-the only deferred acceptance item.
+The Player selects compact DivX 3 storage, accepts at most 320x240, uses one
+10 KiB RGB565 display strip allocation and reduces DivX stdio read-ahead from
+16 KiB to 4 KiB.
+
+## Physical-board validation
+
+The original contiguous allocation for both compact reference frames failed
+before the first picture on the ESP32. Allocating the two frames independently
+reduces the largest request from 133,440 to 66,720 bytes at 320x180 and from
+166,800 to 83,400 bytes at 320x240. Both profiles then decode successfully.
+
+A 300-frame ESP32-D0WD-V3 run at 240 MHz produced:
+
+- 320x180: zero sequence gaps, rebuffers, underrun samples or silence chunks;
+  89.3 ms average and 167.0 ms p95 decode time, 8.06 observed fps, 57 display
+  skips and 23 audio-loop events.
+- 320x240: zero sequence gaps, rebuffers, underrun samples or silence chunks;
+  111.1 ms average and 197.5 ms p95 decode time, 6.64 observed fps, 72 display
+  skips and 26 audio-loop events.
+
+Independent frame allocations therefore solve the memory blocker without
+changing reconstructed pixels, but the current q4 material does not sustain
+the saved 12 fps profile on the physical board. CPU optimization or a lower
+frame rate is still required for smooth playback.
