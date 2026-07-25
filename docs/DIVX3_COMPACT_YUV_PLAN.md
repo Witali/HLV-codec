@@ -138,6 +138,25 @@ Together these changes reduce average guest cycles by 44.8%. A tested
 64-bit bit-reader reservoir increased the average cost by 3.1%, so it was
 reverted rather than retained.
 
+### Xtensa DSP experiments
+
+The ESP32 LX6 toolchain reports hardware `MUL16S`/`MUL16U` support but no
+standard `MAC16` package. Two exact narrow-multiply variants were tested:
+
+- Replacing the hot IDCT column multiplications with `MUL16S` and retaining
+  a 32-bit fallback for out-of-range samples changed the QEMU average from
+  1,847,744 to 1,852,770 guest cycles (+0.27%). On the board, average QVGA
+  decode time changed from 52.759 to 52.874 ms.
+- Applying `MUL16U` to dequantization and `MUL16S` to intra DC scaling
+  changed the QEMU average to 1,848,728 cycles (+0.05%) and the board average
+  to 54.010 ms.
+
+Both variants retained the visible-frame hash but were removed because they
+were slower. The AE32 packed multiply-accumulate instructions are effective
+for aligned contiguous dot products. Using them in this decoder would first
+require packing the strided 32-bit IDCT columns and would discard the current
+factorization's shared products, so no AE32 path was retained.
+
 ## Physical-board validation
 
 The original contiguous allocation for both compact reference frames failed
