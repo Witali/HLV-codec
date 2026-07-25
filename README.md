@@ -17,6 +17,11 @@ The second device codec is the standard
 native source frame rate, and muxes PCM_U8 audio through the same saved level
 curve as the HLV preset.
 
+[`DivX 3`](codecs/divx3/) support decodes the Microsoft MPEG-4 v3 bitstream
+found in `DIV3`/`MP43` AVI files. The first memory-bounded ESP32 profile is
+160x90 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. DivX 4
+and 5 use the different MPEG-4 Part 2 ASP format and are not yet supported.
+
 The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
 Stream with MPEG-1 Video and MP2 audio. Its ESP32 memory-bounded variant
 accepts pictures up to 320x240, contains only I/P pictures, and stores two
@@ -93,6 +98,7 @@ Build and test the desktop tools with MSVC:
 ```powershell
 .\scripts\build_msvc.ps1
 .\scripts\build_bpv_msvc.ps1
+.\scripts\test_divx3.ps1
 ```
 
 Encode the approved 1080p Big Buck Bunny source to BPV1 v2 at 320x180 and its
@@ -100,6 +106,12 @@ native 24 fps. The script uses eight C GOP workers by default:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
+```
+
+Create the conservative DivX 3 AVI profile and its matching `play.txt`:
+
+```powershell
+.\scripts\encode_big_buck_bunny_divx3.ps1
 ```
 
 ## Native Windows player
@@ -124,11 +136,11 @@ headless full-file validation mode.
 
 ## ESP32-2432S028 playback
 
-The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, BPV1 or the
-constrained MPEG-1/MP2 profile from a FAT32
+The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, DivX 3/AVI, BPV1 or
+the constrained MPEG-1/MP2 profile from a FAT32
 microSD card over an independent SPI3/VSPI DMA bus and displays it on the
-320x240 ST7789 over SPI2 DMA. HLV/MJPEG PCM_U8 and decoded MPEG MP2 play
-through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps
+320x240 ST7789 over SPI2 DMA. HLV/MJPEG/DivX 3 PCM_U8 and decoded MPEG MP2
+play through DAC GPIO26 DMA and the onboard amplifier. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
 DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX
@@ -146,10 +158,10 @@ firmware project directory:
 ```
 
 The player reads one filename from `/sdcard/HLV/play.txt`; it never guesses a
-fallback video. The selected `.hlv` or MJPEG `.avi` file must be in the same
-directory; video-only `.bpv1` is accepted as well. With the firmware running
-normally, the video and selection file can be copied over the CH340C UART
-without removing the card:
+fallback video. The selected `.hlv`, MJPEG/DivX 3 `.avi`, `.bpv1`, or
+MPEG-1 file must be in the same directory. With the firmware running normally,
+the video and selection file can be copied over the CH340C UART without
+removing the card:
 
 ```powershell
 .\scripts\upload_video_uart.ps1 -Port COM8 `

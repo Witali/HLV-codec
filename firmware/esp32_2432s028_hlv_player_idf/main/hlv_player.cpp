@@ -26,6 +26,8 @@
 #include "board_config.hpp"
 #include "bpv_esp32_decoder.hpp"
 #include "cyd_display.hpp"
+#include "divx3.h"
+#include "divx3_avi.h"
 #include "hlv1.h"
 #include "hlv_esp32_decoder.hpp"
 #include "mjpeg_avi_decoder.hpp"
@@ -43,6 +45,8 @@ constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
 constexpr size_t kVideoReadAheadBytes = 16 * 1024;
 constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
+constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
+constexpr uint32_t kDivx3MaximumMacroblocks = 80;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -108,6 +112,7 @@ enum class VideoCodec {
     kNone,
     kHlv,
     kMjpeg,
+    kDivx3,
     kBpv,
     kMpeg1,
 };
@@ -153,6 +158,9 @@ FILE *audio_file = nullptr;
 HlvEsp32Decoder decoder;
 MjpegAviDecoder mjpeg_decoder;
 MjpegAviInfo mjpeg_info{};
+Divx3Decoder *divx3_decoder = nullptr;
+Divx3AviInfo divx3_info{};
+uint8_t *divx3_packet = nullptr;
 BpvEsp32Decoder bpv_decoder;
 BPV1Header bpv_header{};
 plm_t *mpeg_video = nullptr;
@@ -765,6 +773,20 @@ int prefetchMjpegAudioChunk() {
     return MJPEG_AVI_OK;
 }
 
+int prefetchDivx3AudioChunk() {
+    uint32_t payload_size = 0;
+    const int result =
+        divx3_avi_next_audio_chunk(audio_file, &divx3_info,
+                                   &payload_size);
+    if (result != DIVX3_AVI_OK) return result;
+    const int audio_result = prefetchAudioBytes(payload_size);
+    if (audio_result != HLV1_OK) return audio_result;
+    if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR)) {
+        return DIVX3_AVI_ERR_IO;
+    }
+    return DIVX3_AVI_OK;
+}
+
 int prefetchBpvAudioPacket() {
     BPV1FrameInfo info{};
     const int result =
@@ -819,6 +841,8 @@ int prefetchAudioPacket() {
         return prefetchMpegAudioFrame();
     if (video_codec == VideoCodec::kMjpeg)
         return prefetchMjpegAudioChunk();
+    if (video_codec == VideoCodec::kDivx3)
+        return prefetchDivx3AudioChunk();
     if (video_codec == VideoCodec::kBpv)
         return prefetchBpvAudioPacket();
     return prefetchHlvAudioPacket();
@@ -1031,6 +1055,21 @@ bool prepareAudio(const HLV1Header &header) {
             stopAudio();
             return false;
         }
+    } else if (video_codec == VideoCodec::kDivx3) {
+        Divx3AviInfo audio_info{};
+        if (divx3_avi_read_info(audio_file, &audio_info) !=
+                DIVX3_AVI_OK ||
+            audio_info.width != header.width ||
+            audio_info.height != header.height ||
+            audio_info.fps_num != header.fps_num ||
+            audio_info.fps_den != header.fps_den ||
+            audio_info.frame_count != header.frame_count ||
+            audio_info.audio_sample_rate != header.audio_sample_rate ||
+            audio_info.audio_channels != 1 ||
+            audio_info.audio_bits_per_sample != 8) {
+            stopAudio();
+            return false;
+        }
     } else if (video_codec == VideoCodec::kBpv) {
         BPV1Header audio_header{};
         if (bpv1_header_read(audio_file, &audio_header) != BPV1_OK ||
@@ -1154,6 +1193,11 @@ void closeVideo() {
     decoder.end();
     mjpeg_decoder.end();
     mjpeg_info = {};
+    divx3_decoder_destroy(divx3_decoder);
+    divx3_decoder = nullptr;
+    heap_caps_free(divx3_packet);
+    divx3_packet = nullptr;
+    divx3_info = {};
     bpv_decoder.end();
     bpv_header = {};
     if (mpeg_video) {
@@ -1295,7 +1339,18 @@ VideoOpenResult openVideoCandidate(const char *path) {
     } else if (signature_size == sizeof signature &&
                !std::memcmp(signature, "RIFF", 4) &&
                !std::memcmp(signature + 8, "AVI ", 4)) {
-        video_codec = VideoCodec::kMjpeg;
+        Divx3AviInfo probe{};
+        const int divx3_result =
+            divx3_avi_read_info(video_file, &probe);
+        std::clearerr(video_file);
+        if (std::fseek(video_file, 0, SEEK_SET)) {
+            std::fclose(video_file);
+            video_file = nullptr;
+            return VideoOpenResult::kIoError;
+        }
+        video_codec = divx3_result == DIVX3_AVI_OK
+                          ? VideoCodec::kDivx3
+                          : VideoCodec::kMjpeg;
     } else if (signature_size >= 4 &&
                signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {
@@ -1490,6 +1545,62 @@ bool openVideo() {
                  sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
                      mjpeg_decoder.compressedCapacity()));
+    } else if (video_codec == VideoCodec::kDivx3) {
+        int result = divx3_avi_read_info(video_file, &divx3_info);
+        const uint32_t macroblocks =
+            ((static_cast<uint32_t>(divx3_info.width) + 15U) / 16U) *
+            ((static_cast<uint32_t>(divx3_info.height) + 15U) / 16U);
+        if (result == DIVX3_AVI_OK &&
+            (divx3_info.fps_num > UINT16_MAX ||
+             divx3_info.fps_den > UINT16_MAX ||
+             divx3_info.audio_sample_rate > UINT16_MAX ||
+             divx3_info.max_video_packet_size >
+                 kDivx3MaximumPacketBytes ||
+             macroblocks > kDivx3MaximumMacroblocks)) {
+            result = DIVX3_AVI_ERR_RANGE;
+        }
+        if (result != DIVX3_AVI_OK) {
+            showStatus("Invalid DivX 3 AVI",
+                       divx3_avi_strerror(result));
+            closeVideo();
+            return false;
+        }
+        divx3_decoder =
+            divx3_decoder_create(divx3_info.width, divx3_info.height);
+        divx3_packet = static_cast<uint8_t *>(heap_caps_malloc(
+            divx3_info.max_video_packet_size, MALLOC_CAP_8BIT));
+        if (!divx3_decoder || !divx3_packet) {
+            showStatus("Not enough RAM",
+                       "use at most the 160x120 DivX 3 profile");
+            reportHeap("DivX 3 decoder allocation failed");
+            closeVideo();
+            return false;
+        }
+        sequence_header.width = divx3_info.width;
+        sequence_header.height = divx3_info.height;
+        sequence_header.fps_num =
+            static_cast<uint16_t>(divx3_info.fps_num);
+        sequence_header.fps_den =
+            static_cast<uint16_t>(divx3_info.fps_den);
+        sequence_header.frame_count = divx3_info.frame_count;
+        if (divx3_info.audio_stream != 0xff) {
+            sequence_header.flags = HLV1_FLAG_AUDIO;
+            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_sample_rate =
+                static_cast<uint16_t>(divx3_info.audio_sample_rate);
+            sequence_header.audio_channels = 1;
+        }
+        ESP_LOGI(kTag,
+                 "DivX 3/AVI: %ux%u, %u/%u fps, %u frames, "
+                 "PCM_U8 audio=%u Hz, decoder=%u bytes, packet=%u bytes",
+                 sequence_header.width, sequence_header.height,
+                 sequence_header.fps_num, sequence_header.fps_den,
+                 static_cast<unsigned>(sequence_header.frame_count),
+                 sequence_header.audio_sample_rate,
+                 static_cast<unsigned>(
+                     divx3_decoder_memory_bytes(divx3_decoder)),
+                 static_cast<unsigned>(
+                     divx3_info.max_video_packet_size));
     } else if (video_codec == VideoCodec::kBpv) {
         const int result = bpv_decoder.begin(video_file, &bpv_header);
         if (result != BPV1_OK) {
@@ -1617,6 +1728,13 @@ bool openVideo() {
     } else if (video_codec == VideoCodec::kMjpeg) {
         ESP_LOGI(kTag,
                  "Playing MJPEG in %s mode, frame storage=RGB565 strip",
+                 player_settings::kScaleVideoToDisplay
+                     ? "scale-to-320x240"
+                     : "native-centred");
+    } else if (video_codec == VideoCodec::kDivx3) {
+        ESP_LOGI(kTag,
+                 "Playing DivX 3 in %s mode, frame storage=two YUV420 "
+                 "reference frames",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -1962,6 +2080,10 @@ void failPlayback(const char *title, int result) {
             ? "invalid, truncated or unsupported MPEG-1 stream"
             : video_codec == VideoCodec::kMjpeg
             ? mjpeg_avi_strerror(result)
+            : video_codec == VideoCodec::kDivx3
+            ? (result <= DIVX3_AVI_ERR_ARGUMENT
+                   ? divx3_avi_strerror(result)
+                   : divx3_strerror(result))
             : video_codec == VideoCodec::kBpv
                 ? bpv1_strerror(result)
                 : hlv1_strerror(result);
@@ -2408,6 +2530,82 @@ void playOneMjpegFrame() {
     finishPresentation(presentation, read_us, decode_us, render_us);
 }
 
+plm_frame_t makeDivx3RenderFrame(const Divx3Frame &source) {
+    plm_frame_t frame{};
+    frame.width = source.width;
+    frame.height = source.height;
+    frame.storage_mode = PLM_FRAME_STORAGE_YUV420;
+    frame.y.width = source.width;
+    frame.y.height = source.height;
+    frame.y.stride = source.y_stride;
+    frame.y.data = const_cast<uint8_t *>(source.y);
+    frame.cb.width = (source.width + 1U) / 2U;
+    frame.cb.height = (source.height + 1U) / 2U;
+    frame.cb.stride = source.c_stride;
+    frame.cb.data = const_cast<uint8_t *>(source.cb);
+    frame.cr.width = frame.cb.width;
+    frame.cr.height = frame.cb.height;
+    frame.cr.stride = source.c_stride;
+    frame.cr.data = const_cast<uint8_t *>(source.cr);
+    return frame;
+}
+
+void playOneDivx3Frame() {
+    size_t packet_size = 0;
+    const long retry_offset = std::ftell(video_file);
+    const int64_t read_start = microsNow();
+    int packet_result = divx3_avi_read_video_packet(
+        video_file, &divx3_info, divx3_packet,
+        divx3_info.max_video_packet_size, &packet_size);
+    if (packet_result == DIVX3_AVI_ERR_IO && retry_offset >= 0) {
+        for (unsigned attempt = 1; attempt <= 2; ++attempt) {
+            ESP_LOGW(kTag,
+                     "Recovering DivX 3 packet at %ld, attempt %u/2",
+                     retry_offset, attempt);
+            if (!reopenVideoAt(retry_offset)) break;
+            packet_result = divx3_avi_read_video_packet(
+                video_file, &divx3_info, divx3_packet,
+                divx3_info.max_video_packet_size, &packet_size);
+            if (packet_result == DIVX3_AVI_OK) {
+                ESP_LOGI(kTag, "DivX 3 packet recovered at %ld",
+                         retry_offset);
+                break;
+            }
+            if (packet_result != DIVX3_AVI_ERR_IO) break;
+        }
+    }
+    const uint32_t read_us =
+        static_cast<uint32_t>(microsNow() - read_start);
+    if (packet_result == DIVX3_AVI_EOF) {
+        finishVideoLoop();
+        return;
+    }
+    if (packet_result != DIVX3_AVI_OK) {
+        if (packet_result == DIVX3_AVI_ERR_IO) {
+            failSdCardRead("cannot read DivX 3 video");
+            return;
+        }
+        failPlayback("DivX 3 packet error", packet_result);
+        return;
+    }
+
+    Divx3Frame decoded{};
+    const int64_t decode_start = microsNow();
+    const int decode_result = divx3_decoder_decode(
+        divx3_decoder, divx3_packet, packet_size, &decoded);
+    const uint32_t decode_us =
+        static_cast<uint32_t>(microsNow() - decode_start);
+    if (decode_result != DIVX3_OK) {
+        failPlayback("DivX 3 decode error", decode_result);
+        return;
+    }
+    const plm_frame_t render_frame = makeDivx3RenderFrame(decoded);
+    if (!presentDecodedFrame(
+            &render_frame, renderMpegOpaque, read_us, decode_us)) {
+        failPlayback("Display DMA error", DIVX3_ERR_BITSTREAM);
+    }
+}
+
 void playOneBpvFrameSequential() {
     BPV1Packet packet{};
     const int64_t read_start = microsNow();
@@ -2675,6 +2873,11 @@ extern "C" void app_main(void) {
         if (video_file && video_codec == VideoCodec::kMjpeg &&
             mjpeg_decoder.ready()) {
             playOneMjpegFrame();
+            continue;
+        }
+        if (video_file && video_codec == VideoCodec::kDivx3 &&
+            divx3_decoder && divx3_packet) {
+            playOneDivx3Frame();
             continue;
         }
         if (video_file && video_codec == VideoCodec::kBpv &&

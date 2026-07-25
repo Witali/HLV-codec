@@ -26,6 +26,7 @@ else()
         INCLUDE_DIRS "."
         REQUIRES
             bpv1
+            divx3
             hlv1
             esp_driver_dac
             esp_driver_gpio
