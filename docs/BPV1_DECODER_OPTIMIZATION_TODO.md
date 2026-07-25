@@ -4,22 +4,28 @@ This list covers BPV1 decoding and presentation on the
 ESP32-2432S028 player. Optimize against measurements from the physical board,
 not only host execution time.
 
-## Current baseline
+## Current physical-board result
 
-Test stream: `BigBuckBunny.bpv1`, 320x180, 24 fps, 14,315 frames.
-The frame-time budget is 41,667 us.
+Test stream selected by `/sdcard/HLV/play.txt`:
+`VID_20260522_181611_v4.bpv1`, 320x240, 30 fps. The frame-time budget is
+33,333 us. The display uses 80 MHz SPI and the SD card uses 40 MHz SPI.
 
-The retained decoder completed a 549-frame physical-board run with:
+A 900-frame run of the retained dual-core pipeline completed with:
 
-- no frame-number gaps and no frames exceeding the time budget;
-- SD read: 2,797 us average, 15,570 us maximum;
-- BPV decode: 2,113 us average, 9,081 us maximum;
-- RGB565 conversion and display: 13,358 us average;
-- complete frame work: 18,268 us average, 36,825 us maximum.
+- 30.014 observed fps, no frame-number gaps and no skipped presentations;
+- SD read: 17,313 us average, 19,283 us p95, 22,624 us maximum;
+- BPV decode: 5,223 us average, 5,357 us p95, 5,395 us maximum;
+- RGB565 conversion and display: 16,899 us average, 17,381 us p95;
+- no audio rebuffer, underrun, silence insertion or DMA-loop events.
 
-The 80 MHz SPI transfer of a 320x180 RGB565 frame has a theoretical lower
-bound of 11,520 us. Therefore only about 1.8 ms of the measured rendering time
-is not the physical display transfer.
+The individual read, decode and render measurements sum to more than one
+frame period, but they are no longer serial. CPU1 decodes a packet and
+prefetches the next packet while CPU0 presents the preceding decoded frame.
+
+Before the pipeline change, the same file ran at 15.881 fps with the active
+SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
+that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD
+clock then reached the native 30 fps.
 
 ## Completed
 
@@ -31,37 +37,44 @@ is not the physical display transfer.
       `89003dd0f74192ff`.
 - [x] Measure the optimized path on the physical ESP32. Decode time fell from
       50,537 us to 2,113 us on average, with no missed 24 fps deadlines.
+- [x] Render four adjacent pixels from one converted BPV block palette instead
+      of converting every pixel independently.
+- [x] Add bounded one-packet BPV read-ahead without adding a second payload
+      buffer. CPU1 reads the next packet only after it has finished consuming
+      the current packet.
+- [x] Overlap CPU1 decode/read-ahead with CPU0 RGB565 conversion and display.
+- [x] Restore both the tracked default and active test configuration to
+      40 MHz SD SPI. Use lower clocks only for SD reliability diagnostics.
+- [x] Allocate the BPV decoder, packet storage, read-ahead, worker queues and
+      worker stack while opening the video. The close path now stops the
+      worker and deletes its queues before freeing codec and file buffers.
+      No BPV-frame path performs heap allocation.
+- [x] Validate 900 consecutive 320x240 frames on the physical board at native
+      30 fps with no video gaps or audio underruns.
+- [x] Force a close/reopen through the UART CRC command and validate another
+      300 frames at 29.993 fps with no gaps or audio errors.
 
 ## Remaining work
 
-### 1. Render blocks directly to RGB565
+### 1. Separate RGB conversion from display waiting
 
-- [ ] Build a 64x16 RGB565 palette table once when the BPV header is opened.
-      The table requires 2 KiB.
-- [ ] Render all four pixels of a BPV block row together instead of calling
-      `pixel_rgb()` separately for every pixel.
+- [ ] Measure CPU conversion separately from SPI/DMA buffer waiting.
+- [ ] A/B test a 64x16 RGB565 table. BPV v4 must rebuild the 2 KiB table only
+      when a keyframe replaces the active palette.
 - [ ] Preserve the portable RGB24 path used by the Windows player and tests.
-- [ ] Measure conversion time separately from SPI waiting so that display
-      transfer time is not mistaken for decoder work.
 
 Keep the change only if the full decoded-frame hash is unchanged and the
 physical-board render or CPU-conversion measurement improves.
 
-### 2. Hide SD-card latency
+### 2. Validate repeated allocation lifetimes
 
-- [ ] Add one-packet read-ahead for BPV.
-- [ ] Overlap reading the next packet with conversion and SPI submission of
-      the current frame.
-- [ ] Keep packet memory bounded by the maximum frame size from the BPV
-      header.
-- [ ] Measure average, p95, p99 and maximum SD/read-plus-decode time, frame
-      gaps and missed presentation deadlines.
+- [ ] Record free heap and largest free block before open, after open and
+      after close.
+- [ ] Run repeated EOF loops and multiple UART-driven close/reopen cycles.
+- [ ] Confirm that free heap and the largest block return to the same values
+      after every close.
 
-This is primarily a playback-pipeline optimization, not a reduction in the
-BPV decoder's operation count. It targets the observed SD spikes of up to
-15.6 ms.
-
-### 3. Test remaining decoder-core micro-optimizations
+### 3. Optional decoder-core micro-optimizations
 
 - [ ] Maintain `block_x` and `block_y` counters in the decode loop instead of
       using division and remainder for motion blocks.
@@ -75,7 +88,8 @@ BPV decoder's operation count. It targets the observed SD spikes of up to
       change.
 
 Retain a micro-optimization only when the complete decode remains bit-exact
-and physical-board average or tail decode time improves repeatably.
+and physical-board average or tail decode time improves repeatably. These
+changes are lower priority now that 320x240 native 30 fps is sustained.
 
 ### 4. Optional aligned in-memory records
 
@@ -85,13 +99,22 @@ and physical-board average or tail decode time improves repeatably.
 - [ ] Reject the experiment if the memory increase reduces player stability
       or interferes with other codec paths.
 
+## Tested and rejected
+
+- A dedicated single-file BPV audio/video demux experiment did not reduce the
+  measured SD time at 10 MHz and failed audio initialization. It was reverted;
+  the working independent audio reader remains.
+- Increasing the stdio video read-ahead buffer from 16 KiB to 48 KiB changed
+  observed playback from 15.881 to 15.789 fps at 10 MHz. It was reverted.
+
 ## Not currently justified
 
-- A BPV-specific dual-core pipeline is not required for 320x180 at 24 fps:
-  the measured maximum complete-frame work is 36.8 ms against a 41.7 ms
-  budget, with no missed frames.
+- A second maximum-size BPV payload buffer would cost about 48 KiB at
+  320x240. The retained pipeline reuses the decoder-owned packet buffer after
+  decode and already sustains 30 fps.
 - Larger memory banks do not remove the main costs. The decoder already fits
   in RAM, and the display transfer is limited primarily by SPI bandwidth.
 - Enabling byte-addressable IRAM is not a default optimization: byte accesses
   are exception-emulated on this ESP32 profile and can be slower than DRAM.
-
+- Changing the BPV file format is outside this optimization work; all retained
+  changes preserve the existing bitstream.
