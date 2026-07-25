@@ -251,8 +251,9 @@ display DMA timing.
   strips.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1, 16 KiB for the other formats). HLV uses nine reusable
-  7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  (4 KiB for MPEG-1, 16 KiB for the other formats). HLV streams through two
+  alternating reusable 7680-byte packet windows (15 KiB), updating CRC while
+  CPU1 decodes; MJPEG uses the maximum indexed
   JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
   uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
   39,678 bytes for these three MJPEG allocations instead of a full-frame

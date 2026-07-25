@@ -16,6 +16,7 @@
 
 enum {
     PACKET_BLOCK_COUNT = 9,
+    STREAM_BLOCK_COUNT = 2,
     PACKET_BLOCK_BYTES = 7680
 };
 
@@ -68,6 +69,60 @@ static uint64_t hash_frame(uint64_t hash, const HLV1Frame *frame) {
     hash = hash_bytes(hash, frame->y, y_size);
     hash = hash_bytes(hash, frame->u, (size_t)frame->stride_u * c_height);
     return hash_bytes(hash, frame->v, (size_t)frame->stride_v * c_height);
+}
+
+static int file_read_exact(void *context, uint8_t *destination,
+                           size_t bytes) {
+    FILE *file = (FILE *)context;
+    size_t received = fread(destination, 1, bytes, file);
+    if (received == bytes) return HLV1_OK;
+    return received == 0 && feof(file) ? HLV1_EOF : HLV1_ERR_IO;
+}
+
+static int streaming_decode_pass(const char *path, uint64_t *hash,
+                                 size_t *frame_count) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return HLV1_ERR_IO;
+    HLV1Header header;
+    int result = hlv1_header_read(file, &header);
+    HLV1Decoder *decoder =
+        result == HLV1_OK
+            ? hlv1_decoder_create_y6_u5_v5(&header)
+            : NULL;
+    if (result == HLV1_OK && !decoder) result = HLV1_ERR_MEMORY;
+
+    uint8_t *buffers[STREAM_BLOCK_COUNT] = {0};
+    for (size_t index = 0;
+         result == HLV1_OK && index < STREAM_BLOCK_COUNT; ++index) {
+        buffers[index] = (uint8_t *)malloc(PACKET_BLOCK_BYTES);
+        if (!buffers[index]) result = HLV1_ERR_MEMORY;
+    }
+
+    uint64_t local_hash = UINT64_C(14695981039346656037);
+    size_t frames = 0;
+    while (result == HLV1_OK) {
+        HLV1Packet packet = {0};
+        const HLV1Frame *frame = NULL;
+        result = hlv1_decoder_decode_stream(
+            decoder, file_read_exact, file, buffers,
+            STREAM_BLOCK_COUNT, PACKET_BLOCK_BYTES,
+            &packet, &frame);
+        if (result == HLV1_EOF) {
+            result = HLV1_OK;
+            break;
+        }
+        if (result != HLV1_OK) break;
+        local_hash = hash_frame(local_hash, frame);
+        ++frames;
+    }
+
+    for (size_t index = 0; index < STREAM_BLOCK_COUNT; ++index)
+        free(buffers[index]);
+    hlv1_decoder_destroy(decoder);
+    fclose(file);
+    if (hash) *hash = local_hash;
+    if (frame_count) *frame_count = frames;
+    return result;
 }
 
 static void packet_list_free(PacketList *list) {
@@ -204,6 +259,20 @@ int main(int argc, char **argv) {
         packet_list_free(&list);
         return 1;
     }
+    uint64_t streaming_hash = 0;
+    size_t streaming_frames = 0;
+    result = streaming_decode_pass(
+        argv[1], &streaming_hash, &streaming_frames);
+    if (result < 0 || streaming_frames != list.count ||
+        streaming_hash != frame_hash) {
+        fprintf(stderr,
+                "Streaming verification: %s, frames %zu/%zu, "
+                "hash %016" PRIx64 "/%016" PRIx64 "\n",
+                hlv1_strerror(result), streaming_frames, list.count,
+                streaming_hash, frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
 
     double start = now_seconds();
     for (int loop = 0; loop < loops; ++loop) {
@@ -221,6 +290,8 @@ int main(int argc, char **argv) {
            list.count);
     printf("Packet view: %u x %u bytes, maximum packet %zu bytes\n",
            PACKET_BLOCK_COUNT, PACKET_BLOCK_BYTES, maximum_packet);
+    printf("Streaming verification: %u x %u bytes, hash match\n",
+           STREAM_BLOCK_COUNT, PACKET_BLOCK_BYTES);
     printf("Frame storage + working rows: %zu bytes\n",
            compact_frame_working_bytes(&header));
     printf("Reconstruction hash: %016" PRIx64 "\n", frame_hash);

@@ -125,34 +125,37 @@ way and finishes rendering the preceding frame before a v4 keyframe replaces
 the active palette. Set the flag to `false` to retain the sequential
 comparison mode.
 
-## Segmented ESP32 decoder
+## Streaming ESP32 decoder
 
 The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
-portable predictive decoder first and then allocates a nine-block packet
-pool from internal SRAM. Every block preferentially uses DMA-capable memory;
-if decoder fragmentation exhausts that heap, only the remaining blocks fall
-back to ordinary 8-bit internal SRAM. Its 69,120-byte capacity covers a fully
-literal 320x180 Y6/U5/V5 key frame plus one 16 kHz mono audio interval without
-requiring one equally large contiguous heap region.
+portable predictive decoder first and then allocates two alternating 7680-byte
+packet windows from internal SRAM. Every window preferentially uses
+DMA-capable memory; an ordinary 8-bit internal allocation is the fallback.
+The 15,360-byte window replaces the former nine-block, 69,120-byte resident
+packet pool and saves 53,760 bytes.
 
-Packet data is read sequentially into the blocks and CRC-32 is updated during
-the read. The bit reader advances to the next block without joining or copying
-the payload. PCM at the packet tail is likewise sent to the FreeRTOS audio
-stream one contiguous span at a time. The blocks are retained for the complete
-playback session, so the frame loop performs no packet `malloc` or `free`.
-The startup log reports the actual DMA-capable block count; the ESP-IDF SD
-driver supplies its DMA-safe fallback for any ordinary internal block.
+CPU1 reads the packet header, refills one window at a time and decodes directly
+from those sequential spans while CPU0 renders the preceding frame. CRC-32 is
+updated as each span arrives. After the video bit count is exhausted, any
+unread padding and the audio tail are consumed through the same windows before
+the CRC is accepted, leaving the file cursor on the next packet header. The
+independent audio cursor continues to supply PCM to the FreeRTOS stream.
+
+Packet size is no longer limited by resident packet RAM. Both windows remain
+allocated for the playback session, so the frame loop performs no packet
+`malloc` or `free`, and the on-disk HLV v1-v13 syntax is unchanged.
 
 The stdio layer uses a fixed 16 KiB aligned read-ahead buffer. This costs 16
 KiB of the RAM saved by compact frame storage, but combines small packet/header
 reads into longer SDSPI transactions. On the reference card it reduced average
 packet-read time from roughly 50--55 ms to 5--6 ms.
 
-The pool capacity is 69,120 bytes. A packet larger than that is rejected with
-an out-of-memory error instead of fragmenting the ESP32 heap. The ninth block
-uses 7,680 additional bytes compared with the v12 player and leaves roughly
-28 KiB free in the current 320x180 compact memory-budget estimate; confirm the
-actual minimum heap from the serial log on physical hardware.
+The saved 53,760 bytes are enough for the 174,480-byte compact frame storage
+required by 320x240. Physical-hardware verification decoded the complete
+3359-frame test source identically on the host and opened the same 320x240
+file on ESP32 with PCM audio enabled. At that size the remaining limitation is
+CPU throughput rather than allocation: a 300-frame hardware sample reached
+9.362 fps, with 97.864 ms average decode and 44.482 ms average render time.
 
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
 ten-second file. The DAC DMA clock uses APLL rather than frame timing, while

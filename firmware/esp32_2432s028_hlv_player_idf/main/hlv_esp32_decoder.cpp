@@ -2,10 +2,31 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace {
 
 constexpr char kTag[] = "hlv-decoder";
+
+struct StreamReadContext {
+    FILE *file;
+    uint32_t read_us;
+};
+
+int streamRead(void *opaque, uint8_t *destination, size_t bytes) {
+    auto *context = static_cast<StreamReadContext *>(opaque);
+    if (!context || !context->file || (!destination && bytes))
+        return HLV1_ERR_ARGUMENT;
+    const int64_t start = esp_timer_get_time();
+    const size_t received =
+        fread(destination, 1, bytes, context->file);
+    context->read_us +=
+        static_cast<uint32_t>(esp_timer_get_time() - start);
+    if (received == bytes) return HLV1_OK;
+    return received == 0 && feof(context->file)
+               ? HLV1_EOF
+               : HLV1_ERR_IO;
+}
 
 }  // namespace
 
@@ -76,6 +97,10 @@ int HlvEsp32Decoder::begin(const HLV1Header &header,
             return HLV1_ERR_MEMORY;
         }
     }
+    ESP_LOGI(kTag, "Streaming packet window: %u x %u = %u bytes",
+             static_cast<unsigned>(kPacketBlockCount),
+             static_cast<unsigned>(kPacketBlockBytes),
+             static_cast<unsigned>(packetCapacity()));
     return HLV1_OK;
 }
 
@@ -94,12 +119,26 @@ void HlvEsp32Decoder::end() {
 
 int HlvEsp32Decoder::readPacket(FILE *file, HLV1Packet *packet) {
     if (!ready()) return HLV1_ERR_ARGUMENT;
-    return hlv1_packet_read_blocks(file, packet, packet_blocks_,
-                                   kPacketBlockCount, kPacketBlockBytes);
+    return hlv1_packet_read(file, packet);
 }
 
 int HlvEsp32Decoder::decode(const HLV1Packet *packet,
                             const HLV1Frame **frame) {
     if (!ready()) return HLV1_ERR_ARGUMENT;
-    return hlv1_decoder_decode_blocks(decoder_, packet, frame);
+    return packet && packet->payload_blocks
+               ? hlv1_decoder_decode_blocks(decoder_, packet, frame)
+               : hlv1_decoder_decode(decoder_, packet, frame);
+}
+
+int HlvEsp32Decoder::decodeNext(FILE *file, const HLV1Frame **frame,
+                                uint32_t *read_us) {
+    if (!ready() || !file || !frame || !read_us)
+        return HLV1_ERR_ARGUMENT;
+    StreamReadContext context{file, 0};
+    HLV1Packet packet{};
+    const int result = hlv1_decoder_decode_stream(
+        decoder_, streamRead, &context, packet_blocks_,
+        kPacketBlockCount, kPacketBlockBytes, &packet, frame);
+    *read_us = context.read_us;
+    return result;
 }

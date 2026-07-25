@@ -18,3 +18,9 @@ deterministic correction, while zero-motion `SKIP` copies it with the packed
 macroblock. The v13 `LITERAL` path copies byte-aligned rows directly and
 records zero correction because those samples are already quantized by the
 stream syntax.
+
+The ESP32 front end uses `hlv1_decoder_decode_stream()` with two alternating
+caller-owned buffers. The bitreader requests sequential spans through an
+exact-read callback, updates CRC-32 during refill, drains the packet tail and
+returns with the source positioned at the next frame header. This keeps packet
+memory bounded without changing the HLV container or decoded reconstruction.

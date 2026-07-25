@@ -40,6 +40,11 @@ static inline void hlv1_wr32(uint8_t *p, uint32_t v) {
 }
 
 uint32_t hlv1_crc32(const uint8_t *data, size_t size);
+uint32_t hlv1_crc32_begin(void);
+uint32_t hlv1_crc32_update(uint32_t crc, const uint8_t *data, size_t size);
+uint32_t hlv1_crc32_end(uint32_t crc);
+int hlv1_packet_header_parse(const uint8_t header[HLV1_FRAME_HEADER_SIZE],
+                             HLV1Packet *packet, uint32_t *expected_crc);
 
 /* A zero version appeared in early in-memory callers and is normalized to v1. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
@@ -67,10 +72,16 @@ int hlv1_bw_finish(HLV1BitWriter *bw);
 
 /* Reader mirrors HLV1BitWriter.  bits_left is the normative valid-bit count,
  * so padding bits in the final byte are never interpreted as syntax. */
+typedef size_t (*HLV1BitReaderRefill)(void *context,
+                                      const uint8_t **data,
+                                      int *error);
+
 typedef struct HLV1BitReader {
     const uint8_t *ptr;
     const uint8_t *end;
     const HLV1Packet *packet;
+    HLV1BitReaderRefill refill;
+    void *refill_context;
     size_t next_offset;
     size_t byte_limit;
 #if HLV1_FAST_32BIT_BITREADER
@@ -90,6 +101,8 @@ typedef struct HLV1BitReader {
 void hlv1_br_init(HLV1BitReader *br, const uint8_t *data,
                   size_t size, uint32_t valid_bits);
 void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *packet);
+void hlv1_br_init_stream(HLV1BitReader *br, uint32_t valid_bits,
+                         HLV1BitReaderRefill refill, void *context);
 #if HLV1_FAST_32BIT_BITREADER
 uint32_t hlv1_br_get_slow(HLV1BitReader *br, unsigned count);
 

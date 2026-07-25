@@ -71,6 +71,19 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
     return crc;
 }
 
+uint32_t hlv1_crc32_begin(void) {
+    crc_init();
+    return 0xFFFFFFFFU;
+}
+
+uint32_t hlv1_crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    return crc32_update(crc, data, size);
+}
+
+uint32_t hlv1_crc32_end(uint32_t crc) {
+    return crc ^ 0xFFFFFFFFU;
+}
+
 size_t hlv1_packet_payload_span(const HLV1Packet *p, size_t offset,
                                 const uint8_t **data) {
     if (data) *data = NULL;
@@ -216,12 +229,9 @@ int hlv1_packet_write(FILE *file, const HLV1Packet *p) {
     return HLV1_OK;
 }
 
-static int packet_header_read(FILE *file, HLV1Packet *p,
-                              uint32_t *expected_crc) {
-    uint8_t b[HLV1_FRAME_HEADER_SIZE];
-    size_t got = fread(b, 1, sizeof b, file);
-    if (got == 0 && feof(file)) return HLV1_EOF;
-    if (got != sizeof b) return HLV1_ERR_IO;
+int hlv1_packet_header_parse(const uint8_t b[HLV1_FRAME_HEADER_SIZE],
+                             HLV1Packet *p, uint32_t *expected_crc) {
+    if (!b || !p || !expected_crc) return HLV1_ERR_ARGUMENT;
     if (memcmp(b, HLV1_FRAME_MAGIC, 4)) return HLV1_ERR_FORMAT;
     p->frame_type = b[4];
     p->q_y = b[5];
@@ -235,6 +245,15 @@ static int packet_header_read(FILE *file, HLV1Packet *p,
         p->payload_size > (1U << 30))
         return HLV1_ERR_FORMAT;
     return HLV1_OK;
+}
+
+static int packet_header_read(FILE *file, HLV1Packet *p,
+                              uint32_t *expected_crc) {
+    uint8_t b[HLV1_FRAME_HEADER_SIZE];
+    size_t got = fread(b, 1, sizeof b, file);
+    if (got == 0 && feof(file)) return HLV1_EOF;
+    if (got != sizeof b) return HLV1_ERR_IO;
+    return hlv1_packet_header_parse(b, p, expected_crc);
 }
 
 int hlv1_packet_read(FILE *file, HLV1Packet *p) {
@@ -522,19 +541,42 @@ int hlv1_bw_finish(HLV1BitWriter *bw) {
 #define HLV1_BR_CACHE_BITS 64U
 #endif
 
+static int HLV1_BITREADER_ATTR br_load_span(HLV1BitReader *br) {
+    if (br->ptr != br->end) return 1;
+    if (br->refill) {
+        const uint8_t *data = NULL;
+        int error = HLV1_OK;
+        size_t span = br->refill(br->refill_context, &data, &error);
+        if (!span) {
+            if (error < HLV1_OK) br->error = error;
+            return 0;
+        }
+        if (!data) {
+            br->error = HLV1_ERR_BITSTREAM;
+            return 0;
+        }
+        br->ptr = data;
+        br->end = data + span;
+        return 1;
+    }
+    if (!br->packet || br->next_offset >= br->byte_limit) return 0;
+    const uint8_t *data;
+    size_t span = hlv1_packet_payload_span(
+        br->packet, br->next_offset, &data);
+    span = HLV1_MIN(span, br->byte_limit - br->next_offset);
+    if (!span) {
+        br->error = HLV1_ERR_BITSTREAM;
+        return 0;
+    }
+    br->ptr = data;
+    br->end = data + span;
+    br->next_offset += span;
+    return 1;
+}
+
 static void HLV1_BITREADER_ATTR br_refill(HLV1BitReader *br) {
     while (br->bits <= HLV1_BR_CACHE_BITS - 8U) {
-        if (br->ptr == br->end) {
-            if (!br->packet || br->next_offset >= br->byte_limit) break;
-            const uint8_t *data;
-            size_t span = hlv1_packet_payload_span(
-                br->packet, br->next_offset, &data);
-            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
-            if (!span) { br->error = HLV1_ERR_BITSTREAM; break; }
-            br->ptr = data;
-            br->end = data + span;
-            br->next_offset += span;
-        }
+        if (!br_load_span(br)) break;
         br->cache |=
             (uint64_t)(*br->ptr++) << (HLV1_BR_CACHE_BITS - 8U - br->bits);
         br->bits += 8;
@@ -554,6 +596,15 @@ void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *p) {
     br->packet = p;
     br->byte_limit = hlv1_packet_video_payload_size(p);
     br->bits_left = p ? p->bit_length : 0;
+    br_refill(br);
+}
+
+void hlv1_br_init_stream(HLV1BitReader *br, uint32_t valid_bits,
+                         HLV1BitReaderRefill refill, void *context) {
+    memset(br, 0, sizeof *br);
+    br->refill = refill;
+    br->refill_context = context;
+    br->bits_left = valid_bits;
     br_refill(br);
 }
 
@@ -697,22 +748,9 @@ int hlv1_br_read_bytes(HLV1BitReader *br, uint8_t *destination,
         --bytes;
     }
     while (bytes) {
-        if (br->ptr == br->end) {
-            if (!br->packet || br->next_offset >= br->byte_limit) {
-                br->error = HLV1_ERR_BITSTREAM;
-                return br->error;
-            }
-            const uint8_t *data;
-            size_t span = hlv1_packet_payload_span(
-                br->packet, br->next_offset, &data);
-            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
-            if (!span) {
-                br->error = HLV1_ERR_BITSTREAM;
-                return br->error;
-            }
-            br->ptr = data;
-            br->end = data + span;
-            br->next_offset += span;
+        if (!br_load_span(br)) {
+            if (!br->error) br->error = HLV1_ERR_BITSTREAM;
+            return br->error;
         }
         size_t available = (size_t)(br->end - br->ptr);
         size_t count = HLV1_MIN(bytes, available);

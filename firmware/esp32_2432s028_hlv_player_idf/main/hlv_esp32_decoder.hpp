@@ -7,12 +7,9 @@
 
 class HlvEsp32Decoder {
 public:
-    // Nine blocks fit a worst-case 320x180 v13 LITERAL key frame plus one
-    // frame interval of mono audio. The previous eight-block pool topped out
-    // at 61,440 bytes, below the 65,280 bytes of literal data
-    // (65,520 bytes including one mode byte per padded macroblock).
-    static constexpr size_t kPacketBlockCount = 9;
-    // Each allocation remains below the fragmented heap's largest block.
+    // The bitreader consumes the payload sequentially and alternates these
+    // blocks. Compressed packets are no longer retained in their entirety.
+    static constexpr size_t kPacketBlockCount = 2;
     static constexpr size_t kPacketBlockBytes = 7680;
 
     int begin(const HLV1Header &header, bool compact_y6_u5_v5);
@@ -27,6 +24,8 @@ public:
 
     int readPacket(FILE *file, HLV1Packet *packet);
     int decode(const HLV1Packet *packet, const HLV1Frame **frame);
+    int decodeNext(FILE *file, const HLV1Frame **frame,
+                   uint32_t *read_us);
 
 private:
     HLV1Decoder *decoder_ = nullptr;

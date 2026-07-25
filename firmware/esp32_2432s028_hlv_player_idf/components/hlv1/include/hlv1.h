@@ -423,6 +423,33 @@ int hlv1_decoder_decode(HLV1Decoder *decoder,
 int hlv1_decoder_decode_blocks(HLV1Decoder *decoder,
                                const HLV1Packet *packet,
                                const HLV1Frame **frame);
+
+/**
+ * Exact-read callback used by the bounded-memory streaming decoder.
+ *
+ * Return HLV1_OK after filling all requested bytes, HLV1_EOF when no byte is
+ * available at the beginning of a new packet, or a negative HLV1_ERR_* code.
+ * A short read inside a packet must be reported as HLV1_ERR_IO.
+ */
+typedef int (*HLV1ReadCallback)(void *context, uint8_t *destination,
+                                size_t bytes);
+
+/**
+ * Read, CRC-check and decode one packet through reusable alternating buffers.
+ *
+ * Only the video payload needed by the bitreader is retained. Remaining video
+ * padding and the packet's audio tail are consumed while completing the CRC,
+ * so the next call starts at the following packet header. The stream format
+ * and decoder reference semantics are identical to hlv1_decoder_decode().
+ */
+int hlv1_decoder_decode_stream(HLV1Decoder *decoder,
+                               HLV1ReadCallback read_callback,
+                               void *read_context,
+                               uint8_t **buffers,
+                               size_t buffer_count,
+                               size_t buffer_size,
+                               HLV1Packet *packet_info,
+                               const HLV1Frame **frame);
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *decoder);
 
 /** Map the user-facing 1..100 scale to stable v1/v2 quantizer mantissas. */

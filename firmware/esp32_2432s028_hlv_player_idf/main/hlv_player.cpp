@@ -126,7 +126,7 @@ enum class VideoOpenResult {
 
 struct DecodeRequest {
     VideoCodec codec;
-    const HLV1Packet *hlv_packet;
+    FILE *hlv_file;
     const BPV1Packet *bpv_packet;
     FILE *bpv_file;
     bool bpv_prefetch;
@@ -140,6 +140,7 @@ struct DecodeResult {
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
+    uint32_t hlv_read_us;
     BPV1Packet bpv_next_packet;
     int bpv_read_result;
     uint32_t bpv_read_us;
@@ -267,15 +268,22 @@ void decodeTask(void *) {
                     ? HLV1_ERR_IO
                     : HLV1_OK;
         } else if (request.codec == VideoCodec::kHlv) {
-            result.result =
-                decoder.decode(request.hlv_packet, &result.hlv_frame);
+            result.result = decoder.decodeNext(
+                request.hlv_file, &result.hlv_frame,
+                &result.hlv_read_us);
         } else if (request.codec == VideoCodec::kBpv) {
             result.result =
                 bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
         } else {
             result.result = HLV1_ERR_ARGUMENT;
         }
-        result.decode_us = static_cast<uint32_t>(microsNow() - start);
+        const uint32_t total_us =
+            static_cast<uint32_t>(microsNow() - start);
+        result.decode_us =
+            request.codec == VideoCodec::kHlv &&
+                    result.hlv_read_us <= total_us
+                ? total_us - result.hlv_read_us
+                : total_us;
         if (request.codec == VideoCodec::kBpv &&
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {
@@ -319,11 +327,11 @@ bool startDecodeWorker() {
     return true;
 }
 
-bool submitDecode(const HLV1Packet *packet) {
-    if (!decode_task_handle || decode_in_flight || !packet) return false;
+bool submitDecode(FILE *file) {
+    if (!decode_task_handle || decode_in_flight || !file) return false;
     DecodeRequest request{};
     request.codec = VideoCodec::kHlv;
-    request.hlv_packet = packet;
+    request.hlv_file = file;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -1529,7 +1537,9 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-        ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u DMA-capable",
+        ESP_LOGI(kTag,
+                 "Streaming packet window: %u x %u = %u bytes, "
+                 "%u DMA-capable",
                  static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockCount),
                  static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockBytes),
                  static_cast<unsigned>(decoder.packetCapacity()),
@@ -2178,12 +2188,6 @@ bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
         frame, renderMpegOpaque, 0, decode_us);
 }
 
-uint32_t readPacket(HLV1Packet *packet, int *result) {
-    const int64_t read_start = microsNow();
-    *result = decoder.readPacket(video_file, packet);
-    return static_cast<uint32_t>(microsNow() - read_start);
-}
-
 void finishVideoLoop() {
     if (audio_enabled) {
         // A held DMA ring never drains by itself. Release it so the remaining
@@ -2216,28 +2220,24 @@ void finishVideoLoop() {
 }
 
 void playOneFrameSequential() {
-    HLV1Packet packet{};
-    int packet_result = HLV1_OK;
-    const uint32_t read_us = readPacket(&packet, &packet_result);
-    if (packet_result == HLV1_EOF) {
+    const HLV1Frame *frame = nullptr;
+    uint32_t read_us = 0;
+    const int64_t decode_start = microsNow();
+    const int decode_result =
+        decoder.decodeNext(video_file, &frame, &read_us);
+    const uint32_t total_us =
+        static_cast<uint32_t>(microsNow() - decode_start);
+    const uint32_t decode_us =
+        read_us <= total_us ? total_us - read_us : total_us;
+    if (decode_result == HLV1_EOF) {
         finishVideoLoop();
         return;
     }
-    if (packet_result != HLV1_OK) {
-        if (packet_result == HLV1_ERR_IO) {
+    if (decode_result != HLV1_OK) {
+        if (decode_result == HLV1_ERR_IO) {
             failSdCardRead("cannot read HLV video");
             return;
         }
-        failPlayback("Packet read error", packet_result);
-        return;
-    }
-    const HLV1Frame *frame = nullptr;
-    const int64_t decode_start = microsNow();
-    const int decode_result = decoder.decode(&packet, &frame);
-    const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
-    hlv1_packet_free(&packet);
-    if (decode_result != HLV1_OK) {
         failPlayback("Decode error", decode_result);
         return;
     }
@@ -2535,32 +2535,7 @@ void playOneBpvFramePipelined() {
 }
 
 void playOneFramePipelined() {
-    HLV1Packet packet{};
-    int packet_result = HLV1_OK;
-    const uint32_t read_us = readPacket(&packet, &packet_result);
-    if (packet_result == HLV1_EOF) {
-        if (pending_frame_valid) {
-            const bool rendered = presentFrame(
-                &pending_frame, pending_read_us, pending_decode_us);
-            pending_frame_valid = false;
-            if (!rendered) {
-                failPlayback("Display DMA error", HLV1_ERR_IO);
-                return;
-            }
-        }
-        finishVideoLoop();
-        return;
-    }
-    if (packet_result != HLV1_OK) {
-        if (packet_result == HLV1_ERR_IO) {
-            failSdCardRead("cannot read HLV video");
-            return;
-        }
-        failPlayback("Packet read error", packet_result);
-        return;
-    }
-    if (!submitDecode(&packet)) {
-        hlv1_packet_free(&packet);
+    if (!submitDecode(video_file)) {
         failPlayback("Decode pipeline error", HLV1_ERR_IO);
         return;
     }
@@ -2574,7 +2549,6 @@ void playOneFramePipelined() {
 
     DecodeResult result{};
     const bool received = waitDecode(&result);
-    hlv1_packet_free(&packet);
     if (!received) {
         failPlayback("Decode pipeline error", HLV1_ERR_IO);
         return;
@@ -2583,13 +2557,24 @@ void playOneFramePipelined() {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    if (result.codec != VideoCodec::kHlv ||
-        result.result != HLV1_OK || !result.hlv_frame) {
+    if (result.codec != VideoCodec::kHlv) {
+        failPlayback("Decode pipeline error", HLV1_ERR_IO);
+        return;
+    }
+    if (result.result == HLV1_EOF) {
+        finishVideoLoop();
+        return;
+    }
+    if (result.result == HLV1_ERR_IO) {
+        failSdCardRead("cannot read HLV video");
+        return;
+    }
+    if (result.result != HLV1_OK || !result.hlv_frame) {
         failPlayback("Decode error", result.result);
         return;
     }
     pending_frame = *result.hlv_frame;
-    pending_read_us = read_us;
+    pending_read_us = result.hlv_read_us;
     pending_decode_us = result.decode_us;
     pending_frame_valid = true;
 }

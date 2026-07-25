@@ -2,6 +2,12 @@
 
 Date: 2026-07-25
 
+> This is the result for firmware `cc01cc6`. The later bounded-memory HLV
+> streaming reader replaces the 69,120-byte packet pool with two 7680-byte
+> windows. The same HLV 320x240 file now opens and plays with audio; a
+> 300-frame hardware sample reached 9.362 fps. The RAM failure below remains
+> useful as the baseline, but is no longer the current HLV startup result.
+
 ## Test setup
 
 - Board: ESP32-2432S028, real hardware on COM8.

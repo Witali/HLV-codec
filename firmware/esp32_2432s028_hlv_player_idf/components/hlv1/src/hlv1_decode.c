@@ -1554,7 +1554,8 @@ void hlv1_decoder_destroy(HLV1Decoder *d) {
  * is committed as the new reference only after all syntax has validated. */
 static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  const HLV1Frame **frame,
-                                 int segmented) {
+                                 int segmented,
+                                 const HLV1BitReader *stream_reader) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
     unsigned version = hlv1_stream_version(&d->header);
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
@@ -1566,7 +1567,9 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
     int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
 
     HLV1BitReader br;
-    if (segmented)
+    if (stream_reader)
+        br = *stream_reader;
+    else if (segmented)
         hlv1_br_init_packet(&br, p);
     else
         hlv1_br_init(&br, p->payload, p->payload_size, p->bit_length);
@@ -1852,7 +1855,7 @@ int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
     if (!d || !p || !frame || p->payload_blocks ||
         (!p->payload && p->payload_size))
         return HLV1_ERR_ARGUMENT;
-    return decoder_decode_packet(d, p, frame, 0);
+    return decoder_decode_packet(d, p, frame, 0, NULL);
 }
 
 int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
@@ -1862,7 +1865,116 @@ int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
         (p->payload_size &&
          !hlv1_packet_payload_span(p, 0, &first_payload)))
         return HLV1_ERR_ARGUMENT;
-    return decoder_decode_packet(d, p, frame, 1);
+    return decoder_decode_packet(d, p, frame, 1, NULL);
+}
+
+typedef struct HLV1StreamPacketReader {
+    HLV1ReadCallback read_callback;
+    void *read_context;
+    uint8_t **buffers;
+    size_t buffer_count;
+    size_t buffer_size;
+    size_t next_buffer;
+    size_t payload_remaining;
+    size_t video_remaining;
+    uint32_t crc;
+    int error;
+} HLV1StreamPacketReader;
+
+static int stream_read_payload(HLV1StreamPacketReader *stream,
+                               uint8_t *destination, size_t bytes) {
+    int result = stream->read_callback(
+        stream->read_context, destination, bytes);
+    if (result != HLV1_OK) {
+        stream->error =
+            result == HLV1_EOF ? HLV1_ERR_IO : result;
+        return stream->error;
+    }
+    stream->crc = hlv1_crc32_update(stream->crc, destination, bytes);
+    stream->payload_remaining -= bytes;
+    return HLV1_OK;
+}
+
+static size_t stream_refill_bitreader(void *context,
+                                      const uint8_t **data,
+                                      int *error) {
+    HLV1StreamPacketReader *stream =
+        (HLV1StreamPacketReader *)context;
+    if (data) *data = NULL;
+    if (error) *error = HLV1_OK;
+    if (!stream || !data || !error || stream->error < HLV1_OK ||
+        !stream->video_remaining)
+        return 0;
+
+    size_t bytes = HLV1_MIN(stream->video_remaining, stream->buffer_size);
+    uint8_t *buffer = stream->buffers[stream->next_buffer];
+    stream->next_buffer =
+        (stream->next_buffer + 1U) % stream->buffer_count;
+    if (stream_read_payload(stream, buffer, bytes) != HLV1_OK) {
+        *error = stream->error;
+        return 0;
+    }
+    stream->video_remaining -= bytes;
+    *data = buffer;
+    return bytes;
+}
+
+int hlv1_decoder_decode_stream(HLV1Decoder *d,
+                               HLV1ReadCallback read_callback,
+                               void *read_context,
+                               uint8_t **buffers,
+                               size_t buffer_count,
+                               size_t buffer_size,
+                               HLV1Packet *packet_info,
+                               const HLV1Frame **frame) {
+    if (!d || !read_callback || !buffers || !buffer_count || !buffer_size ||
+        !packet_info || !frame)
+        return HLV1_ERR_ARGUMENT;
+    for (size_t index = 0; index < buffer_count; ++index)
+        if (!buffers[index]) return HLV1_ERR_ARGUMENT;
+
+    uint8_t header[HLV1_FRAME_HEADER_SIZE];
+    int result = read_callback(read_context, header, sizeof header);
+    if (result != HLV1_OK) return result;
+
+    memset(packet_info, 0, sizeof *packet_info);
+    uint32_t expected_crc = 0;
+    result = hlv1_packet_header_parse(
+        header, packet_info, &expected_crc);
+    if (result != HLV1_OK) return result;
+
+    const size_t video_bytes =
+        hlv1_packet_video_payload_size(packet_info);
+    HLV1StreamPacketReader stream;
+    memset(&stream, 0, sizeof stream);
+    stream.read_callback = read_callback;
+    stream.read_context = read_context;
+    stream.buffers = buffers;
+    stream.buffer_count = buffer_count;
+    stream.buffer_size = buffer_size;
+    stream.payload_remaining = packet_info->payload_size;
+    stream.video_remaining = video_bytes;
+    stream.crc = hlv1_crc32_begin();
+
+    HLV1BitReader bitreader;
+    hlv1_br_init_stream(&bitreader, packet_info->bit_length,
+                        stream_refill_bitreader, &stream);
+    if (bitreader.error) return bitreader.error;
+    result = decoder_decode_packet(
+        d, packet_info, frame, 0, &bitreader);
+    if (result != HLV1_OK) return result;
+
+    while (stream.payload_remaining) {
+        size_t bytes = HLV1_MIN(stream.payload_remaining, buffer_size);
+        uint8_t *buffer = buffers[stream.next_buffer];
+        stream.next_buffer =
+            (stream.next_buffer + 1U) % buffer_count;
+        result = stream_read_payload(&stream, buffer, bytes);
+        if (result != HLV1_OK) return result;
+    }
+    return hlv1_crc32_end(stream.crc) == expected_crc
+               ? HLV1_OK
+               : HLV1_ERR_CRC;
 }
 
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *d) {
