@@ -1176,12 +1176,16 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
             std::numeric_limits<size_t>::max() - kInputPadding) {
         result = H263_3GP_ERR_UNSUPPORTED;
     }
-    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result == H263_3GP_OK) {
         decoder->packet = static_cast<uint8_t *>(
             std::malloc(decoder->info.max_sample_size + kInputPadding));
         if (!decoder->packet) result = H263_3GP_ERR_PACKET_MEMORY;
     }
+    // Reserve the largest compressed block before the YUV planes and
+    // PacketVideo tables fragment the internal heap. This is especially
+    // important for intra-only CIF, where one decoded frame already occupies
+    // 152,064 bytes split across three allocations.
+    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
     if (result != H263_3GP_OK) {
         decoder->clear();
         return result;
