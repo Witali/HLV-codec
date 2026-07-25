@@ -13,8 +13,8 @@ DAC GPIO26.
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
   mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
-  `320x240`, or `352x288` CIF; CIF is displayed as its centred `320x240`
-  area;
+  `320x240`, or `352x288` CIF; CIF is interpreted as a `384x288` (4:3)
+  picture and scaled to fill the complete `320x240` display by default;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -180,18 +180,22 @@ constexpr H263ScalingFilter kH263ScalingFilter =
     H263ScalingFilter::kNearestNeighbor;
 ```
 
-`H263CifPresentationMode::kCenterCrop` retains the central 320x240 source
-region. `H263CifPresentationMode::kFit` preserves the 11:9 CIF aspect ratio and
-shows the complete 352x288 frame as 293x240 with centred black borders at the
-sides.
+`H263CifPresentationMode::kCenterCrop` retains the central 320x240 coded
+region. `H263CifPresentationMode::kFit` interprets the 352x288 CIF samples with
+a 12:11 sample aspect ratio, giving a 384x288 (4:3) display picture. It scales
+the complete coded frame to 320x240, filling the panel without borders or
+cropping.
 
 The fit path offers `H263ScalingFilter::kNearestNeighbor` and
 `H263ScalingFilter::kBilinear`. Bilinear interpolation is performed in the
 Y/U/V planes before RGB565 conversion. It uses small row buffers rather than a
-full RGB framebuffer. Nearest-neighbour is the default real-time setting: the
-physical ESP32 sustained 29.95 fps without display skips on the 30 fps CIF AVI
-test. Bilinear is a quality-first option and reached about 18.3 fps on the same
-file and board.
+full RGB framebuffer. For the fixed CIF-to-panel conversion, source indices and
+Q12 interpolation weights are compile-time tables, so the output-strip hot path
+does not recalculate coordinates, clamps, or coefficients. Nearest-neighbour is
+the default real-time setting: the physical ESP32 measured 29.3 fps with 4
+display skips over 300 frames on the 30 fps CIF AVI test. Bilinear is a
+quality-first option and measured 16.1 fps with 54 display skips while filling
+the complete 320x240 panel on the same file and board.
 
 The older `kScaleVideoToDisplay` flag still controls nearest-neighbour
 stretching for non-CIF and non-H.263 playback. When disabled, those videos are

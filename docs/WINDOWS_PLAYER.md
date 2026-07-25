@@ -5,7 +5,8 @@ v1 through v5, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
 intra-only baseline `352x288` CIF, and intra-only H.263+ profiles at
 `256x144`, `256x192`, `320x180`, and `320x240`. CIF playback retains the
-complete `352x288` frame. It uses the portable
+complete coded `352x288` frame and displays it as `384x288` (4:3), using a
+12:11 sample aspect ratio. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is

@@ -329,10 +329,15 @@ display DMA timing.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 `kH263CifPresentationMode` in `main/player_settings.hpp` selects the central
-320x240 crop or aspect-preserving display of the complete 352x288 CIF frame as
-293x240. `kH263ScalingFilter` selects nearest-neighbour or bilinear filtering
-for the complete-frame mode. Nearest-neighbour is the default because it keeps
-30 fps on the physical ESP32; bilinear prioritizes smoothness over frame rate.
+320x240 coded crop or display of the complete 352x288 CIF frame. CIF uses a
+12:11 sample aspect ratio, so the complete frame represents a 384x288 (4:3)
+picture and fills the 320x240 panel. `kH263ScalingFilter` selects
+nearest-neighbour or bilinear filtering. The bilinear CIF path uses
+compile-time source-index and Q12 coefficient tables while preparing each
+output strip on CPU0, without allocating a scaled framebuffer. H.263
+decompression runs concurrently on CPU1. Nearest-neighbour is the default; the
+full-panel physical-board test measured 29.3 fps, while bilinear measured
+16.1 fps and prioritizes smoothness over frame rate.
 The older `kScaleVideoToDisplay` setting continues to control stretching for
 the other video codecs.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current

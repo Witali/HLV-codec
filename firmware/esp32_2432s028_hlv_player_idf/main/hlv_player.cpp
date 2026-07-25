@@ -261,8 +261,6 @@ uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t bpv_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
-uint32_t h263_fit_x_q12[kScreenWidth];
-uint32_t h263_fit_y_q12[kScreenHeight];
 int h263_fit_width = 0;
 int h263_fit_height = 0;
 int h263_fit_x = 0;
@@ -379,16 +377,57 @@ bool fitH263CifToDisplay() {
                player_settings::H263CifPresentationMode::kFit;
 }
 
-uint32_t scaleCoordinateQ12(int destination, int source_size,
-                            int destination_size) {
+constexpr uint32_t scaleCoordinateQ12(int destination, int source_size,
+                                      int destination_size) {
     const int64_t centred =
         ((static_cast<int64_t>(destination) * 2 + 1) *
              source_size * 2048) /
             destination_size -
         2048;
-    return static_cast<uint32_t>(std::clamp<int64_t>(
-        centred, 0, static_cast<int64_t>(source_size - 1) << 12));
+    const int64_t maximum =
+        static_cast<int64_t>(source_size - 1) << 12;
+    return static_cast<uint32_t>(
+        centred < 0 ? 0 : centred > maximum ? maximum : centred);
 }
+
+struct BilinearAxisSample {
+    uint16_t first;
+    uint16_t weight_q12;
+};
+
+template <size_t DestinationSize>
+constexpr std::array<BilinearAxisSample, DestinationSize>
+makeBilinearAxisTable(int coded_source_size, int plane_divisor) {
+    std::array<BilinearAxisSample, DestinationSize> samples{};
+    const int plane_size = coded_source_size / plane_divisor;
+    for (size_t destination = 0; destination < DestinationSize;
+         ++destination) {
+        const uint32_t coordinate_q12 =
+            scaleCoordinateQ12(
+                static_cast<int>(destination), coded_source_size,
+                static_cast<int>(DestinationSize)) /
+            plane_divisor;
+        const uint16_t first =
+            static_cast<uint16_t>(coordinate_q12 >> 12);
+        samples[destination] = {
+            first,
+            static_cast<uint16_t>(
+                first + 1 < plane_size ? coordinate_q12 & 0xfff : 0)};
+    }
+    return samples;
+}
+
+// CIF Fit is always the fixed 352x288 -> 320x240 conversion. Keeping its
+// bilinear source indices and Q12 weights in compile-time tables removes all
+// coordinate, clamp and coefficient work from the per-frame hot path.
+constexpr auto h263_cif_luma_x =
+    makeBilinearAxisTable<kScreenWidth>(352, 1);
+constexpr auto h263_cif_chroma_x =
+    makeBilinearAxisTable<kScreenWidth>(352, 2);
+constexpr auto h263_cif_luma_y =
+    makeBilinearAxisTable<kScreenHeight>(288, 1);
+constexpr auto h263_cif_chroma_y =
+    makeBilinearAxisTable<kScreenHeight>(288, 2);
 
 void configureH263Fit() {
     h263_fit_width = 0;
@@ -399,27 +438,32 @@ void configureH263Fit() {
 
     const int source_width = sequence_header.width;
     const int source_height = sequence_header.height;
+    // CIF carries 352 coded samples per line, but those samples describe a
+    // 384x288 (4:3) display area. Use the display aspect to choose the target
+    // rectangle, then sample the complete coded 352x288 frame below.
+    constexpr int display_width = 384;
+    constexpr int display_height = 288;
     h263_fit_width = kScreenWidth;
     h263_fit_height =
-        source_height * kScreenWidth / source_width;
+        display_height * kScreenWidth / display_width;
     if (h263_fit_height > kScreenHeight) {
         h263_fit_height = kScreenHeight;
         h263_fit_width =
-            source_width * kScreenHeight / source_height;
+            display_width * kScreenHeight / display_height;
     }
     h263_fit_x = (kScreenWidth - h263_fit_width) / 2;
     h263_fit_y = (kScreenHeight - h263_fit_height) / 2;
     for (int x = 0; x < h263_fit_width; ++x) {
-        h263_fit_x_q12[x] =
+        const uint32_t source_x_q12 =
             scaleCoordinateQ12(x, source_width, h263_fit_width);
         scaled_x_map[x] = static_cast<uint16_t>(
-            (h263_fit_x_q12[x] + 2048) >> 12);
+            (source_x_q12 + 2048) >> 12);
     }
     for (int y = 0; y < h263_fit_height; ++y) {
-        h263_fit_y_q12[y] =
+        const uint32_t source_y_q12 =
             scaleCoordinateQ12(y, source_height, h263_fit_height);
         scaled_y_map[y] = static_cast<uint16_t>(
-            (h263_fit_y_q12[y] + 2048) >> 12);
+            (source_y_q12 + 2048) >> 12);
     }
 }
 
@@ -2381,19 +2425,19 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     }
 }
 
-void interpolatePlaneRows(const plm_plane_t &plane, uint32_t y_q12,
+void interpolatePlaneRows(const plm_plane_t &plane,
+                          const BilinearAxisSample &sample,
                           uint8_t *output) {
-    const unsigned y0 = y_q12 >> 12;
-    const unsigned y1 = std::min(y0 + 1, plane.height - 1);
-    const int fraction = y_q12 & 0xfff;
+    const unsigned y0 = sample.first;
+    const int fraction = sample.weight_q12;
     const uint8_t *row0 =
         plane.data + static_cast<size_t>(y0) * plane.stride;
-    if (!fraction || y0 == y1) {
+    if (!fraction) {
         std::memcpy(output, row0, plane.width);
         return;
     }
     const uint8_t *row1 =
-        plane.data + static_cast<size_t>(y1) * plane.stride;
+        plane.data + static_cast<size_t>(y0 + 1) * plane.stride;
     for (unsigned x = 0; x < plane.width; ++x) {
         output[x] = static_cast<uint8_t>(
             row0[x] +
@@ -2403,35 +2447,35 @@ void interpolatePlaneRows(const plm_plane_t &plane, uint32_t y_q12,
     }
 }
 
-uint8_t interpolateRowSample(const uint8_t *row, unsigned width,
-                             uint32_t x_q12) {
-    const unsigned x0 = x_q12 >> 12;
-    const unsigned x1 = std::min(x0 + 1, width - 1);
-    const int fraction = x_q12 & 0xfff;
+uint8_t interpolateRowSample(const uint8_t *row,
+                             const BilinearAxisSample &sample) {
+    const unsigned x0 = sample.first;
+    const int fraction = sample.weight_q12;
     return static_cast<uint8_t>(
         row[x0] +
-        ((static_cast<int>(row[x1]) - row[x0]) * fraction +
+        ((static_cast<int>(row[x0 + (fraction != 0)]) - row[x0]) * fraction +
          2048) /
             4096);
 }
 
 void convertH263BilinearRow(const plm_frame_t *frame,
                             int destination_y, uint16_t *output) {
-    const uint32_t y_q12 = h263_fit_y_q12[destination_y];
     interpolatePlaneRows(
-        frame->y, y_q12, h263_bilinear_y_row);
+        frame->y, h263_cif_luma_y[destination_y],
+        h263_bilinear_y_row);
     interpolatePlaneRows(
-        frame->cb, y_q12 >> 1, h263_bilinear_u_row);
+        frame->cb, h263_cif_chroma_y[destination_y],
+        h263_bilinear_u_row);
     interpolatePlaneRows(
-        frame->cr, y_q12 >> 1, h263_bilinear_v_row);
+        frame->cr, h263_cif_chroma_y[destination_y],
+        h263_bilinear_v_row);
     for (int x = 0; x < h263_fit_width; ++x) {
-        const uint32_t x_q12 = h263_fit_x_q12[x];
         const uint8_t y = interpolateRowSample(
-            h263_bilinear_y_row, frame->y.width, x_q12);
+            h263_bilinear_y_row, h263_cif_luma_x[x]);
         const uint8_t cb = interpolateRowSample(
-            h263_bilinear_u_row, frame->cb.width, x_q12 >> 1);
+            h263_bilinear_u_row, h263_cif_chroma_x[x]);
         const uint8_t cr = interpolateRowSample(
-            h263_bilinear_v_row, frame->cr.width, x_q12 >> 1);
+            h263_bilinear_v_row, h263_cif_chroma_x[x]);
         output[x] = yuvToRgb565(
             y, yuv_red_add[cr],
             yuv_green_u_add[cb] + yuv_green_v_add[cr],
@@ -2536,7 +2580,10 @@ bool renderH263Frame(const H2633gpFrame *frame) {
                     consumed_source_rows = std::max(
                         consumed_source_rows,
                         std::min<int>(
-                            (h263_fit_y_q12[destination_y] >> 12) + 2,
+                            h263_cif_luma_y[destination_y].first +
+                                (h263_cif_luma_y[destination_y].weight_q12
+                                     ? 2
+                                     : 1),
                             frame->height));
                 } else {
                     const int source_y =

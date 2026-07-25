@@ -32,9 +32,9 @@ enum class H263ScalingFilter {
     kBilinear,
 };
 
-// CIF is 352x288 while the display is 320x240. Fit presents the complete
-// frame as 293x240 with centred black side borders. CenterCrop retains the
-// former full-screen central 320x240 view.
+// CIF contains 352x288 coded samples with a 12:11 sample aspect ratio, so its
+// display geometry is 384x288 (4:3). Fit presents the complete frame over the
+// full 320x240 display. CenterCrop retains the former central 320x240 view.
 constexpr H263CifPresentationMode kH263CifPresentationMode =
     H263CifPresentationMode::kFit;
 constexpr H263ScalingFilter kH263ScalingFilter =

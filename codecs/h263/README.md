@@ -60,7 +60,10 @@ N+1 while CPU0 converts and submits frame N. It automatically falls back to
 one output if the second allocation is unavailable. Y, U, and V are separate
 allocations, so 320x240 never requires one contiguous 115,200-byte block.
 Predictive QCIF also uses two outputs to preserve its reference frame. CIF is
-decoded at its native `352x288` size. The ESP32 displays its centred
+decoded at its native `352x288` coded size. Those samples represent a
+`384x288` (4:3) display picture using a 12:11 sample aspect ratio. The ESP32
+scales the complete frame to fill its `320x240` display by default; its
+optional crop mode displays the centred
 `320x240` area without scaling; the Windows Player displays the full frame.
 
 FFmpeg exposes custom picture sizes through its H.263+ encoder but its 3GP
