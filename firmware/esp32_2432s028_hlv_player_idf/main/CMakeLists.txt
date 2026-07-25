@@ -25,6 +25,7 @@ else()
             "uart_file_upload.cpp"
         INCLUDE_DIRS "."
         REQUIRES
+            amrnb_3gp
             bpv1
             h263_3gp
             hlv1

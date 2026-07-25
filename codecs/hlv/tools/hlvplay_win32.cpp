@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include "hlv1.h"
+#include "amrnb_3gp.h"
 #include "bpv1.h"
 #include "h263_3gp.h"
 #include "pl_mpeg.h"
@@ -929,6 +930,32 @@ public:
             header_.fps_den =
                 static_cast<uint16_t>(h263_info_.fps_den);
             header_.frame_count = h263_info_.frame_count;
+
+            if (_wfopen_s(&h263_audio_file_, path.c_str(), L"rb") != 0 ||
+                !h263_audio_file_) {
+                return fail(L"Cannot open the 3GP audio track");
+            }
+            h263_audio_decoder_ = amrnb_3gp_decoder_create();
+            const int audio_result =
+                h263_audio_decoder_
+                    ? amrnb_3gp_decoder_open(
+                          h263_audio_decoder_, h263_audio_file_,
+                          &amrnb_info_)
+                    : AMRNB_3GP_ERR_MEMORY;
+            if (audio_result == AMRNB_3GP_OK) {
+                header_.flags = HLV1_FLAG_AUDIO;
+                header_.audio_codec = HLV1_AUDIO_PCM_U8;
+                header_.audio_sample_rate = amrnb_info_.sample_rate;
+                header_.audio_channels = amrnb_info_.channels;
+            } else if (audio_result == AMRNB_3GP_ERR_UNSUPPORTED) {
+                amrnb_3gp_decoder_destroy(h263_audio_decoder_);
+                h263_audio_decoder_ = nullptr;
+                fclose(h263_audio_file_);
+                h263_audio_file_ = nullptr;
+            } else {
+                return fail(L"Invalid AMR-NB/3GP audio: " +
+                            widen_ascii(amrnb_3gp_strerror(audio_result)));
+            }
         } else {
             return fail(
                 L"Unsupported video signature; expected HLV1, BPV1, "
@@ -1018,6 +1045,14 @@ public:
             h263_3gp_decoder_destroy(h263_decoder_);
             h263_decoder_ = nullptr;
         }
+        if (h263_audio_decoder_) {
+            amrnb_3gp_decoder_destroy(h263_audio_decoder_);
+            h263_audio_decoder_ = nullptr;
+        }
+        if (h263_audio_file_) {
+            fclose(h263_audio_file_);
+            h263_audio_file_ = nullptr;
+        }
         if (file_) {
             fclose(file_);
             file_ = nullptr;
@@ -1029,7 +1064,9 @@ public:
         std::memset(&header_, 0, sizeof header_);
         std::memset(&bpv_header_, 0, sizeof bpv_header_);
         std::memset(&h263_info_, 0, sizeof h263_info_);
+        std::memset(&amrnb_info_, 0, sizeof amrnb_info_);
         mpeg_audio_samples_ = 0;
+        amrnb_audio_samples_ = 0;
         codec_ = VideoCodec::kNone;
         first_packet_offset_ = 0;
         decoded_frames_ = 0;
@@ -1540,6 +1577,31 @@ private:
                 error_ = L"Cannot reset the H.263/3GP decoder for seeking";
                 return false;
             }
+            if (h263_audio_decoder_) {
+                amrnb_3gp_decoder_destroy(h263_audio_decoder_);
+                h263_audio_decoder_ = nullptr;
+                if (!h263_audio_file_ ||
+                    _fseeki64(h263_audio_file_, 0, SEEK_SET) != 0) {
+                    error_ = L"Cannot rewind the AMR-NB/3GP audio track";
+                    return false;
+                }
+                AmrNb3gpInfo audio_info = {};
+                h263_audio_decoder_ = amrnb_3gp_decoder_create();
+                const int audio_result =
+                    h263_audio_decoder_
+                        ? amrnb_3gp_decoder_open(
+                              h263_audio_decoder_, h263_audio_file_,
+                              &audio_info)
+                        : AMRNB_3GP_ERR_MEMORY;
+                if (audio_result != AMRNB_3GP_OK ||
+                    audio_info.frame_count != amrnb_info_.frame_count ||
+                    audio_info.sample_rate != amrnb_info_.sample_rate) {
+                    error_ =
+                        L"Cannot reset the AMR-NB decoder for seeking";
+                    return false;
+                }
+                amrnb_audio_samples_ = 0;
+            }
         } else if (codec_ == VideoCodec::kBpv) {
             if (!bpv_decoder_) {
                 error_ = L"The BPV1 decoder is unavailable";
@@ -1650,6 +1712,56 @@ private:
                 }
                 convert_h263_frame(&decoded, output);
                 ready_.push_back(std::move(output));
+            }
+            if (h263_audio_decoder_) {
+                const uint64_t target_samples =
+                    ((decoded_frames_ + 1U) *
+                     header_.audio_sample_rate * header_.fps_den) /
+                    header_.fps_num;
+                std::vector<uint8_t> pcm;
+                if (queue_audio && audio_.active()) {
+                    pcm.reserve(static_cast<size_t>(
+                        target_samples > amrnb_audio_samples_
+                            ? target_samples - amrnb_audio_samples_ +
+                                  AMRNB_SAMPLES_PER_FRAME
+                            : AMRNB_SAMPLES_PER_FRAME));
+                }
+                while (amrnb_audio_samples_ < target_samples) {
+                    AmrNb3gpFrame audio_frame = {};
+                    const int audio_result = amrnb_3gp_decoder_decode_next(
+                        h263_audio_decoder_, h263_audio_file_,
+                        &audio_frame);
+                    if (audio_result == AMRNB_3GP_EOF) break;
+                    if (audio_result != AMRNB_3GP_OK) {
+                        error_ = L"AMR-NB frame " +
+                                 std::to_wstring(
+                                     amrnb_audio_samples_ /
+                                     AMRNB_SAMPLES_PER_FRAME) +
+                                 L" failed to decode: " +
+                                 widen_ascii(
+                                     amrnb_3gp_strerror(audio_result));
+                        return false;
+                    }
+                    amrnb_audio_samples_ += audio_frame.sample_count;
+                    if (queue_audio && audio_.active()) {
+                        for (uint16_t i = 0;
+                             i < audio_frame.sample_count; ++i) {
+                            pcm.push_back(static_cast<uint8_t>(
+                                (static_cast<int32_t>(
+                                     audio_frame.samples[i]) +
+                                 32768) >>
+                                8));
+                        }
+                    }
+                }
+                if (!pcm.empty()) {
+                    std::wstring audio_error;
+                    if (!audio_.submit(pcm.data(), pcm.size(),
+                                       audio_error)) {
+                        audio_warning_ = L"Audio stopped: " + audio_error;
+                        audio_.close();
+                    }
+                }
             }
             ++decoded_frames_;
             return true;
@@ -1855,13 +1967,16 @@ private:
     HWND seek_bar_ = nullptr;
     HWND time_label_ = nullptr;
     FILE *file_ = nullptr;
+    FILE *h263_audio_file_ = nullptr;
     HLV1Decoder *decoder_ = nullptr;
     BPV1Decoder *bpv_decoder_ = nullptr;
     plm_t *mpeg_ = nullptr;
     H2633gpDecoder *h263_decoder_ = nullptr;
+    AmrNb3gpDecoder *h263_audio_decoder_ = nullptr;
     HLV1Header header_ = {};
     BPV1Header bpv_header_ = {};
     H2633gpInfo h263_info_ = {};
+    AmrNb3gpInfo amrnb_info_ = {};
     VideoCodec codec_ = VideoCodec::kNone;
     AudioOutput audio_;
     D3DVideoRenderer video_renderer_;
@@ -1879,6 +1994,7 @@ private:
     uint64_t decoded_frames_ = 0;
     uint64_t presented_frames_ = 0;
     uint64_t mpeg_audio_samples_ = 0;
+    uint64_t amrnb_audio_samples_ = 0;
     __int64 first_packet_offset_ = 0;
     int seek_range_max_ = 0;
     bool loaded_ = false;
@@ -2126,6 +2242,39 @@ int check_file(const wchar_t *path) {
         }
         valid = result == H263_3GP_EOF &&
                 frames == info.frame_count;
+        FILE *audio_file = nullptr;
+        if (_wfopen_s(&audio_file, path, L"rb") != 0 || !audio_file) {
+            valid = false;
+        } else {
+            AmrNb3gpInfo audio_info = {};
+            AmrNb3gpDecoder *audio_decoder =
+                amrnb_3gp_decoder_create();
+            int audio_result =
+                audio_decoder
+                    ? amrnb_3gp_decoder_open(
+                          audio_decoder, audio_file, &audio_info)
+                    : AMRNB_3GP_ERR_MEMORY;
+            uint32_t audio_frames = 0;
+            if (audio_result == AMRNB_3GP_OK) {
+                while (audio_result == AMRNB_3GP_OK) {
+                    AmrNb3gpFrame audio_frame = {};
+                    audio_result = amrnb_3gp_decoder_decode_next(
+                        audio_decoder, audio_file, &audio_frame);
+                    if (audio_result != AMRNB_3GP_OK) break;
+                    audio_bytes +=
+                        static_cast<uint64_t>(audio_frame.sample_count) *
+                        sizeof(int16_t);
+                    ++audio_frames;
+                }
+                valid = valid &&
+                        audio_result == AMRNB_3GP_EOF &&
+                        audio_frames == audio_info.frame_count;
+            } else if (audio_result != AMRNB_3GP_ERR_UNSUPPORTED) {
+                valid = false;
+            }
+            amrnb_3gp_decoder_destroy(audio_decoder);
+            fclose(audio_file);
+        }
         label = "H.263/3GP";
         h263_3gp_decoder_destroy(decoder);
     } else if (signature[0] == 0x00 && signature[1] == 0x00 &&

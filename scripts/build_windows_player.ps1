@@ -11,6 +11,8 @@ $bpv = Join-Path $repo "codecs\bpv"
 $mpeg = Join-Path $repo "codecs\mpeg1"
 $h263 = Join-Path $repo "codecs\h263"
 $pv = Join-Path $h263 "third_party\pv"
+$amrnb = Join-Path $repo "codecs\amrnb"
+$amrPv = Join-Path $amrnb "third_party\pv"
 $plMpeg = Join-Path $repo "third_party\pl_mpeg"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
@@ -42,18 +44,65 @@ $h263Sources = @(
 $h263SourceArguments = ($h263Sources | ForEach-Object {
     '"{0}"' -f $_
 }) -join " "
+$amrSources = @(
+    (Join-Path $amrnb "src\amrnb_3gp.cpp")
+) + @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
+        -Filter "*.cpp" |
+    Sort-Object Name | ForEach-Object { $_.FullName }) +
+    @(Get-ChildItem -LiteralPath (Join-Path $amrPv "dec\src") `
+        -Filter "*.cpp" |
+    Sort-Object Name | ForEach-Object { $_.FullName })
+$amrObjectDirectory = Join-Path $OutputDirectory "amrnb-obj"
+New-Item -ItemType Directory -Force -Path $amrObjectDirectory | Out-Null
+Get-ChildItem -LiteralPath $amrObjectDirectory -Filter "*.obj" |
+    Remove-Item -Force
+$amrResponse = Join-Path $OutputDirectory "amrnb-compile.rsp"
+$amrArguments = @(
+    ('/FI"{0}"' -f (Join-Path $amrnb "include\amrnb_port.h")),
+    ('/I"{0}"' -f (Join-Path $amrnb "include")),
+    ('/I"{0}"' -f (Join-Path $amrPv "common\include")),
+    ('/I"{0}"' -f (Join-Path $amrPv "dec\src")),
+    ('/I"{0}"' -f (Join-Path $amrPv "include"))
+) + @($amrSources | ForEach-Object { '"{0}"' -f $_ })
+$amrArguments | Set-Content -LiteralPath $amrResponse -Encoding ascii
+$amrLibrary = Join-Path $OutputDirectory "amrnb.lib"
 $output = Join-Path $OutputDirectory "hlvplay.exe"
+
+$amrCommandTemplate =
+    'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
+    'cl /nologo /c /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
+    '/D_CRT_SECURE_NO_WARNINGS @"{2}"'
+$amrCommand = $amrCommandTemplate -f
+    $devcmd, $amrObjectDirectory, $amrResponse
+Write-Host "Building AMR-NB decoder library..."
+& cmd.exe /d /c $amrCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed while compiling the AMR-NB decoder."
+}
+$amrLibraryResponse = Join-Path $OutputDirectory "amrnb-library.rsp"
+@(Get-ChildItem -LiteralPath $amrObjectDirectory -Filter "*.obj" |
+    Sort-Object Name |
+    ForEach-Object { '"{0}"' -f $_.FullName }) |
+    Set-Content -LiteralPath $amrLibraryResponse -Encoding ascii
+$libraryCommand =
+    'call "{0}" -no_logo -arch=x64 && lib /nologo /OUT:"{1}" @"{2}"' -f
+    $devcmd, $amrLibrary, $amrLibraryResponse
+& cmd.exe /d /c $libraryCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed while archiving the AMR-NB decoder."
+}
 
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ' +
-    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" ' +
-    '"{8}" "{9}" "{10}" "{11}" "{12}" {13} ' +
-    '/Fe:"{14}" /link /SUBSYSTEM:WINDOWS'
+    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" /I"{8}" ' +
+    '"{9}" "{10}" "{11}" "{12}" "{13}" {14} "{15}" ' +
+    '/Fe:"{16}" /link /SUBSYSTEM:WINDOWS'
 $command = $commandTemplate -f $devcmd, $OutputDirectory, $include, `
     $bpvInclude, $plMpeg, (Join-Path $h263 "include"), `
-    (Join-Path $pv "include"), (Join-Path $pv "src"), $player, $common, `
-    $decoder, $bpvDecoder, $mpegDecoder, $h263SourceArguments, $output
+    (Join-Path $pv "include"), (Join-Path $pv "src"), `
+    (Join-Path $amrnb "include"), $player, $common, $decoder, `
+    $bpvDecoder, $mpegDecoder, $h263SourceArguments, $amrLibrary, $output
 
 Write-Host "Building hlvplay..."
 & cmd.exe /d /c $command
@@ -61,4 +110,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building hlvplay."
 }
 
-Write-Host "Windows HLV/BPV/MPEG-1/H.263 player is ready: $output"
+Write-Host "Windows HLV/BPV/MPEG-1/H.263+AMR-NB player is ready: $output"

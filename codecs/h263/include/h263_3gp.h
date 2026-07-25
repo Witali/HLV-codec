@@ -53,8 +53,9 @@ void h263_3gp_decoder_destroy(H2633gpDecoder *decoder);
 
 /*
  * Opens the first H.263 video track. The initial embedded profile deliberately
- * accepts only the standard QCIF geometry (176x144), baseline profile 0, and
- * video-only playback. Other tracks in the container are ignored.
+ * accepts only the standard QCIF geometry (176x144) and baseline profile 0.
+ * Other tracks are ignored here; the companion AMR-NB decoder opens `samr`
+ * audio through an independent file cursor.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);

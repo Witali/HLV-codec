@@ -24,6 +24,7 @@
 #include "sdmmc_cmd.h"
 
 #include "board_config.hpp"
+#include "amrnb_3gp.h"
 #include "bpv_esp32_decoder.hpp"
 #include "cyd_display.hpp"
 #include "h263_3gp.h"
@@ -53,7 +54,7 @@ constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
 constexpr size_t kAudioDmaDescriptors = 6;
 constexpr size_t kAudioReadAheadBytes = 512;
 constexpr size_t kAudioReadChunkBytes = 512;
-constexpr uint32_t kAudioReaderStackBytes = 3072;
+constexpr uint32_t kAudioReaderStackBytes = 6144;
 constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
@@ -159,6 +160,8 @@ plm_t *mpeg_video = nullptr;
 plm_t *mpeg_audio = nullptr;
 H2633gpDecoder *h263_decoder = nullptr;
 H2633gpInfo h263_info{};
+AmrNb3gpDecoder *amrnb_audio_decoder = nullptr;
+AmrNb3gpInfo amrnb_audio_info{};
 UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
@@ -192,6 +195,7 @@ size_t video_read_ahead_size = 0;
 alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
 alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
 alignas(4) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
+alignas(4) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
 sdmmc_card_t *sd_card = nullptr;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
@@ -223,6 +227,9 @@ volatile uint32_t audio_loop_chunks = 0;
 volatile uint32_t mpeg_audio_decode_frames = 0;
 volatile uint32_t mpeg_audio_decode_us = 0;
 volatile uint32_t mpeg_audio_convert_us = 0;
+volatile uint32_t amrnb_audio_decode_frames = 0;
+volatile uint32_t amrnb_audio_decode_us = 0;
+volatile uint32_t amrnb_audio_convert_us = 0;
 size_t audio_preroll_bytes = 0;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
@@ -798,9 +805,46 @@ int prefetchMpegAudioFrame() {
     return HLV1_OK;
 }
 
+int prefetchAmrNbAudioFrame() {
+    if (!amrnb_audio_decoder) return AMRNB_3GP_ERR_FORMAT;
+    AmrNb3gpFrame frame{};
+    const int64_t decode_start = microsNow();
+    const int result = amrnb_3gp_decoder_decode_next(
+        amrnb_audio_decoder, audio_file, &frame);
+    const uint32_t decode_us =
+        static_cast<uint32_t>(microsNow() - decode_start);
+    if (result != AMRNB_3GP_OK) return result;
+    amrnb_audio_decode_frames = amrnb_audio_decode_frames + 1;
+    amrnb_audio_decode_us = amrnb_audio_decode_us + decode_us;
+
+    const int64_t convert_start = microsNow();
+    for (uint16_t index = 0; index < frame.sample_count; ++index) {
+        amrnb_audio_pcm[index] = static_cast<uint8_t>(
+            (static_cast<int32_t>(frame.samples[index]) + 32768) >> 8);
+    }
+    amrnb_audio_convert_us =
+        amrnb_audio_convert_us +
+        static_cast<uint32_t>(microsNow() - convert_start);
+
+    size_t sent = 0;
+    while (sent < frame.sample_count && !audio_reader_stop_requested) {
+        sent += xStreamBufferSend(
+            audio_stream, amrnb_audio_pcm + sent,
+            frame.sample_count - sent, pdMS_TO_TICKS(20));
+        if (audio_rebuffering &&
+            xStreamBufferBytesAvailable(audio_stream) >=
+                audio_preroll_bytes) {
+            audio_rebuffering = false;
+        }
+    }
+    return AMRNB_3GP_OK;
+}
+
 int prefetchAudioPacket() {
     if (video_codec == VideoCodec::kMpeg1)
         return prefetchMpegAudioFrame();
+    if (video_codec == VideoCodec::kH263)
+        return prefetchAmrNbAudioFrame();
     if (video_codec == VideoCodec::kMjpeg)
         return prefetchMjpegAudioChunk();
     if (video_codec == VideoCodec::kBpv)
@@ -932,6 +976,10 @@ void stopAudio() {
             plm_destroy(mpeg_audio);
             mpeg_audio = nullptr;
         }
+        if (amrnb_audio_decoder) {
+            amrnb_3gp_decoder_destroy(amrnb_audio_decoder);
+            amrnb_audio_decoder = nullptr;
+        }
         std::fclose(audio_file);
         audio_file = nullptr;
     }
@@ -956,6 +1004,10 @@ void stopAudio() {
     mpeg_audio_decode_frames = 0;
     mpeg_audio_decode_us = 0;
     mpeg_audio_convert_us = 0;
+    amrnb_audio_decode_frames = 0;
+    amrnb_audio_decode_us = 0;
+    amrnb_audio_convert_us = 0;
+    amrnb_audio_info = {};
     audio_preroll_bytes = 0;
     consecutive_skipped_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
@@ -998,6 +1050,21 @@ bool prepareAudio(const HLV1Header &header) {
         if (plm_get_num_audio_streams(mpeg_audio) < 1 ||
             plm_get_samplerate(mpeg_audio) !=
                 header.audio_sample_rate) {
+            stopAudio();
+            return false;
+        }
+    } else if (video_codec == VideoCodec::kH263) {
+        amrnb_audio_decoder = amrnb_3gp_decoder_create();
+        const int result =
+            amrnb_audio_decoder
+                ? amrnb_3gp_decoder_open(
+                      amrnb_audio_decoder, audio_file,
+                      &amrnb_audio_info)
+                : AMRNB_3GP_ERR_MEMORY;
+        if (result != AMRNB_3GP_OK ||
+            amrnb_audio_info.sample_rate !=
+                header.audio_sample_rate ||
+            amrnb_audio_info.channels != 1) {
             stopAudio();
             return false;
         }
@@ -1316,6 +1383,19 @@ int probeMpegAudioSampleRate(const char *path) {
     return sample_rate;
 }
 
+int probeAmrNbAudio(const char *path, AmrNb3gpInfo *info) {
+    FILE *file = std::fopen(path, "rb");
+    if (!file) return AMRNB_3GP_ERR_IO;
+    AmrNb3gpDecoder *probe = amrnb_3gp_decoder_create();
+    const int result =
+        probe
+            ? amrnb_3gp_decoder_open(probe, file, info)
+            : AMRNB_3GP_ERR_MEMORY;
+    amrnb_3gp_decoder_destroy(probe);
+    std::fclose(file);
+    return result;
+}
+
 bool reopenVideoAt(long offset) {
     if (!active_video_path || !video_read_ahead ||
         !video_read_ahead_size || offset < 0) {
@@ -1470,13 +1550,28 @@ bool openVideo() {
         sequence_header.fps_den =
             static_cast<uint16_t>(h263_info.fps_den);
         sequence_header.frame_count = h263_info.frame_count;
+        AmrNb3gpInfo audio_info{};
+        const int audio_result =
+            probeAmrNbAudio(active_video_path, &audio_info);
+        if (audio_result == AMRNB_3GP_OK) {
+            sequence_header.flags = HLV1_FLAG_AUDIO;
+            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_sample_rate = audio_info.sample_rate;
+            sequence_header.audio_channels = audio_info.channels;
+        } else if (audio_result != AMRNB_3GP_ERR_UNSUPPORTED) {
+            showStatus("Invalid audio.3gp",
+                       amrnb_3gp_strerror(audio_result));
+            closeVideo();
+            return false;
+        }
         ESP_LOGI(kTag,
                  "H.263/3GP: %ux%u, %u/%u fps, %u frames, "
-                 "profile=%u level=%u, decoder=%u bytes",
+                 "profile=%u level=%u, AMR-NB=%u Hz, decoder=%u bytes",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
                  h263_info.profile, h263_info.level,
+                 sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
                      h263_3gp_decoder_memory_bytes(h263_decoder)));
     } else if (video_codec == VideoCodec::kMjpeg) {
