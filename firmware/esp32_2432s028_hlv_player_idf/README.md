@@ -29,7 +29,7 @@ exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main`, `hlv1`, `bpv1` and `divx3` components explicitly use `-O3`.
 
-The initial DivX 3 profile is deliberately limited to 160x90 at 12 fps, I/P
+The initial DivX 3 profile is deliberately limited to 256x144 at 12 fps, I/P
 pictures, a maximum 96 KiB compressed packet, and no per-macroblock quantizer
 changes. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by this
 decoder.
@@ -281,9 +281,9 @@ display DMA timing.
   correction. BPV instead retains two 32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
-- DivX 3: two padded 8-bit YUV420 reference frames use 58,856 bytes at 160x90,
-  plus one compressed packet capped at 96 KiB. The first profile is decoded
-  sequentially on CPU0; physical-board frame-time validation is still
+- DivX 3: two padded 8-bit YUV420 reference frames use 141,008 bytes at
+  256x144, plus one compressed packet capped at 96 KiB. The first profile is
+  decoded sequentially on CPU0; physical-board frame-time validation is still
   required.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at

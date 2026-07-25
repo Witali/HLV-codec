@@ -15,11 +15,12 @@ The current decoder supports:
 
 The first embedded profile intentionally excludes B-pictures and per-
 macroblock quantizer changes. The portable decoder uses two padded YUV420
-reference frames. At 160x90 it reserves about 59 KiB; at 320x180 it reserves
-about 235 KiB before the AVI packet buffer, so QVGA is not suitable for the
-original ESP32 board without a later compact-frame optimization.
+reference frames. At 256x144 it reserves 141,008 bytes (about 138 KiB); at
+320x180 it reserves about 235 KiB before the AVI packet buffer, so QVGA is not
+suitable for the original ESP32 board without a later compact-frame
+optimization.
 
-Create the validated 160x90, 12 fps, `q=4` Big Buck Bunny profile with mono
+Create the validated 256x144, 12 fps, `q=4` Big Buck Bunny profile with mono
 PCM_U8 audio:
 
 ```powershell
