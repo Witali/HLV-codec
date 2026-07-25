@@ -271,7 +271,7 @@ Average syntax work per frame:
   - motion/intra prediction;
   - inverse WHT and residual addition;
   - compact Y6/U5/V5 packing.
-- [ ] Compare the current table CRC with the ESP32 ROM CRC32 implementation,
+- [x] Compare the current table CRC with the ESP32 ROM CRC32 implementation,
       an IRAM-resident loop and a bounded-memory word-at-a-time implementation.
 - [ ] Fuse compact motion prediction and output:
   - generate prediction in four-pixel groups;
@@ -301,6 +301,7 @@ Average syntax work per frame:
 | --- | ---: | ---: | --- | --- |
 | Streaming baseline | 1,596.69 | 97,863.6 | `3fecc5b367d31b8c` | baseline |
 | Stage profiler, 30 frames | n/a | 105,057.9 | unchanged decoder | accepted as an opt-in diagnostic |
+| Four-byte unrolled CRC | hash pass | 103,557.7 | `3fecc5b367d31b8c` | accepted |
 
 The opt-in stage build uses `HLV1_STAGE_PROFILE=ON`; release builds leave every
 timer read compiled out. On the first 30 physical frames it reports:
@@ -319,3 +320,16 @@ blocks. It is therefore a stage-share diagnostic, not a release-performance
 baseline. The profile makes prediction the first structural target. CRC is
 only about 1.4 ms/frame, so even eliminating it completely cannot close the
 30 fps gap.
+
+CRC variants were compared over the same first-frame window:
+
+| CRC implementation | CRC avg us/frame | Decision |
+| --- | ---: | --- |
+| One-byte table loop | 1,439.6 | baseline |
+| Same loop in IRAM | 1,447.2 | rejected, no improvement |
+| ESP32 ROM `crc32_le` | 1,451.4 | rejected, no improvement |
+| Four-byte unrolled loop, same 1 KiB table | 846.6 | accepted, -41.2% |
+
+The retained loop adds no lookup tables or heap and preserves the complete
+streaming reconstruction hash. It saves about 0.6 ms/frame, so it is useful
+but deliberately not treated as a solution to the decoder bottleneck.

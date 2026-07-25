@@ -66,6 +66,14 @@ uint32_t hlv1_crc32(const uint8_t *data, size_t size) {
 }
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    while (size >= 4U) {
+        crc = crc_table[(crc ^ data[0]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[1]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[2]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[3]) & 0xFFU] ^ (crc >> 8);
+        data += 4;
+        size -= 4;
+    }
     for (size_t i = 0; i < size; ++i)
         crc = crc_table[(crc ^ data[i]) & 0xFFU] ^ (crc >> 8);
     return crc;
