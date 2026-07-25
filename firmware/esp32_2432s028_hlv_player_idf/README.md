@@ -4,8 +4,8 @@ This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, BPV1 v1
 through v4 with PCM_U8 audio and active per-GOP palettes, and the constrained
-MPEG-1 Video/MP2 profile up to 320x240. It also supports video-only baseline
-H.263 in a 3GP container at `176x144` QCIF.
+MPEG-1 Video/MP2 profile up to 320x240. It also supports baseline H.263 with
+optional 8 kHz mono AMR-NB audio in a 3GP container at `176x144` QCIF.
 
 The only application components are:
 
@@ -15,6 +15,8 @@ The only application components are:
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
 - `h263_3gp`: the shared bounded-table 3GP demultiplexer and PacketVideo
   H.263 decoder from `codecs/h263`.
+- `amrnb_3gp`: the companion `samr` demultiplexer and PacketVideo AMR-NB
+  decoder from `codecs/amrnb`.
 
 `MINIMAL_BUILD` in `CMakeLists.txt` admits only their transitive ESP-IDF
 dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The

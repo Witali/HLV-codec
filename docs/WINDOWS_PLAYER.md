@@ -1,12 +1,13 @@
 # Native Windows HLV/BPV/MPEG-1/H.263 player
 
 `hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
-v1 through v5, the constrained MPEG-1/MP2 profile, and the video-only
-`176x144` QCIF 3GP/H.263 profile. It uses the portable
+v1 through v5, the constrained MPEG-1/MP2 profile, and the
+`176x144` QCIF H.263/AMR-NB 3GP profile. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
-decoded and downmixed into that output format. HLV/MPEG YUV and decoded BPV
+decoded and downmixed into that output format. AMR-NB is decoded from 8 kHz
+mono PCM16 into the same unsigned PCM8 output. HLV/MPEG YUV and decoded BPV
 palette blocks are prepared as NV12 plus BGRA; the GPU performs colour
 conversion and scaling. If D3D11 initialisation or presentation fails, the
 player automatically switches to double-buffered GDI. BPV1 v4/v5 supports
@@ -68,8 +69,8 @@ compact frame-to-keyframe index. A seek starts at the nearest preceding
 keyframe, decodes dependent frames without presenting them, then displays the
 selected frame. HLV/BPV audio restarts from the matching packet. MPEG seeking
 reopens its bounded decoder and decodes video and MP2 forward from the start to
-keep both streams aligned. H.263 seeking likewise reopens the bounded 3GP
-decoder and decodes forward from the start.
+keep both streams aligned. H.263 seeking likewise reopens both bounded 3GP
+track decoders and decodes H.263 plus AMR-NB forward from the start.
 Seeking while paused preserves the paused state. HLV files whose header has a
 streaming `frame_count=0` remain seekable because their local index uses the
 actual packet count. BPV indexing also rejects truncated frames and bytes

@@ -79,6 +79,9 @@ function Assert-FfmpegCapability {
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
     -Pattern '^\s*V\S*\s+h263(?:\s|$)' `
     -Description "the H.263 encoder"
+Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
+    -Pattern '^\s*A\S*\s+libopencore_amrnb(?:\s|$)' `
+    -Description "the libopencore AMR-NB encoder"
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-muxers") `
     -Pattern '^\s*E\s+3gp(?:\s|$)' `
     -Description "the 3GP muxer"
@@ -89,4 +92,4 @@ Assert-FfmpegCapability -Arguments @("-hide_banner", "-demuxers") `
 $versionOutput | Select-Object -First 1
 Write-Host "Project-local FFmpeg is ready: $ffmpeg"
 Write-Host "Project-local FFprobe is ready: $ffprobe"
-Write-Host "H.263 encoder and 3GP mux/demux support are available."
+Write-Host "H.263 and AMR-NB encoders plus 3GP mux/demux support are available."

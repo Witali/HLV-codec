@@ -26,7 +26,8 @@ if (-not (Test-Path -LiteralPath $Player)) {
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 & $ffmpeg -y -hide_banner -loglevel error `
     -f lavfi -i "testsrc2=size=320x180:rate=15:duration=2" `
-    -c:v ffv1 $source
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=2" `
+    -map 0:v:0 -map 1:a:0 -c:v ffv1 -c:a pcm_s16le $source
 if ($LASTEXITCODE -ne 0) {
     throw "Could not generate the synthetic H.263 input."
 }

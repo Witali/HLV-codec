@@ -23,10 +23,12 @@ accepts pictures up to 320x240, contains only I/P pictures, and stores two
 packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
-The standard [`3GP/H.263 profile`](codecs/h263/) starts with video-only
-baseline H.263 at `176x144` QCIF and a constant frame rate. The encoder keeps
-the source aspect ratio inside that canvas with black padding. Both players
-use the same portable 3GP demultiplexer and Apache-2.0 PacketVideo decoder.
+The standard [`3GP/H.263 profile`](codecs/h263/) uses baseline H.263 at
+`176x144` QCIF, a constant frame rate, and optional
+[`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono (enabled by default by the
+encoder). The encoder keeps the source aspect ratio inside that canvas with
+black padding. Both players use the same bounded-table 3GP demultiplexers and
+pinned PacketVideo video/audio decoders.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion

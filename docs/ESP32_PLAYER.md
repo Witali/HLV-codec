@@ -10,8 +10,8 @@ DAC GPIO26.
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
-  the constrained MPEG-1 Video/MP2 profile up to 320x240, and video-only
-  baseline H.263 in a 3GP container at `176x144` QCIF;
+  the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline H.263
+  with optional AMR-NB mono audio in a 3GP container at `176x144` QCIF;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -259,7 +259,7 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 
-For the initial video-only 3GP/H.263 profile:
+For the 3GP/H.263 profile with default AMR-NB audio:
 
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `
@@ -268,9 +268,10 @@ For the initial video-only 3GP/H.263 profile:
 ```
 
 The profile is fixed-rate baseline H.263 on the standardized `176x144` QCIF
-canvas. The encoder preserves aspect ratio with black padding. Audio tracks,
-variable-rate timing, other H.263 profiles, and other dimensions are outside
-this first profile.
+canvas. The encoder preserves aspect ratio with black padding and, when the
+source has audio, adds AMR-NB mono at 8 kHz and 12.2 kbit/s. Use `-NoAudio`
+for a silent file. Variable-rate timing, other H.263 profiles, other audio
+codecs, and other dimensions are outside this profile.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the

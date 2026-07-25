@@ -19,6 +19,12 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
+    [ValidateSet("4.75k", "5.15k", "5.9k", "6.7k", "7.4k",
+        "7.95k", "10.2k", "12.2k")]
+    [string]$AudioBitrate = "12.2k",
+
+    [switch]$NoAudio,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -69,7 +75,6 @@ $arguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
     "-i", $InputFile,
     "-map", "0:v:0",
-    "-an",
     "-vf", $videoFilter,
     "-fps_mode", "cfr",
     "-c:v", "h263",
@@ -82,6 +87,18 @@ $arguments = @(
     "-threads", $Threads,
     "-movflags", "+faststart"
 )
+if ($NoAudio) {
+    $arguments += @("-an")
+} else {
+    $arguments += @(
+        "-map", "0:a:0?",
+        "-c:a", "libopencore_amrnb",
+        "-ar", "8000",
+        "-ac", "1",
+        "-b:a", $AudioBitrate,
+        "-shortest"
+    )
+}
 if ($MaxFrames) {
     $arguments += @("-frames:v", $MaxFrames)
 }
@@ -89,7 +106,10 @@ $arguments += @("-f", "3gp", $OutputFile)
 
 Write-Host (
     "Encoding baseline H.263/3GP: 176x144 QCIF, ${Fps} fps, " +
-    "${VideoBitrateKbps} kbps, GOP $Gop, video only..."
+    "${VideoBitrateKbps} kbps, GOP $Gop, " +
+    $(if ($NoAudio) { "video only" } else {
+        "AMR-NB mono 8 kHz at $AudioBitrate"
+    }) + "..."
 )
 & $ffmpeg @arguments
 if ($LASTEXITCODE -ne 0) {
@@ -108,13 +128,21 @@ if ($video.Count -ne 1 -or $video[0].codec_name -ne "h263" -or
     $video[0].width -ne 176 -or $video[0].height -ne 144) {
     throw "Output is not the supported 176x144 H.263 profile."
 }
-if (@($metadata.streams |
-        Where-Object { $_.codec_type -eq "audio" }).Count) {
-    throw "The first H.263/3GP profile must be video-only."
+$audio = @($metadata.streams |
+    Where-Object { $_.codec_type -eq "audio" })
+if ($NoAudio -and $audio.Count) {
+    throw "The -NoAudio output unexpectedly contains an audio track."
+}
+if ($audio.Count -gt 1 -or
+    ($audio.Count -eq 1 -and
+        ($audio[0].codec_name -ne "amr_nb" -or
+         $audio[0].sample_rate -ne "8000" -or
+         $audio[0].channels -ne 1))) {
+    throw "Output audio is not the supported mono AMR-NB 8 kHz profile."
 }
 
 Write-Host "Decoding the complete H.263/3GP file with FFmpeg..."
-& $ffmpeg -v error -i $OutputFile -map 0:v:0 -f null NUL
+& $ffmpeg -v error -i $OutputFile -map 0:v:0 -map 0:a:0? -f null NUL
 if ($LASTEXITCODE -ne 0) {
     throw "Full H.263/3GP validation failed."
 }
