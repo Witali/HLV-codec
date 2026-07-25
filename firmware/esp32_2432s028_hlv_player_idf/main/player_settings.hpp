@@ -19,6 +19,27 @@ enum class AvSyncMode {
     kDropThenLoopAudio,
 };
 
+enum class H263CifPresentationMode {
+    // Preserve the existing behaviour: show the central 320x240 source area.
+    kCenterCrop,
+
+    // Preserve aspect ratio and shrink the complete CIF frame to the display.
+    kFit,
+};
+
+enum class H263ScalingFilter {
+    kNearestNeighbor,
+    kBilinear,
+};
+
+// CIF is 352x288 while the display is 320x240. Fit presents the complete
+// frame as 293x240 with centred black side borders. CenterCrop retains the
+// former full-screen central 320x240 view.
+constexpr H263CifPresentationMode kH263CifPresentationMode =
+    H263CifPresentationMode::kFit;
+constexpr H263ScalingFilter kH263ScalingFilter =
+    H263ScalingFilter::kNearestNeighbor;
+
 // false: draw at native resolution in the centre with black borders.
 // true: stretch every frame to the complete 320x240 display.
 constexpr bool kScaleVideoToDisplay = false;

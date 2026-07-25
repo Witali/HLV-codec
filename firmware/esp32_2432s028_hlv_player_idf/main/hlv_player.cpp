@@ -261,9 +261,18 @@ uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t bpv_rgb_row[kScreenWidth];
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
+uint32_t h263_fit_x_q12[kScreenWidth];
+uint32_t h263_fit_y_q12[kScreenHeight];
+int h263_fit_width = 0;
+int h263_fit_height = 0;
+int h263_fit_x = 0;
+int h263_fit_y = 0;
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
+uint8_t h263_bilinear_y_row[kMaximumH263Width];
+uint8_t h263_bilinear_u_row[kMaximumH263Width / 2];
+uint8_t h263_bilinear_v_row[kMaximumH263Width / 2];
 int32_t mpeg_red_add[kMaximumH263Width / 2];
 int32_t mpeg_green_add[kMaximumH263Width / 2];
 int32_t mpeg_blue_add[kMaximumH263Width / 2];
@@ -362,13 +371,71 @@ int64_t microsNow() { return esp_timer_get_time(); }
 
 int64_t millisNow() { return microsNow() / 1000; }
 
+bool fitH263CifToDisplay() {
+    return video_codec == VideoCodec::kH263 &&
+           sequence_header.width == 352 &&
+           sequence_header.height == 288 &&
+           player_settings::kH263CifPresentationMode ==
+               player_settings::H263CifPresentationMode::kFit;
+}
+
+uint32_t scaleCoordinateQ12(int destination, int source_size,
+                            int destination_size) {
+    const int64_t centred =
+        ((static_cast<int64_t>(destination) * 2 + 1) *
+             source_size * 2048) /
+            destination_size -
+        2048;
+    return static_cast<uint32_t>(std::clamp<int64_t>(
+        centred, 0, static_cast<int64_t>(source_size - 1) << 12));
+}
+
+void configureH263Fit() {
+    h263_fit_width = 0;
+    h263_fit_height = 0;
+    h263_fit_x = 0;
+    h263_fit_y = 0;
+    if (!fitH263CifToDisplay()) return;
+
+    const int source_width = sequence_header.width;
+    const int source_height = sequence_header.height;
+    h263_fit_width = kScreenWidth;
+    h263_fit_height =
+        source_height * kScreenWidth / source_width;
+    if (h263_fit_height > kScreenHeight) {
+        h263_fit_height = kScreenHeight;
+        h263_fit_width =
+            source_width * kScreenHeight / source_height;
+    }
+    h263_fit_x = (kScreenWidth - h263_fit_width) / 2;
+    h263_fit_y = (kScreenHeight - h263_fit_height) / 2;
+    for (int x = 0; x < h263_fit_width; ++x) {
+        h263_fit_x_q12[x] =
+            scaleCoordinateQ12(x, source_width, h263_fit_width);
+        scaled_x_map[x] = static_cast<uint16_t>(
+            (h263_fit_x_q12[x] + 2048) >> 12);
+    }
+    for (int y = 0; y < h263_fit_height; ++y) {
+        h263_fit_y_q12[y] =
+            scaleCoordinateQ12(y, source_height, h263_fit_height);
+        scaled_y_map[y] = static_cast<uint16_t>(
+            (h263_fit_y_q12[y] + 2048) >> 12);
+    }
+}
+
 void waitForH263OutputRow(void *, uint16_t first_y) {
     if (!__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE))
         return;
     const int source_height = sequence_header.height;
     const int visible_height = std::min(source_height, kScreenHeight);
-    const int first_visible_y = (source_height - visible_height) / 2;
-    const int visible_end_y = first_visible_y + visible_height;
+    const int first_visible_y =
+        fitH263CifToDisplay()
+            ? 0
+            : (source_height - visible_height) / 2;
+    const int visible_end_y =
+        fitH263CifToDisplay()
+            ? source_height
+            : first_visible_y + visible_height;
     const int row_end_y = std::min<int>(first_y + 16, visible_end_y);
     if (row_end_y <= first_visible_y || first_y >= visible_end_y)
         return;
@@ -391,7 +458,10 @@ void beginH263RowPipeline() {
     __atomic_store_n(&h263_row_guard_wait_us, 0, __ATOMIC_RELAXED);
     __atomic_store_n(
         &h263_rendered_source_rows,
-        (source_height - visible_height) / 2, __ATOMIC_RELEASE);
+        fitH263CifToDisplay()
+            ? 0
+            : (source_height - visible_height) / 2,
+        __ATOMIC_RELEASE);
     __atomic_store_n(&h263_row_pipeline_active, 1, __ATOMIC_RELEASE);
 }
 
@@ -2103,7 +2173,9 @@ bool openVideo() {
     consecutive_skipped_presentations = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
-    if (player_settings::kScaleVideoToDisplay) {
+    configureH263Fit();
+    if (player_settings::kScaleVideoToDisplay &&
+        !fitH263CifToDisplay()) {
         for (int x = 0; x < kScreenWidth; ++x) {
             scaled_x_map[x] = static_cast<uint16_t>(
                 (x * sequence_header.width) / kScreenWidth);
@@ -2124,13 +2196,22 @@ bool openVideo() {
     } else if (video_codec == VideoCodec::kH263) {
         ESP_LOGI(kTag,
                  "Playing H.263/%s in %s mode, "
-                 "frame storage=bounded YUV420 frame buffers",
+                 "frame storage=bounded YUV420 frame buffers%s",
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",
-                 player_settings::kScaleVideoToDisplay
-                     ? "scale-to-320x240"
-                     : "native-centred");
+                 fitH263CifToDisplay()
+                     ? "aspect-fit"
+                     : player_settings::kScaleVideoToDisplay
+                           ? "scale-to-320x240"
+                           : "native-centred",
+                 fitH263CifToDisplay()
+                     ? player_settings::kH263ScalingFilter ==
+                               player_settings::H263ScalingFilter::
+                                   kBilinear
+                           ? ", bilinear"
+                           : ", nearest-neighbor"
+                     : "");
     } else if (video_codec == VideoCodec::kMjpeg) {
         ESP_LOGI(kTag,
                  "Playing MJPEG in %s mode, frame storage=RGB565 strip",
@@ -2300,6 +2381,64 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     }
 }
 
+void interpolatePlaneRows(const plm_plane_t &plane, uint32_t y_q12,
+                          uint8_t *output) {
+    const unsigned y0 = y_q12 >> 12;
+    const unsigned y1 = std::min(y0 + 1, plane.height - 1);
+    const int fraction = y_q12 & 0xfff;
+    const uint8_t *row0 =
+        plane.data + static_cast<size_t>(y0) * plane.stride;
+    if (!fraction || y0 == y1) {
+        std::memcpy(output, row0, plane.width);
+        return;
+    }
+    const uint8_t *row1 =
+        plane.data + static_cast<size_t>(y1) * plane.stride;
+    for (unsigned x = 0; x < plane.width; ++x) {
+        output[x] = static_cast<uint8_t>(
+            row0[x] +
+            ((static_cast<int>(row1[x]) - row0[x]) * fraction +
+             2048) /
+                4096);
+    }
+}
+
+uint8_t interpolateRowSample(const uint8_t *row, unsigned width,
+                             uint32_t x_q12) {
+    const unsigned x0 = x_q12 >> 12;
+    const unsigned x1 = std::min(x0 + 1, width - 1);
+    const int fraction = x_q12 & 0xfff;
+    return static_cast<uint8_t>(
+        row[x0] +
+        ((static_cast<int>(row[x1]) - row[x0]) * fraction +
+         2048) /
+            4096);
+}
+
+void convertH263BilinearRow(const plm_frame_t *frame,
+                            int destination_y, uint16_t *output) {
+    const uint32_t y_q12 = h263_fit_y_q12[destination_y];
+    interpolatePlaneRows(
+        frame->y, y_q12, h263_bilinear_y_row);
+    interpolatePlaneRows(
+        frame->cb, y_q12 >> 1, h263_bilinear_u_row);
+    interpolatePlaneRows(
+        frame->cr, y_q12 >> 1, h263_bilinear_v_row);
+    for (int x = 0; x < h263_fit_width; ++x) {
+        const uint32_t x_q12 = h263_fit_x_q12[x];
+        const uint8_t y = interpolateRowSample(
+            h263_bilinear_y_row, frame->y.width, x_q12);
+        const uint8_t cb = interpolateRowSample(
+            h263_bilinear_u_row, frame->cb.width, x_q12 >> 1);
+        const uint8_t cr = interpolateRowSample(
+            h263_bilinear_v_row, frame->cr.width, x_q12 >> 1);
+        output[x] = yuvToRgb565(
+            y, yuv_red_add[cr],
+            yuv_green_u_add[cb] + yuv_green_v_add[cr],
+            yuv_blue_add[cb]);
+    }
+}
+
 bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
     const int rows_per_transfer = display.rowsPerTransfer();
@@ -2372,6 +2511,55 @@ bool renderH263Frame(const H2633gpFrame *frame) {
         static_cast<unsigned>(frame->width / 2),
         static_cast<unsigned>(frame->height / 2),
         frame->chroma_stride, const_cast<uint8_t *>(frame->v), 0, nullptr};
+    if (fitH263CifToDisplay()) {
+        const int rows_per_transfer = display.rowsPerTransfer();
+        const bool bilinear =
+            player_settings::kH263ScalingFilter ==
+            player_settings::H263ScalingFilter::kBilinear;
+        mpeg_cached_chroma_y = -1;
+        for (int y0 = 0; y0 < h263_fit_height;
+             y0 += rows_per_transfer) {
+            const int rows =
+                std::min(rows_per_transfer, h263_fit_height - y0);
+            uint16_t *pixels = display.acquireBuffer();
+            if (!pixels) {
+                endH263RowPipeline();
+                return false;
+            }
+            int consumed_source_rows = 0;
+            for (int row = 0; row < rows; ++row) {
+                const int destination_y = y0 + row;
+                if (bilinear) {
+                    convertH263BilinearRow(
+                        &adapted, destination_y,
+                        pixels + row * h263_fit_width);
+                    consumed_source_rows = std::max(
+                        consumed_source_rows,
+                        std::min<int>(
+                            (h263_fit_y_q12[destination_y] >> 12) + 2,
+                            frame->height));
+                } else {
+                    const int source_y =
+                        scaled_y_map[destination_y];
+                    convertMpegRow(
+                        &adapted, source_y, true, 0,
+                        pixels + row * h263_fit_width,
+                        h263_fit_width);
+                    consumed_source_rows = std::max(
+                        consumed_source_rows, source_y + 1);
+                }
+            }
+            publishH263RenderedRows(consumed_source_rows);
+            if (display.drawBitmap(
+                    h263_fit_x, h263_fit_y + y0,
+                    h263_fit_width, rows, pixels) != ESP_OK) {
+                endH263RowPipeline();
+                return false;
+            }
+        }
+        publishH263RenderedRows(frame->height);
+        return true;
+    }
     if (!h263_row_pipelined) return renderMpegFrame(&adapted);
 
     const int rows_per_transfer = display.rowsPerTransfer();

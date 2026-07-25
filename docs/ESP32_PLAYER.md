@@ -168,25 +168,34 @@ avoid cumulative A/V drift. See [`AUDIO_FORMAT.md`](AUDIO_FORMAT.md) for the
 container layout. DAC writes use a finite timeout so stopping or reopening a
 video cannot strand an audio task and leak its stack.
 
-## Display scaling setting
+## Display scaling settings
 
-The compile-time flag `kScaleVideoToDisplay` is in
+The H.263 CIF presentation settings are in
 `firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp`:
 
 ```cpp
-constexpr bool kScaleVideoToDisplay = false;
+constexpr H263CifPresentationMode kH263CifPresentationMode =
+    H263CifPresentationMode::kFit;
+constexpr H263ScalingFilter kH263ScalingFilter =
+    H263ScalingFilter::kNearestNeighbor;
 ```
 
-- `false` draws the video at its native resolution in the centre. The complete
-  display is cleared once, then only the video rectangle is transferred over
-  SPI on each frame. A 320x180 frame is placed at (0, 30), leaving black
-  borders only above and below it.
-- `true` stretches each frame to 320x240 using nearest-neighbour sampling and
-  transfers the complete display on every frame.
+`H263CifPresentationMode::kCenterCrop` retains the central 320x240 source
+region. `H263CifPresentationMode::kFit` preserves the 11:9 CIF aspect ratio and
+shows the complete 352x288 frame as 293x240 with centred black borders at the
+sides.
 
-Both modes convert and send 16 rows at a time and do not allocate a full
-RGB framebuffer. The scaling mode adds only coordinate maps and one cached
-RGB row (1760 bytes in the current build).
+The fit path offers `H263ScalingFilter::kNearestNeighbor` and
+`H263ScalingFilter::kBilinear`. Bilinear interpolation is performed in the
+Y/U/V planes before RGB565 conversion. It uses small row buffers rather than a
+full RGB framebuffer. Nearest-neighbour is the default real-time setting: the
+physical ESP32 sustained 29.95 fps without display skips on the 30 fps CIF AVI
+test. Bilinear is a quality-first option and reached about 18.3 fps on the same
+file and board.
+
+The older `kScaleVideoToDisplay` flag still controls nearest-neighbour
+stretching for non-CIF and non-H.263 playback. When disabled, those videos are
+drawn at native resolution in the centre.
 
 ## Prepare a video on Windows
 

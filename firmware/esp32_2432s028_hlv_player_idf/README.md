@@ -322,8 +322,13 @@ display DMA timing.
   predictive decoding still runs so subsequent P-frames remain valid.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
-Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
-centred presentation or nearest-neighbour scaling to 320x240.
+`kH263CifPresentationMode` in `main/player_settings.hpp` selects the central
+320x240 crop or aspect-preserving display of the complete 352x288 CIF frame as
+293x240. `kH263ScalingFilter` selects nearest-neighbour or bilinear filtering
+for the complete-frame mode. Nearest-neighbour is the default because it keeps
+30 fps on the physical ESP32; bilinear prioritizes smoothness over frame rate.
+The older `kScaleVideoToDisplay` setting continues to control stretching for
+the other video codecs.
 `kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
