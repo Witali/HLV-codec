@@ -269,21 +269,27 @@ For the 3GP/H.263 profile with default AMR-NB audio:
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `
     -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.3gp `
-    -Profile 320x180
+    -OutputFile .\out\video.3gp
 ```
 
-The default profile is fixed-rate baseline H.263 on the standardized
-`176x144` QCIF canvas. `-Profile` also accepts H.263+ custom picture sizes
-`256x144` and `320x180` for 16:9, or `256x192` and `320x240` for 4:3.
+The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
+768 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
+trellis encoder decisions, fills the canvas, and crops equal margins from the
+source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
+source with black padding. `-Profile` also accepts baseline H.263 `176x144`,
+H.263+ `256x144` and `320x180` for 16:9, or `256x192` for 4:3.
 Custom profiles are encoded intra-only (effective GOP 1), allowing the ESP32
 to decode them with one padded YUV420 frame whose Y, U, and V planes are
 allocated separately. This avoids a single 115,200-byte allocation at
 320x240.
-The encoder preserves aspect ratio with black padding and, when the source has
-audio, adds AMR-NB mono at 8 kHz and 12.2 kbit/s. Use `-NoAudio` for a silent
-file. Variable-rate timing, other audio codecs, and other dimensions are
-outside these profiles.
+When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
+12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
+audio codecs, and other dimensions are outside these profiles.
+
+The complete source encoded with this default was exercised for 900 frames on
+the physical ESP32. The run measured 15.007 fps, 48.69 ms average and
+52.15 ms p95 work per frame against a 66.67 ms budget, with zero decode gaps,
+display skips, audio rebuffers, underrun samples, or silence chunks.
 
 Status text uses an embedded 5x7 font covering every printable ASCII character
 from space (`0x20`) through tilde (`0x7e`), including all digits and

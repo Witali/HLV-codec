@@ -26,14 +26,18 @@ Encode any source:
 ```powershell
 .\scripts\encode_h263_3gp.ps1 `
     -InputFile .\input.mp4 `
-    -OutputFile .\out\video.3gp `
-    -Profile 320x180
+    -OutputFile .\out\video.3gp
 ```
 
-The default remains `176x144`. The script preserves source aspect ratio inside
-the selected canvas, pads with black, adds AMR-NB audio when the source has
-audio, verifies the stream metadata, and fully decodes the result with FFmpeg.
-Use `-NoAudio` for a silent file.
+The default is the hardware-verified intra-only `320x240`, 15 fps,
+768 kbit/s profile with a 1024-kbit VBV buffer. RD macroblock decisions,
+trellis quantization, and rate-distortion coefficient selection improve
+quality without enabling unsupported H.263 bitstream tools. The default
+`-FitMode Crop` preserves aspect ratio while filling the canvas and cropping
+equal margins from opposite sides. Use `-FitMode Contain` to retain the
+complete source with black padding. The script adds AMR-NB audio when the
+source has audio, verifies the stream metadata, and fully decodes the result
+with FFmpeg. Use `-NoAudio` for a silent file.
 
 Custom H.263+ profiles use GOP 1 regardless of `-Gop`. Keeping every custom
 frame intra-coded lets the ESP32 decoder use one YUV420 frame. Its Y, U, and V

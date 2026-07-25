@@ -44,8 +44,10 @@ foreach ($profile in $profiles) {
         -InputFile $source `
         -OutputFile $video `
         -Profile $profile `
+        -FitMode Contain `
         -Fps 15 `
         -VideoBitrateKbps 256 `
+        -VideoBufferKbps 512 `
         -Gop 15
     if ($LASTEXITCODE -ne 0) {
         throw "The $profile H.263/3GP encoder smoke test failed."

@@ -27,9 +27,11 @@ The standard [`3GP/H.263 profile`](codecs/h263/) uses baseline H.263 at
 `176x144` QCIF or intra-only H.263+ at `256x144`, `256x192`, `320x180`, or
 `320x240`, a constant frame rate, and optional
 [`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono (enabled by default by the
-encoder). The encoder keeps the source aspect ratio inside the selected canvas with
-black padding. Both players use the same bounded-table 3GP demultiplexers and
-pinned PacketVideo video/audio decoders.
+encoder). The encoder defaults to the hardware-verified `320x240`, 15 fps,
+768 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas
+by cropping equal margins from the source. `-FitMode Contain` retains the
+complete source with black padding instead. Both players use the same
+bounded-table 3GP demultiplexers and pinned PacketVideo video/audio decoders.
 
 [`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
 reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion

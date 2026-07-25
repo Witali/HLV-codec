@@ -9,13 +9,19 @@ param(
 
     [ValidateSet("176x144", "256x144", "256x192",
         "320x180", "320x240")]
-    [string]$Profile = "176x144",
+    [string]$Profile = "320x240",
+
+    [ValidateSet("Crop", "Contain")]
+    [string]$FitMode = "Crop",
 
     [ValidateRange(1, 30)]
     [int]$Fps = 15,
 
-    [ValidateRange(16, 512)]
-    [int]$VideoBitrateKbps = 128,
+    [ValidateRange(16, 2048)]
+    [int]$VideoBitrateKbps = 768,
+
+    [ValidateRange(32, 4096)]
+    [int]$VideoBufferKbps = 1024,
 
     [ValidateRange(1, 300)]
     [int]$Gop = 30,
@@ -71,15 +77,26 @@ New-Item -ItemType Directory -Force -Path (
     Split-Path $ReportFile -Parent
 ) | Out-Null
 
-# Preserve the source aspect ratio inside the selected canvas and
-# letterbox/pillarbox instead of stretching it.
-$videoFilter = (
-    "fps=${Fps}," +
-    "scale=${width}:${height}:force_original_aspect_ratio=decrease:" +
-    "force_divisible_by=2:flags=lanczos," +
-    "pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black," +
-    "setsar=1,format=yuv420p"
-)
+# Preserve source aspect ratio without stretching. Crop fills the canvas and
+# removes equal margins from opposite sides; Contain retains the whole source
+# and pads the unused canvas area with black.
+$videoFilter = if ($FitMode -eq "Crop") {
+    (
+        "fps=${Fps}," +
+        "scale=${width}:${height}:force_original_aspect_ratio=increase:" +
+        "force_divisible_by=2:flags=lanczos," +
+        "crop=${width}:${height}," +
+        "setsar=1,format=yuv420p"
+    )
+} else {
+    (
+        "fps=${Fps}," +
+        "scale=${width}:${height}:force_original_aspect_ratio=decrease:" +
+        "force_divisible_by=2:flags=lanczos," +
+        "pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black," +
+        "setsar=1,format=yuv420p"
+    )
+}
 $videoArguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
     "-i", $InputFile,
@@ -89,12 +106,21 @@ $videoArguments = @(
     "-c:v", $(if ($usesH263Plus) { "h263p" } else { "h263" }),
     "-b:v", "${VideoBitrateKbps}k",
     "-maxrate", "${VideoBitrateKbps}k",
-    "-bufsize", "$($VideoBitrateKbps * 2)k",
+    "-bufsize", "${VideoBufferKbps}k",
     "-g", $effectiveGop,
     "-bf", "0",
     "-pix_fmt", "yuv420p",
     "-threads", $Threads
 )
+if ($usesH263Plus) {
+    # These encoder-side decisions improve intra-frame quality without
+    # enabling H.263 tools that the embedded PacketVideo decoder lacks.
+    $videoArguments += @(
+        "-mbd", "rd",
+        "-trellis", "2",
+        "-mpv_flags", "+qp_rd+cbp_rd"
+    )
+}
 if ($MaxFrames) {
     $videoArguments += @("-frames:v", $MaxFrames)
 }
@@ -102,7 +128,8 @@ if ($MaxFrames) {
 Write-Host (
     "Encoding $(if ($usesH263Plus) { 'H.263+' } else { 'baseline H.263' })" +
     "/3GP: $Profile, ${Fps} fps, " +
-    "${VideoBitrateKbps} kbps, GOP $effectiveGop, " +
+    "${VideoBitrateKbps} kbps, VBV ${VideoBufferKbps}k, " +
+    "$FitMode fit, GOP $effectiveGop, " +
     $(if ($NoAudio) { "video only" } else {
         "AMR-NB mono 8 kHz at $AudioBitrate"
     }) + "..."
@@ -216,7 +243,8 @@ if ($audio.Count -gt 1 -or
 }
 
 Write-Host "Decoding the complete H.263/3GP file with FFmpeg..."
-& $ffmpeg -v error -i $OutputFile -map 0:v:0 -map 0:a:0? -f null NUL
+& $ffmpeg -v error -xerror -i $OutputFile `
+    -map 0:v:0 -map 0:a:0? -f null NUL
 if ($LASTEXITCODE -ne 0) {
     throw "Full H.263/3GP validation failed."
 }
