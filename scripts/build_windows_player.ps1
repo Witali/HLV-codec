@@ -110,4 +110,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building hlvplay."
 }
 
-Write-Host "Windows HLV/BPV/MPEG-1/H.263+AMR-NB player is ready: $output"
+Write-Host (
+    "Windows HLV/BPV/MPEG-1/H.263 3GP+AMR-NB/AVI+PCM player " +
+    "is ready: $output"
+)
