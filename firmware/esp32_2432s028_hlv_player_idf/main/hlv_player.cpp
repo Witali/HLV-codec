@@ -127,6 +127,8 @@ struct DecodeRequest {
     VideoCodec codec;
     const HLV1Packet *hlv_packet;
     const BPV1Packet *bpv_packet;
+    FILE *bpv_file;
+    bool bpv_prefetch;
 };
 
 struct DecodeResult {
@@ -137,6 +139,9 @@ struct DecodeResult {
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
+    BPV1Packet bpv_next_packet;
+    int bpv_read_result;
+    uint32_t bpv_read_us;
 };
 
 CydDisplay display;
@@ -224,6 +229,10 @@ bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
 BPV1Frame pending_bpv_frame{};
 bool pending_bpv_frame_valid = false;
+BPV1Packet ready_bpv_packet{};
+bool ready_bpv_packet_valid = false;
+bool bpv_stream_eof = false;
+uint32_t ready_bpv_read_us = 0;
 uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
@@ -265,6 +274,15 @@ void decodeTask(void *) {
             result.result = HLV1_ERR_ARGUMENT;
         }
         result.decode_us = static_cast<uint32_t>(microsNow() - start);
+        if (request.codec == VideoCodec::kBpv &&
+            result.result == BPV1_OK && request.bpv_prefetch &&
+            request.bpv_file) {
+            const int64_t read_start = microsNow();
+            result.bpv_read_result = bpv_decoder.readPacket(
+                request.bpv_file, &result.bpv_next_packet);
+            result.bpv_read_us =
+                static_cast<uint32_t>(microsNow() - read_start);
+        }
         xQueueSend(decode_result_queue, &result, portMAX_DELAY);
     }
 }
@@ -294,13 +312,16 @@ bool startDecodeWorker() {
         return false;
     }
     ESP_LOGI(kTag,
-             "Playback pipeline: CPU0 SD/render, CPU1 ordered video decode");
+             "Playback pipeline: CPU0 render/main I/O, "
+             "CPU1 ordered decode/BPV prefetch");
     return true;
 }
 
 bool submitDecode(const HLV1Packet *packet) {
     if (!decode_task_handle || decode_in_flight || !packet) return false;
-    DecodeRequest request{VideoCodec::kHlv, packet, nullptr};
+    DecodeRequest request{};
+    request.codec = VideoCodec::kHlv;
+    request.hlv_packet = packet;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -308,15 +329,21 @@ bool submitDecode(const HLV1Packet *packet) {
 
 bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
-    DecodeRequest request{VideoCodec::kMpeg1, nullptr, nullptr};
+    DecodeRequest request{};
+    request.codec = VideoCodec::kMpeg1;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
 }
 
-bool submitBpvDecode(const BPV1Packet *packet) {
+bool submitBpvDecode(const BPV1Packet *packet, FILE *file,
+                     bool prefetch) {
     if (!decode_task_handle || decode_in_flight || !packet) return false;
-    DecodeRequest request{VideoCodec::kBpv, nullptr, packet};
+    DecodeRequest request{};
+    request.codec = VideoCodec::kBpv;
+    request.bpv_packet = packet;
+    request.bpv_file = file;
+    request.bpv_prefetch = prefetch;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -328,6 +355,26 @@ bool waitDecode(DecodeResult *result) {
         return false;
     decode_in_flight = false;
     return true;
+}
+
+void stopDecodeWorker() {
+    if (decode_in_flight) {
+        DecodeResult ignored{};
+        waitDecode(&ignored);
+    }
+    if (decode_task_handle) {
+        vTaskDelete(decode_task_handle);
+        decode_task_handle = nullptr;
+    }
+    if (decode_request_queue) {
+        vQueueDelete(decode_request_queue);
+        decode_request_queue = nullptr;
+    }
+    if (decode_result_queue) {
+        vQueueDelete(decode_result_queue);
+        decode_result_queue = nullptr;
+    }
+    decode_in_flight = false;
 }
 
 int clamp8(int value) {
@@ -1071,13 +1118,14 @@ void startAudio() {
 }
 
 void closeVideo() {
-    if (decode_in_flight) {
-        DecodeResult ignored{};
-        waitDecode(&ignored);
-    }
+    stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
     pending_bpv_frame_valid = false;
+    ready_bpv_packet = {};
+    ready_bpv_packet_valid = false;
+    bpv_stream_eof = false;
+    ready_bpv_read_us = 0;
     pending_read_us = 0;
     pending_decode_us = 0;
     stopAudio();
@@ -2340,13 +2388,7 @@ void playOneBpvFrameSequential() {
 }
 
 void playOneBpvFramePipelined() {
-    BPV1Packet packet{};
-    const int64_t read_start = microsNow();
-    const int packet_result =
-        bpv_decoder.readPacket(video_file, &packet);
-    const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
-    if (packet_result == BPV1_EOF) {
+    if (bpv_stream_eof && !ready_bpv_packet_valid) {
         if (pending_bpv_frame_valid) {
             const bool rendered =
                 presentBpvFrame(&pending_bpv_frame, pending_read_us,
@@ -2360,14 +2402,31 @@ void playOneBpvFramePipelined() {
         finishVideoLoop();
         return;
     }
-    if (packet_result != BPV1_OK) {
-        if (packet_result == BPV1_ERR_IO) {
-            failSdCardRead("cannot read BPV1 video");
+
+    if (!ready_bpv_packet_valid) {
+        const int64_t read_start = microsNow();
+        const int packet_result =
+            bpv_decoder.readPacket(video_file, &ready_bpv_packet);
+        ready_bpv_read_us =
+            static_cast<uint32_t>(microsNow() - read_start);
+        if (packet_result == BPV1_EOF) {
+            bpv_stream_eof = true;
             return;
         }
-        failPlayback("BPV1 packet error", packet_result);
-        return;
+        if (packet_result != BPV1_OK) {
+            if (packet_result == BPV1_ERR_IO) {
+                failSdCardRead("cannot read BPV1 video");
+                return;
+            }
+            failPlayback("BPV1 packet error", packet_result);
+            return;
+        }
+        ready_bpv_packet_valid = true;
     }
+
+    BPV1Packet packet = ready_bpv_packet;
+    const uint32_t read_us = ready_bpv_read_us;
+    ready_bpv_packet_valid = false;
 
     bool rendered = true;
     // BPV v4 replaces the active palette at every keyframe. Finish using the
@@ -2382,7 +2441,8 @@ void playOneBpvFramePipelined() {
         pending_bpv_frame_valid = false;
     }
 
-    if (rendered && !submitBpvDecode(&packet)) {
+    if (rendered &&
+        !submitBpvDecode(&packet, video_file, true)) {
         failPlayback("BPV1 decode pipeline error", BPV1_ERR_IO);
         return;
     }
@@ -2417,6 +2477,18 @@ void playOneBpvFramePipelined() {
     pending_read_us = read_us;
     pending_decode_us = result.decode_us;
     pending_bpv_frame_valid = true;
+
+    if (result.bpv_read_result == BPV1_OK) {
+        ready_bpv_packet = result.bpv_next_packet;
+        ready_bpv_read_us = result.bpv_read_us;
+        ready_bpv_packet_valid = true;
+    } else if (result.bpv_read_result == BPV1_EOF) {
+        bpv_stream_eof = true;
+    } else if (result.bpv_read_result == BPV1_ERR_IO) {
+        failSdCardRead("cannot read BPV1 video");
+    } else {
+        failPlayback("BPV1 packet error", result.bpv_read_result);
+    }
 }
 
 void playOneFramePipelined() {
