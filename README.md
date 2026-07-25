@@ -24,7 +24,8 @@ stores predictive references as Y6/U5/V5 with Q4 block-average corrections;
 the two references are allocated independently so QVGA fits fragmented
 internal RAM. The portable decoder retains a pixel-exact 8-bit validation
 mode. Physical-board tests decode both 320x180 and 320x240 without sequence or
-audio errors, although the current q4 files do not sustain their saved 12 fps.
+audio errors. The optimized player sustains 12 fps at 320x180 with no display
+skips; QVGA reaches 11.83 fps with 5 skips in a 300-frame run.
 DivX 4 and 5 use the different MPEG-4 Part 2 ASP format and are not yet
 supported.
 

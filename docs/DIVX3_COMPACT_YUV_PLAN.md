@@ -105,19 +105,38 @@ performed on the host and in QEMU before a board became available.
   used 293,576 bytes, so rolling predictors plus compact references save
   119,568 bytes (40.7%).
 - The normal ESP-IDF Player build succeeds. Its application image is
-  647,136 bytes and leaves 925,728 bytes free in the 1.5 MiB application
+  632,816 bytes and leaves 940,048 bytes free in the 1.5 MiB application
   partition.
 - Espressif QEMU decodes the validated 60-frame 320x240 clip successfully.
   The compact decoder is 173,916 bytes with 32-bit pointers. Average,
-  p50, p95 and maximum decode costs are 3,348,621, 3,512,118,
-  4,484,926 and 4,835,351 guest cycles. The decode-only rate calculated
-  at 240 MHz is 71.671 fps.
+  p50, p95 and maximum decode costs are 1,847,744, 1,763,681,
+  2,614,435 and 2,701,825 guest cycles. The decode-only rate calculated
+  at 240 MHz is 129.888 fps.
 - QEMU and the host compact decoder produce the same visible-frame hash,
   `1463ec78314286a3`, for that clip.
 
 The Player selects compact DivX 3 storage, accepts at most 320x240, uses one
 10 KiB RGB565 display strip allocation and reduces DivX stdio read-ahead from
-16 KiB to 4 KiB.
+16 KiB to 4 KiB. DivX decoding runs on CPU1 and is overlapped with rendering
+the preceding ping-pong buffer on CPU0.
+
+## Decode acceleration
+
+The 60-frame QEMU benchmark was run after every optimization while retaining
+the same visible-frame hash:
+
+| Stage | Average guest cycles | Change from preceding stage |
+| --- | ---: | ---: |
+| Compact-memory baseline | 3,348,621 | - |
+| Reuse unpacked motion samples | 2,680,892 | -20.0% |
+| Generated VLC tries | 2,455,556 | -8.4% |
+| DC-only and row-shortcut IDCT | 2,119,266 | -13.7% |
+| Specialized compact block packing | 1,986,728 | -6.3% |
+| Reuse Q4 correction spans | 1,847,744 | -7.0% |
+
+Together these changes reduce average guest cycles by 44.8%. A tested
+64-bit bit-reader reservoir increased the average cost by 3.1%, so it was
+reverted rather than retained.
 
 ## Physical-board validation
 
@@ -126,7 +145,7 @@ before the first picture on the ESP32. Allocating the two frames independently
 reduces the largest request from 133,440 to 66,720 bytes at 320x180 and from
 166,800 to 83,400 bytes at 320x240. Both profiles then decode successfully.
 
-A 300-frame ESP32-D0WD-V3 run at 240 MHz produced:
+A 300-frame ESP32-D0WD-V3 baseline run at 240 MHz produced:
 
 - 320x180: zero sequence gaps, rebuffers, underrun samples or silence chunks;
   89.3 ms average and 167.0 ms p95 decode time, 8.06 observed fps, 57 display
@@ -135,7 +154,15 @@ A 300-frame ESP32-D0WD-V3 run at 240 MHz produced:
   111.1 ms average and 197.5 ms p95 decode time, 6.64 observed fps, 72 display
   skips and 26 audio-loop events.
 
-Independent frame allocations therefore solve the memory blocker without
-changing reconstructed pixels, but the current q4 material does not sustain
-the saved 12 fps profile on the physical board. CPU optimization or a lower
-frame rate is still required for smooth playback.
+After the decode optimizations and dual-core decode/render pipeline, the same
+300-frame test produced:
+
+- 320x180: 42.50 ms average and 69.88 ms p95 decode time, 12.005 observed
+  fps and zero display skips.
+- 320x240: 52.76 ms average and 89.09 ms p95 decode time, 11.827 observed
+  fps and 5 display skips.
+
+Both optimized runs had zero sequence gaps, rebuffers, underrun samples and
+silence chunks. The 320x180 profile now sustains its saved 12 fps. QVGA is
+close to the target but its heaviest frames can still exceed the 83.33 ms
+frame period.

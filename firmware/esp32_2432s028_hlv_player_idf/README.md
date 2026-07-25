@@ -317,9 +317,10 @@ display DMA timing.
   Each reference is allocated independently, limiting the largest frame
   request to 83,400 bytes. The player also uses one 10 KiB display allocation,
   4 KiB stdio read-ahead and one compressed packet capped at 96 KiB. It is
-  decoded sequentially on CPU0. Physical 300-frame tests completed without
-  sequence gaps or audio underruns, but q4 material reached only 8.06 observed
-  fps at 320x180 and 6.64 fps at 320x240 versus the saved 12 fps.
+  decoded on CPU1 while CPU0 renders the preceding ping-pong output. Physical
+  300-frame tests completed without sequence gaps or audio underruns.
+  Optimized q4 playback reaches 12.005 observed fps with no display skips at
+  320x180, and 11.827 fps with 5 skips at 320x240.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded
@@ -335,8 +336,8 @@ display DMA timing.
   uses the one-buffer sequential path. 3GP also retains compact sample-size
   and 64-bit chunk-offset caches to avoid per-frame metadata seeks.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV, BPV, MPEG-1 or H.263. MJPEG
-  and DivX 3 use the sequential CPU0 path. Only frame descriptors cross cores
+  reader and two one-entry decode queues for HLV, BPV, MPEG-1, H.263 or DivX
+  3. MJPEG uses the sequential CPU0 path. Only frame descriptors cross cores
   in the pipelined paths, so no frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
