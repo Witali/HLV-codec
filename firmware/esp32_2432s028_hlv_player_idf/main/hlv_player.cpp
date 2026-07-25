@@ -217,6 +217,7 @@ struct DecodeResult {
     int result;
     const HLV1Frame *hlv_frame;
     const BPV1Frame *bpv_frame;
+    H2633gpFrame h263_frame;
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
@@ -242,6 +243,7 @@ H2633gpDecoder *h263_decoder = nullptr;
 H2633gpInfo h263_info{};
 AmrNb3gpDecoder *amrnb_audio_decoder = nullptr;
 AmrNb3gpInfo amrnb_audio_info{};
+H263AviPcmReader *h263_avi_audio_reader = nullptr;
 UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
@@ -335,6 +337,10 @@ bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame{};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
+H2633gpFrame pending_h263_frame{};
+bool pending_h263_frame_valid = false;
+uint32_t pending_h263_decode_us = 0;
+bool h263_dual_buffered = false;
 BPV1Frame pending_bpv_frame{};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet{};
@@ -378,6 +384,12 @@ void decodeTask(void *) {
         } else if (request.codec == VideoCodec::kBpv) {
             result.result =
                 bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
+        } else if (request.codec == VideoCodec::kH263) {
+            result.result =
+                h263_decoder && video_file
+                    ? h263_3gp_decoder_decode_next(
+                          h263_decoder, video_file, &result.h263_frame)
+                    : H263_3GP_ERR_ARGUMENT;
         } else {
             result.result = HLV1_ERR_ARGUMENT;
         }
@@ -421,7 +433,7 @@ bool startDecodeWorker() {
     }
     ESP_LOGI(kTag,
              "Playback pipeline: CPU0 render/main I/O, "
-             "CPU1 ordered decode/BPV prefetch");
+             "CPU1 ordered decode/BPV prefetch, H.263 ping-pong");
     return true;
 }
 
@@ -439,6 +451,18 @@ bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
     DecodeRequest request{};
     request.codec = VideoCodec::kMpeg1;
+    if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
+    decode_in_flight = true;
+    return true;
+}
+
+bool submitH263Decode() {
+    if (!decode_task_handle || decode_in_flight || !h263_decoder ||
+        !video_file) {
+        return false;
+    }
+    DecodeRequest request{};
+    request.codec = VideoCodec::kH263;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -932,11 +956,36 @@ int prefetchAmrNbAudioFrame() {
     return AMRNB_3GP_OK;
 }
 
+int prefetchH263AviPcmFrame() {
+    if (!h263_avi_audio_reader) return H263_3GP_ERR_FORMAT;
+    H263AviPcmFrame frame{};
+    const int result = h263_avi_pcm_reader_decode_next(
+        h263_avi_audio_reader, audio_file, &frame);
+    if (result != H263_3GP_OK) return result;
+
+    size_t sent = 0;
+    while (sent < frame.sample_count &&
+           !audio_reader_stop_requested) {
+        sent += xStreamBufferSend(
+            audio_stream, frame.samples + sent,
+            frame.sample_count - sent, pdMS_TO_TICKS(20));
+        if (audio_rebuffering &&
+            xStreamBufferBytesAvailable(audio_stream) >=
+                audio_preroll_bytes) {
+            audio_rebuffering = false;
+        }
+    }
+    return H263_3GP_OK;
+}
+
 int prefetchAudioPacket() {
     if (video_codec == VideoCodec::kMpeg1)
         return prefetchMpegAudioFrame();
-    if (video_codec == VideoCodec::kH263)
-        return prefetchAmrNbAudioFrame();
+    if (video_codec == VideoCodec::kH263) {
+        return h263_info.container == H263_CONTAINER_AVI
+                   ? prefetchH263AviPcmFrame()
+                   : prefetchAmrNbAudioFrame();
+    }
     if (video_codec == VideoCodec::kMjpeg)
         return prefetchMjpegAudioChunk();
     if (video_codec == VideoCodec::kDivx3)
@@ -1077,6 +1126,10 @@ void stopAudio() {
         std::fclose(audio_file);
         audio_file = nullptr;
     }
+    if (h263_avi_audio_reader) {
+        h263_avi_pcm_reader_destroy(h263_avi_audio_reader);
+        h263_avi_audio_reader = nullptr;
+    }
     if (audio_stream) {
         vStreamBufferDelete(audio_stream);
         audio_stream = nullptr;
@@ -1148,19 +1201,44 @@ bool prepareAudio(const HLV1Header &header) {
             return false;
         }
     } else if (video_codec == VideoCodec::kH263) {
-        amrnb_audio_decoder = amrnb_3gp_decoder_create();
-        const int result =
-            amrnb_audio_decoder
-                ? amrnb_3gp_decoder_open(
-                      amrnb_audio_decoder, audio_file,
-                      &amrnb_audio_info)
-                : AMRNB_3GP_ERR_MEMORY;
-        if (result != AMRNB_3GP_OK ||
-            amrnb_audio_info.sample_rate !=
-                header.audio_sample_rate ||
-            amrnb_audio_info.channels != 1) {
-            stopAudio();
-            return false;
+        if (h263_info.container == H263_CONTAINER_AVI) {
+            H2633gpInfo audio_info{};
+            h263_avi_audio_reader = h263_avi_pcm_reader_create();
+            const int result =
+                h263_avi_audio_reader
+                    ? h263_avi_pcm_reader_open(
+                          h263_avi_audio_reader, audio_file,
+                          &audio_info)
+                    : H263_3GP_ERR_MEMORY;
+            if (result != H263_3GP_OK ||
+                audio_info.width != header.width ||
+                audio_info.height != header.height ||
+                audio_info.fps_num != header.fps_num ||
+                audio_info.fps_den != header.fps_den ||
+                audio_info.frame_count != header.frame_count ||
+                audio_info.audio_sample_rate !=
+                    header.audio_sample_rate ||
+                audio_info.audio_channels != 1 ||
+                (audio_info.audio_bits_per_sample != 8 &&
+                 audio_info.audio_bits_per_sample != 16)) {
+                stopAudio();
+                return false;
+            }
+        } else {
+            amrnb_audio_decoder = amrnb_3gp_decoder_create();
+            const int result =
+                amrnb_audio_decoder
+                    ? amrnb_3gp_decoder_open(
+                          amrnb_audio_decoder, audio_file,
+                          &amrnb_audio_info)
+                    : AMRNB_3GP_ERR_MEMORY;
+            if (result != AMRNB_3GP_OK ||
+                amrnb_audio_info.sample_rate !=
+                    header.audio_sample_rate ||
+                amrnb_audio_info.channels != 1) {
+                stopAudio();
+                return false;
+            }
         }
     } else if (video_codec == VideoCodec::kMjpeg) {
         MjpegAviInfo audio_info{};
@@ -1303,6 +1381,10 @@ void closeVideo() {
     stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
+    pending_h263_frame_valid = false;
+    pending_h263_frame = {};
+    pending_h263_decode_us = 0;
+    h263_dual_buffered = false;
     pending_bpv_frame_valid = false;
     ready_bpv_packet = {};
     ready_bpv_packet_valid = false;
@@ -1465,6 +1547,15 @@ VideoOpenResult openVideoCandidate(const char *path) {
     } else if (signature_size == sizeof signature &&
                !std::memcmp(signature, "RIFF", 4) &&
                !std::memcmp(signature + 8, "AVI ", 4)) {
+        H2633gpInfo h263_probe{};
+        const int h263_result =
+            h263_avi_probe(video_file, &h263_probe);
+        std::clearerr(video_file);
+        if (std::fseek(video_file, 0, SEEK_SET)) {
+            std::fclose(video_file);
+            video_file = nullptr;
+            return VideoOpenResult::kIoError;
+        }
         Divx3AviInfo probe{};
         const int divx3_result =
             divx3_avi_read_info(video_file, &probe);
@@ -1474,9 +1565,13 @@ VideoOpenResult openVideoCandidate(const char *path) {
             video_file = nullptr;
             return VideoOpenResult::kIoError;
         }
-        video_codec = divx3_result == DIVX3_AVI_OK
-                          ? VideoCodec::kDivx3
-                          : VideoCodec::kMjpeg;
+        if (h263_result == H263_3GP_OK) {
+            video_codec = VideoCodec::kH263;
+        } else if (divx3_result == DIVX3_AVI_OK) {
+            video_codec = VideoCodec::kDivx3;
+        } else {
+            video_codec = VideoCodec::kMjpeg;
+        }
     } else if (signature_size >= 4 &&
                signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {
@@ -1662,18 +1757,30 @@ bool openVideo() {
         }
     } else if (video_codec == VideoCodec::kH263) {
         h263_decoder = h263_3gp_decoder_create();
+        if (h263_decoder && player_settings::kUseDualCorePipeline) {
+            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 2);
+        }
         int result =
             h263_decoder
                 ? h263_3gp_decoder_open(
                       h263_decoder, video_file, &h263_info)
                 : H263_3GP_ERR_MEMORY;
+        if (result == H263_3GP_ERR_FRAME_MEMORY &&
+            player_settings::kUseDualCorePipeline && h263_decoder) {
+            ESP_LOGW(kTag,
+                     "H.263 second output buffer unavailable; "
+                     "falling back to sequential decode");
+            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 1);
+            result = h263_3gp_decoder_open(
+                h263_decoder, video_file, &h263_info);
+        }
         if (result == H263_3GP_OK &&
             (h263_info.fps_num > UINT16_MAX ||
              h263_info.fps_den > UINT16_MAX)) {
             result = H263_3GP_ERR_UNSUPPORTED;
         }
         if (result != H263_3GP_OK) {
-            showStatus("Invalid 3GP video", h263_3gp_strerror(result));
+            showStatus("Invalid H263 video", h263_3gp_strerror(result));
             closeVideo();
             return false;
         }
@@ -1684,30 +1791,55 @@ bool openVideo() {
         sequence_header.fps_den =
             static_cast<uint16_t>(h263_info.fps_den);
         sequence_header.frame_count = h263_info.frame_count;
-        AmrNb3gpInfo audio_info{};
-        const int audio_result =
-            probeAmrNbAudio(active_video_path, &audio_info);
-        if (audio_result == AMRNB_3GP_OK) {
+        if (h263_info.container == H263_CONTAINER_AVI &&
+            h263_info.audio_sample_rate) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
-            sequence_header.audio_sample_rate = audio_info.sample_rate;
-            sequence_header.audio_channels = audio_info.channels;
-        } else if (audio_result != AMRNB_3GP_ERR_UNSUPPORTED) {
-            showStatus("Invalid audio.3gp",
-                       amrnb_3gp_strerror(audio_result));
-            closeVideo();
-            return false;
+            sequence_header.audio_sample_rate =
+                static_cast<uint16_t>(h263_info.audio_sample_rate);
+            sequence_header.audio_channels = h263_info.audio_channels;
+        } else if (h263_info.container == H263_CONTAINER_3GP) {
+            AmrNb3gpInfo audio_info{};
+            const int audio_result =
+                probeAmrNbAudio(active_video_path, &audio_info);
+            if (audio_result == AMRNB_3GP_OK) {
+                sequence_header.flags = HLV1_FLAG_AUDIO;
+                sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+                sequence_header.audio_sample_rate =
+                    audio_info.sample_rate;
+                sequence_header.audio_channels = audio_info.channels;
+            } else if (audio_result != AMRNB_3GP_ERR_UNSUPPORTED) {
+                showStatus("Invalid audio.3gp",
+                           amrnb_3gp_strerror(audio_result));
+                closeVideo();
+                return false;
+            }
         }
         ESP_LOGI(kTag,
-                 "H.263/3GP: %ux%u, %u/%u fps, %u frames, "
-                 "profile=%u level=%u, AMR-NB=%u Hz, decoder=%u bytes",
+                 "H.263/%s: %ux%u, %u/%u fps, %u frames, "
+                 "profile=%u level=%u, audio=%u Hz/%u-bit, "
+                 "decoder=%u bytes",
+                 h263_info.container == H263_CONTAINER_AVI
+                     ? "AVI"
+                     : "3GP",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
                  h263_info.profile, h263_info.level,
                  sequence_header.audio_sample_rate,
+                 h263_info.container == H263_CONTAINER_AVI
+                     ? h263_info.audio_bits_per_sample
+                     : 0,
                  static_cast<unsigned>(
                      h263_3gp_decoder_memory_bytes(h263_decoder)));
+        h263_dual_buffered =
+            h263_3gp_decoder_output_buffer_count(h263_decoder) == 2;
+        if (h263_dual_buffered && !startDecodeWorker()) {
+            showStatus("Dual-core init failed",
+                       "cannot create CPU1 decoder task");
+            closeVideo();
+            return false;
+        }
     } else if (video_codec == VideoCodec::kMjpeg) {
         int result = mjpeg_decoder.begin(video_file, &mjpeg_info);
         if (result == MJPEG_AVI_OK &&
@@ -1924,8 +2056,11 @@ bool openVideo() {
                      : "native-centred");
     } else if (video_codec == VideoCodec::kH263) {
         ESP_LOGI(kTag,
-                 "Playing H.263/3GP in %s mode, "
+                 "Playing H.263/%s in %s mode, "
                  "frame storage=bounded YUV420 frame buffers",
+                 h263_info.container == H263_CONTAINER_AVI
+                     ? "AVI"
+                     : "3GP",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -2659,7 +2794,7 @@ void playOneH263Frame() {
         return;
     }
     if (result == H263_3GP_ERR_IO) {
-        failSdCardRead("cannot read H.263/3GP video");
+        failSdCardRead("cannot read H.263 video");
         return;
     }
     if (result != H263_3GP_OK) {
@@ -2668,6 +2803,71 @@ void playOneH263Frame() {
     }
     if (!presentH263Frame(&frame, decode_us)) {
         failPlayback("Display DMA error", H263_3GP_ERR_IO);
+    }
+}
+
+void playOneH263FramePipelined() {
+    if (!pending_h263_frame_valid) {
+        if (!submitH263Decode()) {
+            failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+            return;
+        }
+        DecodeResult first{};
+        if (!waitDecode(&first) || first.codec != VideoCodec::kH263) {
+            failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+            return;
+        }
+        if (first.result == H263_3GP_EOF) {
+            finishVideoLoop();
+            return;
+        }
+        if (first.result == H263_3GP_ERR_IO) {
+            failSdCardRead("cannot read H.263 video");
+            return;
+        }
+        if (first.result != H263_3GP_OK) {
+            failPlayback("H.263 decode error", first.result);
+            return;
+        }
+        pending_h263_frame = first.h263_frame;
+        pending_h263_decode_us = first.decode_us;
+        pending_h263_frame_valid = true;
+    }
+
+    const H2633gpFrame frame = pending_h263_frame;
+    const uint32_t decode_us = pending_h263_decode_us;
+    pending_h263_frame_valid = false;
+    if (!submitH263Decode()) {
+        failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+        return;
+    }
+
+    const bool rendered = presentH263Frame(&frame, decode_us);
+    DecodeResult next{};
+    const bool received = waitDecode(&next);
+    if (!rendered) {
+        failPlayback("Display DMA error", H263_3GP_ERR_IO);
+        return;
+    }
+    if (!received || next.codec != VideoCodec::kH263) {
+        failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+        return;
+    }
+    if (next.result == H263_3GP_ERR_IO) {
+        failSdCardRead("cannot read H.263 video");
+        return;
+    }
+    if (next.result != H263_3GP_OK &&
+        next.result != H263_3GP_EOF) {
+        failPlayback("H.263 decode error", next.result);
+        return;
+    }
+    if (next.result == H263_3GP_OK) {
+        pending_h263_frame = next.h263_frame;
+        pending_h263_decode_us = next.decode_us;
+        pending_h263_frame_valid = true;
+    } else {
+        finishVideoLoop();
     }
 }
 
@@ -3158,7 +3358,12 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kH263 &&
             h263_decoder) {
-            playOneH263Frame();
+            if (player_settings::kUseDualCorePipeline &&
+                h263_dual_buffered) {
+                playOneH263FramePipelined();
+            } else {
+                playOneH263Frame();
+            }
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMjpeg &&

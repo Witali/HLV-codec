@@ -7,7 +7,7 @@ MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v4
 with PCM_U8 audio and active per-GOP palettes, and the constrained MPEG-1
 Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
 and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
-optional 8 kHz mono AMR-NB audio in a 3GP container.
+optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
 The only application components are:
 
@@ -16,8 +16,8 @@ The only application components are:
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`;
 - `divx3`: the shared portable Microsoft MPEG-4 v3 decoder and AVI reader;
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
-- `h263_3gp`: the shared bounded-table 3GP demultiplexer and PacketVideo
-  H.263 decoder from `codecs/h263`.
+- `h263_3gp`: the shared bounded-table 3GP/AVI demultiplexer, streaming AVI
+  PCM reader, and PacketVideo H.263 decoder from `codecs/h263`.
 - `amrnb_3gp`: the companion `samr` demultiplexer and PacketVideo AMR-NB
   decoder from `codecs/amrnb`.
 
@@ -27,10 +27,12 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
 UART0 at 460800 remains enabled for compact per-frame diagnostics. The default
-dual-core pipeline pins ordered HLV, BPV or MPEG-1 decoding to APP CPU (CPU1),
-while the main task on PRO CPU (CPU0) converts the preceding frame to RGB565
-and queues its SPI DMA strips. Predictive P-frames are never decoded out of
-order. Dual-core mode cannot add the 8 KiB RTC Fast RAM to the heap. Slow
+dual-core pipeline pins ordered HLV, BPV, MPEG-1 or H.263 decoding to APP CPU
+(CPU1), while the main task on PRO CPU (CPU0) converts the preceding frame to
+RGB565 and queues its SPI DMA strips. H.263/3GP sample sizes and chunk offsets
+are cached at open time so the hot path reads compressed video sequentially.
+Predictive P-frames are never decoded out of order. Dual-core mode cannot add
+the 8 KiB RTC Fast RAM to the heap. Slow
 exception-emulated byte access to ordinary IRAM stays disabled.
 ESP-IDF libraries retain size optimization, while the latency-sensitive
 `main`, `hlv1`, `bpv1` and `divx3` components explicitly use `-O3`.
@@ -300,10 +302,16 @@ display DMA timing.
   audio-only PL_MPEG instance. Packed planes use separate allocations. Files
   larger than 320x240 or containing B pictures are rejected by the saved
   profile.
+- H.263: two separately allocated YUV420 outputs in dual-core mode, allowing
+  CPU1 to decode frame N+1 while CPU0 presents frame N. The 320x240 pair uses
+  230,400 bytes without requiring either frame to be contiguous. If the
+  second custom-profile output cannot be allocated, playback automatically
+  uses the one-buffer sequential path. 3GP also retains compact sample-size
+  and 64-bit chunk-offset caches to avoid per-frame metadata seeks.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV, BPV or MPEG-1. MJPEG and
-  DivX 3 use the sequential CPU0 path. Only frame descriptors cross cores in
-  the pipelined paths, so no frame or packet payload is copied.
+  reader and two one-entry decode queues for HLV, BPV, MPEG-1 or H.263. MJPEG
+  and DivX 3 use the sequential CPU0 path. Only frame descriptors cross cores
+  in the pipelined paths, so no frame or packet payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet

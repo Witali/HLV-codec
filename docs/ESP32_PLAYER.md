@@ -11,8 +11,8 @@ DAC GPIO26.
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
-  H.263/intra-only H.263+ with optional AMR-NB mono audio in a 3GP container
-  at `176x144`,
+  H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
+  mono audio in AVI at `176x144`,
   `256x144`, `256x192`, `320x180`, or `320x240`;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
@@ -286,11 +286,28 @@ When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
 12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
 audio codecs, and other dimensions are outside these profiles.
 
+For an AVI with H.263 video and PCM S16LE mono at 8 kHz:
+
+```powershell
+.\scripts\encode_h263_avi.ps1 `
+    -InputFile .\out\sources\VID_20260522_181611.mp4 `
+    -OutputFile .\out\video.avi
+```
+
+The AVI reader skips muxer timing chunks, streams video and audio through
+separate file cursors, and converts PCM16 to PCM_U8 for the DAC without
+retaining the AVI index in RAM.
+
 The complete source encoded with this default was exercised for 900 frames on
 the physical ESP32. The run measured 14.999 fps, 62.20 ms average and
 67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
 gaps, audio rebuffers, underrun samples, or silence chunks and omitted one
 display transfer.
+
+The direct-from-source AVI/PCM variant completed the same 900-frame physical
+test at 15.007 fps. Average work was 59.11 ms, p95 was 63.31 ms, and the run
+had zero decode gaps, audio rebuffers, underrun samples, or silence chunks,
+with one omitted display transfer.
 
 Status text uses an embedded 5x7 font covering every printable ASCII character
 from space (`0x20`) through tilde (`0x7e`), including all digits and
