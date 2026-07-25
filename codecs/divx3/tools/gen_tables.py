@@ -49,6 +49,43 @@ def emit_array(
     out.append("")
 
 
+def emit_tree(
+    out: list[str], name: str, entries: list[tuple[int, ...]]
+) -> None:
+    missing = 32767
+    nodes: list[list[int | None]] = [[None, None]]
+    for entry_index, entry in enumerate(entries):
+        length, code = entry[:2]
+        node_index = 0
+        for offset in range(length):
+            bit = (code >> (length - offset - 1)) & 1
+            is_leaf = offset + 1 == length
+            child = nodes[node_index][bit]
+            if is_leaf:
+                if child is not None:
+                    raise ValueError(f"duplicate or prefixed VLC in {name}")
+                nodes[node_index][bit] = -(entry_index + 1)
+            else:
+                if child is None:
+                    child = len(nodes)
+                    if child >= missing:
+                        raise ValueError(f"VLC tree too large in {name}")
+                    nodes[node_index][bit] = child
+                    nodes.append([None, None])
+                elif child < 0:
+                    raise ValueError(f"VLC prefix collision in {name}")
+                node_index = child
+    out.append(f"static const Divx3VlcNode {name}Nodes[] = {{")
+    for zero, one in nodes:
+        children = (
+            missing if zero is None else zero,
+            missing if one is None else one,
+        )
+        out.append(f"    {{{{{children[0]}, {children[1]}}}}},")
+    out.append("};")
+    out.append("")
+
+
 def emit_mcbpc(
     out: list[str], name: str, entries: list[tuple[int, ...]]
 ) -> None:
@@ -228,15 +265,20 @@ def generate(root: pathlib.Path) -> str:
     ]
     for name, entries in dc.items():
         emit_array(out, "Divx3DcVlc", f"k{name}", entries)
+        emit_tree(out, f"k{name}", entries)
     for name, entries in tcoef.items():
         emit_array(out, "Divx3TcoefVlc", f"k{name}", entries)
+        emit_tree(out, f"k{name}", entries)
         max_level, max_run = maxima(entries)
         emit_matrix(out, f"k{name}MaxLevel", max_level)
         emit_matrix(out, f"k{name}MaxRun", max_run)
     for name, entries in motion.items():
         emit_array(out, "Divx3MotionVlc", f"k{name}", entries)
+        emit_tree(out, f"k{name}", entries)
     emit_array(out, "Divx3MbVlc", "kMbNonIntraVlc", mb)
+    emit_tree(out, "kMbNonIntraVlc", mb)
     emit_mcbpc(out, "kMcbpcVlc", mcbpc)
+    emit_tree(out, "kMcbpcVlc", mcbpc)
 
     set_specs = {
         "kLumaSets": (
@@ -256,6 +298,7 @@ def generate(root: pathlib.Path) -> str:
             out.append(
                 "    {"
                 f"k{name}, sizeof(k{name}) / sizeof(k{name}[0]), "
+                f"k{name}Nodes, "
                 f"{escape}, {escape_length}, "
                 f"k{name}MaxLevel, k{name}MaxRun"
                 "},"

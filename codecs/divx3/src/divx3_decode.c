@@ -41,8 +41,13 @@ typedef struct {
 } Divx3McbpcVlc;
 
 typedef struct {
+    int16_t child[2];
+} Divx3VlcNode;
+
+typedef struct {
     const Divx3TcoefVlc *entries;
     size_t count;
+    const Divx3VlcNode *nodes;
     uint16_t escape;
     uint8_t escape_length;
     const uint8_t (*max_level)[64];
@@ -160,118 +165,34 @@ static uint8_t clamp_byte(int value) {
     return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
 }
 
-static int compare_vlc(uint8_t length_a, uint32_t code_a,
-                       uint8_t length_b, uint32_t code_b) {
-    if (length_a != length_b) return length_a < length_b ? -1 : 1;
-    if (code_a == code_b) return 0;
-    return code_a < code_b ? -1 : 1;
-}
-
-static const Divx3DcVlc *find_dc(const Divx3DcVlc *table, size_t count,
-                                 uint8_t length, uint32_t code) {
-    size_t low = 0, high = count;
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        int comparison = compare_vlc(table[middle].length,
-                                     table[middle].code, length, code);
-        if (comparison < 0)
-            low = middle + 1;
-        else
-            high = middle;
+static int decode_vlc_index(BitReader *reader,
+                            const Divx3VlcNode *nodes,
+                            size_t entry_count, size_t *entry_index) {
+    int node_index = 0;
+    unsigned depth;
+    for (depth = 0; depth < 30U; ++depth) {
+        int child = nodes[node_index].child[bit_read(reader)];
+        if (reader->failed || child == INT16_MAX)
+            return DIVX3_ERR_BITSTREAM;
+        if (child < 0) {
+            size_t index = (size_t)(-child - 1);
+            if (index >= entry_count) return DIVX3_ERR_BITSTREAM;
+            *entry_index = index;
+            return DIVX3_OK;
+        }
+        node_index = child;
     }
-    return low < count && table[low].length == length &&
-                   table[low].code == code
-               ? table + low
-               : NULL;
-}
-
-static const Divx3TcoefVlc *find_tcoef(const Divx3TcoefSet *set,
-                                       uint8_t length, uint32_t code) {
-    size_t low = 0, high = set->count;
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        int comparison = compare_vlc(set->entries[middle].length,
-                                     set->entries[middle].code,
-                                     length, code);
-        if (comparison < 0)
-            low = middle + 1;
-        else
-            high = middle;
-    }
-    return low < set->count && set->entries[low].length == length &&
-                   set->entries[low].code == code
-               ? set->entries + low
-               : NULL;
-}
-
-static const Divx3MotionVlc *find_motion(const Divx3MotionVlc *table,
-                                         size_t count, uint8_t length,
-                                         uint32_t code) {
-    size_t low = 0, high = count;
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        int comparison = compare_vlc(table[middle].length,
-                                     table[middle].code, length, code);
-        if (comparison < 0)
-            low = middle + 1;
-        else
-            high = middle;
-    }
-    return low < count && table[low].length == length &&
-                   table[low].code == code
-               ? table + low
-               : NULL;
-}
-
-static const Divx3MbVlc *find_mb(uint8_t length, uint32_t code) {
-    size_t low = 0;
-    size_t high = sizeof(kMbNonIntraVlc) / sizeof(kMbNonIntraVlc[0]);
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        int comparison = compare_vlc(kMbNonIntraVlc[middle].length,
-                                     kMbNonIntraVlc[middle].code,
-                                     length, code);
-        if (comparison < 0)
-            low = middle + 1;
-        else
-            high = middle;
-    }
-    return low < sizeof(kMbNonIntraVlc) / sizeof(kMbNonIntraVlc[0]) &&
-                   kMbNonIntraVlc[low].length == length &&
-                   kMbNonIntraVlc[low].code == code
-               ? kMbNonIntraVlc + low
-               : NULL;
-}
-
-static const Divx3McbpcVlc *find_mcbpc(uint8_t length, uint32_t code) {
-    size_t low = 0;
-    size_t high = sizeof(kMcbpcVlc) / sizeof(kMcbpcVlc[0]);
-    while (low < high) {
-        size_t middle = low + (high - low) / 2;
-        int comparison = compare_vlc(kMcbpcVlc[middle].length,
-                                     kMcbpcVlc[middle].code,
-                                     length, code);
-        if (comparison < 0)
-            low = middle + 1;
-        else
-            high = middle;
-    }
-    return low < sizeof(kMcbpcVlc) / sizeof(kMcbpcVlc[0]) &&
-                   kMcbpcVlc[low].length == length &&
-                   kMcbpcVlc[low].code == code
-               ? kMcbpcVlc + low
-               : NULL;
+    return DIVX3_ERR_BITSTREAM;
 }
 
 static int decode_dc(BitReader *reader, const Divx3DcVlc *table,
-                     size_t count, int *difference) {
-    uint32_t code = 0;
-    unsigned length;
-    for (length = 1; length <= 30; ++length) {
-        const Divx3DcVlc *entry;
-        code = (code << 1) | (uint32_t)bit_read(reader);
-        entry = find_dc(table, count, (uint8_t)length, code);
-        if (!entry) continue;
+                     size_t count, const Divx3VlcNode *nodes,
+                     int *difference) {
+    size_t index;
+    const Divx3DcVlc *entry;
+    if (decode_vlc_index(reader, nodes, count, &index) != DIVX3_OK)
+        return DIVX3_ERR_BITSTREAM;
+    entry = table + index;
         if (entry->magnitude == 119) {
             int value = (int)bits_read(reader, 8);
             if (bit_read(reader)) value = -value;
@@ -282,23 +203,18 @@ static int decode_dc(BitReader *reader, const Divx3DcVlc *table,
             *difference = bit_read(reader) ? -(int)entry->magnitude
                                            : (int)entry->magnitude;
         }
-        return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
-    }
-    return DIVX3_ERR_BITSTREAM;
+    return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
 }
 
 static int decode_tcoef_direct(BitReader *reader,
                                const Divx3TcoefSet *set,
                                const Divx3TcoefVlc **entry) {
-    uint32_t code = 0;
-    unsigned length;
-    for (length = 1; length <= 16; ++length) {
-        code = (code << 1) | (uint32_t)bit_read(reader);
-        *entry = find_tcoef(set, (uint8_t)length, code);
-        if (*entry)
-            return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
-    }
-    return DIVX3_ERR_BITSTREAM;
+    size_t index;
+    if (decode_vlc_index(
+            reader, set->nodes, set->count, &index) != DIVX3_OK)
+        return DIVX3_ERR_BITSTREAM;
+    *entry = set->entries + index;
+    return DIVX3_OK;
 }
 
 static int decode_tcoef(BitReader *reader, const Divx3TcoefSet *set,
@@ -347,32 +263,26 @@ static int decode_tcoef(BitReader *reader, const Divx3TcoefSet *set,
 }
 
 static int decode_mcbpc(BitReader *reader, uint8_t cbp[6]) {
-    uint32_t code = 0;
-    unsigned length;
-    for (length = 1; length <= 14; ++length) {
-        const Divx3McbpcVlc *entry;
-        code = (code << 1) | (uint32_t)bit_read(reader);
-        entry = find_mcbpc((uint8_t)length, code);
-        if (!entry) continue;
-        memcpy(cbp, entry->cbp, 6);
-        return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
-    }
-    return DIVX3_ERR_BITSTREAM;
+    size_t index;
+    if (decode_vlc_index(
+            reader, kMcbpcVlcNodes,
+            sizeof(kMcbpcVlc) / sizeof(kMcbpcVlc[0]),
+            &index) != DIVX3_OK)
+        return DIVX3_ERR_BITSTREAM;
+    memcpy(cbp, kMcbpcVlc[index].cbp, 6);
+    return DIVX3_OK;
 }
 
 static int decode_mb(BitReader *reader, int *intra, int *cbp) {
-    uint32_t code = 0;
-    unsigned length;
-    for (length = 1; length <= 22; ++length) {
-        const Divx3MbVlc *entry;
-        code = (code << 1) | (uint32_t)bit_read(reader);
-        entry = find_mb((uint8_t)length, code);
-        if (!entry) continue;
-        *intra = entry->intra;
-        *cbp = entry->cbp;
-        return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
-    }
-    return DIVX3_ERR_BITSTREAM;
+    size_t index;
+    if (decode_vlc_index(
+            reader, kMbNonIntraVlcNodes,
+            sizeof(kMbNonIntraVlc) / sizeof(kMbNonIntraVlc[0]),
+            &index) != DIVX3_OK)
+        return DIVX3_ERR_BITSTREAM;
+    *intra = kMbNonIntraVlc[index].intra;
+    *cbp = kMbNonIntraVlc[index].cbp;
+    return DIVX3_OK;
 }
 
 static int decode_motion(BitReader *reader, int table_index,
@@ -382,23 +292,21 @@ static int decode_motion(BitReader *reader, int table_index,
     size_t count = table_index
                        ? sizeof(kmvVLC1) / sizeof(kmvVLC1[0])
                        : sizeof(kmvVLC0) / sizeof(kmvVLC0[0]);
-    uint32_t code = 0;
-    unsigned length;
-    for (length = 1; length <= 17; ++length) {
-        const Divx3MotionVlc *entry;
-        code = (code << 1) | (uint32_t)bit_read(reader);
-        entry = find_motion(table, count, (uint8_t)length, code);
-        if (!entry) continue;
-        if (entry->x == -32 && entry->y == -32) {
-            *x = (int)bits_read(reader, 6) - 32;
-            *y = (int)bits_read(reader, 6) - 32;
-        } else {
-            *x = entry->x;
-            *y = entry->y;
-        }
-        return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
+    const Divx3VlcNode *nodes =
+        table_index ? kmvVLC1Nodes : kmvVLC0Nodes;
+    size_t index;
+    const Divx3MotionVlc *entry;
+    if (decode_vlc_index(reader, nodes, count, &index) != DIVX3_OK)
+        return DIVX3_ERR_BITSTREAM;
+    entry = table + index;
+    if (entry->x == -32 && entry->y == -32) {
+        *x = (int)bits_read(reader, 6) - 32;
+        *y = (int)bits_read(reader, 6) - 32;
+    } else {
+        *x = entry->x;
+        *y = entry->y;
     }
-    return DIVX3_ERR_BITSTREAM;
+    return reader->failed ? DIVX3_ERR_BITSTREAM : DIVX3_OK;
 }
 
 static int read_c3(BitReader *reader) {
@@ -654,8 +562,9 @@ static int decode_intra_block(
     unsigned block, unsigned mb_x, unsigned mb_y, int quantizer,
     int coded, int ac_prediction, const Divx3TcoefSet *luma_set,
     const Divx3TcoefSet *chroma_set, const Divx3DcVlc *dc_luma,
-    size_t dc_luma_count, const Divx3DcVlc *dc_chroma,
-    size_t dc_chroma_count) {
+    size_t dc_luma_count, const Divx3VlcNode *dc_luma_nodes,
+    const Divx3DcVlc *dc_chroma, size_t dc_chroma_count,
+    const Divx3VlcNode *dc_chroma_nodes) {
     int16_t *dc_grid;
     int16_t *ac_row;
     int16_t *ac_column;
@@ -682,7 +591,7 @@ static int decode_intra_block(
         ac_row = decoder->ac_luma_row;
         ac_column = decoder->ac_luma_col;
         dc_scale = luma_dc_scaler(quantizer);
-        if (decode_dc(reader, dc_luma, dc_luma_count,
+        if (decode_dc(reader, dc_luma, dc_luma_count, dc_luma_nodes,
                       &difference) != DIVX3_OK)
             return DIVX3_ERR_BITSTREAM;
     } else {
@@ -696,6 +605,7 @@ static int decode_intra_block(
             block == 4 ? decoder->ac_cb_col : decoder->ac_cr_col;
         dc_scale = chroma_dc_scaler(quantizer);
         if (decode_dc(reader, dc_chroma, dc_chroma_count,
+                      dc_chroma_nodes,
                       &difference) != DIVX3_OK)
             return DIVX3_ERR_BITSTREAM;
     }
@@ -831,6 +741,8 @@ static int decode_intra_picture(Divx3Decoder *decoder,
     const Divx3TcoefSet *chroma_set;
     const Divx3DcVlc *dc_luma;
     const Divx3DcVlc *dc_chroma;
+    const Divx3VlcNode *dc_luma_nodes;
+    const Divx3VlcNode *dc_chroma_nodes;
     size_t dc_luma_count;
     size_t dc_chroma_count;
     unsigned mb_x, mb_y;
@@ -845,13 +757,17 @@ static int decode_intra_picture(Divx3Decoder *decoder,
     if (dc_index) {
         dc_luma = kdcRaw1_0;
         dc_luma_count = sizeof(kdcRaw1_0) / sizeof(kdcRaw1_0[0]);
+        dc_luma_nodes = kdcRaw1_0Nodes;
         dc_chroma = kdcRaw1_1;
         dc_chroma_count = sizeof(kdcRaw1_1) / sizeof(kdcRaw1_1[0]);
+        dc_chroma_nodes = kdcRaw1_1Nodes;
     } else {
         dc_luma = kdcRaw0_0;
         dc_luma_count = sizeof(kdcRaw0_0) / sizeof(kdcRaw0_0[0]);
+        dc_luma_nodes = kdcRaw0_0Nodes;
         dc_chroma = kdcRaw0_1;
         dc_chroma_count = sizeof(kdcRaw0_1) / sizeof(kdcRaw0_1[0]);
+        dc_chroma_nodes = kdcRaw0_1Nodes;
     }
     reset_prediction_grids(decoder, quantizer);
     for (mb_y = 0; mb_y < decoder->mb_height; ++mb_y) {
@@ -887,7 +803,8 @@ static int decode_intra_picture(Divx3Decoder *decoder,
                     decoder, reader, frame, block, mb_x, mb_y,
                     quantizer, cbp[block], ac_prediction,
                     luma_set, chroma_set, dc_luma, dc_luma_count,
-                    dc_chroma, dc_chroma_count);
+                    dc_luma_nodes, dc_chroma, dc_chroma_count,
+                    dc_chroma_nodes);
                 if (result != DIVX3_OK) return result;
             }
         }
@@ -1062,6 +979,8 @@ static int decode_inter_picture(Divx3Decoder *decoder,
     const Divx3TcoefSet *luma_set = kLumaSets + table_index;
     const Divx3DcVlc *dc_luma;
     const Divx3DcVlc *dc_chroma;
+    const Divx3VlcNode *dc_luma_nodes;
+    const Divx3VlcNode *dc_chroma_nodes;
     size_t dc_luma_count;
     size_t dc_chroma_count;
     unsigned mb_x, mb_y;
@@ -1070,13 +989,17 @@ static int decode_inter_picture(Divx3Decoder *decoder,
     if (dc_index) {
         dc_luma = kdcRaw1_0;
         dc_luma_count = sizeof(kdcRaw1_0) / sizeof(kdcRaw1_0[0]);
+        dc_luma_nodes = kdcRaw1_0Nodes;
         dc_chroma = kdcRaw1_1;
         dc_chroma_count = sizeof(kdcRaw1_1) / sizeof(kdcRaw1_1[0]);
+        dc_chroma_nodes = kdcRaw1_1Nodes;
     } else {
         dc_luma = kdcRaw0_0;
         dc_luma_count = sizeof(kdcRaw0_0) / sizeof(kdcRaw0_0[0]);
+        dc_luma_nodes = kdcRaw0_0Nodes;
         dc_chroma = kdcRaw0_1;
         dc_chroma_count = sizeof(kdcRaw0_1) / sizeof(kdcRaw0_1[0]);
+        dc_chroma_nodes = kdcRaw0_1Nodes;
     }
     memcpy(frame, reference, decoder->frame_bytes);
     reset_prediction_grids(decoder, quantizer);
@@ -1110,8 +1033,9 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                         decoder, reader, frame, block, mb_x, mb_y,
                         quantizer, (cbp >> (5U - block)) & 1U,
                         ac_prediction, luma_set, chroma_set,
-                        dc_luma, dc_luma_count, dc_chroma,
-                        dc_chroma_count);
+                        dc_luma, dc_luma_count, dc_luma_nodes,
+                        dc_chroma, dc_chroma_count,
+                        dc_chroma_nodes);
                     if (result != DIVX3_OK) return result;
                 }
             } else {
