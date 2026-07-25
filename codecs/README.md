@@ -18,6 +18,8 @@ Current packages:
 - [`bpv/`](bpv/) — the BPV1 v2 BPAL-derived reference encoder/decoder,
   automatic 64-palette training, RD selection, Y4M CLI adapters, tests, and
   supplied reference measurements.
+- [`divx3/`](divx3/) — a portable Microsoft MPEG-4 v3 (`DIV3`/`MP43`)
+  AVI decoder, Y4M command-line adapter, and pixel-exact regression path.
 
 When another codec is added, place it in `codecs/<codec-name>/` and expose a
 non-interactive encoder and decoder that the common benchmark adapter can
