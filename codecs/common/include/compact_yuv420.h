@@ -167,14 +167,38 @@ static inline void compact_yuv420_unpack_corrected_samples(
     const uint8_t *row, int x, int y, unsigned bits,
     const int8_t *correction, int correction_stride,
     uint8_t *output, int count) {
-    int i;
+    static const uint8_t threshold[16] = {
+         0,  8,  2, 10,
+        12,  4, 14,  6,
+         3, 11,  1,  9,
+        15,  7, 13,  5
+    };
+    const int8_t *correction_row;
+    unsigned phase_row;
+    int i = 0;
     compact_yuv420_unpack_packed_samples(row, x, bits, output, count);
-    for (i = 0; i < count; ++i) {
-        int value = output[i] + compact_yuv420_correction(
-                                      correction, correction_stride,
-                                      x + i, y);
-        output[i] =
-            (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
+    if (!correction || count <= 0) return;
+    correction_row =
+        correction + (y >> 3) * correction_stride;
+    phase_row = ((unsigned)y & 3U) * 4U;
+    while (i < count) {
+        int sample_x = x + i;
+        int q4 = correction_row[sample_x >> 3];
+        int whole =
+            q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+        int fraction = q4 - whole * 16;
+        int span = 8 - (sample_x & 7);
+        int end = i + span < count ? i + span : count;
+        for (; i < end; ++i) {
+            int current_x = x + i;
+            unsigned phase =
+                phase_row + ((unsigned)current_x & 3U);
+            int value =
+                output[i] + whole +
+                (threshold[phase] < fraction);
+            output[i] = (uint8_t)(
+                value < 0 ? 0 : (value > 255 ? 255 : value));
+        }
     }
 }
 
