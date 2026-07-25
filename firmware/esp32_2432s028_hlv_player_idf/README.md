@@ -290,8 +290,9 @@ display DMA timing.
 
 Changing `kScaleVideoToDisplay` in `main/player_settings.hpp` selects native
 centred presentation or nearest-neighbour scaling to 320x240.
-`kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
-test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
+`kUseCompactY6U5V5` selects packed or expanded storage for the same normative
+v14 Y6/U5/V5+Q4 reference and is `true` in the current test build. Setting it
+to `false` uses more RAM but must produce identical reconstructed samples.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.

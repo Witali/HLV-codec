@@ -47,6 +47,8 @@ syntax branches. The format includes:
 - directional intra prediction;
 - strict 2/4/8-colour palette blocks;
 - byte-aligned Y6/U5/V5 literal macroblocks for bounded decode time;
+- normative Y6/U5/V5 reference reconstruction with signed Q4 local-average
+  correction, shared bit-for-bit by the encoder, Windows and ESP32 decoders;
 - complexity-aware RDO that trades a configurable amount of bitrate for
   lower decoder work;
 - the original simple 4×4 integer WHT reconstruction.

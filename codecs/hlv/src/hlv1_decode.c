@@ -864,17 +864,15 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
         return NULL;
     }
     trace_decoder_heap("after current frame");
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        d->mv_cols = d->current.padded_width / 16;
-        size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
-        d->mv_top_x = (int16_t *)malloc(bytes);
-        d->mv_top_y = (int16_t *)malloc(bytes);
-        d->mv_cur_x = (int16_t *)malloc(bytes);
-        d->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
-            hlv1_decoder_destroy(d);
-            return NULL;
-        }
+    d->mv_cols = d->current.padded_width / 16;
+    size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
+    d->mv_top_x = (int16_t *)malloc(bytes);
+    d->mv_top_y = (int16_t *)malloc(bytes);
+    d->mv_cur_x = (int16_t *)malloc(bytes);
+    d->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
+        hlv1_decoder_destroy(d);
+        return NULL;
     }
     trace_decoder_heap("after motion state");
     return d;
@@ -895,7 +893,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  const HLV1Frame **frame,
                                  int segmented) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
-    unsigned version = hlv1_stream_version(&d->header);
+    const unsigned version = HLV1_VERSION;
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
         (version < HLV1_STREAM_VERSION_4 && p->q_shift != 0) ||
         p->bit_length > p->payload_size * 8ULL)
@@ -1126,6 +1124,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 return HLV1_ERR_BITSTREAM;
             }
             if (r < 0) return r;
+            hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;

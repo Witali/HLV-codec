@@ -19,6 +19,10 @@ macroblock. The v13 `LITERAL` path copies byte-aligned rows directly and
 records zero correction because those samples are already quantized by the
 stream syntax.
 
+Y6/U5/V5+Q4 is the normative v14 predictive reference, not an ESP32-only
+approximation. The expanded decoder applies the same quantization after every
+macroblock and therefore produces exactly the same samples as compact storage.
+
 The ESP32 front end uses `hlv1_decoder_decode_stream()` with two alternating
 caller-owned buffers. The bitreader requests sequential spans through an
 exact-read callback, updates CRC-32 during refill, drains the packet tail and

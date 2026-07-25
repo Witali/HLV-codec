@@ -55,6 +55,7 @@ typedef struct Candidate {
     int partition;
     int mvx;
     int mvy;
+    int reference_quantized;
     HLV1BitWriter bits;
     MB rec;
 } Candidate;
@@ -587,8 +588,25 @@ static uint64_t estimate_candidate_decode_cycles(const Candidate *candidate) {
     return 100U + input_cycles + predictor_cycles + residual_cycles;
 }
 
+static void quantize_v14_reference_mb(MB *macroblock, int x, int y) {
+    for (int tile_y = 0; tile_y < 16; tile_y += 8)
+        for (int tile_x = 0; tile_x < 16; tile_x += 8)
+            hlv1_quantize_v14_reference_tile(
+                macroblock->y + tile_y * 16 + tile_x, 16,
+                x + tile_x, y + tile_y, 2);
+    hlv1_quantize_v14_reference_tile(
+        macroblock->u, 8, x >> 1, y >> 1, 3);
+    hlv1_quantize_v14_reference_tile(
+        macroblock->v, 8, x >> 1, y >> 1, 3);
+}
+
 static double score_candidate(HLV1Encoder *encoder, const MB *source,
-                              Candidate *candidate, double lambda_bits) {
+                              Candidate *candidate, double lambda_bits,
+                              int x, int y) {
+    if (!candidate->reference_quantized) {
+        quantize_v14_reference_mb(&candidate->rec, x, y);
+        candidate->reference_quantized = 1;
+    }
     candidate->estimated_decode_cycles =
         estimate_candidate_decode_cycles(candidate);
     return (double)weighted_sse(source, &candidate->rec,
@@ -2127,16 +2145,14 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
         hlv1_frame_alloc(&e->current, header->width, header->height) < 0) {
         hlv1_encoder_destroy(e); return NULL;
     }
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        e->mv_cols = e->current.padded_width / 16;
-        size_t bytes = (size_t)e->mv_cols * sizeof(int16_t);
-        e->mv_top_x = (int16_t *)malloc(bytes);
-        e->mv_top_y = (int16_t *)malloc(bytes);
-        e->mv_cur_x = (int16_t *)malloc(bytes);
-        e->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!e->mv_top_x || !e->mv_top_y || !e->mv_cur_x || !e->mv_cur_y) {
-            hlv1_encoder_destroy(e); return NULL;
-        }
+    e->mv_cols = e->current.padded_width / 16;
+    size_t bytes = (size_t)e->mv_cols * sizeof(int16_t);
+    e->mv_top_x = (int16_t *)malloc(bytes);
+    e->mv_top_y = (int16_t *)malloc(bytes);
+    e->mv_cur_x = (int16_t *)malloc(bytes);
+    e->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!e->mv_top_x || !e->mv_top_y || !e->mv_cur_x || !e->mv_cur_y) {
+        hlv1_encoder_destroy(e); return NULL;
     }
     return e;
 }
@@ -2335,7 +2351,7 @@ static int encode_inter_mb_candidate(HLV1Encoder *e,
                          e->q_y, e->q_uv, e->ac_deadzone, NULL);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = score_candidate(e, src, out, lambda_bits);
+    out->score = score_candidate(e, src, out, lambda_bits, x, y);
     return HLV1_OK;
 }
 
@@ -2524,7 +2540,7 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
             candidate_free(&trial);
             return r;
         }
-        trial.score = score_candidate(e, src_mb, &trial, lambda_bits);
+        trial.score = score_candidate(e, src_mb, &trial, lambda_bits, x, y);
         if (trial.score < out->score) {
             candidate_free(out);
             *out = trial;
@@ -2555,7 +2571,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             key = 1;
     }
     int frame_type = key ? HLV1_FRAME_KEY : HLV1_FRAME_P;
-    unsigned version = hlv1_stream_version(&e->header);
+    const unsigned version = HLV1_VERSION;
     HLV1BitWriter frame_bits;
     encoder_bw_init(&frame_bits, &e->stats.encoder_work);
     double lambda_bits = e->lambda_scale *
@@ -2788,7 +2804,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             for (int i = 0; i < count; ++i) {
                 if (c[i].bits.bit_count)
                     c[i].score = score_candidate(e, &src, &c[i],
-                                                 lambda_bits);
+                                                 lambda_bits, x, y);
                 if (c[i].score < best->score) best = &c[i];
             }
             if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0) goto fail_mb;

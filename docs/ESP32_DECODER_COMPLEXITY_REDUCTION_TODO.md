@@ -328,7 +328,7 @@ physical ESP32 frame time.
 - [ ] Add a direct packed Y6/U5/V5 literal macroblock carrying its local
       correction entries. Use it as the fallback for blocks whose transform
       representation exceeds a measured decode-cost threshold.
-- [ ] Make compact Y6/U5/V5 plus local correction the normative v14 reference
+- [x] Make compact Y6/U5/V5 plus local correction the normative v14 reference
       reconstruction. The encoder must predict from exactly that reference so
       the decoder never reconstructs and then requantizes a second reference.
 - [ ] Evaluate macroblock-row or tile slices with independent byte-aligned
@@ -369,8 +369,8 @@ quantizers Y=64/UV=86, balanced preset and eight encoder threads:
 Both hardware captures contain all 300 sequential frames with no gaps. The
 compact simulator uses the same 174,480-byte frame/row storage for both
 versions. The v14 reconstruction hash is `01403ecd59a4a84d`. This fixed-mask
-syntax is accepted as the first v14 experiment; v13 remains the default output
-until a full-length adaptive-quality encode is validated.
+syntax was accepted as the first v14 experiment before v14 became the
+standalone default format.
 
 Removing the outer `has_residual` bit and representing the rare empty residual
 with an all-zero fixed mask looked promising in simulation: 992.88 fell to
@@ -380,6 +380,20 @@ from 22,497.5 to 23,484.7 us/frame, and playback fell from 13.533 to 13.429 fps.
 Changing the syntax cost also changed the encoder's macroblock decisions, so a
 one-branch micro-optimization did not improve the complete system. The
 experiment was removed and the accepted fixed-mask stream keeps `has_residual`.
+
+The standalone v14 reference now quantizes every selected encoder macroblock
+and every expanded decoder macroblock to the same Y6/U5/V5+Q4 reconstruction
+stored by ESP32. On the 180-frame 320x240 camera scene, Windows and compact
+ESP32 reconstruction compare at infinite PSNR and SSIM 1.000000 for all
+frames; their former reference MAE grew from 1.02 after a key frame to 1.94
+before the next key frame. Relative to the old mismatched ESP32 output at
+Y=64/UV=86, the normative stream costs 1.1% more bytes, improves PSNR by
+0.28 dB and SSIM by 0.00565, and reduces measured bright-trail energy by
+10.6%. This removes reference drift; temporal RDO/SKIP tuning remains a
+separate quality task. Compiling the accepted encoder and decoder hot paths
+against constant syntax v14 lets the optimiser discard legacy branches and
+reduced the ESP32 application image from `0x5cfb0` to `0x581e0` bytes
+(19,920 bytes).
 
 ### Results
 

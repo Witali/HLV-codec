@@ -36,6 +36,12 @@ static inline void hlv1_wr32(uint8_t *p, uint32_t v) {
 }
 
 uint32_t hlv1_crc32(const uint8_t *data, size_t size);
+void hlv1_quantize_v14_reference_tile(uint8_t *base, int stride,
+                                      int origin_x, int origin_y,
+                                      unsigned shift);
+void hlv1_frame_quantize_v14_reference_mb(HLV1Frame *frame,
+                                          int macroblock_x,
+                                          int macroblock_y);
 
 /* A zero-initialized in-memory header selects the only supported syntax. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
