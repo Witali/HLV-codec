@@ -18,7 +18,7 @@ param(
     [int]$Fps = 15,
 
     [ValidateRange(16, 2048)]
-    [int]$VideoBitrateKbps = 768,
+    [int]$VideoBitrateKbps = 1536,
 
     [ValidateRange(32, 4096)]
     [int]$VideoBufferKbps = 1024,

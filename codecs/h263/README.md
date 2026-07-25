@@ -30,7 +30,7 @@ Encode any source:
 ```
 
 The default is the hardware-verified intra-only `320x240`, 15 fps,
-768 kbit/s profile with a 1024-kbit VBV buffer. RD macroblock decisions,
+1536 kbit/s profile with a 1024-kbit VBV buffer. RD macroblock decisions,
 trellis quantization, and rate-distortion coefficient selection improve
 quality without enabling unsupported H.263 bitstream tools. The default
 `-FitMode Crop` preserves aspect ratio while filling the canvas and cropping

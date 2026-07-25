@@ -273,7 +273,7 @@ For the 3GP/H.263 profile with default AMR-NB audio:
 ```
 
 The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
-768 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
+1536 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
 trellis encoder decisions, fills the canvas, and crops equal margins from the
 source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
 source with black padding. `-Profile` also accepts baseline H.263 `176x144`,
@@ -287,9 +287,10 @@ When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
 audio codecs, and other dimensions are outside these profiles.
 
 The complete source encoded with this default was exercised for 900 frames on
-the physical ESP32. The run measured 15.007 fps, 48.69 ms average and
-52.15 ms p95 work per frame against a 66.67 ms budget, with zero decode gaps,
-display skips, audio rebuffers, underrun samples, or silence chunks.
+the physical ESP32. The run measured 14.999 fps, 62.20 ms average and
+67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
+gaps, audio rebuffers, underrun samples, or silence chunks and omitted one
+display transfer.
 
 Status text uses an embedded 5x7 font covering every printable ASCII character
 from space (`0x20`) through tilde (`0x7e`), including all digits and
