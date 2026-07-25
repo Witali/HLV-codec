@@ -275,6 +275,9 @@ Average syntax work per frame:
       an IRAM-resident loop and a bounded-memory word-at-a-time implementation.
 - [x] Cache compact correction division and tile lookup once per 8-pixel
       span instead of once per reconstructed sample.
+- [x] Decode cached v9 coefficient levels with magnitude 1 through 17 using
+      one lookahead/consume operation. These codes cover the dominant small
+      coefficient path without changing the v13 bitstream.
 - [ ] Fuse compact motion prediction and output:
   - generate prediction in four-pixel groups;
   - apply residuals in a 4x4 scratch block;
@@ -283,15 +286,18 @@ Average syntax work per frame:
 - [ ] Re-evaluate direct packed no-residual motion for this denser v13 file
       only with a materially different fused implementation. Do not restore
       the previously rejected standalone packed-copy experiment.
-- [ ] Profile the coefficient-count histogram beyond two coefficients, then
-      test only frequent specialised WHT cases.
+- [x] Profile the coefficient structure: 12.0% of residual blocks have one
+      coefficient, 5.3% have two, and 64.3% of coefficient symbols have
+      `|level|=1`.
+- [ ] Use that histogram to test only frequent specialised WHT cases.
 - [ ] Evaluate a hand-unrolled Xtensa general inverse WHT and selective IRAM
       placement without increasing the decoder's frame heap.
 - [ ] Cache each unpacked HLV chroma row across its two luma rows and fuse
       compact luma unpacking with RGB565 conversion.
-- [ ] Add an optional encoder RDO decode-cost term. Compare equal-quality
-      outputs by PSNR/SSIM, bitrate, packet peak, ESP32 decode time and render
-      time. The output must remain a standard HLV stream.
+- [x] Expose the existing optional encoder RDO decode-cost term through
+      `--decode-cycle-weight`.
+- [ ] Calibrate that term with equal-quality PSNR/SSIM, bitrate, packet peak,
+      ESP32 decode-time and render-time comparisons.
 - [ ] Consider a bounded second-core transform/prediction job queue only after
       the single-core decoder work above. CPU0 already renders the preceding
       frame concurrently, so accept this only if synchronisation and queue
@@ -347,6 +353,16 @@ heap and physical ESP32 frame time.
 | Stage profiler, 30 frames | n/a | 105,057.9 | unchanged decoder | accepted as an opt-in diagnostic |
 | Four-byte unrolled CRC | hash pass | 103,557.7 | `3fecc5b367d31b8c` | accepted |
 | Per-tile compact correction | 1,403.35 | 85,797.1 | `3fecc5b367d31b8c` | accepted |
+| Cached small-level VLC lookahead | 1,538.77 vs 1,702.28 A/B | 81,410.6 | `3fecc5b367d31b8c` | accepted |
+
+The small-level lookahead consumes the complete v9 code for magnitudes 1
+through 17 with one bitreader call when eight cached bits are available, and
+falls back to the original parser at span boundaries and for larger levels.
+On a paired five-pass simulator run it reduces decode time by 9.6%. On the
+first 31 physical ESP32 frames it reduces external decoder time from 85,797.1
+to 81,410.6 us/frame (5.1%), residual-stage time from 35,562.3 to 33,807.8
+us/frame (4.9%), and raises observed playback from 10.211 to 10.665 fps. The
+frame heap and encoded file are unchanged.
 
 The opt-in stage build uses `HLV1_STAGE_PROFILE=ON`; release builds leave every
 timer read compiled out. On the first 30 physical frames it reports:

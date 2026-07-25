@@ -440,6 +440,47 @@ static int add_dc_only(uint8_t *dst, int stride, int level, int qstep) {
 }
 
 static int get_level_v9(HLV1BitReader *br, int32_t *level) {
+#if !defined(HLV1_LEVEL_LOOKAHEAD) || HLV1_LEVEL_LOOKAHEAD
+    /*
+     * Decode the common magnitudes 1..17 from one cached lookahead.  The
+     * v9 code is:
+     *   0s, 10rrs, 110rrs, 1110rrs, 11110rrs
+     * where s is the sign and rr is the two-bit remainder.  Keeping this
+     * path local avoids three to eight reader calls for the small levels
+     * that dominate natural video while preserving the escape syntax below.
+     */
+    if (br && br->bits >= 8U && br->bits_left >= 8U) {
+        uint32_t prefix = (uint32_t)(br->cache >> 56);
+        unsigned bits = 0, magnitude = 0, negative = 0;
+        if (!(prefix & 0x80U)) {
+            bits = 2;
+            magnitude = 1;
+            negative = (prefix >> 6) & 1U;
+        } else if (!(prefix & 0x40U)) {
+            bits = 5;
+            magnitude = 2U + ((prefix >> 4) & 3U);
+            negative = (prefix >> 3) & 1U;
+        } else if (!(prefix & 0x20U)) {
+            bits = 6;
+            magnitude = 6U + ((prefix >> 3) & 3U);
+            negative = (prefix >> 2) & 1U;
+        } else if (!(prefix & 0x10U)) {
+            bits = 7;
+            magnitude = 10U + ((prefix >> 2) & 3U);
+            negative = (prefix >> 1) & 1U;
+        } else if (!(prefix & 0x08U)) {
+            bits = 8;
+            magnitude = 14U + ((prefix >> 1) & 3U);
+            negative = prefix & 1U;
+        }
+        if (bits) {
+            (void)hlv1_br_get(br, bits);
+            if (br->error) return br->error;
+            *level = negative ? -(int32_t)magnitude : (int32_t)magnitude;
+            return HLV1_OK;
+        }
+    }
+#endif
     uint32_t first = hlv1_br_get(br, 1);
     if (br->error) return br->error;
     unsigned magnitude;

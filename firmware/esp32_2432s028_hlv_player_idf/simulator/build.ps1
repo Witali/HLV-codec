@@ -7,7 +7,9 @@ param(
     [ValidateSet(32, 64)]
     [int]$BitReaderBits = 32,
     [ValidateSet(0, 1)]
-    [int]$DecoderStats = 0
+    [int]$DecoderStats = 0,
+    [ValidateSet(0, 1)]
+    [int]$LevelLookahead = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,11 +39,11 @@ $bitReaderFlag = if ($BitReaderBits -eq 32) { "1" } else { "0" }
 $commandTemplate = 'call "{0}" -no_logo -arch={1} && cd /d "{2}" && ' +
     'cl /nologo {3} /W4 /std:c11 /D_CRT_SECURE_NO_WARNINGS ' +
     '/DHLV1_ESP32_SIMULATOR=1 /DHLV1_ENABLE_DECODER_STATS={4} ' +
-    '/DHLV1_FAST_32BIT_BITREADER={5} /I"{6}" /I"{7}" ' +
-    '"{8}" "{9}" "{10}" /Fe:"{11}"'
+    '/DHLV1_FAST_32BIT_BITREADER={5} /DHLV1_LEVEL_LOOKAHEAD={6} ' +
+    '/I"{7}" /I"{8}" "{9}" "{10}" "{11}" /Fe:"{12}"'
 $command = $commandTemplate -f $devcmd, $Architecture, $build,
-    $optimizationFlag, $DecoderStats, $bitReaderFlag, $include,
-    $privateInclude, $simulator, $common, $decoder, $output
+    $optimizationFlag, $DecoderStats, $bitReaderFlag, $LevelLookahead,
+    $include, $privateInclude, $simulator, $common, $decoder, $output
 
 Write-Host "Building ESP32 decoder simulator ($Architecture, $Optimization, BR$BitReaderBits, stats=$DecoderStats)..."
 & cmd.exe /d /c $command
