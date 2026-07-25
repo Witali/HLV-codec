@@ -332,6 +332,13 @@ static void idct_row(int32_t *row) {
         IDCT_W4 * row[0] + (1 << (IDCT_ROW_SHIFT - 1));
     int32_t a1 = a0, a2 = a0, a3 = a0;
     int32_t b0, b1, b2, b3;
+    if (!(row[1] | row[2] | row[3] | row[4] |
+          row[5] | row[6] | row[7])) {
+        int32_t value = a0 >> IDCT_ROW_SHIFT;
+        unsigned index;
+        for (index = 0; index < 8U; ++index) row[index] = value;
+        return;
+    }
     a0 += IDCT_W2 * row[2];
     a1 += IDCT_W6 * row[2];
     a2 -= IDCT_W6 * row[2];
@@ -390,6 +397,19 @@ static void idct_column(int32_t *column) {
 
 static void inverse_dct(int32_t block[64]) {
     unsigned index;
+    for (index = 1; index < 64U; ++index)
+        if (block[index]) break;
+    if (index == 64U) {
+        int32_t row_value =
+            (IDCT_W4 * block[0] +
+             (1 << (IDCT_ROW_SHIFT - 1))) >>
+            IDCT_ROW_SHIFT;
+        int32_t value =
+            IDCT_W4 * (row_value + IDCT_COLUMN_ROUND) >>
+            IDCT_COLUMN_SHIFT;
+        for (index = 0; index < 64U; ++index) block[index] = value;
+        return;
+    }
     for (index = 0; index < 64; index += 8) idct_row(block + index);
     for (index = 0; index < 8; ++index) idct_column(block + index);
 }
