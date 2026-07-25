@@ -26,6 +26,7 @@
 #include "board_config.hpp"
 #include "bpv_esp32_decoder.hpp"
 #include "cyd_display.hpp"
+#include "h263_3gp.h"
 #include "hlv1.h"
 #include "hlv_esp32_decoder.hpp"
 #include "mjpeg_avi_decoder.hpp"
@@ -110,6 +111,7 @@ enum class VideoCodec {
     kMjpeg,
     kBpv,
     kMpeg1,
+    kH263,
 };
 
 enum class SelectionReadResult {
@@ -155,6 +157,8 @@ BpvEsp32Decoder bpv_decoder;
 BPV1Header bpv_header{};
 plm_t *mpeg_video = nullptr;
 plm_t *mpeg_audio = nullptr;
+H2633gpDecoder *h263_decoder = nullptr;
+H2633gpInfo h263_info{};
 UartFileUpload uart_upload;
 HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
@@ -1140,6 +1144,11 @@ void closeVideo() {
         plm_destroy(mpeg_video);
         mpeg_video = nullptr;
     }
+    if (h263_decoder) {
+        h263_3gp_decoder_destroy(h263_decoder);
+        h263_decoder = nullptr;
+    }
+    h263_info = {};
     if (video_file) {
         std::fclose(video_file);
         video_file = nullptr;
@@ -1280,6 +1289,9 @@ VideoOpenResult openVideoCandidate(const char *path) {
                signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {
         video_codec = VideoCodec::kMpeg1;
+    } else if (signature_size == sizeof signature &&
+               !std::memcmp(signature + 4, "ftyp", 4)) {
+        video_codec = VideoCodec::kH263;
     } else {
         std::fclose(video_file);
         video_file = nullptr;
@@ -1434,6 +1446,39 @@ bool openVideo() {
             closeVideo();
             return false;
         }
+    } else if (video_codec == VideoCodec::kH263) {
+        h263_decoder = h263_3gp_decoder_create();
+        int result =
+            h263_decoder
+                ? h263_3gp_decoder_open(
+                      h263_decoder, video_file, &h263_info)
+                : H263_3GP_ERR_MEMORY;
+        if (result == H263_3GP_OK &&
+            (h263_info.fps_num > UINT16_MAX ||
+             h263_info.fps_den > UINT16_MAX)) {
+            result = H263_3GP_ERR_UNSUPPORTED;
+        }
+        if (result != H263_3GP_OK) {
+            showStatus("Invalid video.3gp", h263_3gp_strerror(result));
+            closeVideo();
+            return false;
+        }
+        sequence_header.width = h263_info.width;
+        sequence_header.height = h263_info.height;
+        sequence_header.fps_num =
+            static_cast<uint16_t>(h263_info.fps_num);
+        sequence_header.fps_den =
+            static_cast<uint16_t>(h263_info.fps_den);
+        sequence_header.frame_count = h263_info.frame_count;
+        ESP_LOGI(kTag,
+                 "H.263/3GP: %ux%u, %u/%u fps, %u frames, "
+                 "profile=%u level=%u, decoder=%u bytes",
+                 sequence_header.width, sequence_header.height,
+                 sequence_header.fps_num, sequence_header.fps_den,
+                 static_cast<unsigned>(sequence_header.frame_count),
+                 h263_info.profile, h263_info.level,
+                 static_cast<unsigned>(
+                     h263_3gp_decoder_memory_bytes(h263_decoder)));
     } else if (video_codec == VideoCodec::kMjpeg) {
         int result = mjpeg_decoder.begin(video_file, &mjpeg_info);
         if (result == MJPEG_AVI_OK &&
@@ -1589,6 +1634,13 @@ bool openVideo() {
         ESP_LOGI(kTag,
                  "Playing MPEG-1 in %s mode, frame storage=two YCbCr "
                  "reference frames",
+                 player_settings::kScaleVideoToDisplay
+                     ? "scale-to-320x240"
+                     : "native-centred");
+    } else if (video_codec == VideoCodec::kH263) {
+        ESP_LOGI(kTag,
+                 "Playing H.263/3GP in %s mode, "
+                 "frame storage=two QCIF YUV420 frames",
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
@@ -1801,6 +1853,26 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     return true;
 }
 
+bool renderH263Frame(const H2633gpFrame *frame) {
+    if (!frame) return false;
+    plm_frame_t adapted{};
+    adapted.width = frame->width;
+    adapted.height = frame->height;
+    adapted.storage_mode = PLM_FRAME_STORAGE_YUV420;
+    adapted.y = {
+        frame->width, frame->height, frame->y_stride,
+        const_cast<uint8_t *>(frame->y), 0, nullptr};
+    adapted.cb = {
+        static_cast<unsigned>(frame->width / 2),
+        static_cast<unsigned>(frame->height / 2),
+        frame->chroma_stride, const_cast<uint8_t *>(frame->u), 0, nullptr};
+    adapted.cr = {
+        static_cast<unsigned>(frame->width / 2),
+        static_cast<unsigned>(frame->height / 2),
+        frame->chroma_stride, const_cast<uint8_t *>(frame->v), 0, nullptr};
+    return renderMpegFrame(&adapted);
+}
+
 struct MjpegRenderContext {
     uint32_t render_us = 0;
     int next_scaled_y = 0;
@@ -1938,6 +2010,8 @@ void failPlayback(const char *title, int result) {
     const char *detail =
         video_codec == VideoCodec::kMpeg1
             ? "invalid, truncated or unsupported MPEG-1 stream"
+            : video_codec == VideoCodec::kH263
+            ? h263_3gp_strerror(result)
             : video_codec == VideoCodec::kMjpeg
             ? mjpeg_avi_strerror(result)
             : video_codec == VideoCodec::kBpv
@@ -2027,6 +2101,10 @@ bool renderBpvOpaque(const void *frame) {
 
 bool renderMpegOpaque(const void *frame) {
     return renderMpegFrame(static_cast<const plm_frame_t *>(frame));
+}
+
+bool renderH263Opaque(const void *frame) {
+    return renderH263Frame(static_cast<const H2633gpFrame *>(frame));
 }
 
 struct PresentationState {
@@ -2178,6 +2256,10 @@ bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
         frame, renderMpegOpaque, 0, decode_us);
 }
 
+bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
+    return presentDecodedFrame(frame, renderH263Opaque, 0, decode_us);
+}
+
 uint32_t readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
     *result = decoder.readPacket(video_file, packet);
@@ -2262,6 +2344,30 @@ void playOneMpegFrameSequential() {
     }
     if (!presentMpegFrame(frame, decode_us)) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
+    }
+}
+
+void playOneH263Frame() {
+    H2633gpFrame frame{};
+    const int64_t decode_start = microsNow();
+    const int result =
+        h263_3gp_decoder_decode_next(h263_decoder, video_file, &frame);
+    const uint32_t decode_us =
+        static_cast<uint32_t>(microsNow() - decode_start);
+    if (result == H263_3GP_EOF) {
+        finishVideoLoop();
+        return;
+    }
+    if (result == H263_3GP_ERR_IO) {
+        failSdCardRead("cannot read H.263/3GP video");
+        return;
+    }
+    if (result != H263_3GP_OK) {
+        failPlayback("H.263 decode error", result);
+        return;
+    }
+    if (!presentH263Frame(&frame, decode_us)) {
+        failPlayback("Display DMA error", H263_3GP_ERR_IO);
     }
 }
 
@@ -2673,6 +2779,11 @@ extern "C" void app_main(void) {
             } else {
                 playOneMpegFrameSequential();
             }
+            continue;
+        }
+        if (video_file && video_codec == VideoCodec::kH263 &&
+            h263_decoder) {
+            playOneH263Frame();
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMjpeg &&

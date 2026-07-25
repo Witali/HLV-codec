@@ -10,8 +10,8 @@ DAC GPIO26.
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
-  or the constrained
-  MPEG-1 Video/MP2 profile up to 320x240;
+  the constrained MPEG-1 Video/MP2 profile up to 320x240, and video-only
+  baseline H.263 in a 3GP container at `176x144` QCIF;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -258,6 +258,19 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 `-Width 320 -Height 240` for the maximum supported frame size. See
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
+
+For the initial video-only 3GP/H.263 profile:
+
+```powershell
+.\scripts\encode_h263_3gp.ps1 `
+    -InputFile .\out\sources\VID_20260522_181611.mp4 `
+    -OutputFile .\out\video.3gp
+```
+
+The profile is fixed-rate baseline H.263 on the standardized `176x144` QCIF
+canvas. The encoder preserves aspect ratio with black padding. Audio tracks,
+variable-rate timing, other H.263 profiles, and other dimensions are outside
+this first profile.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the

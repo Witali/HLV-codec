@@ -13,6 +13,7 @@ firmware/esp32_2432s028_hlv_player_idf/build-physical-bench/
 *.mkv
 *.mov
 *.avi
+*.3gp
 *.webm
 *.mpeg
 *.mpg
