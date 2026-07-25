@@ -208,3 +208,95 @@ instruction-count comparisons, not physical playback rates.
 
 No accepted decoder change adds heap or static frame storage. Physical
 Flash-cache effects and key/P-frame distributions have now been validated.
+
+## 320x240 v13 streaming optimisation pass
+
+This pass targets `out/VID_20260522_181611.hlv`, the current difficult
+HLV v13 320x240 at 30 fps workload. It keeps the HLV container and bitstream
+standard unchanged. The preceding v12 320x180 results remain useful regression
+tests, but they are not representative of this file's much denser residual
+stream.
+
+### Acceptance rules
+
+Each experiment must:
+
+1. preserve the complete 3,359-frame compact reconstruction hash
+   `3fecc5b367d31b8c`;
+2. keep packet CRC verification enabled and accept the same standard HLV files;
+3. pass both the bounded two-window streaming decoder and the existing
+   segmented packet decoder;
+4. measure full-film native time and physical ESP32 per-frame time;
+5. retain a change only when the physical-board result improves beyond normal
+   run-to-run variation without an unacceptable RAM or code-size increase;
+6. record rejected experiments here and remove their source changes.
+
+### Baseline
+
+- Input size: 82,474,306 bytes, or about 24.5 KiB per frame including audio.
+- Compact frame storage plus working rows: 174,480 bytes.
+- Streaming packet window: two 7,680-byte buffers.
+- Native x64 O3/BR32: 1,596.69 us/frame over one complete timed pass.
+- Physical ESP32, first 300 frames:
+  - SD read: 8,503.6 us average;
+  - decode excluding `fread`: 97,863.6 us average;
+  - render: 44,482.2 us average;
+  - observed presentation rate: 9.362 fps;
+  - 46 skipped presentations and no audio underrun.
+
+Average syntax work per frame:
+
+| Work item | Per frame |
+| --- | ---: |
+| Macroblocks | 300.0 |
+| SKIP | 43.86 |
+| INTER | 47.40 |
+| GLOBAL | 17.81 |
+| SPLIT_INTER | 156.29 |
+| FILL | 6.71 |
+| PALETTE | 4.11 |
+| LITERAL | 0.03 |
+| Intra modes, combined | 23.79 |
+| Coefficient symbols | 26,592.7 |
+| Residual 4x4 blocks | 4,968.3 |
+| Zero residual blocks | 1,162.4 |
+| DC-only blocks | 450.4 |
+| Inverse WHT blocks | 3,356.2 |
+
+### Ordered checklist
+
+- [ ] Add low-overhead, compile-time stage profiling for:
+  - streaming CRC;
+  - entropy/VLC and residual parsing;
+  - motion/intra prediction;
+  - inverse WHT and residual addition;
+  - compact Y6/U5/V5 packing.
+- [ ] Compare the current table CRC with the ESP32 ROM CRC32 implementation,
+      an IRAM-resident loop and a bounded-memory word-at-a-time implementation.
+- [ ] Fuse compact motion prediction and output:
+  - generate prediction in four-pixel groups;
+  - apply residuals in a 4x4 scratch block;
+  - immediately write packed Y6/U5/V5;
+  - accumulate the existing local correction values in the same pass.
+- [ ] Re-evaluate direct packed no-residual motion for this denser v13 file
+      only with a materially different fused implementation. Do not restore
+      the previously rejected standalone packed-copy experiment.
+- [ ] Profile the coefficient-count histogram beyond two coefficients, then
+      test only frequent specialised WHT cases.
+- [ ] Evaluate a hand-unrolled Xtensa general inverse WHT and selective IRAM
+      placement without increasing the decoder's frame heap.
+- [ ] Cache each unpacked HLV chroma row across its two luma rows and fuse
+      compact luma unpacking with RGB565 conversion.
+- [ ] Add an optional encoder RDO decode-cost term. Compare equal-quality
+      outputs by PSNR/SSIM, bitrate, packet peak, ESP32 decode time and render
+      time. The output must remain a standard HLV stream.
+- [ ] Consider a bounded second-core transform/prediction job queue only after
+      the single-core decoder work above. CPU0 already renders the preceding
+      frame concurrently, so accept this only if synchronisation and queue
+      memory produce a clear end-to-end improvement.
+
+### Results
+
+| Variant | Native us/frame | ESP32 decode us/frame | Hash | Decision |
+| --- | ---: | ---: | --- | --- |
+| Streaming baseline | 1,596.69 | 97,863.6 | `3fecc5b367d31b8c` | baseline |
