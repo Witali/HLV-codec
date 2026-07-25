@@ -37,9 +37,9 @@ static inline void hlv1_wr32(uint8_t *p, uint32_t v) {
 
 uint32_t hlv1_crc32(const uint8_t *data, size_t size);
 
-/* A zero version appeared in early in-memory callers and is normalized to v1. */
+/* A zero-initialized in-memory header selects the only supported syntax. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
-    return h && h->version ? h->version : HLV1_STREAM_VERSION_1;
+    return h && h->version ? h->version : HLV1_VERSION;
 }
 
 /* MSB-first writer compatible with HLV-1 v0.1. */

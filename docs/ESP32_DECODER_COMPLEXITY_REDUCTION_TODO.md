@@ -305,10 +305,11 @@ Average syntax work per frame:
 
 ### Decode-oriented HLV v14 format experiments
 
-HLV v14 may change the bitstream when that produces a measured decoder gain.
-The decoder must retain v1-v13 input support, and every v14 experiment must
-still report reconstruction quality, bitrate, maximum packet size, decoder
-heap and physical ESP32 frame time.
+HLV v14 is a standalone incompatible format and may change the bitstream when
+that produces a measured decoder or quality gain. The v14 encoder and players
+do not support v1-v13 streams. Every experiment must still report
+reconstruction quality, bitrate, maximum packet size, decoder heap and
+physical ESP32 frame time.
 
 - [ ] Keep the frequently used SKIP mode as a direct packed reference copy.
       It averages 43.86 macroblocks/frame in the current source.

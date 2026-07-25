@@ -110,7 +110,7 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     uint8_t b[HLV1_HEADER_SIZE] = {0};
     memcpy(b, HLV1_MAGIC, 4);
     unsigned version = hlv1_stream_version(h);
-    if (version < HLV1_STREAM_VERSION_1 || version > HLV1_MAX_VERSION)
+    if (version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
         return HLV1_ERR_ARGUMENT;
     if (h->flags & (uint8_t)~HLV1_FLAG_AUDIO)
         return HLV1_ERR_ARGUMENT;
@@ -147,7 +147,7 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
     if (got == 0 && feof(file)) return HLV1_EOF;
     if (got != sizeof b) return HLV1_ERR_IO;
     if (memcmp(b, HLV1_MAGIC, 4) ||
-        b[4] < HLV1_STREAM_VERSION_1 || b[4] > HLV1_MAX_VERSION ||
+        b[4] < HLV1_MIN_VERSION || b[4] > HLV1_MAX_VERSION ||
         b[22] != 16 || b[27] != 0)
         return HLV1_ERR_FORMAT;
     memset(h, 0, sizeof *h);

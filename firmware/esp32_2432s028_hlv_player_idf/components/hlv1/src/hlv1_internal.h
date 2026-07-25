@@ -48,7 +48,7 @@ int hlv1_packet_header_parse(const uint8_t header[HLV1_FRAME_HEADER_SIZE],
 
 /* A zero version appeared in early in-memory callers and is normalized to v1. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
-    return h && h->version ? h->version : HLV1_STREAM_VERSION_1;
+    return h && h->version ? h->version : HLV1_VERSION;
 }
 
 /* MSB-first writer compatible with HLV-1 v0.1. */

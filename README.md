@@ -32,10 +32,12 @@ rate-distortion selection, streaming validation, Y4M adapters and the supplied
 the native Windows and ESP32 players. BPV1 carries video only; those players
 therefore use their frame timer and do not open an audio device for `.bpv1`.
 
-## HLV-1 v0.3 development build
+## HLV v14 development build
 
-The decoder accepts stream syntax v1 through v13. New encodes use **stream
-v13** by default.  The stable syntax now includes:
+HLV v14 is a standalone, intentionally incompatible format. Encoders and
+players emit and accept **stream v14 only**; v1-v13 decoding is not part of
+the v14 implementation. This lets the decoder hot path evolve without legacy
+syntax branches. The format includes:
 
 - short `SKIP` and zero-residual paths;
 - 16×16 and optional four-way 8×8 motion prediction;
@@ -79,7 +81,7 @@ make test
 make sanitize
 ```
 
-`make test` covers v1-v13 round-trip, forced `FILL`/`SKIP`/split/palette/literal
+`make test` covers v14 round-trip, forced `FILL`/`SKIP`/split/palette/literal
 paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.

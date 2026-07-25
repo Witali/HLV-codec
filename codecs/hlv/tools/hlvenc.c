@@ -874,7 +874,7 @@ int main(int argc, char **argv) {
         min_key_interval < 1 || min_key_interval >= gop ||
         keyframe_bias < 1.0 || keyframe_bias > 1.25 ||
         bitrate_kbps < 0 || bitrate_kbps > 100000 ||
-        syntax < HLV1_STREAM_VERSION_1 || syntax > HLV1_MAX_VERSION ||
+        syntax < HLV1_MIN_VERSION || syntax > HLV1_MAX_VERSION ||
         chroma_scale < 0.25 || chroma_scale > 4.0 ||
         rd_luma_weight < 1 || rd_luma_weight > 16 ||
         rd_lambda_scale <= 0.0 || rd_lambda_scale > 16.0 ||

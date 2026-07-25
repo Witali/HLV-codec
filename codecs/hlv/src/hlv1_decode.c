@@ -846,8 +846,10 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
 
 /* --- Public decoder lifecycle ----------------------------------------- */
 HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
+    unsigned version = hlv1_stream_version(header);
     if (!header || !header->width || !header->height ||
-        hlv1_stream_version(header) > HLV1_MAX_VERSION) return NULL;
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     trace_decoder_heap("after state");

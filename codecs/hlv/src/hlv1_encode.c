@@ -2106,7 +2106,10 @@ static int candidate_init(Candidate *c, int mode, HLV1EncoderWork *work) {
 static void candidate_free(Candidate *c) { hlv1_bw_free(&c->bits); }
 
 HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
-    if (!header || !header->width || !header->height || !header->gop) return NULL;
+    unsigned version = hlv1_stream_version(header);
+    if (!header || !header->width || !header->height || !header->gop ||
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Encoder *e = (HLV1Encoder *)calloc(1, sizeof *e);
     if (!e) return NULL;
     e->header = *header;
