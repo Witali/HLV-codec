@@ -560,11 +560,12 @@ int main(void) {
         test_version(HLV1_STREAM_VERSION_11) ||
         test_version(HLV1_STREAM_VERSION_12) ||
         test_version(HLV1_STREAM_VERSION_13) ||
+        test_version(HLV1_STREAM_VERSION_14) ||
         test_split_v3() || test_extended_quant_v4() || test_odd_motion_v5() ||
         test_half_motion_v6() || test_palette_v12() ||
         test_palette8_v13() || test_literal_v13() ||
         test_adaptive_gop_v12() || test_encoder_clone() ||
         test_segmented_decode()) return 1;
-    puts("HLV-1 C round-trip v1-v13 including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
+    puts("HLV-1 C round-trip v1-v14 including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
     return 0;
 }

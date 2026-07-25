@@ -315,9 +315,9 @@ heap and physical ESP32 frame time.
 - [ ] Remove the optional no-residual branch from dense INTER, GLOBAL and
       SPLIT_INTER v14 modes. It is useful only 0.02 times/frame in this source;
       use separate explicit no-residual mode tokens if another source needs it.
-- [ ] Replace the multi-branch residual-mask syntax with a directly readable
-      fixed or table-coded 24-bit mask. Measure the bitrate cost against the
-      reduction in bitreader calls and branches.
+- [x] Replace the multi-branch residual-mask syntax with one coefficient-mode
+      bit and a directly readable 24-bit mask in experimental v14. Six-block
+      split residuals use the same rule with a six-bit mask.
 - [ ] Define a bounded run/level token table for the frequent coefficient
       range, with one escape token for uncommon runs and magnitudes. Target
       one lookahead and one consume operation per common coefficient.
@@ -344,6 +344,32 @@ heap and physical ESP32 frame time.
 - [ ] Compare v13 and v14 at equal PSNR/SSIM. A v14 candidate is accepted only
       when the physical end-to-end frame rate improves; a smaller file alone
       is not sufficient.
+
+The first v14 hardware trial accidentally enabled a dormant rectangular
+`16x8`/`8x16` split experiment together with the fixed residual mask. Although
+its residual stage was 4.4% faster, prediction became 14.3% slower and external
+decode time increased from 68,863.4 to 74,203.6 us/frame. That combination was
+rejected; rectangular split is not part of the supported v14 syntax.
+
+The isolated fixed-mask comparison uses the same 300 source frames, exact
+quantizers Y=64/UV=86, balanced preset and eight encoder threads:
+
+| Metric | v13 | v14 fixed mask | Change |
+| --- | ---: | ---: | ---: |
+| Video payload | 3.724 MiB | 3.666 MiB | -1.6% |
+| Maximum packet | 31,721 B | 31,412 B | -1.0% |
+| PSNR | 31.2981 dB | 31.4297 dB | +0.1316 dB |
+| SSIM | 0.884012 | 0.886455 | +0.002443 |
+| ESP32 simulator | 1,020.20 us/frame | 992.88 us/frame | -2.7% |
+| Physical ESP32 decode | 68,863.4 us/frame | 67,670.9 us/frame | -1.7% |
+| Physical residual stage | 24,562.1 us/frame | 22,497.5 us/frame | -8.4% |
+| Observed playback | 13.298 fps | 13.533 fps | +1.8% |
+
+Both hardware captures contain all 300 sequential frames with no gaps. The
+compact simulator uses the same 174,480-byte frame/row storage for both
+versions. The v14 reconstruction hash is `01403ecd59a4a84d`. This fixed-mask
+syntax is accepted as the first v14 experiment; v13 remains the default output
+until a full-length adaptive-quality encode is validated.
 
 ### Results
 

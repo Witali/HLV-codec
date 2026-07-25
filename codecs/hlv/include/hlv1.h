@@ -33,7 +33,9 @@ extern "C" {
 #define HLV1_STREAM_VERSION_11 11
 #define HLV1_STREAM_VERSION_12 12
 #define HLV1_STREAM_VERSION_13 13
+#define HLV1_STREAM_VERSION_14 14
 #define HLV1_VERSION HLV1_STREAM_VERSION_13
+#define HLV1_MAX_VERSION HLV1_STREAM_VERSION_14
 
 /* Effective quantizer steps are represented as an 8-bit mantissa and a small
  * left shift.  2040 is therefore the largest stable v4+ step. */

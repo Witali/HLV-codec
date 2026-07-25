@@ -927,6 +927,25 @@ static int put_residual_group_v9(HLV1BitWriter *dst, uint32_t mask,
     return r;
 }
 
+/*
+ * Experimental v14 residual groups have one directly readable coefficient
+ * mode bit followed by the complete block mask.  The encoder still chooses
+ * the shorter coefficient representation, but the decoder no longer walks
+ * the raw/sparse mask decision tree for every residual macroblock.
+ */
+static int put_residual_group_v14(HLV1BitWriter *dst, uint32_t mask,
+                                  int block_count,
+                                  const HLV1BitWriter *legacy_coeff,
+                                  const HLV1BitWriter *v9_coeff) {
+    int use_v9 = v9_coeff->bit_count < legacy_coeff->bit_count;
+    int r = hlv1_bw_put(dst, (uint32_t)use_v9, 1);
+    if (r >= 0)
+        r = hlv1_bw_put(dst, mask, (unsigned)block_count);
+    if (r >= 0)
+        r = hlv1_bw_append(dst, use_v9 ? v9_coeff : legacy_coeff);
+    return r;
+}
+
 static int encode_residual_masked(HLV1BitWriter *bw,
                                   const MB *src, const MB *pred, MB *rec,
                                   int qy, int quv, double ac_deadzone,
@@ -988,7 +1007,7 @@ static int encode_residual_sb8_masked(HLV1BitWriter *bw,
     return r;
 }
 
-static int encode_residual_v9(HLV1BitWriter *bw,
+static int encode_residual_v9(HLV1BitWriter *bw, unsigned version,
                               const MB *src, const MB *pred, MB *rec,
                               int qy, int quv, double ac_deadzone,
                               int *nonzero_blocks) {
@@ -1014,14 +1033,16 @@ static int encode_residual_v9(HLV1BitWriter *bw,
     if (r >= 0) r = hlv1_bw_finish(&legacy);
     if (r >= 0) r = hlv1_bw_finish(&vlc);
     if (r >= 0 && nz)
-        r = put_residual_group_v9(bw, mask, 24, nz, &legacy, &vlc);
+        r = version >= HLV1_STREAM_VERSION_14
+                ? put_residual_group_v14(bw, mask, 24, &legacy, &vlc)
+                : put_residual_group_v9(bw, mask, 24, nz, &legacy, &vlc);
     if (nonzero_blocks) *nonzero_blocks = nz;
     hlv1_bw_free(&legacy);
     hlv1_bw_free(&vlc);
     return r;
 }
 
-static int encode_residual_sb8_v9(HLV1BitWriter *bw,
+static int encode_residual_sb8_v9(HLV1BitWriter *bw, unsigned version,
                                   const SB8 *src, const SB8 *pred, SB8 *rec,
                                   int qy, int quv, double ac_deadzone,
                                   int *nonzero_blocks) {
@@ -1047,7 +1068,9 @@ static int encode_residual_sb8_v9(HLV1BitWriter *bw,
     if (r >= 0) r = hlv1_bw_finish(&legacy);
     if (r >= 0) r = hlv1_bw_finish(&vlc);
     if (r >= 0 && nz)
-        r = put_residual_group_v9(bw, mask, 6, nz, &legacy, &vlc);
+        r = version >= HLV1_STREAM_VERSION_14
+                ? put_residual_group_v14(bw, mask, 6, &legacy, &vlc)
+                : put_residual_group_v9(bw, mask, 6, nz, &legacy, &vlc);
     if (nonzero_blocks) *nonzero_blocks = nz;
     hlv1_bw_free(&legacy);
     hlv1_bw_free(&vlc);
@@ -1597,7 +1620,7 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
     if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
-                ? encode_residual_v9(&residual, src, pred, rec,
+                ? encode_residual_v9(&residual, version, src, pred, rec,
                                      qy, quv, ac_deadzone, &nonzero)
                 : version >= HLV1_STREAM_VERSION_8 && qy >= 64
                 ? encode_residual_masked(&residual, src, pred, rec,
@@ -1622,7 +1645,7 @@ static int put_residual_sb8(HLV1BitWriter *dst, unsigned version,
     if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
-                ? encode_residual_sb8_v9(&residual, src, pred, rec,
+                ? encode_residual_sb8_v9(&residual, version, src, pred, rec,
                                          qy, quv, ac_deadzone, &nonzero)
                 : version >= HLV1_STREAM_VERSION_8 && qy >= 64
                 ? encode_residual_sb8_masked(&residual, src, pred, rec,
@@ -2324,7 +2347,7 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     int legacy_even = version < HLV1_STREAM_VERSION_5;
     int r = put_mode(&out->bits, version, HLV1_FRAME_P,
                      HLV1_MODE_SPLIT_INTER, use_global);
-    if (r >= 0 && version >= 14)
+    if (r >= 0 && version >= 15)
         r = hlv1_bw_put(&out->bits, 0, 1); /* four 8x8 blocks */
     if (r < 0) return r;
     out->partition = 0;
@@ -2743,7 +2766,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                           use_global,
                                                           ct)) < 0)
                         goto fail_mb;
-                    if (version >= 14) {
+                    if (version >= 15) {
                         Candidate *ch = &c[count++];
                         if ((r = encode_rect_inter_candidate(
                                 e, input, &src, x, y, version, lambda_bits,

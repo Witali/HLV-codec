@@ -1306,6 +1306,11 @@ static int get_residual_mask(HLV1BitReader *br, unsigned version,
                              int block_count, uint32_t *mask,
                              int *coeff_mode) {
     *coeff_mode = 0;
+    if (version >= HLV1_STREAM_VERSION_14) {
+        *coeff_mode = (int)hlv1_br_get(br, 1);
+        *mask = hlv1_br_get(br, (unsigned)block_count);
+        return br->error ? br->error : HLV1_OK;
+    }
     int first = (int)hlv1_br_get(br, 1);
     if (br->error) return br->error;
     int pivot = block_count - 1;
@@ -1578,7 +1583,7 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
 static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
                                         int compact_y6_u5_v5) {
     if (!header || !header->width || !header->height ||
-        hlv1_stream_version(header) > HLV1_VERSION) return NULL;
+        hlv1_stream_version(header) > HLV1_MAX_VERSION) return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     trace_decoder_heap("after state");
@@ -1785,7 +1790,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
                 int partition = 0;
-                if (version >= 14) {
+                if (version >= 15) {
                     int first = (int)hlv1_br_get(&br, 1);
                     if (br.error) return br.error;
                     if (first) {
