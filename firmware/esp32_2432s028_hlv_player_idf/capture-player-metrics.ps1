@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Port,
     [ValidateRange(1, 1000000)][int]$Frames = 900,
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
+    [string]$OutputCsv,
     [switch]$AllowAudioUnderrun
 )
 
@@ -31,6 +32,9 @@ $captureArguments = @(
 )
 if ($AllowAudioUnderrun) {
     $captureArguments += "--allow-audio-underrun"
+}
+if ($OutputCsv) {
+    $captureArguments += @("--output-csv", $OutputCsv)
 }
 
 & $python @captureArguments

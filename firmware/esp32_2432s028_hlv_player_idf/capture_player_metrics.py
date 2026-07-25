@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import csv
 import math
 import statistics
 import sys
@@ -122,6 +123,10 @@ def main() -> int:
         action="store_true",
         help="return success even if the audio telemetry reports an underrun",
     )
+    parser.add_argument(
+        "--output-csv",
+        help="write every collected frame timing record to this CSV file",
+    )
     args = parser.parse_args()
     if args.frames <= 0 or args.timeout <= 0:
         parser.error("--frames and --timeout must be positive")
@@ -202,6 +207,31 @@ def main() -> int:
             if not line.startswith("S,"):
                 print(line, file=sys.stderr)
         return 3
+
+    if args.output_csv:
+        with open(args.output_csv, "w", newline="", encoding="utf-8") as output:
+            writer = csv.writer(output)
+            writer.writerow(
+                (
+                    "frame",
+                    "sd_us",
+                    "decode_us",
+                    "render_us",
+                    "work_us",
+                    "present_us",
+                )
+            )
+            for record in frames:
+                writer.writerow(
+                    (
+                        record.frame,
+                        record.sd_us,
+                        record.decode_us,
+                        record.render_us,
+                        record.work_us,
+                        record.present_us,
+                    )
+                )
 
     print(
         f"frames={frames[0].frame}-{frames[-1].frame} "
