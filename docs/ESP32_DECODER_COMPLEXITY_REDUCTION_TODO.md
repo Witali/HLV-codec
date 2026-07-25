@@ -297,6 +297,48 @@ Average syntax work per frame:
       frame concurrently, so accept this only if synchronisation and queue
       memory produce a clear end-to-end improvement.
 
+### Decode-oriented HLV v14 format experiments
+
+HLV v14 may change the bitstream when that produces a measured decoder gain.
+The decoder must retain v1-v13 input support, and every v14 experiment must
+still report reconstruction quality, bitrate, maximum packet size, decoder
+heap and physical ESP32 frame time.
+
+- [ ] Keep the frequently used SKIP mode as a direct packed reference copy.
+      It averages 43.86 macroblocks/frame in the current source.
+- [ ] Remove the optional no-residual branch from dense INTER, GLOBAL and
+      SPLIT_INTER v14 modes. It is useful only 0.02 times/frame in this source;
+      use separate explicit no-residual mode tokens if another source needs it.
+- [ ] Replace the multi-branch residual-mask syntax with a directly readable
+      fixed or table-coded 24-bit mask. Measure the bitrate cost against the
+      reduction in bitreader calls and branches.
+- [ ] Define a bounded run/level token table for the frequent coefficient
+      range, with one escape token for uncommon runs and magnitudes. Target
+      one lookahead and one consume operation per common coefficient.
+- [ ] Test a fixed-width signed coefficient payload for dense residual blocks.
+      Allow the encoder to choose it per block when it is cheaper to decode
+      than Exp-Golomb/Rice syntax.
+- [ ] Add a direct packed Y6/U5/V5 literal macroblock carrying its local
+      correction entries. Use it as the fallback for blocks whose transform
+      representation exceeds a measured decode-cost threshold.
+- [ ] Make compact Y6/U5/V5 plus local correction the normative v14 reference
+      reconstruction. The encoder must predict from exactly that reference so
+      the decoder never reconstructs and then requantizes a second reference.
+- [ ] Evaluate macroblock-row or tile slices with independent byte-aligned
+      entropy payloads and bounded per-slice CRC. This should permit CPU0 to
+      help CPU1 after the preceding frame's LCD transfer has been queued.
+- [ ] For independently decodable P slices, carry the slice motion-vector
+      predictor seed explicitly. Do not duplicate a full-frame motion table.
+- [ ] Add a per-frame syntax-profile byte so the decoder selects one narrow
+      hot loop once per frame instead of testing optional tools inside every
+      macroblock.
+- [ ] Let encoder RDO choose among legacy transform, fast coefficient tokens,
+      packed literal and SKIP using measured ESP32 cycle costs in addition to
+      distortion and bitrate.
+- [ ] Compare v13 and v14 at equal PSNR/SSIM. A v14 candidate is accepted only
+      when the physical end-to-end frame rate improves; a smaller file alone
+      is not sufficient.
+
 ### Results
 
 | Variant | Native us/frame | ESP32 decode us/frame | Hash | Decision |
