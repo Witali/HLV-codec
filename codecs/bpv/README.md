@@ -2,7 +2,7 @@
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
 laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
-a portable streaming C decoder, the version 2/3/4 JavaScript reference
+a portable streaming C decoder, the version 5 JavaScript reference
 implementation, automatic active 64-palette training, rate-distortion block
 selection, strict stream inspection, Y4M command-line adapters, and tests.
 
@@ -10,19 +10,22 @@ The common video profile uses:
 
 - 4x4 pixel blocks;
 - 64 shared palettes with 16 RGB888 colors each;
-- four local colors and a 2-bit pixel pattern per block;
+- one to four canonical local colors and an adaptive 0/1/2-bit pixel pattern;
 - `SKIP`, exact block motion, full-block dictionary, pattern dictionary and
   raw block modes;
 - periodic keyframes that reset prediction and dictionaries;
 - encoder-side selection by `J = RGB SSE + lambda * estimated payload bits`.
 
-BPV1 v4 trains and transmits an active 64x16 palette bank in every keyframe.
+BPV1 v5 trains and transmits an active 64x16 palette bank in every keyframe.
 Each GOP can therefore replace colors that are no longer useful for the
-current scene. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder
-remains compatible with fixed-palette v3, video-only v2 and legacy v1 streams
-containing 16 shared palettes. See
+current scene. RAW blocks use adaptive 2/4/7/7-byte records for one through
+four local colors, and pattern-dictionary blocks pack their 4-bit local
+indices. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder also
+accepts v1 through v4 streams. See
 [BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level format and
-[RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule.
+[RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule. The
+multi-video v4/v5 comparison is recorded in
+[`../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md`](../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md).
 
 ## Test
 
@@ -112,7 +115,7 @@ node codecs/bpv/tools/bpv1superpalette.js output.bpv1 \
 
 The native encoder's `--active-palette-file FILE` option is an experimental
 test hook. `FILE` contains one consecutive 3,072-byte RGB888 bank for each
-GOP. The encoder uses those banks while still writing ordinary BPV1 v4, which
+GOP. The encoder uses those banks while writing ordinary BPV1 v5, which
 allows controlled A/B tests without adding a production format version. The
 completed experiment and rejection measurements are recorded in
 [`../../docs/BPV1_SUPERPALETTE_TODO.md`](../../docs/BPV1_SUPERPALETTE_TODO.md).
@@ -123,10 +126,10 @@ the normalized RGBA sequence in host memory. The command-line decoder does
 not retain decoded frames: it keeps compact 9-byte block records and renders
 one frame at a time.
 
-By default the encoder writes v4 with or without audio. `--fixed-palettes` retains the
-old v2/v3 output mode and one bank for the whole file. Short PCM inputs are
-padded with unsigned silence (`128`), and trailing samples beyond the video
-duration are ignored.
+The encoder always writes v5. `--fixed-palettes` trains one global bank and
+repeats it in each keyframe so every GOP remains independently decodable.
+Short PCM inputs are padded with unsigned silence (`128`), and trailing
+samples beyond the video duration are ignored.
 
 ## Players
 
@@ -137,11 +140,11 @@ The same `src/bpv1_decode.c` implementation is linked into both players:
 ```
 
 On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
-in `/HLV` on the microSD card. The decoder retains two compact 9-byte block
-record frames and renders RGB565 rows directly into the display's existing DMA
-strips. At 320x180 its decoder state, maximum packet buffer and dictionaries
-consume about 109 KiB and no complete RGB framebuffer. BPV v3/v4 uses the same
-PCM_U8 DAC/audio-clock pipeline as HLV; files without audio remain timer-clocked.
+in `/HLV` on the microSD card. The decoder expands adaptive file records into
+two simple 9-byte block-record frames and renders RGB565 rows directly into
+the display's existing DMA strips. BPV v5 reduces the maximum 320x240 packet
+buffer by 9600 bytes. It uses the same PCM_U8 DAC/audio-clock pipeline as HLV;
+files without audio remain timer-clocked.
 
 ## Reference measurement
 

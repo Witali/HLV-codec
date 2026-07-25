@@ -15,7 +15,7 @@ Current packages:
   player source.
 - [`mjpeg/`](mjpeg/) — the standard AVI/MJPEG device profile and its encoding
   workflow.
-- [`bpv/`](bpv/) — the BPV1 v2 BPAL-derived reference encoder/decoder,
+- [`bpv/`](bpv/) — the BPV1 v5 BPAL-derived reference encoder/decoder,
   automatic 64-palette training, RD selection, Y4M CLI adapters, tests, and
   supplied reference measurements.
 

@@ -9,7 +9,8 @@ DAC GPIO26.
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, BPV1
-  v1 through v4 including active per-GOP palettes, or the constrained
+  v1 through v5 including adaptive RAW records and active per-GOP palettes,
+  or the constrained
   MPEG-1 Video/MP2 profile up to 320x240;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
@@ -235,12 +236,13 @@ its aspect ratio and native frame rate preserved:
 ```
 
 For BPV1, the corresponding script uses the same approved 1080p source,
-preserves native 24 fps and writes BPV1 v4 with active per-GOP palettes:
+preserves native 24 fps and writes BPV1 v5 with adaptive RAW records and
+active per-GOP palettes:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
-    -InputFile .\out\BigBuckBunny_1080p_bpv1_v4_active_lambda64_normalized_native-fps_320x180.bpv1
+    -InputFile .\out\BigBuckBunny_1080p_bpv1_v5_adaptive_lambda64_normalized_native-fps_320x180.bpv1
 ```
 
 For an ESP32-safe MPEG Program Stream:
@@ -259,10 +261,11 @@ dual-core scheduling details.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
-complete allocation is about 109 KiB for v4. It renders source rows directly into
-the two existing display DMA strips, so no 115,200-byte RGB565 frame is
-allocated. With PCM_U8 audio it uses the DAC clock; video-only streams use the
-rational ESP timer clock.
+complete allocation is about 102 KiB for BPV v5 at 320x180 because the
+maximum packet uses 7 rather than 9 bytes per RAW block. It renders source
+rows directly into the two existing display DMA strips, so no 115,200-byte
+RGB565 frame is allocated. With PCM_U8 audio it uses the DAC clock; video-only
+streams use the rational ESP timer clock.
 
 The MJPEG decoder likewise does not retain a complete RGB565 frame. TJpgDec
 converts one MCU row into a reusable 320x16 RGB565 strip and submits it through

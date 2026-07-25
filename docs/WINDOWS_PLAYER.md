@@ -1,16 +1,17 @@
 # Native Windows HLV/BPV/MPEG-1 player
 
 `hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
-v1 through v4, and the constrained MPEG-1/MP2 profile. It uses the portable
+v1 through v5, and the constrained MPEG-1/MP2 profile. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
 decoded and downmixed into that output format. HLV/MPEG YUV and decoded BPV
 palette blocks are prepared as NV12 plus BGRA; the GPU performs colour
 conversion and scaling. If D3D11 initialisation or presentation fails, the
-player automatically switches to double-buffered GDI. BPV1 v4 supports active
-per-GOP palettes and PCM_U8 audio; video-only files use the high-resolution
-frame timer without opening audio.
+player automatically switches to double-buffered GDI. BPV1 v4/v5 supports
+active per-GOP palettes and PCM_U8 audio; video-only files use the
+high-resolution frame timer without opening audio. BPV1 v5 additionally uses adaptive
+2/4/7-byte RAW records and packed local palette indices.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
 ## Setup and build

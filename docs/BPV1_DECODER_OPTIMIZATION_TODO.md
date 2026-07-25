@@ -59,7 +59,7 @@ clock then reached the native 30 fps.
 ### 1. Separate RGB conversion from display waiting
 
 - [ ] Measure CPU conversion separately from SPI/DMA buffer waiting.
-- [ ] A/B test a 64x16 RGB565 table. BPV v4 must rebuild the 2 KiB table only
+- [ ] A/B test a 64x16 RGB565 table. BPV v4/v5 must rebuild the 2 KiB table only
       when a keyframe replaces the active palette.
 - [ ] Preserve the portable RGB24 path used by the Windows player and tests.
 
