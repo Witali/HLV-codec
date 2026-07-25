@@ -931,6 +931,46 @@ static int motion_sample(const uint8_t *source, unsigned stride,
                : row[x];
 }
 
+static void motion_patch(uint8_t patch[81], unsigned patch_stride,
+                         unsigned patch_width, unsigned patch_height,
+                         const uint8_t *source, unsigned stride,
+                         unsigned plane_width, unsigned plane_height,
+                         int source_x, int source_y,
+                         int compact, unsigned bits,
+                         const int8_t *correction,
+                         unsigned correction_stride) {
+    unsigned row;
+    int interior_x =
+        source_x >= 0 &&
+        source_x + (int)patch_width <= (int)plane_width;
+    for (row = 0; row < patch_height; ++row) {
+        int y = clamp_coordinate(
+            source_y + (int)row, (int)plane_height);
+        uint8_t *destination = patch + row * patch_stride;
+        const uint8_t *source_row = source + (size_t)y * stride;
+        if (interior_x) {
+            if (compact) {
+                compact_yuv420_unpack_corrected_samples(
+                    source_row, source_x, y, bits, correction,
+                    (int)correction_stride, destination,
+                    (int)patch_width);
+            } else {
+                memcpy(destination, source_row + source_x,
+                       patch_width);
+            }
+        } else {
+            unsigned column;
+            for (column = 0; column < patch_width; ++column) {
+                int x = clamp_coordinate(
+                    source_x + (int)column, (int)plane_width);
+                destination[column] = (uint8_t)motion_sample(
+                    source, stride, x, y, compact, bits,
+                    correction, correction_stride);
+            }
+        }
+    }
+}
+
 static void motion_compensate(int32_t output[64],
                               const uint8_t *source, unsigned stride,
                               unsigned plane_width, unsigned plane_height,
@@ -944,42 +984,49 @@ static void motion_compensate(int32_t output[64],
     int integer_y = half_pixel_integer(motion_y, &fractional_y);
     int round_two = no_rounding ? 0 : 1;
     int round_four = no_rounding ? 1 : 2;
+    unsigned patch_width = 8U + (unsigned)fractional_x;
+    unsigned patch_height = 8U + (unsigned)fractional_y;
+    uint8_t patch[81];
     unsigned row, column;
-    for (row = 0; row < 8; ++row) {
-        for (column = 0; column < 8; ++column) {
-            int source_y = block_y + (int)row + integer_y;
-            int source_x = block_x + (int)column + integer_x;
-            int y0 = clamp_coordinate(source_y, (int)plane_height);
-            int x0 = clamp_coordinate(source_x, (int)plane_width);
-            int a = motion_sample(
-                source, stride, x0, y0, compact, bits,
-                correction, correction_stride);
-            if (!fractional_x && !fractional_y) {
-                output[row * 8U + column] = a;
-            } else {
-                int x1 =
-                    clamp_coordinate(source_x + 1, (int)plane_width);
-                int y1 =
-                    clamp_coordinate(source_y + 1, (int)plane_height);
-                int b = motion_sample(
-                    source, stride, x1, y0, compact, bits,
-                    correction, correction_stride);
-                int c = motion_sample(
-                    source, stride, x0, y1, compact, bits,
-                    correction, correction_stride);
-                int d = motion_sample(
-                    source, stride, x1, y1, compact, bits,
-                    correction, correction_stride);
-                if (fractional_x && !fractional_y)
-                    output[row * 8U + column] =
-                        (a + b + round_two) >> 1;
-                else if (!fractional_x && fractional_y)
-                    output[row * 8U + column] =
-                        (a + c + round_two) >> 1;
-                else
-                    output[row * 8U + column] =
-                        (a + b + c + d + round_four) >> 2;
-            }
+    motion_patch(
+        patch, patch_width, patch_width, patch_height,
+        source, stride, plane_width, plane_height,
+        block_x + integer_x, block_y + integer_y,
+        compact, bits, correction, correction_stride);
+    if (!fractional_x && !fractional_y) {
+        for (row = 0; row < 8; ++row)
+            for (column = 0; column < 8; ++column)
+                output[row * 8U + column] =
+                    patch[row * patch_width + column];
+    } else if (fractional_x && !fractional_y) {
+        for (row = 0; row < 8; ++row) {
+            const uint8_t *patch_row = patch + row * patch_width;
+            for (column = 0; column < 8; ++column)
+                output[row * 8U + column] =
+                    (patch_row[column] + patch_row[column + 1U] +
+                     round_two) >>
+                    1;
+        }
+    } else if (!fractional_x && fractional_y) {
+        for (row = 0; row < 8; ++row) {
+            const uint8_t *patch_row = patch + row * patch_width;
+            const uint8_t *next_row = patch_row + patch_width;
+            for (column = 0; column < 8; ++column)
+                output[row * 8U + column] =
+                    (patch_row[column] + next_row[column] +
+                     round_two) >>
+                    1;
+        }
+    } else {
+        for (row = 0; row < 8; ++row) {
+            const uint8_t *patch_row = patch + row * patch_width;
+            const uint8_t *next_row = patch_row + patch_width;
+            for (column = 0; column < 8; ++column)
+                output[row * 8U + column] =
+                    (patch_row[column] + patch_row[column + 1U] +
+                     next_row[column] + next_row[column + 1U] +
+                     round_four) >>
+                    2;
         }
     }
 }
