@@ -47,10 +47,10 @@ $h263SourceArguments = ($h263Sources | ForEach-Object {
 }) -join " "
 $amrAdapter = Join-Path $amrnb "src\amrnb_3gp.c"
 $amrSources = @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
-        -Filter "*.cpp" |
+        -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName }) +
     @(Get-ChildItem -LiteralPath (Join-Path $amrPv "dec\src") `
-        -Filter "*.cpp" |
+        -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName })
 $amrObjectDirectory = Join-Path $OutputDirectory "amrnb-obj"
 New-Item -ItemType Directory -Force -Path $amrObjectDirectory | Out-Null
@@ -70,7 +70,7 @@ $output = Join-Path $OutputDirectory "hlvplay.exe"
 
 $amrCommandTemplate =
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
-    'cl /nologo /c /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
+    'cl /nologo /c /O2 /W4 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS @"{2}"'
 $amrCommand = $amrCommandTemplate -f
     $devcmd, $amrObjectDirectory, $amrResponse
