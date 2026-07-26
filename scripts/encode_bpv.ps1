@@ -216,7 +216,7 @@ try {
     else {
         $encoderArguments += "--fixed-palettes"
     }
-    $bpvVersion = if ($ActivePalettes) { 4 } else { 3 }
+    $bpvVersion = 5
     $paletteMode = if ($ActivePalettes) {
         "active GOP palettes"
     }
