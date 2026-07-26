@@ -28,7 +28,7 @@ static uint32_t fourccLe(char a, char b, char c, char d) {
 
 enum { kInputPadding = 8 };
 
-bool isSupportedGeometry(uint16_t width, uint16_t height) {
+static bool isSupportedGeometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
            (width == 256 && (height == 144 || height == 192)) ||
            (width == 320 && (height == 180 || height == 240)) ||
@@ -68,7 +68,7 @@ static int hexDigit(uint8_t value) {
     return -1;
 }
 
-bool seekFile(FILE *file, uint64_t offset) {
+static bool seekFile(FILE *file, uint64_t offset) {
 #ifdef _WIN32
     return offset <= (uint64_t)(INT64_MAX) &&
            _fseeki64(file, (int64_t)(offset), SEEK_SET) == 0;
@@ -79,7 +79,7 @@ bool seekFile(FILE *file, uint64_t offset) {
 #endif
 }
 
-bool tellFile(FILE *file, uint64_t *offset) {
+static bool tellFile(FILE *file, uint64_t *offset) {
 #ifdef _WIN32
     const int64_t position = _ftelli64(file);
 #else
@@ -90,18 +90,18 @@ bool tellFile(FILE *file, uint64_t *offset) {
     return true;
 }
 
-bool readExact(FILE *file, void *destination, size_t size) {
+static bool readExact(FILE *file, void *destination, size_t size) {
     return size == 0 || fread(destination, 1, size, file) == size;
 }
 
-bool readU16(FILE *file, uint16_t *value) {
+static bool readU16(FILE *file, uint16_t *value) {
     uint8_t bytes[2];
     if (!readExact(file, bytes, sizeof bytes)) return false;
     *value = (uint16_t)((bytes[0] << 8) | bytes[1]);
     return true;
 }
 
-bool readU32(FILE *file, uint32_t *value) {
+static bool readU32(FILE *file, uint32_t *value) {
     uint8_t bytes[4];
     if (!readExact(file, bytes, sizeof bytes)) return false;
     *value = ((uint32_t)(bytes[0]) << 24) |
@@ -111,7 +111,7 @@ bool readU32(FILE *file, uint32_t *value) {
     return true;
 }
 
-bool readU64(FILE *file, uint64_t *value) {
+static bool readU64(FILE *file, uint64_t *value) {
     uint32_t high = 0;
     uint32_t low = 0;
     if (!readU32(file, &high) || !readU32(file, &low)) return false;
@@ -119,7 +119,7 @@ bool readU64(FILE *file, uint64_t *value) {
     return true;
 }
 
-bool readLe32(FILE *file, uint32_t *value) {
+static bool readLe32(FILE *file, uint32_t *value) {
     uint8_t bytes[4];
     if (!readExact(file, bytes, sizeof bytes)) return false;
     *value = (uint32_t)(bytes[0]) |
@@ -129,7 +129,7 @@ bool readLe32(FILE *file, uint32_t *value) {
     return true;
 }
 
-bool fileSize(FILE *file, uint64_t *size) {
+static bool fileSize(FILE *file, uint64_t *size) {
     uint64_t saved = 0;
     if (!tellFile(file, &saved)) return false;
 #ifdef _WIN32
@@ -141,7 +141,7 @@ bool fileSize(FILE *file, uint64_t *size) {
     return seekFile(file, saved) && ok;
 }
 
-bool readBox(FILE *file, uint64_t limit, Box *box) {
+static bool readBox(FILE *file, uint64_t limit, Box *box) {
     uint64_t start = 0;
     uint32_t size32 = 0;
     uint32_t type = 0;
@@ -165,7 +165,7 @@ bool readBox(FILE *file, uint64_t limit, Box *box) {
     return true;
 }
 
-bool findChildFrom(FILE *file, Box parent, uint32_t type, Box *child,
+static bool findChildFrom(FILE *file, Box parent, uint32_t type, Box *child,
                    uint64_t first_data) {
     uint64_t cursor = first_data ? first_data : parent.data;
     while (cursor < parent.end) {
@@ -178,11 +178,11 @@ bool findChildFrom(FILE *file, Box parent, uint32_t type, Box *child,
     return false;
 }
 
-bool findChild(FILE *file, Box parent, uint32_t type, Box *child) {
+static bool findChild(FILE *file, Box parent, uint32_t type, Box *child) {
     return findChildFrom(file, parent, type, child, 0);
 }
 
-uint32_t gcd32(uint32_t a, uint32_t b) {
+static uint32_t gcd32(uint32_t a, uint32_t b) {
     while (b != 0) {
         const uint32_t next = a % b;
         a = b;
@@ -191,13 +191,13 @@ uint32_t gcd32(uint32_t a, uint32_t b) {
     return a ? a : 1;
 }
 
-int aviStreamNumber(uint32_t id) {
+static int aviStreamNumber(uint32_t id) {
     const int high = hexDigit((uint8_t)(id));
     const int low = hexDigit((uint8_t)(id >> 8));
     return high < 0 || low < 0 ? -1 : (high << 4) | low;
 }
 
-bool isAviVideoChunk(uint32_t id, uint8_t stream) {
+static bool isAviVideoChunk(uint32_t id, uint8_t stream) {
     const uint8_t c2 = (uint8_t)(id >> 16);
     const uint8_t c3 = (uint8_t)(id >> 24);
     return aviStreamNumber(id) == stream &&
@@ -205,7 +205,7 @@ bool isAviVideoChunk(uint32_t id, uint8_t stream) {
             (c2 == 'd' && c3 == 'b'));
 }
 
-bool isAviAudioChunk(uint32_t id, uint8_t stream) {
+static bool isAviAudioChunk(uint32_t id, uint8_t stream) {
     return aviStreamNumber(id) == stream &&
            (uint8_t)(id >> 16) == 'w' &&
            (uint8_t)(id >> 24) == 'b';
@@ -301,13 +301,13 @@ static void resetPcmReader(H263AviPcmReader *reader) {
     resetAviState(&reader->avi);
 }
 
-bool skipAviChunk(FILE *file, uint64_t data_start, uint32_t size) {
+static bool skipAviChunk(FILE *file, uint64_t data_start, uint32_t size) {
     const uint64_t end =
         data_start + (uint64_t)(size) + (size & 1U);
     return end >= data_start && seekFile(file, end);
 }
 
-bool readAviChunkHeader(FILE *file, uint32_t *id, uint32_t *size,
+static bool readAviChunkHeader(FILE *file, uint32_t *id, uint32_t *size,
                         uint64_t *data_start) {
     return readLe32(file, id) && readLe32(file, size) &&
            tellFile(file, data_start);
@@ -322,7 +322,7 @@ typedef struct AviStreamHeader {
     uint32_t suggested_buffer;
 } AviStreamHeader;
 
-int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
+static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
                        H2633gpInfo *info, AviState *avi) {
     AviStreamHeader stream = {0};
     uint8_t format[40] = {0};
@@ -404,7 +404,7 @@ int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
     return H263_3GP_OK;
 }
 
-int parseAviHeaderList(FILE *file, uint64_t end, H2633gpInfo *info,
+static int parseAviHeaderList(FILE *file, uint64_t end, H2633gpInfo *info,
                        AviState *avi) {
     uint8_t stream_index = 0;
     uint64_t cursor = 0;
@@ -442,7 +442,7 @@ int parseAviHeaderList(FILE *file, uint64_t end, H2633gpInfo *info,
     return H263_3GP_OK;
 }
 
-int scanAviIndex(FILE *file, uint64_t data_start, uint32_t size,
+static int scanAviIndex(FILE *file, uint64_t data_start, uint32_t size,
                  H2633gpInfo *info, AviState avi,
                  uint32_t *video_frames) {
     if (size % 16U || !seekFile(file, data_start))
@@ -470,7 +470,7 @@ int scanAviIndex(FILE *file, uint64_t data_start, uint32_t size,
     return H263_3GP_OK;
 }
 
-int scanAviMovie(FILE *file, H2633gpInfo *info, AviState avi,
+static int scanAviMovie(FILE *file, H2633gpInfo *info, AviState avi,
                  uint32_t *video_frames) {
     uint64_t cursor = avi.movi_start;
     while (cursor + 8 <= avi.movi_end) {
@@ -503,7 +503,7 @@ int scanAviMovie(FILE *file, H2633gpInfo *info, AviState avi,
     return H263_3GP_OK;
 }
 
-int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
+static int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
                     uint32_t indexed_frames) {
     if (avi->video_stream == 0xff || !avi->movi_start ||
         avi->movi_end <= avi->movi_start ||
@@ -557,7 +557,7 @@ int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
     return H263_3GP_OK;
 }
 
-int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
+static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
     memset(info, 0, sizeof(*info));
     resetAviState(avi);
     uint64_t file_size = 0;
@@ -623,7 +623,7 @@ int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
     return result;
 }
 
-int nextAviPayload(FILE *file, AviState avi, bool video,
+static int nextAviPayload(FILE *file, AviState avi, bool video,
                    uint64_t *offset, uint32_t *size) {
     if (!file || !offset || !size) return H263_3GP_ERR_ARGUMENT;
     while (*offset + 8 <= avi.movi_end) {
@@ -658,7 +658,7 @@ int nextAviPayload(FILE *file, AviState avi, bool video,
     return H263_3GP_EOF;
 }
 
-int parseMediaHeader(FILE *file, Box mdhd, H2633gpInfo *info) {
+static int parseMediaHeader(FILE *file, Box mdhd, H2633gpInfo *info) {
     if (!seekFile(file, mdhd.data)) return H263_3GP_ERR_IO;
     uint32_t version_flags = 0;
     if (!readU32(file, &version_flags)) return H263_3GP_ERR_IO;
@@ -685,7 +685,7 @@ int parseMediaHeader(FILE *file, Box mdhd, H2633gpInfo *info) {
     return info->timescale ? H263_3GP_OK : H263_3GP_ERR_FORMAT;
 }
 
-int parseSampleDescription(FILE *file, Box stsd, H2633gpInfo *info) {
+static int parseSampleDescription(FILE *file, Box stsd, H2633gpInfo *info) {
     if (!seekFile(file, stsd.data + 4)) return H263_3GP_ERR_IO;
     uint32_t count = 0;
     if (!readU32(file, &count)) return H263_3GP_ERR_IO;
@@ -721,7 +721,7 @@ int parseSampleDescription(FILE *file, Box stsd, H2633gpInfo *info) {
     return H263_3GP_ERR_UNSUPPORTED;
 }
 
-int parseStsz(FILE *file, Box stsz, H2633gpDecoder *decoder) {
+static int parseStsz(FILE *file, Box stsz, H2633gpDecoder *decoder) {
     if (!seekFile(file, stsz.data + 4) ||
         !readU32(file, &decoder->fixed_sample_size) ||
         !readU32(file, &decoder->info.frame_count)) {
@@ -757,7 +757,7 @@ int parseStsz(FILE *file, Box stsz, H2633gpDecoder *decoder) {
                                          : H263_3GP_ERR_FORMAT;
 }
 
-int parseChunks(FILE *file, Box box, H2633gpDecoder *decoder) {
+static int parseChunks(FILE *file, Box box, H2633gpDecoder *decoder) {
     if (!seekFile(file, box.data + 4) ||
         !readU32(file, &decoder->chunk_count)) {
         return H263_3GP_ERR_IO;
@@ -791,7 +791,7 @@ int parseChunks(FILE *file, Box box, H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-int parseStsc(FILE *file, Box stsc, H2633gpDecoder *decoder) {
+static int parseStsc(FILE *file, Box stsc, H2633gpDecoder *decoder) {
     if (!seekFile(file, stsc.data + 4) ||
         !readU32(file, &decoder->stsc_count)) {
         return H263_3GP_ERR_IO;
@@ -826,7 +826,7 @@ int parseStsc(FILE *file, Box stsc, H2633gpDecoder *decoder) {
                                              : H263_3GP_ERR_FORMAT;
 }
 
-int parseStts(FILE *file, Box stts, H2633gpDecoder *decoder) {
+static int parseStts(FILE *file, Box stts, H2633gpDecoder *decoder) {
     if (!seekFile(file, stts.data + 4) ||
         !readU32(file, &decoder->stts_count)) {
         return H263_3GP_ERR_IO;
@@ -864,7 +864,7 @@ int parseStts(FILE *file, Box stts, H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-int parseTrack(FILE *file, Box trak, H2633gpDecoder *decoder) {
+static int parseTrack(FILE *file, Box trak, H2633gpDecoder *decoder) {
     Box mdia;
     Box hdlr;
     if (!findChild(file, trak, fourcc('m', 'd', 'i', 'a'), &mdia) ||
@@ -909,7 +909,7 @@ int parseTrack(FILE *file, Box trak, H2633gpDecoder *decoder) {
     return result;
 }
 
-int parseContainer(FILE *file, H2633gpDecoder *decoder) {
+static int parseContainer(FILE *file, H2633gpDecoder *decoder) {
     uint64_t size = 0;
     if (!fileSize(file, &size)) return H263_3GP_ERR_IO;
     Box root;
@@ -946,7 +946,7 @@ int parseContainer(FILE *file, H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-int sampleSize(const H2633gpDecoder *decoder, uint32_t index,
+static int sampleSize(const H2633gpDecoder *decoder, uint32_t index,
                uint32_t *size) {
     if (decoder->fixed_sample_size) {
         *size = decoder->fixed_sample_size;
@@ -958,7 +958,7 @@ int sampleSize(const H2633gpDecoder *decoder, uint32_t index,
     return *size ? H263_3GP_OK : H263_3GP_ERR_FORMAT;
 }
 
-int beginChunk(H2633gpDecoder *decoder) {
+static int beginChunk(H2633gpDecoder *decoder) {
     if (decoder->chunk_index >= decoder->chunk_count)
         return H263_3GP_ERR_FORMAT;
     while (decoder->stsc_index + 1 < decoder->stsc_count &&
@@ -974,7 +974,7 @@ int beginChunk(H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-int initializeDecoder(H2633gpDecoder *decoder) {
+static int initializeDecoder(H2633gpDecoder *decoder) {
     const int32 expected_width =
         ((int32)(decoder->info.width) + 15) & -16;
     const int32 expected_height =

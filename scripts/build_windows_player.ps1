@@ -45,9 +45,8 @@ $h263Sources = @(
 $h263SourceArguments = ($h263Sources | ForEach-Object {
     '"{0}"' -f $_
 }) -join " "
-$amrSources = @(
-    (Join-Path $amrnb "src\amrnb_3gp.cpp")
-) + @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
+$amrAdapter = Join-Path $amrnb "src\amrnb_3gp.c"
+$amrSources = @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
         -Filter "*.cpp" |
     Sort-Object Name | ForEach-Object { $_.FullName }) +
     @(Get-ChildItem -LiteralPath (Join-Path $amrPv "dec\src") `
@@ -76,6 +75,18 @@ $amrCommandTemplate =
 $amrCommand = $amrCommandTemplate -f
     $devcmd, $amrObjectDirectory, $amrResponse
 Write-Host "Building AMR-NB decoder library..."
+$amrAdapterCommand =
+    'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
+    'cl /nologo /c /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
+    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" "{6}"'
+$amrAdapterCommand = $amrAdapterCommand -f
+    $devcmd, $amrObjectDirectory, (Join-Path $amrnb "include"),
+    (Join-Path $amrPv "common\include"), (Join-Path $amrPv "dec\src"),
+    (Join-Path $amrPv "include"), $amrAdapter
+& cmd.exe /d /c $amrAdapterCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed while compiling the AMR-NB 3GP adapter."
+}
 & cmd.exe /d /c $amrCommand
 if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while compiling the AMR-NB decoder."

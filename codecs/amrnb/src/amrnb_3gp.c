@@ -1,95 +1,96 @@
 #include "amrnb_3gp.h"
 
-#include <algorithm>
-#include <cstdlib>
-#include <cstring>
-#include <limits>
-#include <new>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
 
 #include "gsmamr_dec.h"
 
-namespace {
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-constexpr uint32_t fourcc(char a, char b, char c, char d) {
-    return (static_cast<uint32_t>(static_cast<uint8_t>(a)) << 24) |
-           (static_cast<uint32_t>(static_cast<uint8_t>(b)) << 16) |
-           (static_cast<uint32_t>(static_cast<uint8_t>(c)) << 8) |
-           static_cast<uint32_t>(static_cast<uint8_t>(d));
+static uint32_t fourcc(char a, char b, char c, char d) {
+    return ((uint32_t)((uint8_t)(a)) << 24) |
+           ((uint32_t)((uint8_t)(b)) << 16) |
+           ((uint32_t)((uint8_t)(c)) << 8) |
+           (uint32_t)((uint8_t)(d));
 }
 
-constexpr uint8_t kPayloadBytes[16] = {
+static const uint8_t kPayloadBytes[16] = {
     12, 13, 15, 17, 19, 20, 26, 31, 5, 0, 0, 0, 0, 0, 0, 0,
 };
 
-struct Box {
-    uint32_t type = 0;
-    uint64_t start = 0;
-    uint64_t data = 0;
-    uint64_t end = 0;
-};
+typedef struct Box {
+    uint32_t type;
+    uint64_t start;
+    uint64_t data;
+    uint64_t end;
+} Box;
 
-struct StscEntry {
-    uint32_t first_chunk = 0;
-    uint32_t samples_per_chunk = 0;
-};
+typedef struct StscEntry {
+    uint32_t first_chunk;
+    uint32_t samples_per_chunk;
+} StscEntry;
 
-struct SttsEntry {
-    uint32_t sample_count = 0;
-    uint32_t sample_delta = 0;
-};
+typedef struct SttsEntry {
+    uint32_t sample_count;
+    uint32_t sample_delta;
+} SttsEntry;
 
-bool seekFile(FILE *file, uint64_t offset) {
+static bool seekFile(FILE *file, uint64_t offset) {
 #ifdef _WIN32
-    return offset <= static_cast<uint64_t>(INT64_MAX) &&
-           _fseeki64(file, static_cast<int64_t>(offset), SEEK_SET) == 0;
+    return offset <= (uint64_t)(INT64_MAX) &&
+           _fseeki64(file, (int64_t)(offset), SEEK_SET) == 0;
 #else
     return offset <=
-               static_cast<uint64_t>(std::numeric_limits<off_t>::max()) &&
-           fseeko(file, static_cast<off_t>(offset), SEEK_SET) == 0;
+               (uint64_t)((sizeof(off_t) >= 8 ? INT64_MAX : INT32_MAX)) &&
+           fseeko(file, (off_t)(offset), SEEK_SET) == 0;
 #endif
 }
 
-bool tellFile(FILE *file, uint64_t *offset) {
+static bool tellFile(FILE *file, uint64_t *offset) {
 #ifdef _WIN32
     const int64_t position = _ftelli64(file);
 #else
     const off_t position = ftello(file);
 #endif
     if (position < 0) return false;
-    *offset = static_cast<uint64_t>(position);
+    *offset = (uint64_t)(position);
     return true;
 }
 
-bool readExact(FILE *file, void *destination, size_t size) {
-    return size == 0 || ::fread(destination, 1, size, file) == size;
+static bool readExact(FILE *file, void *destination, size_t size) {
+    return size == 0 || fread(destination, 1, size, file) == size;
 }
 
-bool readU16(FILE *file, uint16_t *value) {
+static bool readU16(FILE *file, uint16_t *value) {
     uint8_t bytes[2];
     if (!readExact(file, bytes, sizeof bytes)) return false;
-    *value = static_cast<uint16_t>((bytes[0] << 8) | bytes[1]);
+    *value = (uint16_t)((bytes[0] << 8) | bytes[1]);
     return true;
 }
 
-bool readU32(FILE *file, uint32_t *value) {
+static bool readU32(FILE *file, uint32_t *value) {
     uint8_t bytes[4];
     if (!readExact(file, bytes, sizeof bytes)) return false;
-    *value = (static_cast<uint32_t>(bytes[0]) << 24) |
-             (static_cast<uint32_t>(bytes[1]) << 16) |
-             (static_cast<uint32_t>(bytes[2]) << 8) |
-             static_cast<uint32_t>(bytes[3]);
+    *value = ((uint32_t)(bytes[0]) << 24) |
+             ((uint32_t)(bytes[1]) << 16) |
+             ((uint32_t)(bytes[2]) << 8) |
+             (uint32_t)(bytes[3]);
     return true;
 }
 
-bool readU64(FILE *file, uint64_t *value) {
+static bool readU64(FILE *file, uint64_t *value) {
     uint32_t high = 0;
     uint32_t low = 0;
     if (!readU32(file, &high) || !readU32(file, &low)) return false;
-    *value = (static_cast<uint64_t>(high) << 32) | low;
+    *value = ((uint64_t)(high) << 32) | low;
     return true;
 }
 
-bool fileSize(FILE *file, uint64_t *size) {
+static bool fileSize(FILE *file, uint64_t *size) {
     uint64_t saved = 0;
     if (!tellFile(file, &saved)) return false;
 #ifdef _WIN32
@@ -101,7 +102,7 @@ bool fileSize(FILE *file, uint64_t *size) {
     return seekFile(file, saved) && ok;
 }
 
-bool readBox(FILE *file, uint64_t limit, Box *box) {
+static bool readBox(FILE *file, uint64_t limit, Box *box) {
     uint64_t start = 0;
     uint32_t size32 = 0;
     uint32_t type = 0;
@@ -125,8 +126,8 @@ bool readBox(FILE *file, uint64_t limit, Box *box) {
     return true;
 }
 
-bool findChild(FILE *file, const Box &parent, uint32_t type, Box *child,
-               uint64_t first_data = 0) {
+static bool findChildFrom(FILE *file, Box parent, uint32_t type, Box *child,
+                   uint64_t first_data) {
     uint64_t cursor = first_data ? first_data : parent.data;
     while (cursor < parent.end) {
         if (!seekFile(file, cursor) || !readBox(file, parent.end, child))
@@ -138,50 +139,50 @@ bool findChild(FILE *file, const Box &parent, uint32_t type, Box *child,
     return false;
 }
 
-}  // namespace
+static bool findChild(FILE *file, Box parent, uint32_t type, Box *child) {
+    return findChildFrom(file, parent, type, child, 0);
+}
 
 struct AmrNb3gpDecoder {
-    AmrNb3gpInfo info{};
-    void *amr_state = nullptr;
-    uint8_t *packet = nullptr;
-    int16_t pcm[AMRNB_SAMPLES_PER_FRAME]{};
+    AmrNb3gpInfo info;
+    void *amr_state;
+    uint8_t *packet;
+    int16_t pcm[AMRNB_SAMPLES_PER_FRAME];
 
-    uint64_t stsz_entries = 0;
-    uint32_t fixed_sample_size = 0;
-    uint64_t chunk_entries = 0;
-    uint32_t chunk_count = 0;
-    bool chunks_are_64_bit = false;
-    StscEntry *stsc = nullptr;
-    uint32_t stsc_count = 0;
-    SttsEntry *stts = nullptr;
-    uint32_t stts_count = 0;
+    uint64_t stsz_entries;
+    uint32_t fixed_sample_size;
+    uint64_t chunk_entries;
+    uint32_t chunk_count;
+    bool chunks_are_64_bit;
+    StscEntry *stsc;
+    uint32_t stsc_count;
+    SttsEntry *stts;
+    uint32_t stts_count;
 
-    uint32_t sample_index = 0;
-    uint32_t chunk_index = 0;
-    uint32_t sample_in_chunk = 0;
-    uint64_t sample_offset = 0;
-    uint32_t samples_in_chunk = 0;
-    uint32_t stsc_index = 0;
-    uint32_t stts_index = 0;
-    uint32_t stts_remaining = 0;
-    uint64_t timestamp = 0;
-
-    void clear() {
-        if (amr_state) GSMDecodeFrameExit(&amr_state);
-        std::free(packet);
-        std::free(stsc);
-        std::free(stts);
-        *this = AmrNb3gpDecoder{};
-    }
+    uint32_t sample_index;
+    uint32_t chunk_index;
+    uint32_t sample_in_chunk;
+    uint64_t sample_offset;
+    uint32_t samples_in_chunk;
+    uint32_t stsc_index;
+    uint32_t stts_index;
+    uint32_t stts_remaining;
+    uint64_t timestamp;
 };
 
-namespace {
+static void clearDecoder(AmrNb3gpDecoder *decoder) {
+    if (decoder->amr_state) GSMDecodeFrameExit(&decoder->amr_state);
+    free(decoder->packet);
+    free(decoder->stsc);
+    free(decoder->stts);
+    memset(decoder, 0, sizeof(*decoder));
+}
 
-int parseMediaHeader(FILE *file, const Box &mdhd, AmrNb3gpInfo *info) {
+static int parseMediaHeader(FILE *file, Box mdhd, AmrNb3gpInfo *info) {
     if (!seekFile(file, mdhd.data)) return AMRNB_3GP_ERR_IO;
     uint32_t version_flags = 0;
     if (!readU32(file, &version_flags)) return AMRNB_3GP_ERR_IO;
-    const uint8_t version = static_cast<uint8_t>(version_flags >> 24);
+    const uint8_t version = (uint8_t)(version_flags >> 24);
     if (version == 0) {
         uint32_t ignored = 0;
         uint32_t duration = 0;
@@ -204,7 +205,7 @@ int parseMediaHeader(FILE *file, const Box &mdhd, AmrNb3gpInfo *info) {
     return info->timescale ? AMRNB_3GP_OK : AMRNB_3GP_ERR_FORMAT;
 }
 
-int parseSampleDescription(FILE *file, const Box &stsd,
+static int parseSampleDescription(FILE *file, Box stsd,
                            AmrNb3gpInfo *info) {
     if (!seekFile(file, stsd.data + 4)) return AMRNB_3GP_ERR_IO;
     uint32_t count = 0;
@@ -226,12 +227,12 @@ int parseSampleDescription(FILE *file, const Box &stsd,
                 !readU32(file, &sample_rate_fixed)) {
                 return AMRNB_3GP_ERR_FORMAT;
             }
-            info->channels = static_cast<uint8_t>(channels);
+            info->channels = (uint8_t)(channels);
             info->sample_rate =
-                static_cast<uint16_t>(sample_rate_fixed >> 16);
+                (uint16_t)(sample_rate_fixed >> 16);
             Box damr;
-            if (!findChild(file, entry, fourcc('d', 'a', 'm', 'r'), &damr,
-                           entry.data + 28) ||
+            if (!findChildFrom(file, entry, fourcc('d', 'a', 'm', 'r'),
+                               &damr, entry.data + 28) ||
                 damr.end - damr.data < 9 ||
                 !seekFile(file, damr.data + 5) ||
                 !readU16(file, &info->mode_set)) {
@@ -254,7 +255,7 @@ int parseSampleDescription(FILE *file, const Box &stsd,
     return AMRNB_3GP_ERR_UNSUPPORTED;
 }
 
-int parseStsz(FILE *file, const Box &stsz, AmrNb3gpDecoder *decoder) {
+static int parseStsz(FILE *file, Box stsz, AmrNb3gpDecoder *decoder) {
     if (!seekFile(file, stsz.data + 4) ||
         !readU32(file, &decoder->fixed_sample_size) ||
         !readU32(file, &decoder->info.frame_count)) {
@@ -267,7 +268,7 @@ int parseStsz(FILE *file, const Box &stsz, AmrNb3gpDecoder *decoder) {
         return AMRNB_3GP_OK;
     }
     if (stsz.end - decoder->stsz_entries <
-        static_cast<uint64_t>(decoder->info.frame_count) * 4) {
+        (uint64_t)(decoder->info.frame_count) * 4) {
         return AMRNB_3GP_ERR_FORMAT;
     }
     if (!seekFile(file, decoder->stsz_entries)) return AMRNB_3GP_ERR_IO;
@@ -275,13 +276,13 @@ int parseStsz(FILE *file, const Box &stsz, AmrNb3gpDecoder *decoder) {
         uint32_t size = 0;
         if (!readU32(file, &size)) return AMRNB_3GP_ERR_IO;
         decoder->info.max_sample_size =
-            std::max(decoder->info.max_sample_size, size);
+            MAX(decoder->info.max_sample_size, size);
     }
     return decoder->info.max_sample_size ? AMRNB_3GP_OK
                                          : AMRNB_3GP_ERR_FORMAT;
 }
 
-int parseChunks(FILE *file, const Box &box, AmrNb3gpDecoder *decoder) {
+static int parseChunks(FILE *file, Box box, AmrNb3gpDecoder *decoder) {
     if (!seekFile(file, box.data + 4) ||
         !readU32(file, &decoder->chunk_count)) {
         return AMRNB_3GP_ERR_IO;
@@ -291,26 +292,26 @@ int parseChunks(FILE *file, const Box &box, AmrNb3gpDecoder *decoder) {
     decoder->chunk_entries = box.data + 8;
     const uint64_t entry_size = decoder->chunks_are_64_bit ? 8 : 4;
     return box.end - decoder->chunk_entries >=
-                   static_cast<uint64_t>(decoder->chunk_count) * entry_size
+                   (uint64_t)(decoder->chunk_count) * entry_size
                ? AMRNB_3GP_OK
                : AMRNB_3GP_ERR_FORMAT;
 }
 
-int parseStsc(FILE *file, const Box &stsc, AmrNb3gpDecoder *decoder) {
+static int parseStsc(FILE *file, Box stsc, AmrNb3gpDecoder *decoder) {
     if (!seekFile(file, stsc.data + 4) ||
         !readU32(file, &decoder->stsc_count)) {
         return AMRNB_3GP_ERR_IO;
     }
     if (!decoder->stsc_count ||
         decoder->stsc_count >
-            std::numeric_limits<size_t>::max() / sizeof(StscEntry)) {
+            SIZE_MAX / sizeof(StscEntry)) {
         return AMRNB_3GP_ERR_FORMAT;
     }
-    decoder->stsc = static_cast<StscEntry *>(
-        std::calloc(decoder->stsc_count, sizeof(StscEntry)));
+    decoder->stsc = (StscEntry *)(
+        calloc(decoder->stsc_count, sizeof(StscEntry)));
     if (!decoder->stsc) return AMRNB_3GP_ERR_MEMORY;
     if (stsc.end - (stsc.data + 8) <
-        static_cast<uint64_t>(decoder->stsc_count) * 12) {
+        (uint64_t)(decoder->stsc_count) * 12) {
         return AMRNB_3GP_ERR_FORMAT;
     }
     for (uint32_t i = 0; i < decoder->stsc_count; ++i) {
@@ -331,21 +332,21 @@ int parseStsc(FILE *file, const Box &stsc, AmrNb3gpDecoder *decoder) {
                                              : AMRNB_3GP_ERR_FORMAT;
 }
 
-int parseStts(FILE *file, const Box &stts, AmrNb3gpDecoder *decoder) {
+static int parseStts(FILE *file, Box stts, AmrNb3gpDecoder *decoder) {
     if (!seekFile(file, stts.data + 4) ||
         !readU32(file, &decoder->stts_count)) {
         return AMRNB_3GP_ERR_IO;
     }
     if (!decoder->stts_count ||
         decoder->stts_count >
-            std::numeric_limits<size_t>::max() / sizeof(SttsEntry)) {
+            SIZE_MAX / sizeof(SttsEntry)) {
         return AMRNB_3GP_ERR_FORMAT;
     }
-    decoder->stts = static_cast<SttsEntry *>(
-        std::calloc(decoder->stts_count, sizeof(SttsEntry)));
+    decoder->stts = (SttsEntry *)(
+        calloc(decoder->stts_count, sizeof(SttsEntry)));
     if (!decoder->stts) return AMRNB_3GP_ERR_MEMORY;
     if (stts.end - (stts.data + 8) <
-        static_cast<uint64_t>(decoder->stts_count) * 8) {
+        (uint64_t)(decoder->stts_count) * 8) {
         return AMRNB_3GP_ERR_FORMAT;
     }
     uint64_t total = 0;
@@ -374,7 +375,7 @@ int parseStts(FILE *file, const Box &stts, AmrNb3gpDecoder *decoder) {
     return AMRNB_3GP_OK;
 }
 
-int parseTrack(FILE *file, const Box &trak, AmrNb3gpDecoder *decoder) {
+static int parseTrack(FILE *file, Box trak, AmrNb3gpDecoder *decoder) {
     Box mdia;
     Box hdlr;
     if (!findChild(file, trak, fourcc('m', 'd', 'i', 'a'), &mdia) ||
@@ -419,7 +420,7 @@ int parseTrack(FILE *file, const Box &trak, AmrNb3gpDecoder *decoder) {
     return result;
 }
 
-int parseContainer(FILE *file, AmrNb3gpDecoder *decoder) {
+static int parseContainer(FILE *file, AmrNb3gpDecoder *decoder) {
     uint64_t size = 0;
     if (!fileSize(file, &size)) return AMRNB_3GP_ERR_IO;
     Box root;
@@ -446,21 +447,21 @@ int parseContainer(FILE *file, AmrNb3gpDecoder *decoder) {
     return AMRNB_3GP_ERR_UNSUPPORTED;
 }
 
-int sampleSize(FILE *file, const AmrNb3gpDecoder *decoder, uint32_t index,
+static int sampleSize(FILE *file, const AmrNb3gpDecoder *decoder, uint32_t index,
                uint32_t *size) {
     if (decoder->fixed_sample_size) {
         *size = decoder->fixed_sample_size;
         return AMRNB_3GP_OK;
     }
     if (!seekFile(file, decoder->stsz_entries +
-                            static_cast<uint64_t>(index) * 4) ||
+                            (uint64_t)(index) * 4) ||
         !readU32(file, size)) {
         return AMRNB_3GP_ERR_IO;
     }
     return *size ? AMRNB_3GP_OK : AMRNB_3GP_ERR_FORMAT;
 }
 
-int beginChunk(FILE *file, AmrNb3gpDecoder *decoder) {
+static int beginChunk(FILE *file, AmrNb3gpDecoder *decoder) {
     if (decoder->chunk_index >= decoder->chunk_count)
         return AMRNB_3GP_ERR_FORMAT;
     while (decoder->stsc_index + 1 < decoder->stsc_count &&
@@ -472,7 +473,7 @@ int beginChunk(FILE *file, AmrNb3gpDecoder *decoder) {
         decoder->stsc[decoder->stsc_index].samples_per_chunk;
     const uint64_t entry_offset =
         decoder->chunk_entries +
-        static_cast<uint64_t>(decoder->chunk_index) *
+        (uint64_t)(decoder->chunk_index) *
             (decoder->chunks_are_64_bit ? 8 : 4);
     if (!seekFile(file, entry_offset)) return AMRNB_3GP_ERR_IO;
     if (decoder->chunks_are_64_bit) {
@@ -486,24 +487,21 @@ int beginChunk(FILE *file, AmrNb3gpDecoder *decoder) {
     return AMRNB_3GP_OK;
 }
 
-}  // namespace
-
-extern "C" {
 
 AmrNb3gpDecoder *amrnb_3gp_decoder_create(void) {
-    return new (std::nothrow) AmrNb3gpDecoder();
+    return (AmrNb3gpDecoder *)calloc(1, sizeof(AmrNb3gpDecoder));
 }
 
 void amrnb_3gp_decoder_destroy(AmrNb3gpDecoder *decoder) {
     if (!decoder) return;
-    decoder->clear();
-    delete decoder;
+    clearDecoder(decoder);
+    free(decoder);
 }
 
 int amrnb_3gp_decoder_open(AmrNb3gpDecoder *decoder, FILE *file,
                            AmrNb3gpInfo *info) {
     if (!decoder || !file || !info) return AMRNB_3GP_ERR_ARGUMENT;
-    decoder->clear();
+    clearDecoder(decoder);
     int result = parseContainer(file, decoder);
     if (result == AMRNB_3GP_OK &&
         (decoder->info.timescale != AMRNB_SAMPLE_RATE ||
@@ -511,18 +509,18 @@ int amrnb_3gp_decoder_open(AmrNb3gpDecoder *decoder, FILE *file,
         result = AMRNB_3GP_ERR_UNSUPPORTED;
     }
     if (result == AMRNB_3GP_OK) {
-        decoder->packet = static_cast<uint8_t *>(
-            std::malloc(decoder->info.max_sample_size));
+        decoder->packet = (uint8_t *)(
+            malloc(decoder->info.max_sample_size));
         if (!decoder->packet) result = AMRNB_3GP_ERR_MEMORY;
     }
     if (result == AMRNB_3GP_OK &&
         GSMInitDecode(&decoder->amr_state,
-                      reinterpret_cast<Word8 *>(
-                          const_cast<char *>("HLV AMR-NB"))) != 0) {
+                      (Word8 *)(
+                          (char *)("HLV AMR-NB"))) != 0) {
         result = AMRNB_3GP_ERR_MEMORY;
     }
     if (result != AMRNB_3GP_OK) {
-        decoder->clear();
+        clearDecoder(decoder);
         return result;
     }
     *info = decoder->info;
@@ -549,14 +547,14 @@ int amrnb_3gp_decoder_decode_next(AmrNb3gpDecoder *decoder, FILE *file,
     }
 
     const uint8_t toc = decoder->packet[0];
-    const uint8_t frame_type = static_cast<uint8_t>((toc >> 3) & 0x0f);
+    const uint8_t frame_type = (uint8_t)((toc >> 3) & 0x0f);
     if ((toc & 0x83U) != 0 || (toc & 0x04U) == 0 ||
         (frame_type > 8 && frame_type != 15) ||
-        size != static_cast<uint32_t>(kPayloadBytes[frame_type]) + 1U) {
+        size != (uint32_t)(kPayloadBytes[frame_type]) + 1U) {
         return AMRNB_3GP_ERR_FORMAT;
     }
     const Word16 consumed = AMRDecode(
-        decoder->amr_state, static_cast<Frame_Type_3GPP>(frame_type),
+        decoder->amr_state, (enum Frame_Type_3GPP)(frame_type),
         decoder->packet + 1, decoder->pcm, MIME_IETF);
     if (consumed != kPayloadBytes[frame_type])
         return AMRNB_3GP_ERR_DECODE;
@@ -590,8 +588,8 @@ int amrnb_3gp_decoder_decode_next(AmrNb3gpDecoder *decoder, FILE *file,
 size_t amrnb_3gp_decoder_memory_bytes(const AmrNb3gpDecoder *decoder) {
     if (!decoder) return 0;
     return sizeof(*decoder) + decoder->info.max_sample_size +
-           static_cast<size_t>(decoder->stsc_count) * sizeof(StscEntry) +
-           static_cast<size_t>(decoder->stts_count) * sizeof(SttsEntry);
+           (size_t)(decoder->stsc_count) * sizeof(StscEntry) +
+           (size_t)(decoder->stts_count) * sizeof(SttsEntry);
 }
 
 const char *amrnb_3gp_strerror(int result) {
@@ -617,4 +615,3 @@ const char *amrnb_3gp_strerror(int result) {
     }
 }
 
-}  // extern "C"
