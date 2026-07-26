@@ -12,6 +12,7 @@ const LEGACY_PALETTE_COUNT = 16;
 const COLORS_PER_PALETTE = 16;
 const BLOCK_SIZE = 4;
 const RECORD_BYTES = 9;
+const DIRECT_RECORD_FLAG = 0x80;
 const PATTERN_BYTES = 4;
 const PATTERN_OFFSET = 5;
 
@@ -20,7 +21,11 @@ const MODE_MOTION = 1;
 const MODE_BLOCK_DICT = 2;
 const MODE_PATTERN_DICT = 3;
 const MODE_RAW = 4;
-const MODE_NAMES = ["skip", "motion", "blockDictionary", "patternDictionary", "raw"];
+const MODE_RAW_DIRECT = 5;
+const MODE_NAMES = [
+  "skip", "motion", "blockDictionary", "patternDictionary", "raw",
+  "rawDirect",
+];
 
 function asUint8Array(value) {
   if (value instanceof Uint8Array) return value;
@@ -124,6 +129,7 @@ function walkFrames(input, onFrame) {
   let offset = header.frameDataOffset;
   const modeCounts = new Array(MODE_NAMES.length).fill(0);
   const rawColorCounts = [0, 0, 0, 0];
+  const rawDirectColorCounts = new Array(17).fill(0);
   const patternDictionaryColorCounts = [0, 0, 0, 0];
   let minimumFrameBytes = Infinity;
   let maximumFrameBytes = 0;
@@ -340,6 +346,35 @@ function walkFrames(input, onFrame) {
           blocks.subarray(destination, destination + RECORD_BYTES),
           header.maxBlockDictionary,
         );
+      } else if (mode === MODE_RAW_DIRECT) {
+        if (header.version < VERSION) {
+          throw new RangeError(
+            `Direct RAW requires BPV1 v${VERSION} at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        requireFrameBytes(offset, 9, frameEnd, frameIndex);
+        const paletteIndex = bytes[offset++];
+        if (paletteIndex >= header.paletteCount) {
+          throw new RangeError(
+            `Invalid direct palette at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        blocks[destination] = DIRECT_RECORD_FLAG | paletteIndex;
+        blocks.set(bytes.subarray(offset, offset + 8), destination + 1);
+        offset += 8;
+        const used = directUsedMask(blocks, destination);
+        const count = popcount16(used);
+        if (count < 5 || count > 16) {
+          throw new RangeError(
+            `Non-canonical direct RAW at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        rawDirectColorCounts[count] += 1;
+        addUnique(
+          blockDictionary,
+          blocks.subarray(destination, destination + RECORD_BYTES),
+          header.maxBlockDictionary,
+        );
       }
     }
     if (offset !== frameEnd) {
@@ -400,6 +435,7 @@ function walkFrames(input, onFrame) {
     blockCount,
     modeCounts: Object.fromEntries(MODE_NAMES.map((name, index) => [name, modeCounts[index]])),
     rawColorCounts,
+    rawDirectColorCounts,
     patternDictionaryColorCounts,
     minimumFrameBytes,
     maximumFrameBytes,
@@ -422,10 +458,20 @@ function renderFrameRgba(frame, header) {
       const blockIndex = Math.floor(y / BLOCK_SIZE) * blocksX + Math.floor(x / BLOCK_SIZE);
       const record = blockIndex * RECORD_BYTES;
       const pixel = (y & 3) * BLOCK_SIZE + (x & 3);
-      const local = (blocks[record + PATTERN_OFFSET + (pixel >> 2)] >>
-        (6 - ((pixel & 3) << 1))) & 3;
-      const colorIndex = blocks[record] * COLORS_PER_PALETTE +
-        blocks[record + 1 + local];
+      let paletteIndex;
+      let paletteColor;
+      if (blocks[record] & DIRECT_RECORD_FLAG) {
+        paletteIndex = blocks[record] & 63;
+        paletteColor = directColor(blocks, record, pixel);
+      } else {
+        const local =
+          (blocks[record + PATTERN_OFFSET + (pixel >> 2)] >>
+           (6 - ((pixel & 3) << 1))) & 3;
+        paletteIndex = blocks[record];
+        paletteColor = blocks[record + 1 + local];
+      }
+      const colorIndex =
+        paletteIndex * COLORS_PER_PALETTE + paletteColor;
       const color = colorIndex * 3;
       const output = (y * header.width + x) * 4;
       const palette = frame.palette || header.palette;
@@ -501,6 +547,14 @@ function expand1BitPattern(bytes, offset) {
 }
 
 function validateRecord(bytes, offset, paletteCount, frameIndex, blockIndex) {
+  if (bytes[offset] & DIRECT_RECORD_FLAG) {
+    if ((bytes[offset] & 0x40) || (bytes[offset] & 63) >= paletteCount) {
+      throw new RangeError(
+        `Invalid direct palette index at ${frameIndex}:${blockIndex}`,
+      );
+    }
+    return;
+  }
   if (bytes[offset] >= paletteCount) {
     throw new RangeError(`Invalid palette index at ${frameIndex}:${blockIndex}`);
   }
@@ -509,6 +563,28 @@ function validateRecord(bytes, offset, paletteCount, frameIndex, blockIndex) {
       throw new RangeError(`Invalid local color at ${frameIndex}:${blockIndex}`);
     }
   }
+}
+
+function directColor(bytes, offset, pixel) {
+  const value = bytes[offset + 1 + (pixel >> 1)];
+  return pixel & 1 ? value & 15 : value >>> 4;
+}
+
+function directUsedMask(bytes, offset) {
+  let mask = 0;
+  for (let pixel = 0; pixel < 16; pixel += 1) {
+    mask |= 1 << directColor(bytes, offset, pixel);
+  }
+  return mask;
+}
+
+function popcount16(value) {
+  let count = 0;
+  while (value) {
+    value &= value - 1;
+    count += 1;
+  }
+  return count;
 }
 
 function addUnique(dictionary, value, limit) {
@@ -597,6 +673,7 @@ module.exports = {
     MODE_MOTION,
     MODE_PATTERN_DICT,
     MODE_RAW,
+    MODE_RAW_DIRECT,
     MODE_SKIP,
     PALETTE_COUNT,
     RECORD_BYTES,

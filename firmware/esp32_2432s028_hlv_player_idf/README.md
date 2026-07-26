@@ -3,11 +3,12 @@
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
-MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v4
-with PCM_U8 audio and active per-GOP palettes, and the constrained MPEG-1
-Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
-and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
-optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
+MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v5
+with PCM_U8 audio, active per-GOP palettes, adaptive RAW and direct 5–16-color
+blocks, and the constrained MPEG-1 Video/MP2 profile up to 320x240. It also
+supports baseline H.263 at `176x144` and intra-only H.263+ at `256x144`,
+`256x192`, `320x180`, or `320x240`, with optional 8 kHz mono AMR-NB audio in
+3GP or PCM S16LE audio in AVI.
 
 AVI is the preferred H.263 container for this firmware. Its interleaved video
 and PCM chunks are streamed without retaining an AVI index in RAM. 3GP remains
@@ -83,7 +84,7 @@ BPV1 uses the same upload path:
 
 ```powershell
 .\upload-video.ps1 -Port COM8 `
-    -File ..\..\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1 `
+    -File ..\..\out\BigBuckBunny_320x180_24fps_BPVv5_35dB.bpv1 `
     -Name bunny.bpv1
 Set-Content play.txt "bunny.bpv1" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
@@ -401,8 +402,9 @@ display DMA timing.
   decoders predict from identical samples. Literal blocks carry four separate
   Y corrections plus one U and one V correction. BPV instead retains two
   32,400-byte block-record frames plus its
-  bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
-  at 320x180 and has no full RGB frame.
+  bounded dictionaries; the complete BPV decoder allocation is about 106 KiB
+  at 320x180 with the conservative 9-byte-per-block `RAW_DIRECT` packet bound
+  and has no full RGB frame.
 - DivX 3: two packed Y6/U5/V5 reference frames, Q4 correction maps and rolling
   DC/AC/MV predictor rows use 174,000 bytes at 320x240, versus 237,600 bytes
   for the exact 8-bit decoder after the same predictor-row optimization.

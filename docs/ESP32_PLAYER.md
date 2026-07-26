@@ -227,8 +227,8 @@ its aspect ratio and native frame rate preserved:
 ```
 
 For BPV1, the corresponding script uses the same approved 1080p source,
-preserves native 24 fps and writes BPV1 v5 with adaptive RAW records and
-active per-GOP palettes:
+preserves native 24 fps and writes BPV1 v5 with adaptive RAW records,
+5–16-color direct blocks and active per-GOP palettes:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
@@ -321,11 +321,12 @@ punctuation.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
-complete allocation is about 102 KiB for BPV v5 at 320x180 because the
-maximum packet uses 7 rather than 9 bytes per RAW block. It renders source
-rows directly into the two existing display DMA strips, so no 115,200-byte
-RGB565 frame is allocated. With PCM_U8 audio it uses the DAC clock; video-only
-streams use the rational ESP timer clock.
+complete core allocation is about 106 KiB. The conservative packet bound uses
+9 bytes per block because `RAW_DIRECT` supports 5–16 colors; adaptive
+one-to-four-color RAW records still use only 2/4/7 bytes in real streams. It
+renders source rows directly into the two existing display DMA strips, so no
+115,200-byte RGB565 frame is allocated. With PCM_U8 audio it uses the DAC
+clock; video-only streams use the rational ESP timer clock.
 
 The MJPEG decoder likewise does not retain a complete RGB565 frame.
 `esp_new_jpeg` emits one aligned RGB565 block at a time straight into one of

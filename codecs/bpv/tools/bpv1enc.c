@@ -17,6 +17,7 @@
 #define PALETTE_COUNT 64
 #define COLORS_PER_PALETTE 16
 #define LOCAL_COLORS 4
+#define DIRECT_RECORD_FLAG 0x80
 #define RECORD_BYTES 9
 #define PATTERN_BYTES 4
 #define MAX_CANDIDATE_PALETTES 8
@@ -27,7 +28,8 @@ enum {
     MODE_BLOCK_DICT = 2,
     MODE_PATTERN_DICT = 3,
     MODE_RAW = 4,
-    MODE_COUNT = 5
+    MODE_RAW_DIRECT = 5,
+    MODE_COUNT = 6
 };
 
 typedef struct {
@@ -104,6 +106,8 @@ typedef struct {
 
 typedef struct {
     uint64_t mode_counts[MODE_COUNT];
+    uint64_t direct_5_to_8;
+    uint64_t direct_9_to_16;
     uint64_t squared_error;
     uint64_t samples;
     uint64_t previous_decisions;
@@ -165,8 +169,9 @@ static void usage(FILE *stream) {
         "  -h, --help                     show help\n\n"
         "The input must be a seekable 8-bit YUV 4:2:0 Y4M file. In the default\n"
         "BPV1 v5 mode every independent GOP carries a 64x16 RGB palette bank\n"
-        "and uses adaptive 2/4/7-byte RAW records. --fixed-palettes repeats\n"
-        "one global bank in each GOP.\n");
+        "and uses adaptive 2/4/7-byte RAW1-4 records plus 9-byte direct\n"
+        "RAW records for 5-16 colors. --fixed-palettes repeats one global\n"
+        "bank in each GOP.\n");
 }
 
 static int buffer_reserve(Buffer *buffer, size_t extra) {
@@ -902,6 +907,53 @@ static void pattern_dictionary_add(
     memcpy(dictionary->items[dictionary->count++], pattern, PATTERN_BYTES);
 }
 
+static int block_is_direct(const Block *block) {
+    return (block->palette_index & DIRECT_RECORD_FLAG) != 0;
+}
+
+static unsigned block_palette_index(const Block *block) {
+    return block->palette_index & 0x3fU;
+}
+
+static uint8_t *block_direct_bytes(Block *block) {
+    return block->local_colors;
+}
+
+static const uint8_t *block_direct_bytes_const(const Block *block) {
+    return block->local_colors;
+}
+
+static unsigned block_direct_color(const Block *block, unsigned pixel) {
+    const uint8_t value = block_direct_bytes_const(block)[pixel >> 1];
+    return pixel & 1U ? value & 15U : value >> 4;
+}
+
+static void block_direct_color_store(Block *block, unsigned pixel,
+                                     unsigned color) {
+    uint8_t *value = block_direct_bytes(block) + (pixel >> 1);
+    if (pixel & 1U)
+        *value = (uint8_t)((*value & 0xf0U) | color);
+    else
+        *value = (uint8_t)((*value & 0x0fU) | (color << 4));
+}
+
+static unsigned popcount16(uint16_t value) {
+    unsigned count = 0;
+    while (value) {
+        value &= (uint16_t)(value - 1U);
+        ++count;
+    }
+    return count;
+}
+
+static uint16_t block_direct_used_mask(const Block *block) {
+    uint16_t mask = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel)
+        mask |= (uint16_t)(1U << block_direct_color(block, pixel));
+    return mask;
+}
+
 static uint64_t block_error(
     const uint8_t pixels[PIXELS_PER_BLOCK][3],
     const Block *block,
@@ -909,12 +961,18 @@ static uint64_t block_error(
 ) {
     uint64_t error = 0;
     int pixel;
+    const unsigned palette_index = block_palette_index(block);
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
-        int shift = 6 - ((pixel & 3) * 2);
-        int local = (block->pattern[pixel >> 2] >> shift) & 3;
+        unsigned color_index;
+        if (block_is_direct(block)) {
+            color_index = block_direct_color(block, (unsigned)pixel);
+        } else {
+            int shift = 6 - ((pixel & 3) * 2);
+            int local = (block->pattern[pixel >> 2] >> shift) & 3;
+            color_index = block->local_colors[local];
+        }
         const uint8_t *color =
-            training->palette[block->palette_index]
-                [block->local_colors[local]];
+            training->palette[palette_index][color_index];
         error += color_distance(pixels[pixel], color);
     }
     return error;
@@ -924,20 +982,25 @@ static uint64_t quantize_block(
     const uint8_t pixels[PIXELS_PER_BLOCK][3],
     int palette_index,
     const Training *training,
+    int color_limit,
     Block *block
 ) {
     uint32_t distances[PIXELS_PER_BLOCK][COLORS_PER_PALETTE];
     uint32_t current[PIXELS_PER_BLOCK];
-    int selected[LOCAL_COLORS];
+    int selected[COLORS_PER_PALETTE];
     int pixel, color, slot;
     uint64_t total_error = 0;
+    if (color_limit != 4 && color_limit != 8 &&
+        color_limit != COLORS_PER_PALETTE) {
+        return UINT64_MAX;
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         current[pixel] = UINT32_MAX;
         for (color = 0; color < COLORS_PER_PALETTE; ++color)
             distances[pixel][color] = color_distance(
                 pixels[pixel], training->palette[palette_index][color]);
     }
-    for (slot = 0; slot < LOCAL_COLORS; ++slot) {
+    for (slot = 0; slot < color_limit; ++slot) {
         int best_color = 0;
         uint64_t best_error = UINT64_MAX;
         for (color = 0; color < COLORS_PER_PALETTE; ++color) {
@@ -962,9 +1025,9 @@ static uint64_t quantize_block(
             if (distances[pixel][best_color] < current[pixel])
                 current[pixel] = distances[pixel][best_color];
     }
-    for (slot = 0; slot < LOCAL_COLORS - 1; ++slot) {
+    for (slot = 0; slot < color_limit - 1; ++slot) {
         int other;
-        for (other = slot + 1; other < LOCAL_COLORS; ++other) {
+        for (other = slot + 1; other < color_limit; ++other) {
             if (selected[other] < selected[slot]) {
                 int temporary = selected[slot];
                 selected[slot] = selected[other];
@@ -973,21 +1036,30 @@ static uint64_t quantize_block(
         }
     }
     memset(block, 0, sizeof *block);
-    block->palette_index = (uint8_t)palette_index;
-    for (slot = 0; slot < LOCAL_COLORS; ++slot)
-        block->local_colors[slot] = (uint8_t)selected[slot];
+    block->palette_index = (uint8_t)(
+        palette_index | (color_limit > LOCAL_COLORS
+                             ? DIRECT_RECORD_FLAG : 0));
+    if (color_limit == LOCAL_COLORS) {
+        for (slot = 0; slot < LOCAL_COLORS; ++slot)
+            block->local_colors[slot] = (uint8_t)selected[slot];
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         int best_slot = 0;
         uint32_t best_distance = distances[pixel][selected[0]];
-        for (slot = 1; slot < LOCAL_COLORS; ++slot) {
+        for (slot = 1; slot < color_limit; ++slot) {
             uint32_t distance = distances[pixel][selected[slot]];
             if (distance < best_distance) {
                 best_distance = distance;
                 best_slot = slot;
             }
         }
-        block->pattern[pixel >> 2] |=
-            (uint8_t)(best_slot << (6 - ((pixel & 3) * 2)));
+        if (color_limit > LOCAL_COLORS) {
+            block_direct_color_store(
+                block, (unsigned)pixel, (unsigned)selected[best_slot]);
+        } else {
+            block->pattern[pixel >> 2] |=
+                (uint8_t)(best_slot << (6 - ((pixel & 3) * 2)));
+        }
         total_error += best_distance;
     }
     return total_error;
@@ -1001,6 +1073,34 @@ static unsigned canonicalize_block(Block *block) {
     unsigned count = 0;
     int pixel;
     int slot;
+    if (block_is_direct(block)) {
+        const uint16_t used_mask = block_direct_used_mask(block);
+        count = popcount16(used_mask);
+        if (count <= LOCAL_COLORS) {
+            Block compact;
+            uint8_t direct_to_local[COLORS_PER_PALETTE] = {0};
+            unsigned color;
+            memset(&compact, 0, sizeof compact);
+            compact.palette_index =
+                (uint8_t)block_palette_index(block);
+            count = 0;
+            for (color = 0; color < COLORS_PER_PALETTE; ++color) {
+                if (!(used_mask & (1U << color))) continue;
+                direct_to_local[color] = (uint8_t)count;
+                compact.local_colors[count++] = (uint8_t)color;
+            }
+            for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+                const unsigned local =
+                    direct_to_local[
+                        block_direct_color(block, (unsigned)pixel)];
+                compact.pattern[pixel >> 2] |=
+                    (uint8_t)(local <<
+                        (6 - ((pixel & 3) * 2)));
+            }
+            *block = compact;
+        }
+        return count;
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         const int shift = 6 - ((pixel & 3) * 2);
         used[(block->pattern[pixel >> 2] >> shift) & 3U] = 1;
@@ -1023,6 +1123,8 @@ static unsigned canonicalize_block(Block *block) {
 }
 
 static unsigned block_color_count(const Block *block) {
+    if (block_is_direct(block))
+        return popcount16(block_direct_used_mask(block));
     unsigned count = 1;
     int row;
     for (row = 0; row < PATTERN_BYTES; ++row) {
@@ -1036,11 +1138,13 @@ static unsigned block_color_count(const Block *block) {
 }
 
 static int raw_payload_bits(const Block *block) {
+    if (block_is_direct(block)) return 72;
     const unsigned count = block_color_count(block);
     return count == 1 ? 16 : count == 2 ? 32 : 56;
 }
 
 static int pattern_dictionary_payload_bits(const Block *block) {
+    if (block_is_direct(block)) return INT_MAX;
     return block_color_count(block) <= 2 ? 32 : 40;
 }
 
@@ -1079,6 +1183,14 @@ static int buffer_adaptive_raw(Buffer *output, const Block *block) {
         return buffer_write(output, bitmap, sizeof bitmap);
     }
     return buffer_write(output, block->pattern, PATTERN_BYTES);
+}
+
+static int buffer_raw_direct(Buffer *output, const Block *block) {
+    const unsigned count = block_color_count(block);
+    if (!block_is_direct(block) || count < 5U || count > 16U)
+        return -1;
+    return buffer_u8(output, (uint8_t)block_palette_index(block)) ||
+           buffer_write(output, block_direct_bytes_const(block), 8);
 }
 
 static void nearest_palettes(
@@ -1254,30 +1366,45 @@ static int encode_gop(GopJob *job) {
             for (palette_slot = 0;
                  palette_slot < options->candidate_palettes;
                  ++palette_slot) {
-                uint64_t error = quantize_block(
-                    pixels, palette_indices[palette_slot],
-                    training, &candidate);
-                int bits;
-                double score;
-                canonicalize_block(&candidate);
-                bits = raw_payload_bits(&candidate);
-                if (frame_index > 0 &&
-                    block_equal(&candidate, &previous[block_index])) bits = 0;
-                else if (block_dictionary_find(&shadow_blocks, &candidate) >= 0)
-                    bits = 16;
-                else if (pattern_dictionary_find(
-                        &shadow_patterns, candidate.pattern) >= 0) {
-                    bits = pattern_dictionary_payload_bits(&candidate);
-                }
-                score = (double)error + options->lambda * bits;
-                if (best_score == HUGE_VAL ||
-                    better_candidate(score, bits, error, &candidate,
-                        best_score, best_bits, best_error, &best_block)) {
-                    best_block = candidate;
-                    best_error = error;
-                    best_score = score;
-                    best_bits = bits;
-                    best_source_previous = 0;
+                static const int color_limits[3] = {
+                    4, 8, COLORS_PER_PALETTE
+                };
+                int color_class;
+                for (color_class = 0; color_class < 3; ++color_class) {
+                    uint64_t error = quantize_block(
+                        pixels, palette_indices[palette_slot],
+                        training, color_limits[color_class],
+                        &candidate);
+                    int bits;
+                    double score;
+                    canonicalize_block(&candidate);
+                    bits = raw_payload_bits(&candidate);
+                    if (frame_index > 0 &&
+                        block_equal(
+                            &candidate, &previous[block_index])) {
+                        bits = 0;
+                    } else if (block_dictionary_find(
+                                   &shadow_blocks, &candidate) >= 0) {
+                        bits = 16;
+                    } else if (!block_is_direct(&candidate) &&
+                               pattern_dictionary_find(
+                                   &shadow_patterns,
+                                   candidate.pattern) >= 0) {
+                        bits = pattern_dictionary_payload_bits(
+                            &candidate);
+                    }
+                    score = (double)error + options->lambda * bits;
+                    if (best_score == HUGE_VAL ||
+                        better_candidate(
+                            score, bits, error, &candidate,
+                            best_score, best_bits, best_error,
+                            &best_block)) {
+                        best_block = candidate;
+                        best_error = error;
+                        best_score = score;
+                        best_bits = bits;
+                        best_source_previous = 0;
+                    }
                 }
             }
             current[block_index] = best_block;
@@ -1289,12 +1416,15 @@ static int encode_gop(GopJob *job) {
             if (!(frame_index > 0 &&
                   block_equal(&best_block, &previous[block_index])) &&
                 block_dictionary_find(&shadow_blocks, &best_block) < 0) {
-                if (pattern_dictionary_find(
+                if (!block_is_direct(&best_block) &&
+                    pattern_dictionary_find(
                         &shadow_patterns, best_block.pattern) >= 0) {
                     block_dictionary_add(&shadow_blocks, &best_block);
                 } else {
-                    pattern_dictionary_add(
-                        &shadow_patterns, best_block.pattern);
+                    if (!block_is_direct(&best_block)) {
+                        pattern_dictionary_add(
+                            &shadow_patterns, best_block.pattern);
+                    }
                     block_dictionary_add(&shadow_blocks, &best_block);
                 }
             }
@@ -1318,7 +1448,8 @@ static int encode_gop(GopJob *job) {
                     modes[block_index] = MODE_BLOCK_DICT;
                     if (buffer_u16(&payload, (uint16_t)dictionary_index))
                         goto frame_fail;
-                } else if ((dictionary_index = pattern_dictionary_find(
+                } else if (!block_is_direct(&best_block) &&
+                           (dictionary_index = pattern_dictionary_find(
                                 &pattern_dictionary,
                                 best_block.pattern)) >= 0) {
                     modes[block_index] = MODE_PATTERN_DICT;
@@ -1330,11 +1461,27 @@ static int encode_gop(GopJob *job) {
                     block_dictionary_add(
                         &block_dictionary, &best_block);
                 } else {
-                    modes[block_index] = MODE_RAW;
-                    if (buffer_adaptive_raw(&payload, &best_block))
-                        goto frame_fail;
-                    pattern_dictionary_add(
-                        &pattern_dictionary, best_block.pattern);
+                    if (block_is_direct(&best_block)) {
+                        const unsigned direct_colors =
+                            block_color_count(&best_block);
+                        modes[block_index] = MODE_RAW_DIRECT;
+                        if (buffer_raw_direct(
+                                &payload, &best_block)) {
+                            goto frame_fail;
+                        }
+                        if (direct_colors <= 8U)
+                            job->stats.direct_5_to_8++;
+                        else
+                            job->stats.direct_9_to_16++;
+                    } else {
+                        modes[block_index] = MODE_RAW;
+                        if (buffer_adaptive_raw(
+                                &payload, &best_block)) {
+                            goto frame_fail;
+                        }
+                        pattern_dictionary_add(
+                            &pattern_dictionary, best_block.pattern);
+                    }
                     block_dictionary_add(
                         &block_dictionary, &best_block);
                 }
@@ -1509,6 +1656,8 @@ static void stats_add(EncodeStats *target, const EncodeStats *source) {
     int mode;
     for (mode = 0; mode < MODE_COUNT; ++mode)
         target->mode_counts[mode] += source->mode_counts[mode];
+    target->direct_5_to_8 += source->direct_5_to_8;
+    target->direct_9_to_16 += source->direct_9_to_16;
     target->squared_error += source->squared_error;
     target->samples += source->samples;
     target->previous_decisions += source->previous_decisions;
@@ -1762,7 +1911,10 @@ static int write_report(
         "    \"motion\": %" PRIu64 ",\n"
         "    \"blockDictionary\": %" PRIu64 ",\n"
         "    \"patternDictionary\": %" PRIu64 ",\n"
-        "    \"raw\": %" PRIu64 "\n"
+        "    \"raw\": %" PRIu64 ",\n"
+        "    \"rawDirect\": %" PRIu64 ",\n"
+        "    \"direct5To8\": %" PRIu64 ",\n"
+        "    \"direct9To16\": %" PRIu64 "\n"
         "  },\n"
         "  \"rgbMse\": %.9f,\n"
         "  \"rgbPsnrDb\": %.9f,\n"
@@ -1793,6 +1945,9 @@ static int write_report(
         stats->mode_counts[MODE_BLOCK_DICT],
         stats->mode_counts[MODE_PATTERN_DICT],
         stats->mode_counts[MODE_RAW],
+        stats->mode_counts[MODE_RAW_DIRECT],
+        stats->direct_5_to_8,
+        stats->direct_9_to_16,
         mse, psnr, stats->previous_decisions, stats->quantized_decisions,
         elapsed_seconds, frame_count / elapsed_seconds) < 0) return -1;
     return 0;

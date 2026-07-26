@@ -78,6 +78,55 @@ assert.deepEqual(
 );
 console.log("BPV1 adaptive RAW sizes passed");
 
+const direct5 = {
+  paletteIndex: 5,
+  directColors: [0,1,2,3,4,0,1,2,3,4,0,1,2,3,4,0],
+};
+const direct16 = {
+  paletteIndex: 6,
+  directColors: Array.from({ length: 16 }, (_, index) => index),
+};
+const direct = codec.encodeVideo({
+  width: 8,
+  height: 4,
+  palette,
+  frames: [{ blocks: [direct5, direct16] }],
+}, { keyframeInterval: 1 });
+assert.equal(
+  direct.bytes.length,
+  29 + 13 + 3072 + 1 + 9 + 9,
+  "direct 5-8 and 9-16 color records must occupy 9 bytes",
+);
+assert.equal(
+  direct.stats.modeCounts[codec.constants.MODE_RAW_DIRECT],
+  2,
+);
+const directDecoded = codec.decodeVideo(direct.bytes);
+assert.deepEqual(
+  directDecoded.frames[0].blocks[0].directColors,
+  direct5.directColors,
+);
+assert.deepEqual(
+  directDecoded.frames[0].blocks[1].directColors,
+  direct16.directColors,
+);
+const directRendered = codec.renderFrame(directDecoded, 0);
+assert.equal(directRendered.length, 8 * 4 * 4);
+assert.deepEqual(
+  Array.from(directRendered.subarray(0, 8)),
+  [
+    palette[5 * 16].r,
+    palette[5 * 16].g,
+    palette[5 * 16].b,
+    255,
+    palette[5 * 16 + 1].r,
+    palette[5 * 16 + 1].g,
+    palette[5 * 16 + 1].b,
+    255,
+  ],
+);
+console.log("BPV1 direct 8/16-color RAW passed");
+
 // A tiny hand-built legacy v1 stream verifies backward decoding.
 const legacy = [];
 const u8 = (v) => legacy.push(v & 255);

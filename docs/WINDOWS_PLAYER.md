@@ -16,8 +16,9 @@ directly to the same PCM8 output. The GPU performs colour conversion and
 scaling. If D3D11 initialisation or presentation fails, the
 player automatically switches to double-buffered GDI. BPV1 v4/v5 supports
 active per-GOP palettes and PCM_U8 audio; video-only files use the
-high-resolution frame timer without opening audio. BPV1 v5 additionally uses adaptive
-2/4/7-byte RAW records and packed local palette indices.
+high-resolution frame timer without opening audio. BPV1 v5 additionally uses
+adaptive 2/4/7-byte RAW records, packed local palette indices, and 9-byte
+direct records for blocks using 5–16 colors.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
 The repository encoder treats CIF as anamorphic during preparation as well as

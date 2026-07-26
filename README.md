@@ -60,14 +60,15 @@ reader must cache sample-size and chunk-offset tables at open time, leaving
 less internal memory for the compressed packet and decoded frame. Use 3GP
 primarily when AMR-NB audio or compatibility with a 3GP workflow is required.
 
-[`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
-reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
-and block/pattern dictionaries. The package includes a bounded-memory,
+[`BPV1 v5`](codecs/bpv/) is also available as a BPAL-derived experimental
+codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion,
+block/pattern dictionaries, adaptive one-to-four-color RAW records and direct
+five-to-sixteen-color blocks. The package includes a bounded-memory,
 eight-thread C11 encoder, automatic palette training, encoder-side
 rate-distortion selection, streaming validation, Y4M adapters and the supplied
 60-second reference measurements. The same portable C decoder is linked into
-the native Windows and ESP32 players. BPV1 carries video only; those players
-therefore use their frame timer and do not open an audio device for `.bpv1`.
+the native Windows and ESP32 players. BPV1 v5 can carry PCM_U8 mono audio;
+video-only files use the players' frame timer.
 
 ## HLV v14 stable format
 
@@ -136,7 +137,7 @@ Build and test the desktop tools with MSVC:
 .\scripts\test_divx3.ps1
 ```
 
-Encode the approved 1080p Big Buck Bunny source to BPV1 v2 at 320x180 and its
+Encode the approved 1080p Big Buck Bunny source to BPV1 v5 at 320x180 and its
 native 24 fps. The script uses eight C GOP workers by default:
 
 ```powershell
@@ -377,7 +378,7 @@ python3 scripts/benchmark.py \
   --prefix local_5min --keep-files --resume
 ```
 
-`bpv` runs the BPV1 v2 Y4M adapters and records results as `BPV1-v2`.
+`bpv` runs the BPV1 v5 Y4M adapters and records results as `BPV1-v5`.
 Palette training keeps the normalized RGBA sequence in host memory, so begin
 with a short duration before scheduling long BPV runs. The matched-bitrate
 tool also accepts `--codecs bpv`; it searches lambda from

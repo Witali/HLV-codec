@@ -14,7 +14,8 @@ enum {
     MODE_BLOCK_DICTIONARY = 2,
     MODE_PATTERN_DICTIONARY = 3,
     MODE_RAW = 4,
-    MODE_COUNT = 5,
+    MODE_RAW_DIRECT = 5,
+    MODE_COUNT = 6,
     PATTERN_OFFSET = 5
 };
 
@@ -332,6 +333,28 @@ static inline void copy_record(uint8_t *destination,
     destination[8] = source[8];
 }
 
+static unsigned popcount16(uint16_t value) {
+    unsigned count = 0;
+    while (value) {
+        value &= (uint16_t)(value - 1U);
+        ++count;
+    }
+    return count;
+}
+
+static unsigned direct_color(const uint8_t *record, unsigned pixel) {
+    const uint8_t packed = record[1U + (pixel >> 1)];
+    return pixel & 1U ? packed & 15U : packed >> 4;
+}
+
+static uint16_t direct_used_mask(const uint8_t *record) {
+    uint16_t mask = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < 16U; ++pixel)
+        mask |= (uint16_t)(1U << direct_color(record, pixel));
+    return mask;
+}
+
 static unsigned pattern_color_count(const uint8_t *pattern) {
     unsigned count = 1;
     unsigned row;
@@ -426,6 +449,12 @@ static inline unsigned read_mode(ModeReader *reader) {
 
 static int validate_record(const BPV1Header *header,
                            const uint8_t record[BPV1_RECORD_BYTES]) {
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        return (record[0] & 0x40U) ||
+                       (record[0] & 0x3fU) >= header->palette_count
+                   ? BPV1_ERR_DECODE
+                   : BPV1_OK;
+    }
     return record[0] >= header->palette_count ||
                    record[1] >= BPV1_COLORS_PER_PALETTE ||
                    record[2] >= BPV1_COLORS_PER_PALETTE ||
@@ -433,6 +462,24 @@ static int validate_record(const BPV1Header *header,
                    record[4] >= BPV1_COLORS_PER_PALETTE
                ? BPV1_ERR_DECODE
                : BPV1_OK;
+}
+
+static int decode_raw_direct(const BPV1Header *header,
+                             const uint8_t **cursor,
+                             const uint8_t *payload_end,
+                             uint8_t *destination) {
+    unsigned count;
+    if ((size_t)(payload_end - *cursor) < 9U ||
+        (*cursor)[0] >= header->palette_count) {
+        return BPV1_ERR_DECODE;
+    }
+    destination[0] =
+        (uint8_t)(BPV1_DIRECT_RECORD_FLAG | (*cursor)[0]);
+    memcpy(destination + 1, *cursor + 1, 8);
+    count = popcount16(direct_used_mask(destination));
+    if (count < 5U || count > 16U) return BPV1_ERR_DECODE;
+    *cursor += 9;
+    return BPV1_OK;
 }
 
 static void reset_references(BPV1Decoder *decoder) {
@@ -749,7 +796,7 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             if (validate_record(&decoder->header, destination))
                 return BPV1_ERR_DECODE;
             dictionary_add_unique(&decoder->blocks, destination);
-        } else {
+        } else if (mode == MODE_RAW) {
             if (decoder->header.version >= BPV1_VERSION) {
                 const int count = decode_packed_prefix(
                     &cursor, payload_end, destination, 0);
@@ -791,6 +838,16 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             dictionary_add_unique(&decoder->patterns,
                                   destination + PATTERN_OFFSET);
             dictionary_add_unique(&decoder->blocks, destination);
+        } else if (mode == MODE_RAW_DIRECT) {
+            if (decoder->header.version < BPV1_VERSION ||
+                decode_raw_direct(
+                    &decoder->header, &cursor, payload_end,
+                    destination) != BPV1_OK) {
+                return BPV1_ERR_DECODE;
+            }
+            dictionary_add_unique(&decoder->blocks, destination);
+        } else {
+            return BPV1_ERR_DECODE;
         }
         destination += BPV1_RECORD_BYTES;
         previous_at_position += BPV1_RECORD_BYTES;
@@ -839,12 +896,20 @@ static const uint8_t *pixel_rgb(const BPV1Frame *frame, uint16_t x,
     const uint8_t *record =
         frame->blocks + (size_t)block_index * BPV1_RECORD_BYTES;
     const unsigned pixel = ((y & 3U) << 2) | (x & 3U);
-    const unsigned local =
-        (record[PATTERN_OFFSET + (pixel >> 2)] >>
-         (6U - ((pixel & 3U) << 1))) & 3U;
+    unsigned palette_index;
+    unsigned color_index;
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        palette_index = record[0] & 0x3fU;
+        color_index = direct_color(record, pixel);
+    } else {
+        const unsigned local =
+            (record[PATTERN_OFFSET + (pixel >> 2)] >>
+             (6U - ((pixel & 3U) << 1))) & 3U;
+        palette_index = record[0];
+        color_index = record[1U + local];
+    }
     const unsigned color =
-        ((unsigned)record[0] * BPV1_COLORS_PER_PALETTE +
-         record[1U + local]) * 3U;
+        (palette_index * BPV1_COLORS_PER_PALETTE + color_index) * 3U;
     return frame->palette + color;
 }
 
@@ -935,35 +1000,63 @@ static int frame_render_rgb565_rows(
 
         while (x < frame->width) {
             const size_t palette_offset =
-                (size_t)record[0] * BPV1_COLORS_PER_PALETTE;
-            uint16_t colors[4];
+                (size_t)(record[0] & 0x3fU) *
+                    BPV1_COLORS_PER_PALETTE;
             const uint16_t block_pixels =
                 (uint16_t)(frame->width - x < BPV1_BLOCK_SIZE
                                ? frame->width - x
                                : BPV1_BLOCK_SIZE);
             uint16_t row;
-            unsigned color_index;
 
-            for (color_index = 0; color_index < 4U; ++color_index) {
-                const size_t color_offset =
-                    palette_offset + record[1U + color_index];
-                colors[color_index] =
-                    palette_rgb565
-                        ? palette_rgb565[color_offset]
-                        : rgb888_to_rgb565(
-                              frame->palette + color_offset * 3U);
-            }
-            for (row = 0; row < group_rows; ++row) {
-                const uint8_t pattern =
-                    record[PATTERN_OFFSET + first_local_y + row];
-                uint16_t *destination =
-                    rgb565 + (size_t)(output_row + row) *
-                                 stride_pixels +
-                    x;
-                uint16_t pixel;
-                for (pixel = 0; pixel < block_pixels; ++pixel) {
-                    destination[pixel] =
-                        colors[(pattern >> (6U - pixel * 2U)) & 3U];
+            if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+                for (row = 0; row < group_rows; ++row) {
+                    uint16_t *destination =
+                        rgb565 + (size_t)(output_row + row) *
+                                     stride_pixels +
+                        x;
+                    uint16_t pixel;
+                    for (pixel = 0; pixel < block_pixels; ++pixel) {
+                        const unsigned direct_index =
+                            (first_local_y + row) * BPV1_BLOCK_SIZE +
+                            pixel;
+                        const size_t color_offset =
+                            palette_offset +
+                            direct_color(record, direct_index);
+                        destination[pixel] =
+                            palette_rgb565
+                                ? palette_rgb565[color_offset]
+                                : rgb888_to_rgb565(
+                                      frame->palette +
+                                      color_offset * 3U);
+                    }
+                }
+            } else {
+                uint16_t colors[4];
+                unsigned color_index;
+                for (color_index = 0; color_index < 4U;
+                     ++color_index) {
+                    const size_t color_offset =
+                        palette_offset + record[1U + color_index];
+                    colors[color_index] =
+                        palette_rgb565
+                            ? palette_rgb565[color_offset]
+                            : rgb888_to_rgb565(
+                                  frame->palette +
+                                  color_offset * 3U);
+                }
+                for (row = 0; row < group_rows; ++row) {
+                    const uint8_t pattern =
+                        record[PATTERN_OFFSET + first_local_y + row];
+                    uint16_t *destination =
+                        rgb565 + (size_t)(output_row + row) *
+                                     stride_pixels +
+                        x;
+                    uint16_t pixel;
+                    for (pixel = 0; pixel < block_pixels; ++pixel) {
+                        destination[pixel] =
+                            colors[(pattern >>
+                                    (6U - pixel * 2U)) & 3U];
+                    }
                 }
             }
             x = (uint16_t)(x + block_pixels);

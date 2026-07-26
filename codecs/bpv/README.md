@@ -10,7 +10,8 @@ The common video profile uses:
 
 - 4x4 pixel blocks;
 - 64 shared palettes with 16 RGB888 colors each;
-- one to four canonical local colors and an adaptive 0/1/2-bit pixel pattern;
+- one to four canonical local colors with an adaptive 0/1/2-bit pixel pattern,
+  or five to sixteen direct 4-bit palette indices;
 - `SKIP`, exact block motion, full-block dictionary, pattern dictionary and
   raw block modes;
 - periodic keyframes that reset prediction and dictionaries;
@@ -19,9 +20,12 @@ The common video profile uses:
 BPV1 v5 trains and transmits an active 64x16 palette bank in every keyframe.
 Each GOP can therefore replace colors that are no longer useful for the
 current scene. RAW blocks use adaptive 2/4/7/7-byte records for one through
-four local colors, and pattern-dictionary blocks pack their 4-bit local
-indices. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder also
-accepts v1 through v4 streams. See
+four local colors. Blocks using five through sixteen colors use one
+9-byte `RAW_DIRECT` record, while pattern-dictionary blocks pack their 4-bit
+local indices. Direct records can be reused by skip, motion and the full-block
+dictionary. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder
+also accepts v1 through v4 streams and earlier v5 streams without the direct
+mode. See
 [BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level format and
 [RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule. The
 multi-video v4/v5 comparison is recorded in
@@ -59,7 +63,8 @@ On a POSIX C11 host:
 make -C codecs/bpv test-c
 ```
 
-The native test covers all five block modes and row rendering. Passing an
+The native test covers all six block modes, both direct color-count classes,
+malformed direct records and row rendering. Passing an
 existing file performs a complete sequential C decode:
 
 ```powershell
@@ -142,9 +147,10 @@ The same `src/bpv1_decode.c` implementation is linked into both players:
 On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
 in `/HLV` on the microSD card. The decoder expands adaptive file records into
 two simple 9-byte block-record frames and renders RGB565 rows directly into
-the display's existing DMA strips. BPV v5 reduces the maximum 320x240 packet
-buffer by 9600 bytes. It uses the same PCM_U8 DAC/audio-clock pipeline as HLV;
-files without audio remain timer-clocked.
+the display's existing DMA strips. A 320x240 keyframe has a conservative
+48,072-byte packet bound when every block is `RAW_DIRECT`; ordinary adaptive
+RAW records remain shorter. It uses the same PCM_U8 DAC/audio-clock pipeline
+as HLV; files without audio remain timer-clocked.
 
 ## Reference measurement
 

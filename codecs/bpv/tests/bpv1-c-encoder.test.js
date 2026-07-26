@@ -198,6 +198,12 @@ try {
   assert.equal(report.paletteUpdates, 2);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
+  assert.ok(Number.isInteger(report.modeCounts.rawDirect));
+  assert.equal(
+    report.modeCounts.rawDirect,
+    report.modeCounts.direct5To8 +
+      report.modeCounts.direct9To16,
+  );
   const overrideReport =
     JSON.parse(fs.readFileSync(reportOverride4, "utf8"));
   assert.equal(overrideReport.paletteMode, "active-override");

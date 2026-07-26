@@ -212,7 +212,7 @@ def bench_bpv(source: Path, ref: Path, duration: float, frames: int,
     size = out.stat().st_size
     dec.unlink(missing_ok=True)
     return Result(
-        source.name, duration, frames, "BPV1-v2", f"lambda={lambda_value}", size,
+        source.name, duration, frames, "BPV1-v5", f"lambda={lambda_value}", size,
         size * 8 / duration / 1000, enc_s, frames / enc_s,
         dec_s, frames / dec_s, py, pu, pv, pa,
     )
@@ -406,7 +406,7 @@ def main() -> None:
             for codec in codecs:
                 for val in grids[codec]:
                     if codec == "bpv":
-                        label = "BPV1-v2"
+                        label = "BPV1-v5"
                         setting = f"lambda={val}"
                     else:
                         label = codec
