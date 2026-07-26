@@ -58,13 +58,21 @@ clock then reached the native 30 fps.
 
 ### 1. Separate RGB conversion from display waiting
 
-- [ ] Measure CPU conversion separately from SPI/DMA buffer waiting.
-- [ ] A/B test a 64x16 RGB565 table. BPV v4/v5 must rebuild the 2 KiB table only
+- [x] Measure CPU conversion separately from SPI/DMA buffer waiting.
+- [x] A/B test a 64x16 RGB565 table. BPV v4/v5 rebuild the 2 KiB table only
       when a keyframe replaces the active palette.
-- [ ] Preserve the portable RGB24 path used by the Windows player and tests.
+- [x] Preserve the portable RGB24 path used by the Windows player and tests.
 
 Keep the change only if the full decoded-frame hash is unchanged and the
 physical-board render or CPU-conversion measurement improves.
+
+The retained table reduces the isolated 320x240 QEMU RGB565 conversion by
+18.31%, from 314,621 to 256,999 guest cycles, with unchanged output hash
+`d761ba3e770d64eb`. On the physical player, where the render timer also includes
+display-buffer and SPI/DMA waiting, the median of three 300-frame runs improves
+from 16,827.5 to 16,665.4 us (0.96%). Total work improves by 0.40%; decode time
+is unchanged. All 900 frames play without gaps or audio errors. The cost is
+2,056 DRAM bytes and 388 Flash-code bytes.
 
 ### 2. Validate repeated allocation lifetimes
 

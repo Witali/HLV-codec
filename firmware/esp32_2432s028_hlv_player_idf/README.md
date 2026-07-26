@@ -320,6 +320,8 @@ measures complete 16-row-strip RGB565 conversion without display DMA:
 It prints a `P` record with the render-only cycle distribution, RGB565 output
 hash, free heap and largest free block. The same synthetic frame is rendered
 repeatedly so the benchmark isolates renderer changes from decode and SD I/O.
+The Player caches the active 64x16 BPV palette as RGB565 and rebuilds the
+2 KiB table only for a keyframe, avoiding per-block RGB888 conversion.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for

@@ -20,8 +20,10 @@ extern "C" {
 #define BPV1_PATTERN_BYTES 4
 #define BPV1_COLORS_PER_PALETTE 16
 #define BPV1_PALETTE_COUNT 64
+#define BPV1_MAX_PALETTE_COLORS \
+    (BPV1_PALETTE_COUNT * BPV1_COLORS_PER_PALETTE)
 #define BPV1_MAX_PALETTE_BYTES \
-    (BPV1_PALETTE_COUNT * BPV1_COLORS_PER_PALETTE * 3)
+    (BPV1_MAX_PALETTE_COLORS * 3)
 
 #define BPV1_AUDIO_NONE 0
 #define BPV1_AUDIO_PCM_U8 1
@@ -133,6 +135,23 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
                                   const BPV1Frame *frame, uint16_t y,
                                   uint16_t rows, uint16_t *rgb565,
                                   size_t stride_pixels, size_t pixels);
+/*
+ * Convert the active palette bank once after opening v1-v3 streams and after
+ * every v4/v5 keyframe. Cached render calls avoid repeated RGB888 conversion
+ * for every block while preserving the allocation-free legacy API above.
+ */
+int bpv1_palette_build_rgb565(const BPV1Header *header,
+                              const BPV1Frame *frame,
+                              uint16_t *palette_rgb565, size_t colors);
+int bpv1_frame_render_rgb565_row_cached(
+    const BPV1Header *header, const BPV1Frame *frame, uint16_t y,
+    const uint16_t *palette_rgb565, size_t palette_colors,
+    uint16_t *rgb565, size_t pixels);
+int bpv1_frame_render_rgb565_rows_cached(
+    const BPV1Header *header, const BPV1Frame *frame, uint16_t y,
+    uint16_t rows, const uint16_t *palette_rgb565,
+    size_t palette_colors, uint16_t *rgb565, size_t stride_pixels,
+    size_t pixels);
 
 #ifdef __cplusplus
 }

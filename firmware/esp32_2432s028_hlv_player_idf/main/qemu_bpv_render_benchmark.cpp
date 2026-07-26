@@ -97,12 +97,19 @@ extern "C" void app_main(void) {
     uint16_t *strip = static_cast<uint16_t *>(
         malloc(static_cast<size_t>(kWidth) * kRowsPerStrip *
                sizeof(uint16_t)));
+    uint16_t *palette_rgb565 = static_cast<uint16_t *>(
+        malloc(BPV1_MAX_PALETTE_COLORS * sizeof(uint16_t)));
     BPV1Header *header =
         static_cast<BPV1Header *>(calloc(1, sizeof(BPV1Header)));
-    if (!blocks || !strip || !header) finish(1);
+    if (!blocks || !strip || !palette_rgb565 || !header) finish(1);
 
     BPV1Frame frame{};
     prepareFrame(header, &frame, blocks);
+    if (bpv1_palette_build_rgb565(
+            header, &frame, palette_rgb565,
+            BPV1_MAX_PALETTE_COLORS) != BPV1_OK) {
+        finish(2);
+    }
     ESP_LOGI(kTag, "Xtensa BPV RGB565 benchmark, %ux%u",
              kWidth, kHeight);
 
@@ -117,10 +124,11 @@ extern "C" void app_main(void) {
                 kHeight - y < kRowsPerStrip
                     ? kHeight - y
                     : kRowsPerStrip);
-            if (bpv1_frame_render_rgb565_rows(
-                    header, &frame, y, rows, strip, kWidth,
+            if (bpv1_frame_render_rgb565_rows_cached(
+                    header, &frame, y, rows, palette_rgb565,
+                    BPV1_MAX_PALETTE_COLORS, strip, kWidth,
                     static_cast<size_t>(kWidth) * rows) != BPV1_OK) {
-                finish(2);
+                finish(3);
             }
         }
         const uint32_t elapsed = esp_cpu_get_cycle_count() - start;
@@ -131,10 +139,11 @@ extern "C" void app_main(void) {
                 kHeight - y < kRowsPerStrip
                     ? kHeight - y
                     : kRowsPerStrip);
-            if (bpv1_frame_render_rgb565_rows(
-                    header, &frame, y, rows, strip, kWidth,
+            if (bpv1_frame_render_rgb565_rows_cached(
+                    header, &frame, y, rows, palette_rgb565,
+                    BPV1_MAX_PALETTE_COLORS, strip, kWidth,
                     static_cast<size_t>(kWidth) * rows) != BPV1_OK) {
-                finish(3);
+                finish(4);
             }
             frame_hash = hashPixels(
                 frame_hash, strip,

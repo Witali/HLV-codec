@@ -170,16 +170,30 @@ decoded 300 consecutive frames with no playback or audio errors.
 
 ## BPV
 
-- [ ] Establish a fresh QEMU and physical-board decode/render baseline.
-- [ ] Build a 64x16 RGB565 palette lookup table only when a keyframe changes
+- [x] Establish a fresh QEMU and physical-board decode/render baseline.
+- [x] Build a 64x16 RGB565 palette lookup table only when a keyframe changes
       the palette.
-- [ ] Use the cached table in the render path.
-- [ ] Verify output and measure decode, render and total frame time in QEMU and
+- [x] Use the cached table in the render path.
+- [x] Verify output and measure decode, render and total frame time in QEMU and
       in three physical-board trials.
-- [ ] Keep the change only if the renderer benefit justifies 2 KiB of memory.
+- [x] Keep the change only if the renderer benefit justifies 2 KiB of memory.
 
-The current approximate split is 5.2 ms decode and 16.9 ms render, so renderer
-work is more important than further decoder micro-optimization.
+The deterministic QEMU render benchmark keeps RGB565 hash
+`d761ba3e770d64eb` and improves a complete 320x240 conversion from 314,621 to
+256,999 guest cycles, or 18.31%. Portable decoder and C-encoder compatibility
+tests also pass.
+
+Three 300-frame physical-board trials of the same 320x240 BPV v4 stream improve
+median render average from 16,827.5 to 16,665.4 us, or 0.96%, and median total
+work from 39,315.7 to 39,160.1 us, or 0.40%. Decode remains within 1.5 us of
+baseline. All 900 frames play at 30 fps with no gaps, display skips, rebuffers
+or audio underruns. The smaller full-player gain is expected because its render
+timer also includes display-buffer and SPI/DMA waiting.
+
+The retained table adds 2,056 DRAM bytes and 388 Flash-code bytes. IRAM and
+Flash data are unchanged; 139,668 DRAM bytes remain free. BPV v4/v5 rebuild
+the cache only when rendering a keyframe whose decode installed a new palette.
+The allocation-free legacy renderer and portable RGB24 path remain available.
 
 ## MJPEG
 

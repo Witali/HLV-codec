@@ -263,6 +263,8 @@ uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t bpv_rgb_row[kScreenWidth];
+uint16_t bpv_rgb565_palette[BPV1_MAX_PALETTE_COLORS];
+bool bpv_rgb565_palette_valid = false;
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
@@ -1473,6 +1475,7 @@ void closeVideo() {
     h263_dual_buffered = false;
     h263_row_pipelined = false;
     pending_bpv_frame_valid = false;
+    bpv_rgb565_palette_valid = false;
     ready_bpv_packet = {};
     ready_bpv_packet_valid = false;
     bpv_stream_eof = false;
@@ -2530,6 +2533,15 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
 
 bool renderBpvFrame(const BPV1Frame *frame) {
     if (!frame) return false;
+    if (!bpv_rgb565_palette_valid || frame->keyframe) {
+        if (bpv1_palette_build_rgb565(
+                &bpv_header, frame, bpv_rgb565_palette,
+                BPV1_MAX_PALETTE_COLORS) != BPV1_OK) {
+            bpv_rgb565_palette_valid = false;
+            return false;
+        }
+        bpv_rgb565_palette_valid = true;
+    }
     const int width = frame->width;
     const int height = frame->height;
     const int rows_per_transfer = display.rowsPerTransfer();
@@ -2543,9 +2555,11 @@ bool renderBpvFrame(const BPV1Frame *frame) {
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
                 if (source_y != cached_source_y) {
-                    if (bpv1_frame_render_rgb565_row(
+                    if (bpv1_frame_render_rgb565_row_cached(
                             &bpv_header, frame,
                             static_cast<uint16_t>(source_y),
+                            bpv_rgb565_palette,
+                            BPV1_MAX_PALETTE_COLORS,
                             bpv_rgb_row, width) != BPV1_OK) {
                         return false;
                     }
@@ -2571,9 +2585,10 @@ bool renderBpvFrame(const BPV1Frame *frame) {
         const int rows = std::min(rows_per_transfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
-        if (bpv1_frame_render_rgb565_rows(
+        if (bpv1_frame_render_rgb565_rows_cached(
                 &bpv_header, frame, static_cast<uint16_t>(y0),
-                static_cast<uint16_t>(rows), pixels, width,
+                static_cast<uint16_t>(rows), bpv_rgb565_palette,
+                BPV1_MAX_PALETTE_COLORS, pixels, width,
                 static_cast<size_t>(width) * rows) != BPV1_OK) {
             return false;
         }

@@ -879,13 +879,37 @@ static inline uint16_t rgb888_to_rgb565(const uint8_t *color) {
                       (color[2] >> 3));
 }
 
-int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
-                                  const BPV1Frame *frame, uint16_t y,
-                                  uint16_t rows, uint16_t *rgb565,
-                                  size_t stride_pixels, size_t pixels) {
+int bpv1_palette_build_rgb565(const BPV1Header *header,
+                              const BPV1Frame *frame,
+                              uint16_t *palette_rgb565, size_t colors) {
+    size_t color_count;
+    size_t color_index;
+    if (!header || !frame || !frame->palette || !palette_rgb565 ||
+        !header->palette_count ||
+        header->palette_count > BPV1_PALETTE_COUNT) {
+        return BPV1_ERR_ARGUMENT;
+    }
+    color_count =
+        (size_t)header->palette_count * BPV1_COLORS_PER_PALETTE;
+    if (colors < color_count) return BPV1_ERR_ARGUMENT;
+    for (color_index = 0; color_index < color_count; ++color_index) {
+        palette_rgb565[color_index] = rgb888_to_rgb565(
+            frame->palette + color_index * 3U);
+    }
+    return BPV1_OK;
+}
+
+static int frame_render_rgb565_rows(
+    const BPV1Header *header, const BPV1Frame *frame, uint16_t y,
+    uint16_t rows, const uint16_t *palette_rgb565,
+    size_t palette_colors, uint16_t *rgb565, size_t stride_pixels,
+    size_t pixels) {
     uint16_t output_row = 0;
     if (!rgb565 || !rows ||
         frame_row_arguments(header, frame, y) ||
+        (palette_rgb565 &&
+         palette_colors <
+             (size_t)header->palette_count * BPV1_COLORS_PER_PALETTE) ||
         rows > (uint16_t)(frame->height - y) ||
         stride_pixels < frame->width ||
         (size_t)(rows - 1U) >
@@ -910,9 +934,8 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
         uint16_t x = 0;
 
         while (x < frame->width) {
-            const uint8_t *palette =
-                frame->palette +
-                (size_t)record[0] * BPV1_COLORS_PER_PALETTE * 3U;
+            const size_t palette_offset =
+                (size_t)record[0] * BPV1_COLORS_PER_PALETTE;
             uint16_t colors[4];
             const uint16_t block_pixels =
                 (uint16_t)(frame->width - x < BPV1_BLOCK_SIZE
@@ -922,8 +945,13 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
             unsigned color_index;
 
             for (color_index = 0; color_index < 4U; ++color_index) {
-                colors[color_index] = rgb888_to_rgb565(
-                    palette + (size_t)record[1U + color_index] * 3U);
+                const size_t color_offset =
+                    palette_offset + record[1U + color_index];
+                colors[color_index] =
+                    palette_rgb565
+                        ? palette_rgb565[color_offset]
+                        : rgb888_to_rgb565(
+                              frame->palette + color_offset * 3U);
             }
             for (row = 0; row < group_rows; ++row) {
                 const uint8_t pattern =
@@ -944,4 +972,33 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
         output_row = (uint16_t)(output_row + group_rows);
     }
     return BPV1_OK;
+}
+
+int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
+                                  const BPV1Frame *frame, uint16_t y,
+                                  uint16_t rows, uint16_t *rgb565,
+                                  size_t stride_pixels, size_t pixels) {
+    return frame_render_rgb565_rows(
+        header, frame, y, rows, NULL, 0, rgb565, stride_pixels,
+        pixels);
+}
+
+int bpv1_frame_render_rgb565_row_cached(
+    const BPV1Header *header, const BPV1Frame *frame, uint16_t y,
+    const uint16_t *palette_rgb565, size_t palette_colors,
+    uint16_t *rgb565, size_t pixels) {
+    return bpv1_frame_render_rgb565_rows_cached(
+        header, frame, y, 1, palette_rgb565, palette_colors, rgb565,
+        frame ? frame->width : 0, pixels);
+}
+
+int bpv1_frame_render_rgb565_rows_cached(
+    const BPV1Header *header, const BPV1Frame *frame, uint16_t y,
+    uint16_t rows, const uint16_t *palette_rgb565,
+    size_t palette_colors, uint16_t *rgb565, size_t stride_pixels,
+    size_t pixels) {
+    if (!palette_rgb565) return BPV1_ERR_ARGUMENT;
+    return frame_render_rgb565_rows(
+        header, frame, y, rows, palette_rgb565, palette_colors,
+        rgb565, stride_pixels, pixels);
 }
