@@ -134,8 +134,13 @@ New-Item -ItemType Directory -Force -Path (
     Split-Path $ReportFile -Parent
 ) | Out-Null
 
-# Both standard H.263 picture sizes are 4:3. Fit at source resolution first,
-# then perform one Lanczos downscale to the complete QCIF/CIF frame.
+# QCIF is shown as a centered 176x144 picture on the 320x240 display. CIF is
+# decoded at its mandatory 352x288 coded size, but the player displays its
+# centered 320x240 window. Prepare that exact window here and surround it with
+# the 16/24-pixel CIF guard area so no useful picture is cropped on playback.
+$contentWidth = if ($isCif) { 320 } else { $width }
+$contentHeight = if ($isCif) { 240 } else { $height }
+$cifPadding = if ($isCif) { ",pad=${width}:${height}:16:24:black" } else { "" }
 $videoFilter = if ($FitMode -eq "Crop") {
     (
         "setpts=PTS-STARTPTS,fps=${sourceRate}," +
@@ -143,9 +148,9 @@ $videoFilter = if ($FitMode -eq "Crop") {
         "'trunc(min(iw\,ih*4/3)/2)*2':" +
         "'trunc(min(ih\,iw*3/4)/2)*2':" +
         "(iw-ow)/2:(ih-oh)/2," +
-        "scale=${width}:${height}:" +
+        "scale=${contentWidth}:${contentHeight}:" +
         "flags=lanczos+accurate_rnd+full_chroma_int," +
-        "setsar=1,format=yuv420p"
+        "setsar=1${cifPadding},format=yuv420p"
     )
 }
 else {
@@ -155,9 +160,9 @@ else {
         "'ceil(max(iw\,ih*4/3)/2)*2':" +
         "'ceil(max(ih\,iw*3/4)/2)*2':" +
         "(ow-iw)/2:(oh-ih)/2:black," +
-        "scale=${width}:${height}:" +
+        "scale=${contentWidth}:${contentHeight}:" +
         "flags=lanczos+accurate_rnd+full_chroma_int," +
-        "setsar=1,format=yuv420p"
+        "setsar=1${cifPadding},format=yuv420p"
     )
 }
 

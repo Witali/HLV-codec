@@ -85,12 +85,34 @@ foreach ($profile in @("176x144", "352x288")) {
         )
     }
     if ($profile -eq "352x288" -and
-        $check.Output -notmatch "checksum 52a68290e93f2fe5") {
+        $check.Output -notmatch "checksum 0505763c92a11c73") {
         throw (
             "The CIF pixel checksum changed while decoding packets larger " +
             "than the streaming input buffer. " + $check.Output
         )
     }
+}
+
+# The ESP32 presents the center 320x240 pixels of CIF. Verify that the
+# transcoding profile reserves exactly the surrounding 16/24-pixel guard area.
+$centeredCif = Join-Path $work "centered-cif.avi"
+& (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
+    -InputFile $source `
+    -OutputFile $centeredCif `
+    -Profile 352x288 `
+    -FitMode Crop `
+    -NoAudio `
+    -MaxFrames 1
+if ($LASTEXITCODE -ne 0) {
+    throw "The centered CIF profile encoding failed."
+}
+$borderStats = (
+    & $ffmpeg -hide_banner -loglevel info -i $centeredCif `
+        -vf "crop=16:288:0:0,signalstats,metadata=print" `
+        -frames:v 1 -f null NUL 2>&1 | Out-String
+)
+if ($borderStats -notmatch "lavfi\.signalstats\.YAVG=(1[456]|1[456]\.\d+)") {
+    throw "The CIF profile no longer has a black 16-pixel left guard area."
 }
 
 $rejectedCustomSize = $false
@@ -147,5 +169,6 @@ if (-not $rejectedHalfRate) {
 
 Write-Host (
     "Standard H.263 QCIF/CIF AVI tests passed at the full source rate; " +
-    "custom sizes, 3GP, and half-rate fallback were rejected."
+    "CIF is centered for a 320x240 display; custom sizes, 3GP, and " +
+    "half-rate fallback were rejected."
 )

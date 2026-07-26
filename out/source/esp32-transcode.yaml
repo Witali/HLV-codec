@@ -124,6 +124,9 @@ formats:
       QCIF:
         width: 176
         height: 144
+        displayMode: center
+        displayOffsetX: 72
+        displayOffsetY: 48
         bitrateKbps: 384
         maximumBitrateKbps: 384
         vbvBufferKbps: 512
@@ -131,6 +134,11 @@ formats:
       CIF:
         width: 352
         height: 288
+        displayMode: centerCrop
+        displayWidth: 320
+        displayHeight: 240
+        codedPaddingX: 16
+        codedPaddingY: 24
         bitrateKbps: 1536
         maximumBitrateKbps: 1536
         vbvBufferKbps: 1024
