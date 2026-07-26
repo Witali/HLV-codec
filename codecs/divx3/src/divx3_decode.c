@@ -564,7 +564,7 @@ static void compact_block_target(
 static void write_residual_block(Divx3Decoder *decoder, uint8_t *frame,
                                  unsigned block, unsigned mb_x,
                                  unsigned mb_y, int32_t values[64],
-                                 const int32_t *prediction) {
+                                 const uint8_t *prediction) {
     uint8_t *destination;
     unsigned stride, row, column;
     if (decoder->compact_y6_u5_v5) {
@@ -607,10 +607,32 @@ static void write_residual_block(Divx3Decoder *decoder, uint8_t *frame,
 static void write_prediction_block(Divx3Decoder *decoder, uint8_t *frame,
                                    unsigned block, unsigned mb_x,
                                    unsigned mb_y,
-                                   const int32_t prediction[64]) {
-    int32_t zero[64] = {0};
-    write_residual_block(decoder, frame, block, mb_x, mb_y,
-                         zero, prediction);
+                                   const uint8_t prediction[64]) {
+    uint8_t *destination;
+    unsigned stride;
+    unsigned row;
+    if (decoder->compact_y6_u5_v5) {
+        int8_t *correction;
+        unsigned correction_stride;
+        unsigned bits;
+        unsigned block_x;
+        unsigned block_y;
+        int residual_sum = 0;
+        compact_block_target(
+            decoder, frame, block, mb_x, mb_y, &destination, &stride,
+            &correction, &correction_stride, &bits, &block_x, &block_y);
+        for (row = 0; row < 8U; ++row)
+            compact_yuv420_pack_aligned_samples(
+                destination + row * stride, prediction + row * 8U, 8,
+                bits, &residual_sum, NULL);
+        correction[(block_y / 8U) * correction_stride + block_x / 8U] =
+            compact_yuv420_error_q4(residual_sum);
+        return;
+    }
+    block_target(decoder, frame, block, mb_x, mb_y,
+                 &destination, &stride);
+    for (row = 0; row < 8U; ++row)
+        memcpy(destination + row * stride, prediction + row * 8U, 8U);
 }
 
 static int decode_coefficients(BitReader *reader,
@@ -974,7 +996,7 @@ static void motion_patch(uint8_t patch[81], unsigned patch_stride,
     }
 }
 
-static void motion_compensate(int32_t output[64],
+static void motion_compensate(uint8_t output[64],
                               const uint8_t *source, unsigned stride,
                               unsigned plane_width, unsigned plane_height,
                               int block_y, int block_x,
@@ -1005,31 +1027,31 @@ static void motion_compensate(int32_t output[64],
         for (row = 0; row < 8; ++row) {
             const uint8_t *patch_row = patch + row * patch_width;
             for (column = 0; column < 8; ++column)
-                output[row * 8U + column] =
+                output[row * 8U + column] = (uint8_t)(
                     (patch_row[column] + patch_row[column + 1U] +
                      round_two) >>
-                    1;
+                    1);
         }
     } else if (!fractional_x && fractional_y) {
         for (row = 0; row < 8; ++row) {
             const uint8_t *patch_row = patch + row * patch_width;
             const uint8_t *next_row = patch_row + patch_width;
             for (column = 0; column < 8; ++column)
-                output[row * 8U + column] =
+                output[row * 8U + column] = (uint8_t)(
                     (patch_row[column] + next_row[column] +
                      round_two) >>
-                    1;
+                    1);
         }
     } else {
         for (row = 0; row < 8; ++row) {
             const uint8_t *patch_row = patch + row * patch_width;
             const uint8_t *next_row = patch_row + patch_width;
             for (column = 0; column < 8; ++column)
-                output[row * 8U + column] =
+                output[row * 8U + column] = (uint8_t)(
                     (patch_row[column] + patch_row[column + 1U] +
                      next_row[column] + next_row[column + 1U] +
                      round_four) >>
-                    2;
+                    2);
         }
     }
 }
@@ -1175,7 +1197,7 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                     const int8_t *correction = NULL;
                     unsigned correction_stride = 0;
                     unsigned bits = 8;
-                    int32_t prediction[64];
+                    uint8_t prediction[64];
                     if (block < 4) {
                         source = reference;
                         stride = decoder->y_stride;
