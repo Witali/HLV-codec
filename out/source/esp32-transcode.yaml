@@ -29,7 +29,8 @@ formats:
     psnrMinDb: 35.0
     psnrMaxDb: 42.0
     cqTrials: 5
-    threads: 6
+    # Adaptive feedback is sequential; hlvenc enforces one encoder thread.
+    threads: 1
     audioCodec: pcm_u8
     audioSampleRate: 16000
     audioChannels: 1
