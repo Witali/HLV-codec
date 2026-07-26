@@ -60,10 +60,10 @@ sequence gaps, audio rebuffers, missing samples or inserted silence.
 
 - [x] Establish a fresh QEMU and physical-board baseline.
 - [x] A/B-test IRAM placement for the bitreader and hot VLC helpers.
-- [ ] Add a small direct lookup for the most frequent coefficient prefixes.
-- [ ] Verify bit-exact output, QEMU cycles and physical-board timing after each
+- [x] Add a small direct lookup for the most frequent coefficient prefixes.
+- [x] Verify bit-exact output, QEMU cycles and physical-board timing after each
       independent change.
-- [ ] Keep only individually justified changes and record IRAM/table size.
+- [x] Keep only individually justified changes and record IRAM/table size.
 
 The decoder already has a 32-bit reader and 16-bit lookahead in
 `third_party/pl_mpeg/pl_mpeg.h`. The remaining candidates are fewer flash-cache
@@ -88,6 +88,24 @@ DRAM unchanged and increases the padded application binary by 80 bytes.
 Both variants report the same known audio underrun pattern because this
 240x180 stream is 30 fps while total decode/render work exceeds its frame
 period.
+
+The six-bit coefficient-prefix lookup was also retained. It resolves 59 of 64
+prefixes without walking the full VLC tree and falls back for the remaining
+five. The complete 3,359-frame compact regression again retained checksum
+`6bc59309b0d7dc23`. QEMU retained hash `14d6bd4e019da037` and improved from
+1,753,288 to 1,710,092 guest cycles per frame, or 2.46%.
+
+| MPEG-1 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| IRAM helpers | 43,833.3 us | 43,779 us | 58,696 us | 64,737 us | baseline |
+| IRAM helpers + prefix lookup | 42,656.1 us | 42,658 us | 57,059 us | 62,005 us | accepted |
+
+These are again medians of three 300-frame board runs. The lookup improves
+physical decode time by another 2.69%, or 4.10% cumulatively relative to the
+original Flash-helper baseline. It adds 256 bytes of read-only table data and
+116 bytes of Flash code, leaves IRAM and DRAM unchanged, and increases the
+padded application binary by 368 bytes. All trials had no frame-sequence gaps
+and reproduced only the stream's known audio-underrun pattern.
 
 ## H.263
 

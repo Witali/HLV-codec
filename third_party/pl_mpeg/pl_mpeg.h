@@ -151,6 +151,10 @@ See below for detailed the API documentation.
 #define PLM_MPEG_IRAM_BITREADER 0
 #endif
 
+#ifndef PLM_MPEG_FAST_DCT_PREFIX
+#define PLM_MPEG_FAST_DCT_PREFIX 0
+#endif
+
 #if PLM_MPEG_IRAM_BITREADER
 #include "esp_attr.h"
 #define PLM_MPEG_BITREADER_ATTR IRAM_ATTR
@@ -2890,6 +2894,65 @@ static const plm_vlc_uint_t PLM_VIDEO_DCT_COEFF[] = {
 	{       0,   0x1c01}, {       0,   0x1b01},  // 111: 0000 0000 0001 111x
 };
 
+#if PLM_MPEG_FAST_DCT_PREFIX
+// Bits 16..23 store the VLC length and the low half stores run/level.
+// Zero entries need more than six bits and fall back to the complete tree.
+static const uint32_t PLM_VIDEO_DCT_COEFF_FAST[64] = {
+	0x00000000U, 0x0006ffffU, 0x00000000U, 0x00000000U,
+	0x00060701U, 0x00060601U, 0x00060102U, 0x00060501U,
+	0x00000000U, 0x00000000U, 0x00050003U, 0x00050003U,
+	0x00050401U, 0x00050401U, 0x00050301U, 0x00050301U,
+	0x00040002U, 0x00040002U, 0x00040002U, 0x00040002U,
+	0x00040201U, 0x00040201U, 0x00040201U, 0x00040201U,
+	0x00030101U, 0x00030101U, 0x00030101U, 0x00030101U,
+	0x00030101U, 0x00030101U, 0x00030101U, 0x00030101U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
+};
+
+static inline uint16_t plm_buffer_read_dct_coeff(plm_buffer_t *self) {
+	enum { PLM_DCT_PREFIX_BITS = 6 };
+	if (
+		(self->bit_cache_count < PLM_DCT_PREFIX_BITS ||
+		 self->bit_cache_index != self->bit_index) &&
+		plm_buffer_has(self, PLM_DCT_PREFIX_BITS)
+	) {
+		plm_buffer_refill_bit_cache(self);
+	}
+	if (
+		self->bit_cache_count >= PLM_DCT_PREFIX_BITS &&
+		self->bit_cache_index == self->bit_index
+	) {
+		uint32_t prefix =
+			self->bit_cache >>
+			(self->bit_cache_count - PLM_DCT_PREFIX_BITS);
+		uint32_t entry = PLM_VIDEO_DCT_COEFF_FAST[prefix];
+		unsigned used = entry >> 16;
+		if (used) {
+			unsigned remaining = self->bit_cache_count - used;
+			self->bit_cache_count = (uint8_t)remaining;
+			self->bit_cache =
+				remaining == 32U
+					? self->bit_cache
+					: self->bit_cache &
+						  (remaining
+							   ? ((1U << remaining) - 1U)
+							   : 0U);
+			self->bit_index += used;
+			self->bit_cache_index = self->bit_index;
+			return (uint16_t)entry;
+		}
+	}
+	return plm_buffer_read_vlc_uint(self, PLM_VIDEO_DCT_COEFF);
+}
+#endif
+
 typedef struct {
 	int full_px;
 	int is_set;
@@ -4293,7 +4356,11 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	int level = 0;
 	while (TRUE) {
 		int run = 0;
+#if PLM_MPEG_FAST_DCT_PREFIX
+		uint16_t coeff = plm_buffer_read_dct_coeff(self->buffer);
+#else
 		uint16_t coeff = plm_buffer_read_vlc_uint(self->buffer, PLM_VIDEO_DCT_COEFF);
+#endif
 
 		if ((coeff == 0x0001) && (n > 0) && (plm_buffer_read(self->buffer, 1) == 0)) {
 			// end_of_block
