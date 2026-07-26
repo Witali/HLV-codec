@@ -222,6 +222,23 @@ parallelize entropy decoding within one JPEG frame.
       reject the physical-board slowdown and remove the candidate.
 - [x] Reject a wider primary VLC lookup for the current stream: no measured DC
       symbols and only 2.737% of AC symbols exceed eight Huffman bits.
+- [ ] A/B a fixed 16x16 YUV420-to-RGB565LE kernel for the 320-pixel output
+      stride. Unroll only the eight four-pixel groups, retain the exact
+      fixed-point products and clipping-table semantics, and keep the original
+      library function as the fallback for every other geometry.
+- [ ] Independently A/B two packed 256-entry U/V contribution tables after the
+      fixed-geometry colour result is known. Charge the 2 KiB internal-DRAM
+      cost separately and do not combine both changes in the first build.
+- [ ] Prototype a complete paired Huffman table-builder/decoder replacement
+      with packed 16-bit `{nbits,symbol}` primary entries and marker-safe
+      multi-byte refill at every refill site. Do not repeat the rejected
+      entry-only refill wrapper.
+- [ ] Measure a fixed aligned, restart-free YUV420 MCU call path only after the
+      isolated colour kernel. Preserve the original 0x5ea-byte process
+      function for restart-coded, rotated, scaled and edge MCUs.
+- [ ] Instrument the first excluded coefficient pair for reduced-IDCT
+      fallbacks, reorder the checks by measured rejection frequency, and keep
+      the order only if both QEMU and COM8 improve.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
 - [ ] Test source-built TJpgDec `JD_FASTDECODE=2` only after measuring its
       approximately 65.5 KiB work-buffer cost on the real firmware.
