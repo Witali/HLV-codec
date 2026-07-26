@@ -39,12 +39,17 @@
 
 /*****************************************************/
 //pretested version
-void idctrow0(int16 *, uint8 *, uint8 *, int)
+void idctrow0(int16 *block, uint8 *prediction, uint8 *destination, int width)
 {
+    (void)block;
+    (void)prediction;
+    (void)destination;
+    (void)width;
     return ;
 }
-PV_H263_INTRA_IDCT_ATTR void idctcol0(int16 *)
+PV_H263_INTRA_IDCT_ATTR void idctcol0(int16 *block)
 {
+    (void)block;
     return ;
 }
 
@@ -429,8 +434,12 @@ PV_H263_INTRA_IDCT_ATTR void idctcol4(int16 *blk)
     return ;
 }
 
-PV_H263_INTRA_IDCT_ATTR void idctrow0_intra(int16 *, PIXEL *, int)
+PV_H263_INTRA_IDCT_ATTR
+void idctrow0_intra(int16 *block, PIXEL *component, int width)
 {
+    (void)block;
+    (void)component;
+    (void)width;
     return ;
 }
 

@@ -149,8 +149,9 @@ void BitstreamReset(BitstreamDecVideo *stream, uint8 *buffer, int32 buffer_size)
 /*  Return   :                                                              */
 /*  Modified :                                                              */
 /* ======================================================================== */
-int BitstreamOpen(BitstreamDecVideo *stream, int)
+int BitstreamOpen(BitstreamDecVideo *stream, int buffer_index)
 {
+    (void)buffer_index;
     int buffer_size = 0;
     /* set up linear bitstream buffer */
 //  stream->currentBytePos = 0;
@@ -172,8 +173,9 @@ int BitstreamOpen(BitstreamDecVideo *stream, int)
 /*  Return   :                                                              */
 /*  Modified :                                                              */
 /* ======================================================================== */
-void BitstreamClose(BitstreamDecVideo *)
+void BitstreamClose(BitstreamDecVideo *stream)
 {
+    (void)stream;
     return;
 }
 
