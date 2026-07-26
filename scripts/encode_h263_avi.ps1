@@ -82,9 +82,12 @@ $inputVideo = @($inputMetadata.streams)
 if ($inputVideo.Count -ne 1) {
     throw "Input must contain one primary video stream."
 }
-$sourceRate = [string]$inputVideo[0].avg_frame_rate
+# MP4 average rates may differ slightly from the nominal cadence because the
+# final frame has a shorter duration. Use the declared cadence first so a
+# nominal 30 fps stream is not misclassified as being above the H.263 limit.
+$sourceRate = [string]$inputVideo[0].r_frame_rate
 if (-not $sourceRate -or $sourceRate -eq "0/0") {
-    $sourceRate = [string]$inputVideo[0].r_frame_rate
+    $sourceRate = [string]$inputVideo[0].avg_frame_rate
 }
 if ($sourceRate -notmatch "^(\d+)/(\d+)$" -or
     [double]$Matches[2] -eq 0.0) {
