@@ -29,7 +29,7 @@ $source = Join-Path $repo "out\sources\VID_20260522_181611.mp4"
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo (
-        "out\VID_20260522_181611_center-crop_240x180_" +
+        "out\MPEG1\VID_20260522_181611_center-crop_240x180_" +
         "mpeg1_q${VideoQuality}_native-fps.mpg"
     )
 }

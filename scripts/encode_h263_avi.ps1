@@ -119,7 +119,7 @@ if (-not $OutputFile) {
         "${VideoBitrateKbps}k"
     }
     $OutputFile = Join-Path $repo (
-        "out\${baseName}_${Profile}_${fpsLabel}fps_" +
+        "out\H263\${baseName}_${Profile}_${fpsLabel}fps_" +
         "H263_${profileName}_${qualityLabel}.avi"
     )
 }

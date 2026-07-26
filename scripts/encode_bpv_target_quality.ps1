@@ -108,7 +108,7 @@ if ($OutputName -and $OutputName.Count -ne $InputFile.Count) {
     throw "OutputName must contain one name for every InputFile."
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $repo "out"
+    $OutputDirectory = Join-Path $repo "out\BPV"
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 

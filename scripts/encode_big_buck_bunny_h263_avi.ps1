@@ -57,7 +57,7 @@ if (-not $OutputFile) {
         "${effectiveBitrate}k"
     }
     $OutputFile = Join-Path $repo (
-        "out\BigBuckBunny_${Profile}_nativefps_" +
+        "out\H263\BigBuckBunny_${Profile}_nativefps_" +
         "H263_${profileName}_${qualityLabel}.avi"
     )
 }

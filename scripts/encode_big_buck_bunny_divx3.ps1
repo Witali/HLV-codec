@@ -55,7 +55,7 @@ $ffprobe = Find-WorktreeFile $ffprobeRelative
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo (
-        "out\BigBuckBunny_1080p_divx3_q{0}_{1}fps_320x240.avi" -f
+        "out\DivX3\BigBuckBunny_1080p_divx3_q{0}_{1}fps_320x240.avi" -f
         $Quality, $Fps
     )
 }

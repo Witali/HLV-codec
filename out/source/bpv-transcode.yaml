@@ -1,8 +1,8 @@
 # BPV1 v5 transcoding profiles.
 # Paths are resolved relative to this YAML file.
 version: 1
-outputDirectory: ..
-summaryFile: ../BPVv5_yaml_summary.json
+outputDirectory: ../BPV
+summaryFile: ../BPV/BPVv5_yaml_summary.json
 
 videos:
   - name: Danila

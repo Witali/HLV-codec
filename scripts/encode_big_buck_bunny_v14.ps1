@@ -26,7 +26,7 @@ $encoder = Join-Path $repo "build\msvc\hlvenc.exe"
 $fpsLabel = if ($Fps) { "${Fps}fps" } else { "native-fps" }
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
-        ("out\BigBuckBunny_1080p_video-settings_v14_{0}_level-curve.hlv" -f
+        ("out\HLV\BigBuckBunny_1080p_video-settings_v14_{0}_level-curve.hlv" -f
             $fpsLabel)
 }
 if (-not [IO.Path]::IsPathRooted($OutputFile)) {

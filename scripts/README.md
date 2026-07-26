@@ -84,6 +84,10 @@ the remaining codecs target 40 dB where that quality is attainable. DivX 3
 always uses half of the source frame rate (12 fps for Bunny, 15 fps for
 Danila).
 
+Generated videos and their sidecar reports are grouped under `out` by codec:
+`HLV`, `BPV`, `H263`, `DivX3`, `MJPEG`, and `MPEG1`. Input media and
+transcoding configuration remain in `out/sources` and `out/source`.
+
 Example H.263 and BPV calls:
 
 ```powershell

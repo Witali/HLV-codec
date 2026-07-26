@@ -27,7 +27,7 @@ $source = Join-Path $repo `
     "out\sources\big_buck_bunny_1080p_h264\big_buck_bunny_1080p_h264.mov"
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
-        "out\BigBuckBunny_1080p_bpv1_v5_adaptive_lambda64_normalized_native-fps_320x180.bpv1"
+        "out\BPV\BigBuckBunny_1080p_bpv1_v5_adaptive_lambda64_normalized_native-fps_320x180.bpv1"
 }
 if (-not $ReportFile) {
     $ReportFile = [IO.Path]::ChangeExtension($OutputFile, ".json")
