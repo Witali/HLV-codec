@@ -133,7 +133,7 @@ elseif(BPV_QEMU_BENCHMARK)
 elseif(H263_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_h263_benchmark.cpp"
+            "qemu_h263_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             esp_rom
@@ -165,7 +165,7 @@ elseif(MPEG1_QEMU_BENCHMARK)
 elseif(DIVX3_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_divx3_benchmark.cpp"
+            "qemu_divx3_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             compact_yuv420
