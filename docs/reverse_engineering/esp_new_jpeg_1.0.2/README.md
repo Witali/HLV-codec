@@ -20,9 +20,9 @@ static library. The derived files here are covered by
 
 ## Saved output
 
-The seven files under [assembly](assembly) are Xtensa little-endian
+The nine files under [assembly](assembly) are Xtensa little-endian
 disassemblies. The matching files under [pseudo_c](pseudo_c) are Ghidra
-pseudo-C. Together they cover 109 retained decoder functions:
+pseudo-C. Together they cover 116 retained decoder and support functions:
 
 | Object | Functions | Main responsibility |
 | --- | ---: | --- |
@@ -33,6 +33,8 @@ pseudo-C. Together they cover 109 retained decoder functions:
 | `jpeg_dec_color.c.obj` | 16 | Full-size grayscale/YUV color conversion |
 | `jpeg_dec_color_scale.c.obj` | 16 | Scaled and rotated color conversion |
 | `jpeg_dec_process.c.obj` | 53 | MCU loops, edge paths and output dispatch |
+| `esp_jpeg_memory.c.obj` | 6 | Capability-aware heap allocation wrappers |
+| `esp_jpeg_version.c.obj` | 1 | Version-string query; not in the decode path |
 
 Every function starts with a `Purpose` comment. In particular, the comments
 mark the current Player hot path:

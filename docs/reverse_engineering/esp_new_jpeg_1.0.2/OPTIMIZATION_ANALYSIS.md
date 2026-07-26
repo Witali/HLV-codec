@@ -15,7 +15,7 @@ reimplemented:
 - The current Player build already moves Huffman, the YUV420 block MCU loop,
   non-rotated dispatch and RGB565LE conversion into IRAM.
 
-The linked Player map currently reports:
+The optimized reference Player map used for the retained A/B runs reports:
 
 | Hot section | Linked size |
 | --- | ---: |
@@ -24,6 +24,123 @@ The linked Player map currently reports:
 | `jpeg_dec_process_0` | 0x150 bytes |
 | `yuv420_to_rgb565le` | 0x1de bytes |
 | Complete IDCT object | 0x1af0 bytes |
+
+## Full nine-object Ghidra follow-up
+
+The decoder-side archive pass now also covers `esp_jpeg_memory.c.obj` and
+`esp_jpeg_version.c.obj`, for a total of 116 retained functions. Neither
+reveals a useful decode hot spot:
+
+- the memory object contains six short wrappers around
+  `heap_caps_calloc_prefer`, `heap_caps_aligned_calloc` and `heap_caps_free`;
+- the version object only returns the compile-time version string.
+
+The allocation-reuse A/B already measured only a 0.037% decoder-only physical
+gain while consuming 608 persistent heap bytes. The version function is not
+called by the Player. These objects should therefore remain untouched.
+
+The complete Ghidra instruction scan reinforces that the remaining work is in
+four functions:
+
+| Function | Static instructions | Notable operations |
+| --- | ---: | --- |
+| `jpeg_dec_huffman` | 514 | 49 conditional branches, 27 byte-load sites |
+| `jpeg_dec_proc_yuv420_0_block` | 585 | 33 indirect-call sites over all paths |
+| `idct_block_8_8` | 201 | 19 multiplies, eight clip-table loads |
+| `yuv420_to_rgb565le` | 184 | two `MULL`, 12 clip loads and four stores per four-pixel inner iteration |
+
+For a 320x240 YUV420 frame the selected block path processes 300 complete
+16x16 MCUs. The RGB565 converter therefore executes 19,200 four-pixel inner
+iterations: 230,400 clip-table byte loads, 76,800 halfword stores and 38,400
+`MULL` instructions per frame, in addition to the two shift/add constant
+products per iteration. The aligned MCU loop also performs three Huffman, six
+IDCT and one colour call per MCU, or 3,000 indirect calls per frame.
+
+The production Player measurement on the physical board over 900 consecutive
+320x240/30 packets decoded 565 packets and skipped 335 late packets. Excluding
+the deliberate `decode_us=0` records, decode latency was 36.054 ms average,
+36.886 ms P50, 40.240 ms P95 and 42.203 ms P99. This remains above the
+33.333 ms frame budget and justifies another isolated optimization round.
+
+## Remaining candidates after the completed A/B work
+
+### A. Fixed-geometry RGB565LE kernel
+
+This is the best remaining isolated candidate. Wrap
+`yuv420_to_rgb565le` and select a first-party Xtensa kernel only when the
+runtime geometry is the current unscaled, non-rotated 16x16 YUV420 MCU with a
+320-pixel destination stride. Keep the original function for every other
+geometry.
+
+First A/B only the structural specialization:
+
+1. hard-code the 320-pixel row stride and 16x16 block dimensions;
+2. unroll the eight four-pixel groups in each two-row pair;
+3. retain the exact existing fixed-point products, clipping-table indexing and
+   four 16-bit stores so the change has no numerical ambiguity;
+4. keep the eight chroma-row iterations as a small loop to limit IRAM growth.
+
+This removes repeated `w_h` loads, inner-loop comparisons, stack spills and
+pointer reconstruction without changing colour arithmetic. It is materially
+safer than replacing the whole MCU function.
+
+As a separate second A/B, test two packed 256-entry contribution tables: one
+for U-derived blue/green terms and one for V-derived red/green terms. Two
+32-bit loads would replace the two `MULL` operations and both synthesized
+constant-multiply sequences for each four-pixel group. The cost is 2 KiB of
+internal DRAM. This is different from the rejected `MULL` to `MUL16S`
+substitution: it removes all four chroma products, so it must be measured
+rather than inferred from that zero-gain DSP experiment.
+
+Do not combine the fixed-geometry and contribution-table changes in the first
+build. Their effects and memory costs need independent results.
+
+### B. Combined Huffman lookup and integrated refill
+
+The primary eight-bit lookup is already the correct width for this stream:
+only 2.737% of AC symbols miss it. The remaining avoidable cost is that a fast
+hit loads bit length and symbol from separate byte arrays, while the same
+marker-safe one-byte refill logic is duplicated throughout the 0x520-byte
+function.
+
+A source-compatible replacement of both `jpeg_dec_create_huffman_tbl` and
+`jpeg_dec_huffman` could use one packed 16-bit `{nbits,symbol}` primary table
+and integrate a two- or three-byte no-`0xff` refill at every refill site. The
+entry-only refill wrapper already regressed, so another wrapper experiment is
+not useful. This candidate requires a complete bit-exact entropy replacement
+and private-state validation; it comes after the colour kernel.
+
+### C. Fixed aligned MCU call path
+
+For the current files, width and height are MCU-aligned and the restart
+interval is zero. A fixed kernel could remove the restart checks and replace
+the ten indirect calls per MCU with direct calls to the selected Huffman,
+8x8-IDCT and RGB565LE functions. The potential saving is bounded by 3,000
+call edges and 300 always-false restart checks per frame.
+
+This still requires reproducing the private `jpeg_decoder_t` layout and most
+of a 0x5ea-byte function, so it has substantially more maintenance and
+correctness risk than the colour specialization. Do not proceed unless phase
+measurements show the colour kernel is no longer the best isolated target.
+
+### D. Reorder the reduced-IDCT rejection checks
+
+The retained one-/two-column shortcut scans excluded coefficient pairs before
+falling back. Instrument which excluded pair first rejects the 67.07% of
+non-matching blocks, then order those loads by observed rejection frequency.
+This preserves every transform equation and only changes early-exit order.
+The likely gain is small, but implementation and bit-exactness risk are low.
+
+### Candidates not worth revisiting
+
+- `esp_jpeg_memory`, version lookup and output-geometry queries;
+- header caching for this stream, because DHT sets change in 58 of 60 sampled
+  frames and header parsing is only about 32,308 cycles;
+- wider flat VLC tables;
+- `MUL16S` substitution, paired RGB565 stores, sparse coefficient clearing,
+  three-column reduced IDCT and the entry-only entropy prefill;
+- `jpeg_dec_color_scale`, rotation kernels and edge-copy paths, because the
+  current Player does not execute them.
 
 ## Recommended experiments
 

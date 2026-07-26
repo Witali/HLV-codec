@@ -315,6 +315,33 @@ public class ExportAnnotatedDecompilation extends GhidraScript {
             "General scaled decode path handling reduced IDCT dimensions, " +
                 "clipping, rotation and output-format dispatch.");
         exactDescriptions.put(
+            "jpeg_calloc",
+            "Allocates zero-initialized JPEG work memory using the component's " +
+                "default capability policy.");
+        exactDescriptions.put(
+            "jpeg_calloc_align",
+            "Allocates zero-initialized JPEG work memory with the requested " +
+                "alignment using the component's default capability policy.");
+        exactDescriptions.put(
+            "jpeg_calloc_inner",
+            "Allocates zero-initialized internal-memory JPEG work storage, " +
+                "preferring capability combinations suitable for decoder " +
+                "tables and state.");
+        exactDescriptions.put(
+            "jpeg_calloc_align_inner",
+            "Allocates aligned, zero-initialized internal-memory JPEG work " +
+                "storage with capability-aware heap selection.");
+        exactDescriptions.put(
+            "jpeg_free",
+            "Releases an ordinary JPEG component allocation.");
+        exactDescriptions.put(
+            "jpeg_free_align",
+            "Releases an aligned JPEG component allocation.");
+        exactDescriptions.put(
+            "esp_jpeg_get_version",
+            "Returns the compile-time ESP_NEW_JPEG version string; it is not " +
+                "part of the image decode path.");
+        exactDescriptions.put(
             "jpeg_dec_proc_yuv420_0_block",
             "Hot Player path: decodes six blocks per 16x16 YUV420 MCU, runs " +
                 "integer IDCT, converts to RGB565LE and submits block rows " +
