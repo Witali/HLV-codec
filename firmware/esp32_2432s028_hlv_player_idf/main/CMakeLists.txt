@@ -2,9 +2,14 @@ set(MJPEG_HOT_IRAM ON CACHE BOOL
     "Place the hottest esp_new_jpeg decode kernels in IRAM")
 set(MJPEG_OPTIMIZED_IDCT ON CACHE BOOL
     "Use the bit-exact DC-only Xtensa IDCT shortcut")
+set(MJPEG_IDCT_REDUCED_ROWS ON CACHE BOOL
+    "Use exact one- and two-column reduced-row IDCT shortcuts")
 set(mjpeg_idct_sources)
 if(MJPEG_OPTIMIZED_IDCT AND MJPEG_HOT_IRAM)
     list(APPEND mjpeg_idct_sources "mjpeg_idct_optimized.S")
+    if(MJPEG_IDCT_REDUCED_ROWS)
+        list(APPEND mjpeg_idct_sources "mjpeg_idct_reduced.cpp")
+    endif()
 endif()
 
 function(enable_mjpeg_hot_iram component_target)
@@ -87,6 +92,10 @@ if(MJPEG_QEMU_BENCHMARK)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT}
         MJPEG_PHASE_TIMING=1)
+    if(MJPEG_IDCT_REDUCED_ROWS)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            MJPEG_IDCT_REDUCED_ROWS=1)
+    endif()
     enable_mjpeg_optimized_idct_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
     target_add_binary_data(
@@ -205,6 +214,10 @@ else()
     )
     enable_mjpeg_optimized_idct_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
+    if(MJPEG_IDCT_REDUCED_ROWS)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            MJPEG_IDCT_REDUCED_ROWS=1)
+    endif()
 endif()
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)

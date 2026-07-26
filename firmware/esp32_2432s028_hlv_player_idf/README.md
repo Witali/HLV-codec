@@ -333,13 +333,21 @@ RGB565 block decoder and direct output:
 
 The production build selectively places the active Huffman, YUV420 process and
 RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. It
-also links a bit-exact Xtensa DC-only shortcut around the fixed 8x8 IDCT.
-Compare that shortcut against the unchanged library kernel while retaining the
-same hot-section placement:
+also links bit-exact Xtensa DC-only and one-/two-column reduced-row shortcuts
+around the fixed 8x8 IDCT. Compare the DC wrapper against the unchanged
+library kernel while retaining the same hot-section placement:
 
 ```powershell
 .\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct OFF
 .\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct ON
+```
+
+Compare the retained reduced-row extension independently from the DC-only
+wrapper:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -ReducedIdct OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -ReducedIdct ON
 ```
 
 To run the historical all-Flash control variant (which also disables the
@@ -353,10 +361,11 @@ The `J` record includes per-frame cycles, the complete submitted RGB565 hash
 and appended decoder-only, header, geometry, JPEG-process and correctness
 callback averages. The callback average measures RGB565 hashing and is
 subtracted from `decoder_avg`; phase counters are compiled only into this
-benchmark. `MJPEG_OPTIMIZED_IDCT=ON` is the production default. The old ROM
-TJpgDec implementation and its benchmark modes were removed after the
-accelerated backend passed the A/B checks. Display SPI/DMA time is measured
-only on the physical board.
+benchmark. `MJPEG_OPTIMIZED_IDCT=ON` and
+`MJPEG_IDCT_REDUCED_ROWS=ON` are the production defaults. The old ROM TJpgDec
+implementation and its benchmark modes were removed after the accelerated
+backend passed the A/B checks. Display SPI/DMA time is measured only on the
+physical board.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for

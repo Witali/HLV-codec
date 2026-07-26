@@ -4,9 +4,10 @@
  * The original Xtensa kernel already skips AC-empty columns, but it always
  * executes the complete row transform. This wrapper recognizes a completely
  * DC-only block before that transform, calculates the identical rounded and
- * clipped sample, and fills the 8x8 destination with 32-bit stores. All other
- * blocks use an ordinary windowed call to the linker-wrapped original
- * implementation.
+ * clipped sample, and fills the 8x8 destination with 32-bit stores. An
+ * optional second shortcut handles blocks whose non-zero coefficients occupy
+ * only natural-order DCT columns 0 or 0..1. All other blocks use an ordinary
+ * windowed call to the linker-wrapped original implementation.
  *
  * ABI:
  *   a2 = int16_t coefficients[64]
@@ -29,17 +30,23 @@
 __wrap_idct_block_8_8:
     entry   a1, 32
 
+#ifdef MJPEG_IDCT_REDUCED_ROWS
+#define IDCT_AC_TARGET .L_idct_check_reduced
+#else
+#define IDCT_AC_TARGET .L_idct_fallback
+#endif
+
     /*
      * Check common low-frequency locations first so ordinary AC-containing
      * blocks reach the original kernel after only one or two loads.
      * Every remaining pair is still checked before taking the DC-only path.
-     */
+    */
     l16si   a7, a2, 2
-    bnez    a7, .L_idct_fallback
+    bnez    a7, IDCT_AC_TARGET
 
     .macro CHECK_AC_PAIR offset
     l32i    a7, a2, \offset
-    bnez    a7, .L_idct_fallback
+    bnez    a7, IDCT_AC_TARGET
     .endm
 
     CHECK_AC_PAIR 16
@@ -101,6 +108,76 @@ __wrap_idct_block_8_8:
     addi    a8, a8, -1
     bnez    a8, .L_idct_fill_row
     retw.n
+
+#ifdef MJPEG_IDCT_REDUCED_ROWS
+    /*
+     * Check whether every coefficient outside natural-order columns 0 and 1
+     * is zero. Two 16-bit coefficients are tested with each aligned load.
+     * The helper then performs only the occupied column transforms and an
+     * algebraically reduced, bit-exact row transform.
+     */
+.L_idct_check_reduced:
+    .macro CHECK_EXCLUDED_PAIR offset
+    l32i    a7, a2, \offset
+    bnez    a7, .L_idct_fallback
+    .endm
+
+    CHECK_EXCLUDED_PAIR 4
+    CHECK_EXCLUDED_PAIR 8
+    CHECK_EXCLUDED_PAIR 12
+    CHECK_EXCLUDED_PAIR 20
+    CHECK_EXCLUDED_PAIR 24
+    CHECK_EXCLUDED_PAIR 28
+    CHECK_EXCLUDED_PAIR 36
+    CHECK_EXCLUDED_PAIR 40
+    CHECK_EXCLUDED_PAIR 44
+    CHECK_EXCLUDED_PAIR 52
+    CHECK_EXCLUDED_PAIR 56
+    CHECK_EXCLUDED_PAIR 60
+    CHECK_EXCLUDED_PAIR 68
+    CHECK_EXCLUDED_PAIR 72
+    CHECK_EXCLUDED_PAIR 76
+    CHECK_EXCLUDED_PAIR 84
+    CHECK_EXCLUDED_PAIR 88
+    CHECK_EXCLUDED_PAIR 92
+    CHECK_EXCLUDED_PAIR 100
+    CHECK_EXCLUDED_PAIR 104
+    CHECK_EXCLUDED_PAIR 108
+    CHECK_EXCLUDED_PAIR 116
+    CHECK_EXCLUDED_PAIR 120
+    CHECK_EXCLUDED_PAIR 124
+
+    /* Column 1 decides between the one- and two-column specializations. */
+    l16si   a7, a2, 2
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 18
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 34
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 50
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 66
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 82
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 98
+    bnez    a7, .L_idct_two_columns
+    l16si   a7, a2, 114
+    bnez    a7, .L_idct_two_columns
+    movi    a14, 1
+    j       .L_idct_call_reduced
+
+.L_idct_two_columns:
+    movi    a14, 2
+
+.L_idct_call_reduced:
+    mov     a10, a2
+    mov     a11, a4
+    mov     a12, a5
+    mov     a13, a6
+    call8   mjpeg_idct_reduced_8x8
+    retw.n
+#endif
 
 .L_idct_fallback:
     mov     a10, a2

@@ -201,7 +201,7 @@ parallelize entropy decoding within one JPEG frame.
       `esp_new_jpeg` kernel as the fallback.
 - [x] Separate header/process/correctness-callback cycles in the benchmark so
       RGB565 hashing does not dilute decoder-only deltas.
-- [ ] Extend the Xtensa IDCT with exact one-column and two-column reduced-row
+- [x] Extend the Xtensa IDCT with exact one-column and two-column reduced-row
       paths; retain the original kernel for every unmatched coefficient mask.
 - [ ] Add a three- or four-byte Huffman reservoir refill for marker-free input
       and retain the current byte path for `0xff`, markers and short tails.
@@ -245,6 +245,17 @@ guest cycles from 1,832,549 to 1,771,053 (3.36%). Seven physical-board runs
 retained the same hash and reduced average decode time from 39.542 to
 38.509 ms per frame (2.61%); P50 improved by 2.73%. The optimized path is
 enabled by default with `MJPEG_OPTIMIZED_IDCT=ON`.
+
+The retained reduced-row extension checks whether all coefficients outside
+natural-order DCT columns zero and one are empty. It transforms only the
+occupied columns and uses exact reduced row equations; every other block still
+calls the original kernel. The 60-frame QEMU A/B remained bit exact
+(`436f6b344bed074e`) and improved 1,771,107 to 1,746,716 total guest cycles
+per frame (1.38%). Five identical reset-to-reset COM8 trials improved
+9,243,179 to 9,133,439 total cycles (1.19%) and 7,776,263 to 7,666,750
+decoder-only cycles (1.41%). Heap and largest-free-block values were
+unchanged. `MJPEG_IDCT_REDUCED_ROWS=ON` is retained by default and can be
+disabled independently while keeping the DC-only wrapper.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
