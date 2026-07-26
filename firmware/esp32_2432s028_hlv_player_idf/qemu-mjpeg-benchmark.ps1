@@ -8,7 +8,9 @@ param(
     [ValidateSet("ON", "OFF")]
     [string]$OptimizedIdct = "ON",
     [ValidateSet("ON", "OFF")]
-    [string]$ReducedIdct = "ON"
+    [string]$ReducedIdct = "ON",
+    [ValidateSet("ON", "OFF")]
+    [string]$FastClear = "ON"
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +34,7 @@ $project = $PSScriptRoot
     "-D", "MJPEG_HOT_IRAM=$HotIram",
     "-D", "MJPEG_OPTIMIZED_IDCT=$OptimizedIdct",
     "-D", "MJPEG_IDCT_REDUCED_ROWS=$ReducedIdct",
+    "-D", "MJPEG_FAST_COEFFICIENT_CLEAR=$FastClear",
     "qemu",
     "--qemu-extra-args=-no-reboot -icount shift=0,sleep=off"
 )

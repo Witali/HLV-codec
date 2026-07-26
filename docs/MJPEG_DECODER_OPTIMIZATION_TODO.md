@@ -213,6 +213,8 @@ parallelize entropy decoding within one JPEG frame.
       DSP substitution because it has zero cycle benefit on the ESP32.
 - [ ] Reuse variable-size Huffman allocations while still rebuilding the
       frame-specific canonical and lookup tables.
+- [x] Replace the aligned zero-128 coefficient `memset` with a bit-exact
+      unrolled IRAM clear and keep libc for every unmatched call.
 - [ ] A/B sparse coefficient clearing only after the larger decode-loop
       candidates have been exhausted.
 - [x] Reject a wider primary VLC lookup for the current stream: no measured DC
@@ -269,6 +271,16 @@ exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame.
 The substitution was removed. Chroma contribution tables would exchange the
 same two products for DRAM loads while costing at least 2 KiB, so they are not
 retained either.
+
+The retained coefficient-clear wrapper recognizes only aligned
+`memset(buffer, 0, 128)` calls and emits 32 unrolled `S32I` stores. Every
+unmatched call uses the original libc implementation. It costs 118 bytes of
+IRAM text plus a four-byte literal and no heap. The 60-frame QEMU A/B remained
+bit exact (`436f6b344bed074e`) and improved 1,746,716 to 1,739,381 total guest
+cycles per frame (0.42%). Five identical COM8 reset trials improved 9,133,439
+to 9,073,825 total cycles (0.65%) and 7,666,750 to 7,607,262 decoder-only
+cycles (0.78%). Heap and largest-free-block results were unchanged.
+`MJPEG_FAST_COEFFICIENT_CLEAR=ON` is retained by default.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,

@@ -350,6 +350,13 @@ wrapper:
 .\qemu-mjpeg-benchmark.ps1 -Frames 60 -ReducedIdct ON
 ```
 
+Compare the retained aligned zero-128 coefficient clear against libc:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -FastClear OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -FastClear ON
+```
+
 To run the historical all-Flash control variant (which also disables the
 IRAM-only IDCT wrapper unless explicitly overridden):
 
@@ -362,10 +369,11 @@ and appended decoder-only, header, geometry, JPEG-process and correctness
 callback averages. The callback average measures RGB565 hashing and is
 subtracted from `decoder_avg`; phase counters are compiled only into this
 benchmark. `MJPEG_OPTIMIZED_IDCT=ON` and
-`MJPEG_IDCT_REDUCED_ROWS=ON` are the production defaults. The old ROM TJpgDec
-implementation and its benchmark modes were removed after the accelerated
-backend passed the A/B checks. Display SPI/DMA time is measured only on the
-physical board.
+`MJPEG_IDCT_REDUCED_ROWS=ON` are the production defaults. The aligned
+coefficient clear is enabled with `MJPEG_FAST_COEFFICIENT_CLEAR=ON`. The old
+ROM TJpgDec implementation and its benchmark modes were removed after the
+accelerated backend passed the A/B checks. Display SPI/DMA time is measured
+only on the physical board.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for

@@ -4,12 +4,18 @@ set(MJPEG_OPTIMIZED_IDCT ON CACHE BOOL
     "Use the bit-exact DC-only Xtensa IDCT shortcut")
 set(MJPEG_IDCT_REDUCED_ROWS ON CACHE BOOL
     "Use exact one- and two-column reduced-row IDCT shortcuts")
+set(MJPEG_FAST_COEFFICIENT_CLEAR ON CACHE BOOL
+    "Use an unrolled aligned zero-128 memset path for JPEG coefficients")
 set(mjpeg_idct_sources)
 if(MJPEG_OPTIMIZED_IDCT AND MJPEG_HOT_IRAM)
     list(APPEND mjpeg_idct_sources "mjpeg_idct_optimized.S")
     if(MJPEG_IDCT_REDUCED_ROWS)
         list(APPEND mjpeg_idct_sources "mjpeg_idct_reduced.cpp")
     endif()
+endif()
+set(mjpeg_clear_sources)
+if(MJPEG_FAST_COEFFICIENT_CLEAR)
+    list(APPEND mjpeg_clear_sources "mjpeg_memset_optimized.S")
 endif()
 
 function(enable_mjpeg_hot_iram component_target)
@@ -61,6 +67,15 @@ function(enable_mjpeg_optimized_idct_link)
     endif()
 endfunction()
 
+function(enable_mjpeg_fast_clear_link)
+    if(MJPEG_FAST_COEFFICIENT_CLEAR)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,--wrap=memset" APPEND)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,-u,__wrap_memset" APPEND)
+    endif()
+endfunction()
+
 function(schedule_mjpeg_hot_iram component_target)
     if(MJPEG_HOT_IRAM)
         cmake_language(DEFER DIRECTORY "${PROJECT_DIR}"
@@ -79,6 +94,7 @@ if(MJPEG_QEMU_BENCHMARK)
             "qemu_mjpeg_benchmark.cpp"
             "mjpeg_avi_decoder.cpp"
             ${mjpeg_idct_sources}
+            ${mjpeg_clear_sources}
         INCLUDE_DIRS "."
         REQUIRES
             esp_rom
@@ -97,6 +113,7 @@ if(MJPEG_QEMU_BENCHMARK)
             MJPEG_IDCT_REDUCED_ROWS=1)
     endif()
     enable_mjpeg_optimized_idct_link()
+    enable_mjpeg_fast_clear_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
     target_add_binary_data(
         ${COMPONENT_LIB} "qemu_mjpeg_benchmark.avi" BINARY)
@@ -188,6 +205,7 @@ else()
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
             ${mjpeg_idct_sources}
+            ${mjpeg_clear_sources}
         INCLUDE_DIRS "."
         REQUIRES
             amrnb_3gp
@@ -213,6 +231,7 @@ else()
             vfs
     )
     enable_mjpeg_optimized_idct_link()
+    enable_mjpeg_fast_clear_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
     if(MJPEG_IDCT_REDUCED_ROWS)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE
