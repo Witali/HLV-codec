@@ -284,6 +284,19 @@ the reconstructed-frame hash, decoder allocation, free heap and largest free
 block. The wrapper verifies that the generated embedded clip remains
 `msmpeg4v3`/`DIV3`, 320x240 and contains the requested number of frames.
 
+The MPEG-1 benchmark similarly embeds 60 frames of the validated 240x180
+Program Stream and runs the Player's compact `pl_mpeg` component:
+
+```powershell
+.\qemu-mpeg1-benchmark.ps1
+.\qemu-mpeg1-benchmark.ps1 -InputFile input.mpg -Frames 60
+```
+
+It prints an `M` record containing the decode-only cycle distribution,
+reconstructed-frame hash, free heap and largest free block. The preparation
+step copies the original MPEG-1 video packets without re-encoding and rejects
+the clip unless its dimensions and frame count match the requested profile.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
