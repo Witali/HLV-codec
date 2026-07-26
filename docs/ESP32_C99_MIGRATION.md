@@ -97,8 +97,9 @@ Android command-line and gtest test harnesses in
 firmware or the Windows player. The Windows player and the superseded Arduino
 firmware are separate targets and remain outside this migration.
 
-The physical A/B matrix remains pending while the shared ESP32 board is in use
-by another process. No firmware was flashed as part of the source migration.
+The physical A/B matrix was completed on 2026-07-26. See
+`docs/ESP32_C99_CPP_CODEC_COMPARISON.md` for the per-codec results, firmware
+hashes and remaining shared C++/C99 memory limits.
 
 ## Physical A/B matrix
 
