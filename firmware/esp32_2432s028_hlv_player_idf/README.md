@@ -323,6 +323,17 @@ repeatedly so the benchmark isolates renderer changes from decode and SD I/O.
 The Player caches the active 64x16 BPV palette as RGB565 and rebuilds the
 2 KiB table only for a keyframe, avoiding per-block RGB888 conversion.
 
+The MJPEG benchmark copies a bounded number of original compressed frames
+without re-encoding and measures ROM TJpgDec plus RGB565 strip output:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1
+```
+
+Its `J` record includes per-frame cycles and the complete submitted RGB565
+hash. This provides a QEMU correctness and CPU baseline for output-buffer
+experiments; display SPI/DMA time is measured only on the physical board.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the

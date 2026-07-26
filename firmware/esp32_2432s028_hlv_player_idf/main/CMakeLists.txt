@@ -1,4 +1,20 @@
-if(BPV_QEMU_BENCHMARK)
+if(MJPEG_QEMU_BENCHMARK)
+    idf_component_register(
+        SRCS
+            "qemu_mjpeg_benchmark.cpp"
+            "mjpeg_avi_decoder.cpp"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_rom
+            esp_system
+            freertos
+            heap
+            log
+            vfs
+    )
+    target_add_binary_data(
+        ${COMPONENT_LIB} "qemu_mjpeg_benchmark.avi" BINARY)
+elseif(BPV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_bpv_render_benchmark.cpp"
