@@ -472,6 +472,26 @@ static void inverse_dct(int32_t block[64]) {
     for (index = 0; index < 8; ++index) idct_column(block + index);
 }
 
+static void inverse_dct_sparse(int32_t block[64], unsigned row_mask,
+                               int has_ac) {
+    unsigned index;
+    if (!has_ac) {
+        int32_t row_value =
+            (IDCT_W4 * block[0] +
+             (1 << (IDCT_ROW_SHIFT - 1))) >>
+            IDCT_ROW_SHIFT;
+        int32_t value =
+            IDCT_W4 * (row_value + IDCT_COLUMN_ROUND) >>
+            IDCT_COLUMN_SHIFT;
+        for (index = 0; index < 64U; ++index) block[index] = value;
+        return;
+    }
+    for (index = 0; index < 8U; ++index)
+        if (row_mask & (1U << index))
+            idct_row(block + index * 8U);
+    for (index = 0; index < 8U; ++index) idct_column(block + index);
+}
+
 static int luma_dc_scaler(int quantizer) {
     if (quantizer <= 4) return 8;
     if (quantizer <= 8) return quantizer * 2;
@@ -1064,15 +1084,31 @@ static int chroma_motion(int value) {
 static int decode_inter_block(BitReader *reader,
                               const Divx3TcoefSet *set,
                               int quantizer, int32_t coefficients[64]) {
-    int32_t quantized[64] = {0};
-    unsigned index;
-    int result = decode_coefficients(reader, set, 1, kScanZigzag, 0,
-                                     quantized);
-    if (result != DIVX3_OK) return result;
-    for (index = 0; index < 64; ++index)
-        coefficients[index] = dequantize(quantized[index], quantizer);
-    inverse_dct(coefficients);
-    return DIVX3_OK;
+    int position = 0;
+    unsigned count;
+    unsigned row_mask = 0;
+    int has_ac = 0;
+    memset(coefficients, 0, 64U * sizeof(*coefficients));
+    for (count = 0; count < 64U; ++count) {
+        AcCoefficient coefficient;
+        unsigned index;
+        int result = decode_tcoef(reader, set, 1, &coefficient);
+        if (result != DIVX3_OK) return result;
+        position += coefficient.run;
+        if (position < 0 || position >= 64)
+            return DIVX3_ERR_BITSTREAM;
+        index = kScanZigzag[position];
+        coefficients[index] =
+            dequantize(coefficient.level, quantizer);
+        row_mask |= 1U << (index / 8U);
+        has_ac |= index != 0U;
+        ++position;
+        if (coefficient.last) {
+            inverse_dct_sparse(coefficients, row_mask, has_ac);
+            return DIVX3_OK;
+        }
+    }
+    return DIVX3_ERR_BITSTREAM;
 }
 
 static int decode_inter_picture(Divx3Decoder *decoder,
