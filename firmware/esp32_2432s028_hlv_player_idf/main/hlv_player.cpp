@@ -27,7 +27,7 @@
 #include "board_config.h"
 #include "amrnb_3gp.h"
 #include "bpv_esp32_decoder.hpp"
-#include "cyd_display.hpp"
+#include "cyd_display.h"
 #include "divx3.h"
 #include "divx3_avi.h"
 #include "h263_3gp.h"
@@ -41,8 +41,8 @@
 namespace {
 
 constexpr char kTag[] = "hlv-player";
-constexpr int kScreenWidth = CydDisplay::kWidth;
-constexpr int kScreenHeight = CydDisplay::kHeight;
+constexpr int kScreenWidth = CYD_DISPLAY_WIDTH;
+constexpr int kScreenHeight = CYD_DISPLAY_HEIGHT;
 constexpr int kMaximumH263Width = 352;
 constexpr uint32_t kRetryDelayMs = 2000;
 constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
@@ -68,7 +68,7 @@ constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 constexpr int kUploadBarX = 16;
 constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
-constexpr int kUploadBarHeight = CydDisplay::kRowsPerTransfer / 2;
+constexpr int kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER / 2;
 constexpr int kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2;
 constexpr int kUploadBarBorder = 2;
 constexpr uint16_t kUploadBarBorderColor = 0xffff;
@@ -231,7 +231,7 @@ struct DecodeResult {
     uint32_t bpv_read_us;
 };
 
-CydDisplay display;
+cyd_display_t display{};
 FILE *video_file = nullptr;
 FILE *audio_file = nullptr;
 HlvEsp32Decoder decoder;
@@ -710,14 +710,14 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
 void drawStatusTitle(const char *title) {
     if (!title || !*title) return;
     const size_t length = std::min<size_t>(std::strlen(title), 52);
-    const int available_rows = display.rowsPerTransfer();
+    const int available_rows = cyd_display_rows_per_transfer(&display);
     const int scale =
         length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
     const int glyph_advance = 6 * scale;
     const int width =
         static_cast<int>(length) * glyph_advance - scale;
     const int height = 7 * scale;
-    uint16_t *pixels = display.acquireBuffer();
+    uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels || width <= 0 || width > kScreenWidth ||
         height > available_rows) {
         return;
@@ -745,8 +745,9 @@ void drawStatusTitle(const char *title) {
     }
     const int x = (kScreenWidth - width) / 2;
     const int y = (kScreenHeight - height) / 2;
-    if (display.drawBitmap(x, y, width, height, pixels) == ESP_OK) {
-        display.flush();
+    if (cyd_display_draw_bitmap(
+            &display, x, y, width, height, pixels) == ESP_OK) {
+        cyd_display_flush(&display);
     }
 }
 
@@ -757,7 +758,8 @@ void showStatus(const char *title, const char *detail = nullptr) {
     } else {
         ESP_LOGI(kTag, "%s", title);
     }
-    const esp_err_t clear_result = display.clear(0x0000);
+    const esp_err_t clear_result =
+        cyd_display_clear(&display, 0x0000);
     if (clear_result != ESP_OK) {
         ESP_LOGE(kTag, "Could not clear status screen: %s",
                  esp_err_to_name(clear_result));
@@ -767,8 +769,8 @@ void showStatus(const char *title, const char *detail = nullptr) {
 }
 
 void beginUploadProgress() {
-    display.clear(0x0000);
-    uint16_t *pixels = display.acquireBuffer();
+    cyd_display_clear(&display, 0x0000);
+    uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels) return;
     for (int y = 0; y < kUploadBarHeight; ++y) {
         for (int x = 0; x < kUploadBarWidth; ++x) {
@@ -781,8 +783,9 @@ void beginUploadProgress() {
                 border ? kUploadBarBorderColor : kUploadBarEmptyColor;
         }
     }
-    if (display.drawBitmap(kUploadBarX, kUploadBarY, kUploadBarWidth,
-                           kUploadBarHeight, pixels) != ESP_OK) {
+    if (cyd_display_draw_bitmap(
+            &display, kUploadBarX, kUploadBarY, kUploadBarWidth,
+            kUploadBarHeight, pixels) != ESP_OK) {
         ESP_LOGE(kTag, "Could not draw UART upload progress bar");
     }
     upload_progress_pixels = 0;
@@ -798,12 +801,13 @@ void updateUploadProgress(uint32_t received, uint32_t total, void *) {
     const int changed = filled - upload_progress_pixels;
     const int x = kUploadBarX + kUploadBarBorder +
                   upload_progress_pixels;
-    uint16_t *pixels = display.acquireBuffer();
+    uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels) return;
     const int inner_height = kUploadBarHeight - 2 * kUploadBarBorder;
     std::fill_n(pixels, changed * inner_height, kUploadBarFillColor);
-    if (display.drawBitmap(x, kUploadBarY + kUploadBarBorder,
-                           changed, inner_height, pixels) == ESP_OK) {
+    if (cyd_display_draw_bitmap(
+            &display, x, kUploadBarY + kUploadBarBorder,
+            changed, inner_height, pixels) == ESP_OK) {
         upload_progress_pixels = filled;
     }
 }
@@ -1751,7 +1755,8 @@ bool openVideo() {
     const bool use_double_display_buffer =
         video_codec != VideoCodec::kH263 &&
         video_codec != VideoCodec::kDivx3;
-    if (display.setDoubleBuffered(use_double_display_buffer) != ESP_OK) {
+    if (cyd_display_set_double_buffered(
+            &display, use_double_display_buffer) != ESP_OK) {
         showStatus("Not enough RAM", "display buffer allocation failed");
         closeVideo();
         return false;
@@ -2151,7 +2156,7 @@ bool openVideo() {
     dropped_deadlines = 0;
     skipped_presentations = 0;
     consecutive_skipped_presentations = 0;
-    ESP_ERROR_CHECK(display.clear(0x0000));
+    ESP_ERROR_CHECK(cyd_display_clear(&display, 0x0000));
 
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         for (int x = 0; x < kScreenWidth; ++x) {
@@ -2238,13 +2243,14 @@ void waitUntil(int64_t deadline) {
 }
 
 bool renderFrame(const HLV1Frame *frame) {
-    const int rows_per_transfer = display.rowsPerTransfer();
+    const int rows_per_transfer =
+        cyd_display_rows_per_transfer(&display);
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
                 std::min(rows_per_transfer, kScreenHeight - y0);
-            uint16_t *pixels = display.acquireBuffer();
+            uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
@@ -2255,8 +2261,8 @@ bool renderFrame(const HLV1Frame *frame) {
                 std::memcpy(pixels + row * kScreenWidth, scaled_rgb_row,
                             sizeof(uint16_t) * kScreenWidth);
             }
-            if (display.drawBitmap(0, y0, kScreenWidth, rows, pixels) !=
-                ESP_OK) {
+            if (cyd_display_draw_bitmap(
+                    &display, 0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
                 return false;
             }
         }
@@ -2267,14 +2273,15 @@ bool renderFrame(const HLV1Frame *frame) {
     const int y_offset = (kScreenHeight - frame->height) / 2;
     for (int y0 = 0; y0 < frame->height; y0 += rows_per_transfer) {
         const int rows = std::min(rows_per_transfer, frame->height - y0);
-        uint16_t *pixels = display.acquireBuffer();
+        uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
             convertNativeRow(frame, y0 + row,
                              pixels + row * frame->width);
         }
-        if (display.drawBitmap(x_offset, y_offset + y0, frame->width, rows,
-                               pixels) != ESP_OK) {
+        if (cyd_display_draw_bitmap(
+                &display, x_offset, y_offset + y0, frame->width, rows,
+                pixels) != ESP_OK) {
             return false;
         }
     }
@@ -2353,7 +2360,8 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
 
 bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
-    const int rows_per_transfer = display.rowsPerTransfer();
+    const int rows_per_transfer =
+        cyd_display_rows_per_transfer(&display);
     mpeg_cached_chroma_y = -1;
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
@@ -2361,7 +2369,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
              y0 += rows_per_transfer) {
             const int rows =
                 std::min(rows_per_transfer, kScreenHeight - y0);
-            uint16_t *pixels = display.acquireBuffer();
+            uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
@@ -2374,8 +2382,8 @@ bool renderMpegFrame(const plm_frame_t *frame) {
                     pixels + row * kScreenWidth, scaled_rgb_row,
                     sizeof(uint16_t) * kScreenWidth);
             }
-            if (display.drawBitmap(
-                    0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
+            if (cyd_display_draw_bitmap(
+                    &display, 0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
                 return false;
             }
         }
@@ -2392,14 +2400,15 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
         const int rows = std::min(rows_per_transfer, height - y0);
-        uint16_t *pixels = display.acquireBuffer();
+        uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
             convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
-        if (display.drawBitmap(
-                x_offset, y_offset + y0, width, rows, pixels) != ESP_OK) {
+        if (cyd_display_draw_bitmap(
+                &display, x_offset, y_offset + y0, width, rows,
+                pixels) != ESP_OK) {
             return false;
         }
     }
@@ -2423,7 +2432,8 @@ bool renderH263Frame(const H2633gpFrame *frame) {
         static_cast<unsigned>(frame->width / 2),
         static_cast<unsigned>(frame->height / 2),
         frame->chroma_stride, const_cast<uint8_t *>(frame->v), 0, nullptr};
-    const int rows_per_transfer = display.rowsPerTransfer();
+    const int rows_per_transfer =
+        cyd_display_rows_per_transfer(&display);
     mpeg_cached_chroma_y = -1;
     const int source_width = static_cast<int>(adapted.width);
     const int source_height = static_cast<int>(adapted.height);
@@ -2435,7 +2445,7 @@ bool renderH263Frame(const H2633gpFrame *frame) {
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
         const int rows = std::min(rows_per_transfer, height - y0);
-        uint16_t *pixels = display.acquireBuffer();
+        uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) {
             endH263RowPipeline();
             return false;
@@ -2446,8 +2456,9 @@ bool renderH263Frame(const H2633gpFrame *frame) {
                 pixels + row * width, width);
         }
         publishH263RenderedRows(source_y + y0 + rows);
-        if (display.drawBitmap(
-                x_offset, y_offset + y0, width, rows, pixels) != ESP_OK) {
+        if (cyd_display_draw_bitmap(
+                &display, x_offset, y_offset + y0, width, rows,
+                pixels) != ESP_OK) {
             endH263RowPipeline();
             return false;
         }
@@ -2469,7 +2480,7 @@ uint16_t *acquireMjpegDmaStrip(void *opaque, uint16_t source_y,
         return nullptr;
     }
     const int64_t render_start = microsNow();
-    uint16_t *pixels = display.acquireBuffer();
+    uint16_t *pixels = cyd_display_acquire_buffer(&display);
     context->render_us +=
         static_cast<uint32_t>(microsNow() - render_start);
     if (!pixels) context->display_failed = true;
@@ -2486,8 +2497,9 @@ bool submitMjpegDmaStrip(void *opaque, const uint16_t *pixels,
     if (source_y + source_rows > height) return false;
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
-    if (display.drawBitmap(x_offset, y_offset + source_y, width,
-                           source_rows, pixels) != ESP_OK) {
+    if (cyd_display_draw_bitmap(
+            &display, x_offset, y_offset + source_y, width,
+            source_rows, pixels) != ESP_OK) {
         context->display_failed = true;
         return false;
     }
@@ -2503,7 +2515,8 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
     const int64_t render_start = microsNow();
     const int width = mjpeg_info.width;
     const int height = mjpeg_info.height;
-    const int rows_per_transfer = display.rowsPerTransfer();
+    const int rows_per_transfer =
+        cyd_display_rows_per_transfer(&display);
     const int source_end = source_y + source_rows;
     if (source_end > height) return false;
 
@@ -2520,7 +2533,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                 ++rows;
             }
             if (!rows) break;
-            uint16_t *pixels = display.acquireBuffer();
+            uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) {
                 context->display_failed = true;
                 return false;
@@ -2536,8 +2549,9 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                     destination[x] = source[scaled_x_map[x]];
                 }
             }
-            if (display.drawBitmap(0, destination_y, kScreenWidth, rows,
-                                   pixels) != ESP_OK) {
+            if (cyd_display_draw_bitmap(
+                    &display, 0, destination_y, kScreenWidth, rows,
+                    pixels) != ESP_OK) {
                 context->display_failed = true;
                 return false;
             }
@@ -2550,7 +2564,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
 
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
-    uint16_t *pixels = display.acquireBuffer();
+    uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels) {
         context->display_failed = true;
         return false;
@@ -2558,8 +2572,9 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
     std::memcpy(pixels, strip,
                 static_cast<size_t>(width) * source_rows *
                     sizeof(uint16_t));
-    if (display.drawBitmap(x_offset, y_offset + source_y, width,
-                           source_rows, pixels) != ESP_OK) {
+    if (cyd_display_draw_bitmap(
+            &display, x_offset, y_offset + source_y, width,
+            source_rows, pixels) != ESP_OK) {
         context->display_failed = true;
         return false;
     }
@@ -2581,13 +2596,14 @@ bool renderBpvFrame(const BPV1Frame *frame) {
     }
     const int width = frame->width;
     const int height = frame->height;
-    const int rows_per_transfer = display.rowsPerTransfer();
+    const int rows_per_transfer =
+        cyd_display_rows_per_transfer(&display);
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
                 std::min(rows_per_transfer, kScreenHeight - y0);
-            uint16_t *pixels = display.acquireBuffer();
+            uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
@@ -2608,8 +2624,8 @@ bool renderBpvFrame(const BPV1Frame *frame) {
                     destination[x] = bpv_rgb_row[scaled_x_map[x]];
                 }
             }
-            if (display.drawBitmap(0, y0, kScreenWidth, rows, pixels) !=
-                ESP_OK) {
+            if (cyd_display_draw_bitmap(
+                    &display, 0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
                 return false;
             }
         }
@@ -2620,7 +2636,7 @@ bool renderBpvFrame(const BPV1Frame *frame) {
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
         const int rows = std::min(rows_per_transfer, height - y0);
-        uint16_t *pixels = display.acquireBuffer();
+        uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         if (bpv1_frame_render_rgb565_rows_cached(
                 &bpv_header, frame, static_cast<uint16_t>(y0),
@@ -2629,8 +2645,9 @@ bool renderBpvFrame(const BPV1Frame *frame) {
                 static_cast<size_t>(width) * rows) != BPV1_OK) {
             return false;
         }
-        if (display.drawBitmap(x_offset, y_offset + y0, width, rows,
-                               pixels) != ESP_OK) {
+        if (cyd_display_draw_bitmap(
+                &display, x_offset, y_offset + y0, width, rows,
+                pixels) != ESP_OK) {
             return false;
         }
     }
@@ -3599,7 +3616,7 @@ void playOneFramePipelined() {
 
 extern "C" void app_main(void) {
     ESP_LOGI(kTag, "Multi-codec ESP-IDF SD player starting");
-    const esp_err_t display_result = display.init();
+    const esp_err_t display_result = cyd_display_init(&display);
     if (display_result != ESP_OK) {
         ESP_LOGE(kTag, "Display initialization failed: %s",
                  esp_err_to_name(display_result));
@@ -3635,7 +3652,7 @@ extern "C" void app_main(void) {
                 upload_request, PLAYER_VIDEO_DIRECTORY,
                 stored_path, sizeof stored_path, updateUploadProgress,
                 nullptr);
-            display.flush();
+            cyd_display_flush(&display);
             showStatus(stored ? "UART upload complete"
                               : "UART upload failed",
                        upload_request.filename);

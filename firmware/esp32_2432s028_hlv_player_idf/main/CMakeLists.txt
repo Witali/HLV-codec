@@ -199,7 +199,7 @@ else()
     idf_component_register(
         SRCS
             "hlv_player.cpp"
-            "cyd_display.cpp"
+            "cyd_display.c"
             "bpv_esp32_decoder.cpp"
             "hlv_esp32_decoder.cpp"
             "mjpeg_avi_decoder.cpp"
@@ -239,7 +239,7 @@ else()
     endif()
 endif()
 
-target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99 cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -ffunction-sections

@@ -13,7 +13,10 @@ components used by the firmware:
 - link without the ESP-IDF `cxx` component;
 - contain no `std::`, RTTI, exception, `new`/`delete`, `__cxa` or
   `__gxx_personality` symbols;
-- build with C99 enabled and keep the existing Xtensa assembly optimisations;
+- keep application code within the C99 language subset and retain the
+  existing Xtensa assembly optimisations. ESP-IDF 5.5.5 itself requires the
+  compiler's GNU C17 mode because its public headers use C11
+  `_Static_assert`;
 - pass the same host, QEMU and physical-board tests as the C++ baseline.
 
 Windows tools are outside this migration. Their implementation language does
