@@ -1,11 +1,10 @@
-#include <algorithm>
-#include <array>
-#include <cerrno>
-#include <climits>
-#include <cmath>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include "driver/dac_continuous.h"
@@ -38,45 +37,53 @@
 #include "pl_mpeg.h"
 #include "uart_file_upload.h"
 
-namespace {
-
-constexpr char kTag[] = "hlv-player";
-constexpr int kScreenWidth = CYD_DISPLAY_WIDTH;
-constexpr int kScreenHeight = CYD_DISPLAY_HEIGHT;
-constexpr int kMaximumH263Width = 352;
-constexpr uint32_t kRetryDelayMs = 2000;
-constexpr uint32_t kSdReadFailuresBeforeReinit = 3;
-constexpr size_t kVideoReadAheadBytes = 16 * 1024;
-constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
-constexpr size_t kDivx3VideoReadAheadBytes = 4 * 1024;
-constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
-constexpr uint32_t kDivx3MaximumMacroblocks = 300;
-constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
-constexpr size_t kAudioStreamBytes = 4096;
+static const char kTag[] = "hlv-player";
+enum {
+    kScreenWidth = CYD_DISPLAY_WIDTH,
+    kScreenHeight = CYD_DISPLAY_HEIGHT,
+    kMaximumH263Width = 352,
+    kRetryDelayMs = 2000,
+    kSdReadFailuresBeforeReinit = 3,
+    kVideoReadAheadBytes = 16 * 1024,
+    kMpegVideoReadAheadBytes = 4 * 1024,
+    kDivx3VideoReadAheadBytes = 4 * 1024,
+    kDivx3MaximumPacketBytes = 96 * 1024,
+    kDivx3MaximumMacroblocks = 300,
+    kH263VideoReadAheadBytes = 4 * 1024,
+    kAudioStreamBytes = 4096,
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
-constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
-constexpr size_t kAudioDmaSamples = 256;
-constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
-constexpr size_t kAudioDmaDescriptors = 6;
-constexpr size_t kAudioReadAheadBytes = 512;
-constexpr size_t kAudioReadChunkBytes = 512;
-constexpr uint32_t kAudioReaderStackBytes = 6144;
-constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
-constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
-constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
-constexpr uint32_t kDecodeWorkerStackBytes = 4096;
-constexpr int kUploadBarX = 16;
-constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
-constexpr int kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER / 2;
-constexpr int kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2;
-constexpr int kUploadBarBorder = 2;
-constexpr uint16_t kUploadBarBorderColor = 0xffff;
-constexpr uint16_t kUploadBarEmptyColor = 0x2104;
-constexpr uint16_t kUploadBarFillColor = 0x07e0;
+    kAudioStreamStorageBytes = kAudioStreamBytes + 1,
+    kAudioDmaSamples = 256,
+    kAudioDmaBufferBytes = kAudioDmaSamples * 2,
+    kAudioDmaDescriptors = 6,
+    kAudioReadAheadBytes = 512,
+    kAudioReadChunkBytes = 512,
+    kAudioReaderStackBytes = 6144,
+    kAudioReaderStopTimeoutMs = 500,
+    kAudioPrerollTimeoutMs = 3000,
+    kAudioClockWaitTimeoutMs = 3000,
+    kDecodeWorkerStackBytes = 4096,
+    kUploadBarX = 16,
+    kUploadBarWidth = kScreenWidth - 2 * kUploadBarX,
+    kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER / 2,
+    kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2,
+    kUploadBarBorder = 2,
+    kUploadBarBorderColor = 0xffff,
+    kUploadBarEmptyColor = 0x2104,
+    kUploadBarFillColor = 0x07e0,
+};
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define CLAMP(value, low, high) \
+    ((value) < (low) ? (low) : ((value) > (high) ? (high) : (value)))
+
+static void fillU16(uint16_t *values, size_t count, uint16_t value) {
+    for (size_t index = 0; index < count; ++index) values[index] = value;
+}
 // Five column, seven row glyphs for printable ASCII 0x20 through 0x7e.
 // Bits run from the top row (bit 0) to the bottom row (bit 6).
-constexpr uint8_t kStatusFont[95][5] = {
+static const uint8_t kStatusFont[95][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00},  // space
     {0x00, 0x00, 0x5f, 0x00, 0x00},  // !
     {0x00, 0x07, 0x00, 0x07, 0x00},  // "
@@ -174,39 +181,39 @@ constexpr uint8_t kStatusFont[95][5] = {
     {0x08, 0x04, 0x08, 0x10, 0x08},  // ~
 };
 
-static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
+_Static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
                   !PLAYER_USE_DUAL_CORE_PIPELINE,
               "Dual-core playback requires a two-core FreeRTOS build");
-static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
+_Static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
               "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
-static_assert(PLAYER_AUDIO_PREROLL_FRAMES > 0,
+_Static_assert(PLAYER_AUDIO_PREROLL_FRAMES > 0,
               "Audio preroll must cover at least one video frame");
-static_assert(PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS > 0,
+_Static_assert(PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS > 0,
               "Hybrid A/V sync must permit at least one video skip");
 
-enum class VideoCodec {
-    kNone,
-    kHlv,
-    kMjpeg,
-    kDivx3,
-    kBpv,
-    kMpeg1,
-    kH263,
-};
+typedef enum VideoCodec {
+    VIDEO_CODEC_kNone,
+    VIDEO_CODEC_kHlv,
+    VIDEO_CODEC_kMjpeg,
+    VIDEO_CODEC_kDivx3,
+    VIDEO_CODEC_kBpv,
+    VIDEO_CODEC_kMpeg1,
+    VIDEO_CODEC_kH263,
+} VideoCodec;
 
-enum class SelectionReadResult {
-    kReady,
-    kMissingOrInvalid,
-    kIoError,
-};
+typedef enum SelectionReadResult {
+    SELECTION_READ_kReady,
+    SELECTION_READ_kMissingOrInvalid,
+    SELECTION_READ_kIoError,
+} SelectionReadResult;
 
-enum class VideoOpenResult {
-    kReady,
-    kMissingOrUnsupported,
-    kIoError,
-};
+typedef enum VideoOpenResult {
+    VIDEO_OPEN_kReady,
+    VIDEO_OPEN_kMissingOrUnsupported,
+    VIDEO_OPEN_kIoError,
+} VideoOpenResult;
 
-struct DecodeRequest {
+typedef struct DecodeRequest {
     VideoCodec codec;
     const HLV1Packet *hlv_packet;
     const BPV1Packet *bpv_packet;
@@ -214,9 +221,9 @@ struct DecodeRequest {
     size_t divx3_packet_size;
     FILE *bpv_file;
     bool bpv_prefetch;
-};
+} DecodeRequest;
 
-struct DecodeResult {
+typedef struct DecodeResult {
     VideoCodec codec;
     int result;
     const HLV1Frame *hlv_frame;
@@ -229,31 +236,31 @@ struct DecodeResult {
     BPV1Packet bpv_next_packet;
     int bpv_read_result;
     uint32_t bpv_read_us;
-};
+} DecodeResult;
 
-cyd_display_t display{};
-FILE *video_file = nullptr;
-FILE *audio_file = nullptr;
-hlv_esp32_decoder_t decoder = {};
-mjpeg_avi_decoder_t mjpeg_decoder{};
-mjpeg_avi_info_t mjpeg_info{};
-Divx3Decoder *divx3_decoder = nullptr;
-Divx3AviInfo divx3_info{};
-uint8_t *divx3_packet = nullptr;
-bpv_esp32_decoder_t bpv_decoder{};
-BPV1Header bpv_header{};
-plm_t *mpeg_video = nullptr;
-plm_t *mpeg_audio = nullptr;
-H2633gpDecoder *h263_decoder = nullptr;
-H2633gpInfo h263_info{};
-AmrNb3gpDecoder *amrnb_audio_decoder = nullptr;
-AmrNb3gpInfo amrnb_audio_info{};
-H263AviPcmReader *h263_avi_audio_reader = nullptr;
-uart_file_upload_t uart_upload = {};
-HLV1Header sequence_header{};
-VideoCodec video_codec = VideoCodec::kNone;
-const char *active_video_path = nullptr;
-char selected_video_path[160]{};
+cyd_display_t display = {0};
+FILE *video_file = NULL;
+FILE *audio_file = NULL;
+hlv_esp32_decoder_t decoder = {0};
+mjpeg_avi_decoder_t mjpeg_decoder = {0};
+mjpeg_avi_info_t mjpeg_info = {0};
+Divx3Decoder *divx3_decoder = NULL;
+Divx3AviInfo divx3_info = {0};
+uint8_t *divx3_packet = NULL;
+bpv_esp32_decoder_t bpv_decoder = {0};
+BPV1Header bpv_header = {0};
+plm_t *mpeg_video = NULL;
+plm_t *mpeg_audio = NULL;
+H2633gpDecoder *h263_decoder = NULL;
+H2633gpInfo h263_info = {0};
+AmrNb3gpDecoder *amrnb_audio_decoder = NULL;
+AmrNb3gpInfo amrnb_audio_info = {0};
+H263AviPcmReader *h263_avi_audio_reader = NULL;
+uart_file_upload_t uart_upload = {0};
+HLV1Header sequence_header = {0};
+VideoCodec video_codec = VIDEO_CODEC_kNone;
+const char *active_video_path = NULL;
+char selected_video_path[160] = {0};
 int64_t frame_period_us = 0;
 uint32_t frame_period_remainder = 0;
 uint32_t frame_period_phase = 0;
@@ -273,45 +280,40 @@ uint8_t native_v_row[kScreenWidth / 2];
 int32_t mpeg_red_add[kMaximumH263Width / 2];
 int32_t mpeg_green_add[kMaximumH263Width / 2];
 int32_t mpeg_blue_add[kMaximumH263Width / 2];
-constexpr std::array<int32_t, 256> makeLumaTable() {
-    std::array<int32_t, 256> values{};
-    for (int sample = 0; sample < 256; ++sample)
-        values[sample] = 298 * (sample > 16 ? sample - 16 : 0);
-    return values;
-}
+static int32_t yuv_luma[256];
+static int32_t yuv_red_add[256];
+static int32_t yuv_green_u_add[256];
+static int32_t yuv_green_v_add[256];
+static int32_t yuv_blue_add[256];
 
-constexpr std::array<int32_t, 256> makeChromaTable(
-    int multiplier, int offset) {
-    std::array<int32_t, 256> values{};
-    for (int sample = 0; sample < 256; ++sample)
-        values[sample] = multiplier * (sample - 128) + offset;
-    return values;
+static void initializeYuvTables(void) {
+    for (int sample = 0; sample < 256; ++sample) {
+        yuv_luma[sample] = 298 * (sample > 16 ? sample - 16 : 0);
+        yuv_red_add[sample] = 409 * (sample - 128) + 128;
+        yuv_green_u_add[sample] = -100 * (sample - 128);
+        yuv_green_v_add[sample] = -208 * (sample - 128) + 128;
+        yuv_blue_add[sample] = 516 * (sample - 128) + 128;
+    }
 }
-
-constexpr auto yuv_luma = makeLumaTable();
-constexpr auto yuv_red_add = makeChromaTable(409, 128);
-constexpr auto yuv_green_u_add = makeChromaTable(-100, 0);
-constexpr auto yuv_green_v_add = makeChromaTable(-208, 128);
-constexpr auto yuv_blue_add = makeChromaTable(516, 128);
 int mpeg_cached_chroma_y = -1;
-uint8_t *video_read_ahead = nullptr;
+uint8_t *video_read_ahead = NULL;
 size_t video_read_ahead_size = 0;
-alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
-alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
-alignas(4) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
-alignas(4) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
-sdmmc_card_t *sd_card = nullptr;
+__attribute__((aligned(4))) uint8_t audio_read_ahead[kAudioReadAheadBytes];
+__attribute__((aligned(4))) uint8_t audio_read_chunk[kAudioReadChunkBytes];
+__attribute__((aligned(4))) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
+__attribute__((aligned(4))) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
+sdmmc_card_t *sd_card = NULL;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
 uint32_t consecutive_sd_read_failures = 0;
-StreamBufferHandle_t audio_stream = nullptr;
-StaticStreamBuffer_t audio_stream_state{};
-alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
-alignas(4) uint8_t audio_dma_samples[kAudioDmaSamples];
-dac_continuous_handle_t audio_dac = nullptr;
-TaskHandle_t audio_reader_task_handle = nullptr;
-void *audio_dma_buffer_keys[kAudioDmaDescriptors]{};
-uint16_t audio_dma_valid_samples[kAudioDmaDescriptors]{};
+StreamBufferHandle_t audio_stream = NULL;
+StaticStreamBuffer_t audio_stream_state = {0};
+__attribute__((aligned(4))) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
+__attribute__((aligned(4))) uint8_t audio_dma_samples[kAudioDmaSamples];
+dac_continuous_handle_t audio_dac = NULL;
+TaskHandle_t audio_reader_task_handle = NULL;
+void *audio_dma_buffer_keys[kAudioDmaDescriptors] = {0};
+uint16_t audio_dma_valid_samples[kAudioDmaDescriptors] = {0};
 bool audio_enabled = false;
 volatile bool audio_started = false;
 bool audio_async_started = false;
@@ -335,18 +337,18 @@ volatile uint32_t amrnb_audio_decode_frames = 0;
 volatile uint32_t amrnb_audio_decode_us = 0;
 volatile uint32_t amrnb_audio_convert_us = 0;
 size_t audio_preroll_bytes = 0;
-QueueHandle_t decode_request_queue = nullptr;
-QueueHandle_t decode_result_queue = nullptr;
-TaskHandle_t decode_task_handle = nullptr;
+QueueHandle_t decode_request_queue = NULL;
+QueueHandle_t decode_result_queue = NULL;
+TaskHandle_t decode_task_handle = NULL;
 bool decode_in_flight = false;
-HLV1Frame pending_frame{};
+HLV1Frame pending_frame = {0};
 bool pending_frame_valid = false;
-plm_frame_t pending_mpeg_frame{};
+plm_frame_t pending_mpeg_frame = {0};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
-Divx3Frame pending_divx3_frame{};
+Divx3Frame pending_divx3_frame = {0};
 bool pending_divx3_frame_valid = false;
-H2633gpFrame pending_h263_frame{};
+H2633gpFrame pending_h263_frame = {0};
 bool pending_h263_frame_valid = false;
 uint32_t pending_h263_decode_us = 0;
 bool h263_dual_buffered = false;
@@ -354,9 +356,9 @@ bool h263_row_pipelined = false;
 int h263_rendered_source_rows = INT_MAX;
 int h263_row_pipeline_active = 0;
 uint32_t h263_row_guard_wait_us = 0;
-BPV1Frame pending_bpv_frame{};
+BPV1Frame pending_bpv_frame = {0};
 bool pending_bpv_frame_valid = false;
-BPV1Packet ready_bpv_packet{};
+BPV1Packet ready_bpv_packet = {0};
 bool ready_bpv_packet_valid = false;
 bool bpv_stream_eof = false;
 uint32_t ready_bpv_read_us = 0;
@@ -370,15 +372,16 @@ int64_t microsNow() { return esp_timer_get_time(); }
 
 int64_t millisNow() { return microsNow() / 1000; }
 
-void waitForH263OutputRow(void *, uint16_t first_y) {
+void waitForH263OutputRow(void *opaque, uint16_t first_y) {
+    (void)opaque;
     if (!__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE))
         return;
     const int source_height = sequence_header.height;
-    const int visible_height = std::min(source_height, kScreenHeight);
+    const int visible_height = MIN(source_height, kScreenHeight);
     const int first_visible_y =
         (source_height - visible_height) / 2;
     const int visible_end_y = first_visible_y + visible_height;
-    const int row_end_y = std::min<int>(first_y + 16, visible_end_y);
+    const int row_end_y = MIN(first_y + 16, visible_end_y);
     if (row_end_y <= first_visible_y || first_y >= visible_end_y)
         return;
 
@@ -390,13 +393,13 @@ void waitForH263OutputRow(void *, uint16_t first_y) {
     }
     __atomic_fetch_add(
         &h263_row_guard_wait_us,
-        static_cast<uint32_t>(microsNow() - wait_start),
+        (uint32_t)(microsNow() - wait_start),
         __ATOMIC_RELAXED);
 }
 
 void beginH263RowPipeline() {
     const int source_height = sequence_header.height;
-    const int visible_height = std::min(source_height, kScreenHeight);
+    const int visible_height = MIN(source_height, kScreenHeight);
     __atomic_store_n(&h263_row_guard_wait_us, 0, __ATOMIC_RELAXED);
     __atomic_store_n(
         &h263_rendered_source_rows,
@@ -417,34 +420,35 @@ void endH263RowPipeline() {
     __atomic_store_n(&h263_row_pipeline_active, 0, __ATOMIC_RELEASE);
 }
 
-void decodeTask(void *) {
-    DecodeRequest request{};
+void decodeTask(void *opaque) {
+    (void)opaque;
+    DecodeRequest request = {0};
     for (;;) {
         if (xQueueReceive(decode_request_queue, &request,
                           portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        DecodeResult result{};
+        DecodeResult result = {0};
         result.codec = request.codec;
         const int64_t start = microsNow();
-        if (request.codec == VideoCodec::kMpeg1) {
+        if (request.codec == VIDEO_CODEC_kMpeg1) {
             plm_frame_t *frame =
-                mpeg_video ? plm_decode_video(mpeg_video) : nullptr;
+                mpeg_video ? plm_decode_video(mpeg_video) : NULL;
             if (frame) {
                 result.mpeg_frame = *frame;
                 result.has_mpeg_frame = true;
             }
             result.result =
-                !frame && video_file && std::ferror(video_file)
+                !frame && video_file && ferror(video_file)
                     ? HLV1_ERR_IO
                     : HLV1_OK;
-        } else if (request.codec == VideoCodec::kHlv) {
+        } else if (request.codec == VIDEO_CODEC_kHlv) {
             result.result = hlv_esp32_decoder_decode(
                 &decoder, request.hlv_packet, &result.hlv_frame);
-        } else if (request.codec == VideoCodec::kBpv) {
+        } else if (request.codec == VIDEO_CODEC_kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
-        } else if (request.codec == VideoCodec::kDivx3) {
+        } else if (request.codec == VIDEO_CODEC_kDivx3) {
             result.result =
                 divx3_decoder && request.divx3_packet &&
                         request.divx3_packet_size
@@ -453,7 +457,7 @@ void decodeTask(void *) {
                           request.divx3_packet_size,
                           &result.divx3_frame)
                     : DIVX3_ERR_ARGUMENT;
-        } else if (request.codec == VideoCodec::kH263) {
+        } else if (request.codec == VIDEO_CODEC_kH263) {
             result.result =
                 h263_decoder && video_file
                     ? h263_3gp_decoder_decode_next(
@@ -462,15 +466,15 @@ void decodeTask(void *) {
         } else {
             result.result = HLV1_ERR_ARGUMENT;
         }
-        result.decode_us = static_cast<uint32_t>(microsNow() - start);
-        if (request.codec == VideoCodec::kBpv &&
+        result.decode_us = (uint32_t)(microsNow() - start);
+        if (request.codec == VIDEO_CODEC_kBpv &&
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {
             const int64_t read_start = microsNow();
             result.bpv_read_result = bpv_esp32_decoder_read_packet(
                 &bpv_decoder, request.bpv_file, &result.bpv_next_packet);
             result.bpv_read_us =
-                static_cast<uint32_t>(microsNow() - read_start);
+                (uint32_t)(microsNow() - read_start);
         }
         xQueueSend(decode_result_queue, &result, portMAX_DELAY);
     }
@@ -487,17 +491,17 @@ bool startDecodeWorker() {
     if (!decode_request_queue || !decode_result_queue) {
         if (decode_request_queue) vQueueDelete(decode_request_queue);
         if (decode_result_queue) vQueueDelete(decode_result_queue);
-        decode_request_queue = nullptr;
-        decode_result_queue = nullptr;
+        decode_request_queue = NULL;
+        decode_result_queue = NULL;
         return false;
     }
     if (xTaskCreatePinnedToCore(decodeTask, "video-decode",
-                                kDecodeWorkerStackBytes, nullptr, 2,
+                                kDecodeWorkerStackBytes, NULL, 2,
                                 &decode_task_handle, 1) != pdPASS) {
         vQueueDelete(decode_request_queue);
         vQueueDelete(decode_result_queue);
-        decode_request_queue = nullptr;
-        decode_result_queue = nullptr;
+        decode_request_queue = NULL;
+        decode_result_queue = NULL;
         return false;
     }
     ESP_LOGI(kTag,
@@ -509,8 +513,8 @@ bool startDecodeWorker() {
 
 bool submitDecode(const HLV1Packet *packet) {
     if (!decode_task_handle || decode_in_flight || !packet) return false;
-    DecodeRequest request{};
-    request.codec = VideoCodec::kHlv;
+    DecodeRequest request = {0};
+    request.codec = VIDEO_CODEC_kHlv;
     request.hlv_packet = packet;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
@@ -519,8 +523,8 @@ bool submitDecode(const HLV1Packet *packet) {
 
 bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
-    DecodeRequest request{};
-    request.codec = VideoCodec::kMpeg1;
+    DecodeRequest request = {0};
+    request.codec = VIDEO_CODEC_kMpeg1;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -531,8 +535,8 @@ bool submitDivx3Decode(const uint8_t *packet, size_t packet_size) {
         !packet || !packet_size) {
         return false;
     }
-    DecodeRequest request{};
-    request.codec = VideoCodec::kDivx3;
+    DecodeRequest request = {0};
+    request.codec = VIDEO_CODEC_kDivx3;
     request.divx3_packet = packet;
     request.divx3_packet_size = packet_size;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE)
@@ -546,8 +550,8 @@ bool submitH263Decode() {
         !video_file) {
         return false;
     }
-    DecodeRequest request{};
-    request.codec = VideoCodec::kH263;
+    DecodeRequest request = {0};
+    request.codec = VIDEO_CODEC_kH263;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -556,8 +560,8 @@ bool submitH263Decode() {
 bool submitBpvDecode(const BPV1Packet *packet, FILE *file,
                      bool prefetch) {
     if (!decode_task_handle || decode_in_flight || !packet) return false;
-    DecodeRequest request{};
-    request.codec = VideoCodec::kBpv;
+    DecodeRequest request = {0};
+    request.codec = VIDEO_CODEC_kBpv;
     request.bpv_packet = packet;
     request.bpv_file = file;
     request.bpv_prefetch = prefetch;
@@ -576,20 +580,20 @@ bool waitDecode(DecodeResult *result) {
 
 void stopDecodeWorker() {
     if (decode_in_flight) {
-        DecodeResult ignored{};
+        DecodeResult ignored = {0};
         waitDecode(&ignored);
     }
     if (decode_task_handle) {
         vTaskDelete(decode_task_handle);
-        decode_task_handle = nullptr;
+        decode_task_handle = NULL;
     }
     if (decode_request_queue) {
         vQueueDelete(decode_request_queue);
-        decode_request_queue = nullptr;
+        decode_request_queue = NULL;
     }
     if (decode_result_queue) {
         vQueueDelete(decode_result_queue);
-        decode_result_queue = nullptr;
+        decode_result_queue = NULL;
     }
     decode_in_flight = false;
 }
@@ -600,12 +604,12 @@ int clamp8(int value) {
 
 bool mpegFpsRational(double fps, uint16_t *numerator,
                      uint16_t *denominator) {
-    struct Rate {
+    typedef struct Rate {
         double value;
         uint16_t numerator;
         uint16_t denominator;
-    };
-    static constexpr Rate rates[] = {
+    } Rate;
+    static const Rate rates[] = {
         {24000.0 / 1001.0, 24000, 1001},
         {24.0, 24, 1},
         {25.0, 25, 1},
@@ -615,10 +619,12 @@ bool mpegFpsRational(double fps, uint16_t *numerator,
         {60000.0 / 1001.0, 60000, 1001},
         {60.0, 60, 1},
     };
-    for (const Rate &rate : rates) {
-        if (std::fabs(fps - rate.value) < 0.01) {
-            *numerator = rate.numerator;
-            *denominator = rate.denominator;
+    for (size_t index = 0; index < sizeof rates / sizeof rates[0];
+         ++index) {
+        const Rate *rate = &rates[index];
+        if (fabs(fps - rate->value) < 0.01) {
+            *numerator = rate->numerator;
+            *denominator = rate->denominator;
             return true;
         }
     }
@@ -626,18 +632,18 @@ bool mpegFpsRational(double fps, uint16_t *numerator,
 }
 
 uint8_t mpegSampleToU8(float left, float right) {
-    const float mono = std::clamp((left + right) * 0.5f, -1.0f, 1.0f);
-    return static_cast<uint8_t>(std::clamp(
-        static_cast<int>(128.5f + mono * 127.0f),
+    const float mono = CLAMP((left + right) * 0.5f, -1.0f, 1.0f);
+    return (uint8_t)(CLAMP(
+        (int)(128.5f + mono * 127.0f),
         0, 255));
 }
 
 uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
-    const int luma = yuv_luma[static_cast<uint8_t>(y)];
+    const int luma = yuv_luma[(uint8_t)(y)];
     const int red = clamp8((luma + red_add) >> 8);
     const int green = clamp8((luma + green_add) >> 8);
     const int blue = clamp8((luma + blue_add) >> 8);
-    return static_cast<uint16_t>(((red & 0xF8) << 8) |
+    return (uint16_t)(((red & 0xF8) << 8) |
                                  ((green & 0xFC) << 3) | (blue >> 3));
 }
 
@@ -709,27 +715,27 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
 
 void drawStatusTitle(const char *title) {
     if (!title || !*title) return;
-    const size_t length = std::min<size_t>(std::strlen(title), 52);
+    const size_t length = MIN(strlen(title), 52);
     const int available_rows = cyd_display_rows_per_transfer(&display);
     const int scale =
         length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
     const int glyph_advance = 6 * scale;
     const int width =
-        static_cast<int>(length) * glyph_advance - scale;
+        (int)(length) * glyph_advance - scale;
     const int height = 7 * scale;
     uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels || width <= 0 || width > kScreenWidth ||
         height > available_rows) {
         return;
     }
-    std::fill_n(pixels, width * height, 0x0000);
+    fillU16(pixels, width * height, 0x0000);
 
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
-            static_cast<unsigned char>(title[index]);
+            (unsigned char)(title[index]);
         if (character < 0x20 || character > 0x7e) character = '?';
         const uint8_t *columns = kStatusFont[character - 0x20];
-        const int glyph_x = static_cast<int>(index) * glyph_advance;
+        const int glyph_x = (int)(index) * glyph_advance;
         for (int source_y = 0; source_y < 7; ++source_y) {
             for (int source_x = 0; source_x < 5; ++source_x) {
                 if (!(columns[source_x] & (1U << source_y))) continue;
@@ -751,7 +757,7 @@ void drawStatusTitle(const char *title) {
     }
 }
 
-void showStatus(const char *title, const char *detail = nullptr) {
+void showStatus(const char *title, const char *detail) {
     esp_rom_printf("S,%s,%s\n", title, detail ? detail : "");
     if (detail) {
         ESP_LOGW(kTag, "%s: %s", title, detail);
@@ -791,11 +797,12 @@ void beginUploadProgress() {
     upload_progress_pixels = 0;
 }
 
-void updateUploadProgress(uint32_t received, uint32_t total, void *) {
+void updateUploadProgress(uint32_t received, uint32_t total, void *opaque) {
+    (void)opaque;
     if (!total) return;
     const int inner_width = kUploadBarWidth - 2 * kUploadBarBorder;
-    const int filled = static_cast<int>(
-        (static_cast<uint64_t>(received) * inner_width) / total);
+    const int filled = (int)(
+        ((uint64_t)(received) * inner_width) / total);
     if (filled <= upload_progress_pixels) return;
 
     const int changed = filled - upload_progress_pixels;
@@ -804,7 +811,7 @@ void updateUploadProgress(uint32_t received, uint32_t total, void *) {
     uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels) return;
     const int inner_height = kUploadBarHeight - 2 * kUploadBarBorder;
-    std::fill_n(pixels, changed * inner_height, kUploadBarFillColor);
+    fillU16(pixels, changed * inner_height, kUploadBarFillColor);
     if (cyd_display_draw_bitmap(
             &display, x, kUploadBarY + kUploadBarBorder,
             changed, inner_height, pixels) == ESP_OK) {
@@ -816,7 +823,7 @@ bool mountSdCard() {
     if (sd_mounted) return true;
 
     if (!sd_bus_initialized) {
-        spi_bus_config_t bus{};
+        spi_bus_config_t bus = {0};
         bus.mosi_io_num = BOARD_SD_MOSI;
         bus.miso_io_num = BOARD_SD_MISO;
         bus.sclk_io_num = BOARD_SD_SCK;
@@ -845,7 +852,7 @@ bool mountSdCard() {
     device.host_id = SPI3_HOST;
     device.gpio_cs = BOARD_SD_CS;
 
-    esp_vfs_fat_mount_config_t mount{};
+    esp_vfs_fat_mount_config_t mount = {0};
     mount.format_if_mount_failed = false;
     mount.max_files = 2;
     mount.allocation_unit_size = 16 * 1024;
@@ -865,7 +872,7 @@ bool mountSdCard() {
         ESP_LOGE(kTag, "Cannot create %s: errno=%d",
                  PLAYER_VIDEO_DIRECTORY, errno);
         esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
-        sd_card = nullptr;
+        sd_card = NULL;
         sd_mounted = false;
         return false;
     }
@@ -878,16 +885,16 @@ bool mountSdCard() {
 }
 
 uint32_t readLe32(const uint8_t *bytes) {
-    return static_cast<uint32_t>(bytes[0]) |
-           (static_cast<uint32_t>(bytes[1]) << 8) |
-           (static_cast<uint32_t>(bytes[2]) << 16) |
-           (static_cast<uint32_t>(bytes[3]) << 24);
+    return (uint32_t)(bytes[0]) |
+           ((uint32_t)(bytes[1]) << 8) |
+           ((uint32_t)(bytes[2]) << 16) |
+           ((uint32_t)(bytes[3]) << 24);
 }
 
 int prefetchAudioBytes(size_t remaining) {
     while (remaining && !audio_reader_stop_requested) {
-        const size_t chunk = std::min(remaining, sizeof audio_read_chunk);
-        if (std::fread(audio_read_chunk, 1, chunk, audio_file) != chunk) {
+        const size_t chunk = MIN(remaining, sizeof audio_read_chunk);
+        if (fread(audio_read_chunk, 1, chunk, audio_file) != chunk) {
             return HLV1_ERR_IO;
         }
         size_t sent = 0;
@@ -908,10 +915,10 @@ int prefetchAudioBytes(size_t remaining) {
 
 int prefetchHlvAudioPacket() {
     uint8_t header[HLV1_FRAME_HEADER_SIZE];
-    const size_t header_bytes = std::fread(header, 1, sizeof header, audio_file);
-    if (!header_bytes && std::feof(audio_file)) return HLV1_EOF;
+    const size_t header_bytes = fread(header, 1, sizeof header, audio_file);
+    if (!header_bytes && feof(audio_file)) return HLV1_EOF;
     if (header_bytes != sizeof header) return HLV1_ERR_IO;
-    if (std::memcmp(header, "FRM1", 4)) return HLV1_ERR_FORMAT;
+    if (memcmp(header, "FRM1", 4)) return HLV1_ERR_FORMAT;
 
     const uint8_t frame_type = header[4];
     const uint8_t q_y = header[5];
@@ -920,14 +927,14 @@ int prefetchHlvAudioPacket() {
     const uint32_t bit_length = readLe32(header + 8);
     const uint32_t payload_size = readLe32(header + 12);
     if (frame_type > HLV1_FRAME_P || !q_y || !q_uv || q_shift > 3 ||
-        bit_length > static_cast<uint64_t>(payload_size) * 8U) {
+        bit_length > (uint64_t)(payload_size) * 8U) {
         return HLV1_ERR_FORMAT;
     }
 
-    const uint32_t video_bytes = static_cast<uint32_t>(
-        (static_cast<uint64_t>(bit_length) + 7U) / 8U);
+    const uint32_t video_bytes = (uint32_t)(
+        ((uint64_t)(bit_length) + 7U) / 8U);
     if (video_bytes > payload_size || video_bytes > LONG_MAX ||
-        std::fseek(audio_file, static_cast<long>(video_bytes), SEEK_CUR)) {
+        fseek(audio_file, (long)(video_bytes), SEEK_CUR)) {
         return HLV1_ERR_IO;
     }
 
@@ -942,7 +949,7 @@ int prefetchMjpegAudioChunk() {
     if (result != MJPEG_AVI_OK) return result;
     const int audio_result = prefetchAudioBytes(payload_size);
     if (audio_result != HLV1_OK) return audio_result;
-    if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR)) {
+    if ((payload_size & 1U) && fseek(audio_file, 1, SEEK_CUR)) {
         return MJPEG_AVI_ERR_IO;
     }
     return MJPEG_AVI_OK;
@@ -956,19 +963,19 @@ int prefetchDivx3AudioChunk() {
     if (result != DIVX3_AVI_OK) return result;
     const int audio_result = prefetchAudioBytes(payload_size);
     if (audio_result != HLV1_OK) return audio_result;
-    if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR)) {
+    if ((payload_size & 1U) && fseek(audio_file, 1, SEEK_CUR)) {
         return DIVX3_AVI_ERR_IO;
     }
     return DIVX3_AVI_OK;
 }
 
 int prefetchBpvAudioPacket() {
-    BPV1FrameInfo info{};
+    BPV1FrameInfo info = {0};
     const int result =
         bpv1_frame_info_read(audio_file, &bpv_header, &info);
     if (result != BPV1_OK) return result;
     if (info.frame_bytes > LONG_MAX ||
-        std::fseek(audio_file, static_cast<long>(info.frame_bytes),
+        fseek(audio_file, (long)(info.frame_bytes),
                    SEEK_CUR)) {
         return BPV1_ERR_IO;
     }
@@ -980,9 +987,9 @@ int prefetchMpegAudioFrame() {
     const int64_t decode_start = microsNow();
     plm_samples_t *samples = plm_decode_audio(mpeg_audio);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (!samples) {
-        return audio_file && std::ferror(audio_file)
+        return audio_file && ferror(audio_file)
                    ? HLV1_ERR_IO
                    : HLV1_EOF;
     }
@@ -996,7 +1003,7 @@ int prefetchMpegAudioFrame() {
     }
     mpeg_audio_convert_us =
         mpeg_audio_convert_us +
-        static_cast<uint32_t>(microsNow() - convert_start);
+        (uint32_t)(microsNow() - convert_start);
     size_t sent = 0;
     while (sent < samples->count && !audio_reader_stop_requested) {
         sent += xStreamBufferSend(
@@ -1013,24 +1020,24 @@ int prefetchMpegAudioFrame() {
 
 int prefetchAmrNbAudioFrame() {
     if (!amrnb_audio_decoder) return AMRNB_3GP_ERR_FORMAT;
-    AmrNb3gpFrame frame{};
+    AmrNb3gpFrame frame = {0};
     const int64_t decode_start = microsNow();
     const int result = amrnb_3gp_decoder_decode_next(
         amrnb_audio_decoder, audio_file, &frame);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (result != AMRNB_3GP_OK) return result;
     amrnb_audio_decode_frames = amrnb_audio_decode_frames + 1;
     amrnb_audio_decode_us = amrnb_audio_decode_us + decode_us;
 
     const int64_t convert_start = microsNow();
     for (uint16_t index = 0; index < frame.sample_count; ++index) {
-        amrnb_audio_pcm[index] = static_cast<uint8_t>(
-            (static_cast<int32_t>(frame.samples[index]) + 32768) >> 8);
+        amrnb_audio_pcm[index] = (uint8_t)(
+            ((int32_t)(frame.samples[index]) + 32768) >> 8);
     }
     amrnb_audio_convert_us =
         amrnb_audio_convert_us +
-        static_cast<uint32_t>(microsNow() - convert_start);
+        (uint32_t)(microsNow() - convert_start);
 
     size_t sent = 0;
     while (sent < frame.sample_count && !audio_reader_stop_requested) {
@@ -1048,7 +1055,7 @@ int prefetchAmrNbAudioFrame() {
 
 int prefetchH263AviPcmFrame() {
     if (!h263_avi_audio_reader) return H263_3GP_ERR_FORMAT;
-    H263AviPcmFrame frame{};
+    H263AviPcmFrame frame = {0};
     const int result = h263_avi_pcm_reader_decode_next(
         h263_avi_audio_reader, audio_file, &frame);
     if (result != H263_3GP_OK) return result;
@@ -1069,23 +1076,24 @@ int prefetchH263AviPcmFrame() {
 }
 
 int prefetchAudioPacket() {
-    if (video_codec == VideoCodec::kMpeg1)
+    if (video_codec == VIDEO_CODEC_kMpeg1)
         return prefetchMpegAudioFrame();
-    if (video_codec == VideoCodec::kH263) {
+    if (video_codec == VIDEO_CODEC_kH263) {
         return h263_info.container == H263_CONTAINER_AVI
                    ? prefetchH263AviPcmFrame()
                    : prefetchAmrNbAudioFrame();
     }
-    if (video_codec == VideoCodec::kMjpeg)
+    if (video_codec == VIDEO_CODEC_kMjpeg)
         return prefetchMjpegAudioChunk();
-    if (video_codec == VideoCodec::kDivx3)
+    if (video_codec == VIDEO_CODEC_kDivx3)
         return prefetchDivx3AudioChunk();
-    if (video_codec == VideoCodec::kBpv)
+    if (video_codec == VIDEO_CODEC_kBpv)
         return prefetchBpvAudioPacket();
     return prefetchHlvAudioPacket();
 }
 
-void audioReaderTask(void *) {
+void audioReaderTask(void *opaque) {
+    (void)opaque;
     int result = HLV1_OK;
     while (!audio_reader_stop_requested) {
         result = prefetchAudioPacket();
@@ -1093,12 +1101,13 @@ void audioReaderTask(void *) {
     }
     audio_reader_result = result;
     audio_prefetch_eof = result == HLV1_EOF;
-    audio_reader_task_handle = nullptr;
-    vTaskDelete(nullptr);
+    audio_reader_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 bool onAudioConvertDone(dac_continuous_handle_t handle,
-                        const dac_event_data_t *event, void *) {
+                        const dac_event_data_t *event, void *opaque) {
+    (void)opaque;
     size_t dma_slot = kAudioDmaDescriptors;
     for (size_t slot = 0; slot < kAudioDmaDescriptors; ++slot) {
         if (audio_dma_buffer_keys[slot] == event->buf) {
@@ -1134,8 +1143,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
         // the driver's 8-bit input buffer and arm that same descriptor again.
         // No stream bytes are consumed and repeated samples do not advance the
         // media clock.
-        const auto *completed_dma =
-            static_cast<const uint8_t *>(event->buf);
+        const uint8_t *completed_dma = (const uint8_t *)(event->buf);
         for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
             audio_dma_samples[sample] = completed_dma[sample * 2U + 1U];
         }
@@ -1151,14 +1159,14 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
         }
     }
     if (!repeat_dma_ring && received < sizeof audio_dma_samples) {
-        std::memset(audio_dma_samples + received, 128,
+        memset(audio_dma_samples + received, 128,
                     sizeof audio_dma_samples - received);
         if (audio_started) {
             audio_silence_chunks = audio_silence_chunks + 1;
             if (!audio_prefetch_eof) {
                 audio_underrun_samples =
                     audio_underrun_samples +
-                    static_cast<uint32_t>(
+                    (uint32_t)(
                         sizeof audio_dma_samples - received);
             }
         }
@@ -1166,16 +1174,16 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
 
     size_t loaded = 0;
     const esp_err_t result = dac_continuous_write_asynchronously(
-        handle, static_cast<uint8_t *>(event->buf), event->buf_size,
+        handle, (uint8_t *)(event->buf), event->buf_size,
         audio_dma_samples, sizeof audio_dma_samples, &loaded);
     if (result != ESP_OK || loaded != sizeof audio_dma_samples) {
         audio_output_failed = true;
     }
     if (dma_slot < kAudioDmaDescriptors) {
         audio_dma_valid_samples[dma_slot] =
-            repeat_dma_ring ? 0 : static_cast<uint16_t>(received);
+            repeat_dma_ring ? 0 : (uint16_t)(received);
         audio_pending_samples =
-            audio_pending_samples + static_cast<uint32_t>(received);
+            audio_pending_samples + (uint32_t)(received);
     }
     return task_woken == pdTRUE;
 }
@@ -1192,7 +1200,7 @@ void stopAudio() {
         if (audio_reader_task_handle) {
             ESP_LOGW(kTag, "Audio reader did not stop; deleting it");
             vTaskDelete(audio_reader_task_handle);
-            audio_reader_task_handle = nullptr;
+            audio_reader_task_handle = NULL;
         }
     }
     if (audio_dac) {
@@ -1202,27 +1210,27 @@ void stopAudio() {
         }
         dac_continuous_disable(audio_dac);
         dac_continuous_del_channels(audio_dac);
-        audio_dac = nullptr;
+        audio_dac = NULL;
     }
     if (audio_file) {
         if (mpeg_audio) {
             plm_destroy(mpeg_audio);
-            mpeg_audio = nullptr;
+            mpeg_audio = NULL;
         }
         if (amrnb_audio_decoder) {
             amrnb_3gp_decoder_destroy(amrnb_audio_decoder);
-            amrnb_audio_decoder = nullptr;
+            amrnb_audio_decoder = NULL;
         }
-        std::fclose(audio_file);
-        audio_file = nullptr;
+        fclose(audio_file);
+        audio_file = NULL;
     }
     if (h263_avi_audio_reader) {
         h263_avi_pcm_reader_destroy(h263_avi_audio_reader);
-        h263_avi_audio_reader = nullptr;
+        h263_avi_audio_reader = NULL;
     }
     if (audio_stream) {
         vStreamBufferDelete(audio_stream);
-        audio_stream = nullptr;
+        audio_stream = NULL;
     }
     audio_enabled = false;
     audio_reader_stop_requested = false;
@@ -1244,15 +1252,15 @@ void stopAudio() {
     amrnb_audio_decode_frames = 0;
     amrnb_audio_decode_us = 0;
     amrnb_audio_convert_us = 0;
-    amrnb_audio_info = {};
+    amrnb_audio_info = (AmrNb3gpInfo){0};
     audio_preroll_bytes = 0;
     consecutive_skipped_presentations = 0;
-    std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
-    std::memset(audio_dma_valid_samples, 0,
+    memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
+    memset(audio_dma_valid_samples, 0,
                 sizeof audio_dma_valid_samples);
 }
 
-bool prepareAudio(const HLV1Header &header) {
+bool prepareAudio(HLV1Header header) {
     stopAudio();
     if (!(header.flags & HLV1_FLAG_AUDIO)) {
         ESP_LOGI(kTag, "Audio clock unavailable: video has no audio track");
@@ -1269,15 +1277,15 @@ bool prepareAudio(const HLV1Header &header) {
         audio_stream_storage, &audio_stream_state);
     if (!audio_stream) return false;
 
-    audio_file = std::fopen(active_video_path, "rb");
+    audio_file = fopen(active_video_path, "rb");
     if (!audio_file ||
-        std::setvbuf(audio_file,
-                     reinterpret_cast<char *>(audio_read_ahead),
+        setvbuf(audio_file,
+                     (char *)(audio_read_ahead),
                      _IOFBF, sizeof audio_read_ahead)) {
         stopAudio();
         return false;
     }
-    if (video_codec == VideoCodec::kMpeg1) {
+    if (video_codec == VIDEO_CODEC_kMpeg1) {
         mpeg_audio = plm_create_with_file(audio_file, 0);
         if (!mpeg_audio) {
             stopAudio();
@@ -1290,9 +1298,9 @@ bool prepareAudio(const HLV1Header &header) {
             stopAudio();
             return false;
         }
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (video_codec == VIDEO_CODEC_kH263) {
         if (h263_info.container == H263_CONTAINER_AVI) {
-            H2633gpInfo audio_info{};
+            H2633gpInfo audio_info = {0};
             h263_avi_audio_reader = h263_avi_pcm_reader_create();
             const int result =
                 h263_avi_audio_reader
@@ -1330,8 +1338,8 @@ bool prepareAudio(const HLV1Header &header) {
                 return false;
             }
         }
-    } else if (video_codec == VideoCodec::kMjpeg) {
-        mjpeg_avi_info_t audio_info{};
+    } else if (video_codec == VIDEO_CODEC_kMjpeg) {
+        mjpeg_avi_info_t audio_info = {0};
         if (mjpeg_avi_read_info(audio_file, &audio_info) != MJPEG_AVI_OK ||
             audio_info.width != header.width ||
             audio_info.height != header.height ||
@@ -1344,8 +1352,8 @@ bool prepareAudio(const HLV1Header &header) {
             stopAudio();
             return false;
         }
-    } else if (video_codec == VideoCodec::kDivx3) {
-        Divx3AviInfo audio_info{};
+    } else if (video_codec == VIDEO_CODEC_kDivx3) {
+        Divx3AviInfo audio_info = {0};
         if (divx3_avi_read_info(audio_file, &audio_info) !=
                 DIVX3_AVI_OK ||
             audio_info.width != header.width ||
@@ -1359,8 +1367,8 @@ bool prepareAudio(const HLV1Header &header) {
             stopAudio();
             return false;
         }
-    } else if (video_codec == VideoCodec::kBpv) {
-        BPV1Header audio_header{};
+    } else if (video_codec == VIDEO_CODEC_kBpv) {
+        BPV1Header audio_header = {0};
         if (bpv1_header_read(audio_file, &audio_header) != BPV1_OK ||
             audio_header.width != header.width ||
             audio_header.height != header.height ||
@@ -1374,7 +1382,7 @@ bool prepareAudio(const HLV1Header &header) {
             return false;
         }
     } else {
-        HLV1Header audio_header{};
+        HLV1Header audio_header = {0};
         if (hlv1_header_read(audio_file, &audio_header) != HLV1_OK ||
             audio_header.width != header.width ||
             audio_header.height != header.height ||
@@ -1389,7 +1397,7 @@ bool prepareAudio(const HLV1Header &header) {
         }
     }
 
-    dac_continuous_config_t config{};
+    dac_continuous_config_t config = {0};
     config.chan_mask = DAC_CHANNEL_MASK_CH1;
     config.desc_num = kAudioDmaDescriptors;
     config.buf_size = kAudioDmaBufferBytes;
@@ -1403,10 +1411,10 @@ bool prepareAudio(const HLV1Header &header) {
         return false;
     }
 
-    dac_event_callbacks_t callbacks{};
+    dac_event_callbacks_t callbacks = {0};
     callbacks.on_convert_done = onAudioConvertDone;
     if (dac_continuous_register_event_callback(
-            audio_dac, &callbacks, nullptr) != ESP_OK ||
+            audio_dac, &callbacks, NULL) != ESP_OK ||
         dac_continuous_start_async_writing(audio_dac) != ESP_OK) {
         stopAudio();
         return false;
@@ -1415,11 +1423,11 @@ bool prepareAudio(const HLV1Header &header) {
     audio_enabled = true;
 
     const uint64_t audio_samples_per_frame =
-        (static_cast<uint64_t>(header.audio_sample_rate) *
+        ((uint64_t)(header.audio_sample_rate) *
              header.fps_den +
          header.fps_num - 1U) /
         header.fps_num;
-    audio_preroll_bytes = static_cast<size_t>(std::min<uint64_t>(
+    audio_preroll_bytes = (size_t)(MIN(
         kAudioStreamBytes,
         audio_samples_per_frame *
             PLAYER_AUDIO_PREROLL_FRAMES));
@@ -1429,7 +1437,7 @@ bool prepareAudio(const HLV1Header &header) {
     audio_reader_result = HLV1_OK;
     if (xTaskCreatePinnedToCore(
             audioReaderTask, "video-audio-read", kAudioReaderStackBytes,
-            nullptr, 3, &audio_reader_task_handle, 0) != pdPASS) {
+            NULL, 3, &audio_reader_task_handle, 0) != pdPASS) {
         stopAudio();
         return false;
     }
@@ -1454,10 +1462,10 @@ bool prepareAudio(const HLV1Header &header) {
              "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
              header.audio_sample_rate, BOARD_AUDIO_DAC,
-             static_cast<unsigned>(kAudioStreamBytes),
-             static_cast<unsigned>(kAudioDmaDescriptors),
-             static_cast<unsigned>(kAudioDmaSamples),
-             static_cast<unsigned>(prefetched));
+             (unsigned)(kAudioStreamBytes),
+             (unsigned)(kAudioDmaDescriptors),
+             (unsigned)(kAudioDmaSamples),
+             (unsigned)(prefetched));
     return true;
 }
 
@@ -1472,16 +1480,16 @@ void closeVideo() {
     stopDecodeWorker();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
-    pending_divx3_frame = {};
+    pending_divx3_frame = (Divx3Frame){0};
     pending_divx3_frame_valid = false;
     pending_h263_frame_valid = false;
-    pending_h263_frame = {};
+    pending_h263_frame = (H2633gpFrame){0};
     pending_h263_decode_us = 0;
     h263_dual_buffered = false;
     h263_row_pipelined = false;
     pending_bpv_frame_valid = false;
     bpv_rgb565_palette_valid = false;
-    ready_bpv_packet = {};
+    ready_bpv_packet = (BPV1Packet){0};
     ready_bpv_packet_valid = false;
     bpv_stream_eof = false;
     ready_bpv_read_us = 0;
@@ -1490,32 +1498,32 @@ void closeVideo() {
     stopAudio();
     hlv_esp32_decoder_end(&decoder);
     mjpeg_avi_decoder_end(&mjpeg_decoder);
-    mjpeg_info = {};
+    mjpeg_info = (mjpeg_avi_info_t){0};
     divx3_decoder_destroy(divx3_decoder);
-    divx3_decoder = nullptr;
+    divx3_decoder = NULL;
     heap_caps_free(divx3_packet);
-    divx3_packet = nullptr;
-    divx3_info = {};
+    divx3_packet = NULL;
+    divx3_info = (Divx3AviInfo){0};
     bpv_esp32_decoder_end(&bpv_decoder);
-    bpv_header = {};
+    bpv_header = (BPV1Header){0};
     if (mpeg_video) {
         plm_destroy(mpeg_video);
-        mpeg_video = nullptr;
+        mpeg_video = NULL;
     }
     if (h263_decoder) {
         h263_3gp_decoder_destroy(h263_decoder);
-        h263_decoder = nullptr;
+        h263_decoder = NULL;
     }
-    h263_info = {};
+    h263_info = (H2633gpInfo){0};
     if (video_file) {
-        std::fclose(video_file);
-        video_file = nullptr;
+        fclose(video_file);
+        video_file = NULL;
     }
     heap_caps_free(video_read_ahead);
-    video_read_ahead = nullptr;
+    video_read_ahead = NULL;
     video_read_ahead_size = 0;
-    video_codec = VideoCodec::kNone;
-    active_video_path = nullptr;
+    video_codec = VIDEO_CODEC_kNone;
+    active_video_path = NULL;
 }
 
 void deinitializeSdCard() {
@@ -1529,7 +1537,7 @@ void deinitializeSdCard() {
                      esp_err_to_name(unmount_result));
         }
     }
-    sd_card = nullptr;
+    sd_card = NULL;
     sd_mounted = false;
 
     if (sd_bus_initialized) {
@@ -1547,22 +1555,22 @@ void reportHeap(const char *stage) {
     ESP_LOGI(kTag,
              "%s: heap=%u largest=%u, DMA=%u largest-DMA=%u",
              stage,
-             static_cast<unsigned>(
+             (unsigned)(
                  heap_caps_get_free_size(MALLOC_CAP_8BIT)),
-             static_cast<unsigned>(
+             (unsigned)(
                  heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
-             static_cast<unsigned>(
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+             (unsigned)(
                  heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 }
 
 bool isSafeVideoFilename(const char *name) {
-    if (!name || !*name || !std::strcmp(name, ".") ||
-        !std::strcmp(name, "..") || std::strstr(name, "..")) {
+    if (!name || !*name || !strcmp(name, ".") ||
+        !strcmp(name, "..") || strstr(name, "..")) {
         return false;
     }
     for (const unsigned char *cursor =
-             reinterpret_cast<const unsigned char *>(name);
+             (const unsigned char *)(name);
          *cursor; ++cursor) {
         const bool letter = (*cursor >= 'a' && *cursor <= 'z') ||
                             (*cursor >= 'A' && *cursor <= 'Z');
@@ -1578,24 +1586,24 @@ bool isSafeVideoFilename(const char *name) {
 SelectionReadResult readSelectedVideoPath() {
     errno = 0;
     FILE *selection =
-        std::fopen(PLAYER_VIDEO_SELECTION_PATH, "rb");
+        fopen(PLAYER_VIDEO_SELECTION_PATH, "rb");
     if (!selection) {
         return errno == ENOENT
-                   ? SelectionReadResult::kMissingOrInvalid
-                   : SelectionReadResult::kIoError;
+                   ? SELECTION_READ_kMissingOrInvalid
+                   : SELECTION_READ_kIoError;
     }
 
-    char filename[112]{};
+    char filename[112] = {0};
     const bool read =
-        std::fgets(filename, sizeof filename, selection) != nullptr;
-    const bool io_error = std::ferror(selection) != 0;
-    const bool close_error = std::fclose(selection) != 0;
-    if (io_error || close_error) return SelectionReadResult::kIoError;
-    if (!read) return SelectionReadResult::kMissingOrInvalid;
+        fgets(filename, sizeof filename, selection) != NULL;
+    const bool io_error = ferror(selection) != 0;
+    const bool close_error = fclose(selection) != 0;
+    if (io_error || close_error) return SELECTION_READ_kIoError;
+    if (!read) return SELECTION_READ_kMissingOrInvalid;
 
     char *start = filename;
     while (*start == ' ' || *start == '\t') ++start;
-    char *end = start + std::strlen(start);
+    char *end = start + strlen(start);
     while (end > start &&
            (end[-1] == '\r' || end[-1] == '\n' ||
             end[-1] == ' ' || end[-1] == '\t')) {
@@ -1603,88 +1611,88 @@ SelectionReadResult readSelectedVideoPath() {
     }
     *end = '\0';
     if (!isSafeVideoFilename(start)) {
-        return SelectionReadResult::kMissingOrInvalid;
+        return SELECTION_READ_kMissingOrInvalid;
     }
 
-    const int written = std::snprintf(
+    const int written = snprintf(
         selected_video_path, sizeof selected_video_path, "%s/%s",
         PLAYER_VIDEO_DIRECTORY, start);
     return written > 0 &&
-                   static_cast<size_t>(written) <
+                   (size_t)(written) <
                        sizeof selected_video_path
-               ? SelectionReadResult::kReady
-               : SelectionReadResult::kMissingOrInvalid;
+               ? SELECTION_READ_kReady
+               : SELECTION_READ_kMissingOrInvalid;
 }
 
 VideoOpenResult openVideoCandidate(const char *path) {
     errno = 0;
-    video_file = std::fopen(path, "rb");
+    video_file = fopen(path, "rb");
     if (!video_file) {
         return errno == ENOENT
-                   ? VideoOpenResult::kMissingOrUnsupported
-                   : VideoOpenResult::kIoError;
+                   ? VIDEO_OPEN_kMissingOrUnsupported
+                   : VIDEO_OPEN_kIoError;
     }
-    uint8_t signature[12]{};
+    uint8_t signature[12] = {0};
     const size_t signature_size =
-        std::fread(signature, 1, sizeof signature, video_file);
-    const bool io_error = std::ferror(video_file) != 0 ||
-                          std::fseek(video_file, 0, SEEK_SET) != 0;
+        fread(signature, 1, sizeof signature, video_file);
+    const bool io_error = ferror(video_file) != 0 ||
+                          fseek(video_file, 0, SEEK_SET) != 0;
     if (io_error) {
-        std::fclose(video_file);
-        video_file = nullptr;
-        return VideoOpenResult::kIoError;
+        fclose(video_file);
+        video_file = NULL;
+        return VIDEO_OPEN_kIoError;
     }
-    if (signature_size >= 4 && !std::memcmp(signature, "HLV1", 4)) {
-        video_codec = VideoCodec::kHlv;
+    if (signature_size >= 4 && !memcmp(signature, "HLV1", 4)) {
+        video_codec = VIDEO_CODEC_kHlv;
     } else if (signature_size >= 4 &&
-               !std::memcmp(signature, "BPV1", 4)) {
-        video_codec = VideoCodec::kBpv;
+               !memcmp(signature, "BPV1", 4)) {
+        video_codec = VIDEO_CODEC_kBpv;
     } else if (signature_size == sizeof signature &&
-               !std::memcmp(signature, "RIFF", 4) &&
-               !std::memcmp(signature + 8, "AVI ", 4)) {
-        H2633gpInfo h263_probe{};
+               !memcmp(signature, "RIFF", 4) &&
+               !memcmp(signature + 8, "AVI ", 4)) {
+        H2633gpInfo h263_probe = {0};
         const int h263_result =
             h263_avi_probe(video_file, &h263_probe);
-        std::clearerr(video_file);
-        if (std::fseek(video_file, 0, SEEK_SET)) {
-            std::fclose(video_file);
-            video_file = nullptr;
-            return VideoOpenResult::kIoError;
+        clearerr(video_file);
+        if (fseek(video_file, 0, SEEK_SET)) {
+            fclose(video_file);
+            video_file = NULL;
+            return VIDEO_OPEN_kIoError;
         }
-        Divx3AviInfo probe{};
+        Divx3AviInfo probe = {0};
         const int divx3_result =
             divx3_avi_read_info(video_file, &probe);
-        std::clearerr(video_file);
-        if (std::fseek(video_file, 0, SEEK_SET)) {
-            std::fclose(video_file);
-            video_file = nullptr;
-            return VideoOpenResult::kIoError;
+        clearerr(video_file);
+        if (fseek(video_file, 0, SEEK_SET)) {
+            fclose(video_file);
+            video_file = NULL;
+            return VIDEO_OPEN_kIoError;
         }
         if (h263_result == H263_3GP_OK) {
-            video_codec = VideoCodec::kH263;
+            video_codec = VIDEO_CODEC_kH263;
         } else if (divx3_result == DIVX3_AVI_OK) {
-            video_codec = VideoCodec::kDivx3;
+            video_codec = VIDEO_CODEC_kDivx3;
         } else {
-            video_codec = VideoCodec::kMjpeg;
+            video_codec = VIDEO_CODEC_kMjpeg;
         }
     } else if (signature_size >= 4 &&
                signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {
-        video_codec = VideoCodec::kMpeg1;
+        video_codec = VIDEO_CODEC_kMpeg1;
     } else if (signature_size == sizeof signature &&
-               !std::memcmp(signature + 4, "ftyp", 4)) {
-        video_codec = VideoCodec::kH263;
+               !memcmp(signature + 4, "ftyp", 4)) {
+        video_codec = VIDEO_CODEC_kH263;
     } else {
-        std::fclose(video_file);
-        video_file = nullptr;
-        return VideoOpenResult::kMissingOrUnsupported;
+        fclose(video_file);
+        video_file = NULL;
+        return VIDEO_OPEN_kMissingOrUnsupported;
     }
     active_video_path = path;
-    return VideoOpenResult::kReady;
+    return VIDEO_OPEN_kReady;
 }
 
 int probeMpegAudioSampleRate(const char *path) {
-    FILE *file = std::fopen(path, "rb");
+    FILE *file = fopen(path, "rb");
     if (!file) return 0;
     plm_t *mpeg = plm_create_with_file(file, 0);
     int sample_rate = 0;
@@ -1694,12 +1702,12 @@ int probeMpegAudioSampleRate(const char *path) {
             sample_rate = plm_get_samplerate(mpeg);
         plm_destroy(mpeg);
     }
-    std::fclose(file);
+    fclose(file);
     return sample_rate;
 }
 
 int probeAmrNbAudio(const char *path, AmrNb3gpInfo *info) {
-    FILE *file = std::fopen(path, "rb");
+    FILE *file = fopen(path, "rb");
     if (!file) return AMRNB_3GP_ERR_IO;
     AmrNb3gpDecoder *probe = amrnb_3gp_decoder_create();
     const int result =
@@ -1707,7 +1715,7 @@ int probeAmrNbAudio(const char *path, AmrNb3gpInfo *info) {
             ? amrnb_3gp_decoder_open(probe, file, info)
             : AMRNB_3GP_ERR_MEMORY;
     amrnb_3gp_decoder_destroy(probe);
-    std::fclose(file);
+    fclose(file);
     return result;
 }
 
@@ -1716,15 +1724,15 @@ bool reopenVideoAt(long offset) {
         !video_read_ahead_size || offset < 0) {
         return false;
     }
-    if (video_file) std::fclose(video_file);
-    video_file = std::fopen(active_video_path, "rb");
+    if (video_file) fclose(video_file);
+    video_file = fopen(active_video_path, "rb");
     if (!video_file) return false;
-    if (std::setvbuf(video_file,
-                     reinterpret_cast<char *>(video_read_ahead),
+    if (setvbuf(video_file,
+                     (char *)(video_read_ahead),
                      _IOFBF, video_read_ahead_size) ||
-        std::fseek(video_file, offset, SEEK_SET)) {
-        std::fclose(video_file);
-        video_file = nullptr;
+        fseek(video_file, offset, SEEK_SET)) {
+        fclose(video_file);
+        video_file = NULL;
         return false;
     }
     return true;
@@ -1733,29 +1741,29 @@ bool reopenVideoAt(long offset) {
 bool openVideo() {
     closeVideo();
     const SelectionReadResult selection_result = readSelectedVideoPath();
-    if (selection_result == SelectionReadResult::kIoError) {
+    if (selection_result == SELECTION_READ_kIoError) {
         showStatus("SD CARD READ ERROR", "cannot read /HLV/play.txt");
         return false;
     }
-    if (selection_result != SelectionReadResult::kReady) {
+    if (selection_result != SELECTION_READ_kReady) {
         showStatus("NO SELECTED FILE.",
                    "create /HLV/play.txt");
         return false;
     }
     const VideoOpenResult open_result =
         openVideoCandidate(selected_video_path);
-    if (open_result == VideoOpenResult::kIoError) {
+    if (open_result == VIDEO_OPEN_kIoError) {
         showStatus("SD CARD READ ERROR", "cannot open selected video");
         return false;
     }
-    if (open_result != VideoOpenResult::kReady) {
+    if (open_result != VIDEO_OPEN_kReady) {
         showStatus("SELECTED FILE ERROR",
                    "missing or unsupported video");
         return false;
     }
     const bool use_double_display_buffer =
-        video_codec != VideoCodec::kH263 &&
-        video_codec != VideoCodec::kDivx3;
+        video_codec != VIDEO_CODEC_kH263 &&
+        video_codec != VIDEO_CODEC_kDivx3;
     if (cyd_display_set_double_buffered(
             &display, use_double_display_buffer) != ESP_OK) {
         showStatus("Not enough RAM", "display buffer allocation failed");
@@ -1763,34 +1771,34 @@ bool openVideo() {
         return false;
     }
     video_read_ahead_size =
-        video_codec == VideoCodec::kMpeg1
+        video_codec == VIDEO_CODEC_kMpeg1
             ? kMpegVideoReadAheadBytes
-            : (video_codec == VideoCodec::kDivx3
+            : (video_codec == VIDEO_CODEC_kDivx3
                    ? kDivx3VideoReadAheadBytes
-                   : (video_codec == VideoCodec::kH263
+                   : (video_codec == VIDEO_CODEC_kH263
                           ? kH263VideoReadAheadBytes
                           : kVideoReadAheadBytes));
-    video_read_ahead = static_cast<uint8_t *>(
+    video_read_ahead = (uint8_t *)(
         heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
     if (!video_read_ahead) {
         showStatus("Not enough RAM", "read-ahead allocation failed");
         closeVideo();
         return false;
     }
-    if (std::setvbuf(video_file,
-                     reinterpret_cast<char *>(video_read_ahead),
+    if (setvbuf(video_file,
+                     (char *)(video_read_ahead),
                      _IOFBF, video_read_ahead_size)) {
         showStatus("SD setup failed", "cannot configure read-ahead");
         closeVideo();
         return false;
     }
 
-    sequence_header = {};
+    sequence_header = (HLV1Header){0};
     reportHeap("before decoder");
-    if (video_codec == VideoCodec::kMpeg1) {
+    if (video_codec == VIDEO_CODEC_kMpeg1) {
         const int audio_sample_rate =
             probeMpegAudioSampleRate(active_video_path);
-        std::clearerr(video_file);
+        clearerr(video_file);
         errno = 0;
         mpeg_video = plm_create_with_file(video_file, 0);
         if (!mpeg_video) {
@@ -1804,8 +1812,8 @@ bool openVideo() {
         const double fps = plm_get_framerate(mpeg_video);
         const double duration = plm_get_duration(mpeg_video);
         const int probe_errno = errno;
-        const bool probe_io_error = std::ferror(video_file) != 0;
-        const long probe_position = std::ftell(video_file);
+        const bool probe_io_error = ferror(video_file) != 0;
+        const long probe_position = ftell(video_file);
         if (width <= 0 || width > UINT16_MAX ||
             height <= 0 || height > UINT16_MAX ||
             !mpegFpsRational(
@@ -1821,10 +1829,10 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-        sequence_header.width = static_cast<uint16_t>(width);
-        sequence_header.height = static_cast<uint16_t>(height);
+        sequence_header.width = (uint16_t)(width);
+        sequence_header.height = (uint16_t)(height);
         const double frame_count =
-            std::floor(duration * sequence_header.fps_num /
+            floor(duration * sequence_header.fps_num /
                        sequence_header.fps_den + 0.5);
         if (frame_count < 1.0 || frame_count > UINT32_MAX) {
             showStatus("Invalid video.mpg", "invalid duration");
@@ -1832,12 +1840,12 @@ bool openVideo() {
             return false;
         }
         sequence_header.frame_count =
-            static_cast<uint32_t>(frame_count);
+            (uint32_t)(frame_count);
         if (audio_sample_rate > 0 && audio_sample_rate <= UINT16_MAX) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
-                static_cast<uint16_t>(audio_sample_rate);
+                (uint16_t)(audio_sample_rate);
             sequence_header.audio_channels = 1;
         }
         plm_rewind(mpeg_video);
@@ -1846,7 +1854,7 @@ bool openVideo() {
                  "MP2 audio=%u Hz, no-B two-frame decoder",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 static_cast<unsigned>(sequence_header.frame_count),
+                 (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
@@ -1854,7 +1862,7 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (video_codec == VIDEO_CODEC_kH263) {
         h263_decoder = h263_3gp_decoder_create();
         if (h263_decoder && PLAYER_USE_DUAL_CORE_PIPELINE) {
             h263_3gp_decoder_set_output_buffer_count(h263_decoder, 2);
@@ -1886,19 +1894,19 @@ bool openVideo() {
         sequence_header.width = h263_info.width;
         sequence_header.height = h263_info.height;
         sequence_header.fps_num =
-            static_cast<uint16_t>(h263_info.fps_num);
+            (uint16_t)(h263_info.fps_num);
         sequence_header.fps_den =
-            static_cast<uint16_t>(h263_info.fps_den);
+            (uint16_t)(h263_info.fps_den);
         sequence_header.frame_count = h263_info.frame_count;
         if (h263_info.container == H263_CONTAINER_AVI &&
             h263_info.audio_sample_rate) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
-                static_cast<uint16_t>(h263_info.audio_sample_rate);
+                (uint16_t)(h263_info.audio_sample_rate);
             sequence_header.audio_channels = h263_info.audio_channels;
         } else if (h263_info.container == H263_CONTAINER_3GP) {
-            AmrNb3gpInfo audio_info{};
+            AmrNb3gpInfo audio_info = {0};
             const int audio_result =
                 probeAmrNbAudio(active_video_path, &audio_info);
             if (audio_result == AMRNB_3GP_OK) {
@@ -1923,13 +1931,13 @@ bool openVideo() {
                      : "3GP",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 static_cast<unsigned>(sequence_header.frame_count),
+                 (unsigned)(sequence_header.frame_count),
                  h263_info.profile, h263_info.level,
                  sequence_header.audio_sample_rate,
                  h263_info.container == H263_CONTAINER_AVI
                      ? h263_info.audio_bits_per_sample
                      : 0,
-                 static_cast<unsigned>(
+                 (unsigned)(
                      h263_3gp_decoder_memory_bytes(h263_decoder)));
         h263_dual_buffered =
             h263_3gp_decoder_output_buffer_count(h263_decoder) == 2;
@@ -1938,7 +1946,7 @@ bool openVideo() {
             h263_3gp_decoder_output_buffer_count(h263_decoder) == 1;
         if (h263_row_pipelined) {
             h263_3gp_decoder_set_output_row_guard(
-                h263_decoder, waitForH263OutputRow, nullptr);
+                h263_decoder, waitForH263OutputRow, NULL);
         }
         if ((h263_dual_buffered || h263_row_pipelined) &&
             !startDecodeWorker()) {
@@ -1947,7 +1955,7 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-    } else if (video_codec == VideoCodec::kMjpeg) {
+    } else if (video_codec == VIDEO_CODEC_kMjpeg) {
         int result = mjpeg_avi_decoder_begin(
             &mjpeg_decoder, video_file, &mjpeg_info,
             PLAYER_SCALE_VIDEO_TO_DISPLAY);
@@ -1965,15 +1973,15 @@ bool openVideo() {
         sequence_header.width = mjpeg_info.width;
         sequence_header.height = mjpeg_info.height;
         sequence_header.fps_num =
-            static_cast<uint16_t>(mjpeg_info.fps_num);
+            (uint16_t)(mjpeg_info.fps_num);
         sequence_header.fps_den =
-            static_cast<uint16_t>(mjpeg_info.fps_den);
+            (uint16_t)(mjpeg_info.fps_den);
         sequence_header.frame_count = mjpeg_info.frame_count;
         if (mjpeg_info.audio_stream != 0xff) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
-                static_cast<uint16_t>(mjpeg_info.audio_sample_rate);
+                (uint16_t)(mjpeg_info.audio_sample_rate);
             sequence_header.audio_channels = 1;
         }
         ESP_LOGI(kTag,
@@ -1981,16 +1989,16 @@ bool openVideo() {
                  "PCM_U8 audio=%u Hz, max JPEG=%u",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 static_cast<unsigned>(sequence_header.frame_count),
+                 (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate,
-                 static_cast<unsigned>(
+                 (unsigned)(
                      mjpeg_avi_decoder_compressed_capacity(
                          &mjpeg_decoder)));
-    } else if (video_codec == VideoCodec::kDivx3) {
+    } else if (video_codec == VIDEO_CODEC_kDivx3) {
         int result = divx3_avi_read_info(video_file, &divx3_info);
         const uint32_t macroblocks =
-            ((static_cast<uint32_t>(divx3_info.width) + 15U) / 16U) *
-            ((static_cast<uint32_t>(divx3_info.height) + 15U) / 16U);
+            (((uint32_t)(divx3_info.width) + 15U) / 16U) *
+            (((uint32_t)(divx3_info.height) + 15U) / 16U);
         if (result == DIVX3_AVI_OK &&
             (divx3_info.fps_num > UINT16_MAX ||
              divx3_info.fps_den > UINT16_MAX ||
@@ -2009,7 +2017,7 @@ bool openVideo() {
         divx3_decoder =
             divx3_decoder_create_y6_u5_v5(
                 divx3_info.width, divx3_info.height);
-        divx3_packet = static_cast<uint8_t *>(heap_caps_malloc(
+        divx3_packet = (uint8_t *)(heap_caps_malloc(
             divx3_info.max_video_packet_size, MALLOC_CAP_8BIT));
         if (!divx3_decoder || !divx3_packet) {
             showStatus("Not enough RAM",
@@ -2021,15 +2029,15 @@ bool openVideo() {
         sequence_header.width = divx3_info.width;
         sequence_header.height = divx3_info.height;
         sequence_header.fps_num =
-            static_cast<uint16_t>(divx3_info.fps_num);
+            (uint16_t)(divx3_info.fps_num);
         sequence_header.fps_den =
-            static_cast<uint16_t>(divx3_info.fps_den);
+            (uint16_t)(divx3_info.fps_den);
         sequence_header.frame_count = divx3_info.frame_count;
         if (divx3_info.audio_stream != 0xff) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
-                static_cast<uint16_t>(divx3_info.audio_sample_rate);
+                (uint16_t)(divx3_info.audio_sample_rate);
             sequence_header.audio_channels = 1;
         }
         ESP_LOGI(kTag,
@@ -2038,11 +2046,11 @@ bool openVideo() {
                  "packet=%u bytes",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 static_cast<unsigned>(sequence_header.frame_count),
+                 (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate,
-                 static_cast<unsigned>(
+                 (unsigned)(
                      divx3_decoder_memory_bytes(divx3_decoder)),
-                 static_cast<unsigned>(
+                 (unsigned)(
                      divx3_info.max_video_packet_size));
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
@@ -2050,7 +2058,7 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-    } else if (video_codec == VideoCodec::kBpv) {
+    } else if (video_codec == VIDEO_CODEC_kBpv) {
         const int result =
             bpv_esp32_decoder_begin(&bpv_decoder, video_file, &bpv_header);
         if (result != BPV1_OK) {
@@ -2078,11 +2086,11 @@ bool openVideo() {
                  "audio=%u Hz, decoder=%u bytes, packet=%u bytes",
                  bpv_header.version, bpv_header.width, bpv_header.height,
                  bpv_header.fps_num, bpv_header.fps_den,
-                 static_cast<unsigned>(bpv_header.frame_count),
+                 (unsigned)(bpv_header.frame_count),
                  bpv_header.audio_sample_rate,
-                 static_cast<unsigned>(
+                 (unsigned)(
                      bpv_esp32_decoder_memory_bytes(&bpv_decoder)),
-                 static_cast<unsigned>(
+                 (unsigned)(
                      bpv_esp32_decoder_packet_capacity(&bpv_decoder)));
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
@@ -2102,7 +2110,7 @@ bool openVideo() {
         ESP_LOGI(kTag, "HLV: %ux%u, %u/%u fps, %u frames, audio=%u Hz",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 static_cast<unsigned>(sequence_header.frame_count),
+                 (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
         const int decoder_result = hlv_esp32_decoder_begin(
             &decoder, &sequence_header, PLAYER_USE_COMPACT_Y6_U5_V5);
@@ -2113,11 +2121,11 @@ bool openVideo() {
             return false;
         }
         ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u DMA-capable",
-                 static_cast<unsigned>(HLV_ESP32_PACKET_BLOCK_COUNT),
-                 static_cast<unsigned>(HLV_ESP32_PACKET_BLOCK_BYTES),
-                 static_cast<unsigned>(
+                 (unsigned)(HLV_ESP32_PACKET_BLOCK_COUNT),
+                 (unsigned)(HLV_ESP32_PACKET_BLOCK_BYTES),
+                 (unsigned)(
                      hlv_esp32_decoder_packet_capacity(&decoder)),
-                 static_cast<unsigned>(
+                 (unsigned)(
                      hlv_esp32_decoder_dma_block_count(&decoder)));
         // Allocate the large predictive planes and packet blocks before the
         // worker stack, preserving the largest contiguous heap regions.
@@ -2129,7 +2137,7 @@ bool openVideo() {
         }
     }
     const bool is_cif_h263 =
-        video_codec == VideoCodec::kH263 &&
+        video_codec == VIDEO_CODEC_kH263 &&
         sequence_header.width == 352 &&
         sequence_header.height == 288;
     if ((sequence_header.width > kScreenWidth ||
@@ -2153,9 +2161,9 @@ bool openVideo() {
 
     const uint64_t frame_period_numerator =
         1000000ULL * sequence_header.fps_den;
-    frame_period_us = static_cast<int64_t>(
+    frame_period_us = (int64_t)(
         frame_period_numerator / sequence_header.fps_num);
-    frame_period_remainder = static_cast<uint32_t>(
+    frame_period_remainder = (uint32_t)(
         frame_period_numerator % sequence_header.fps_num);
     frame_period_phase = 0;
     next_present_us = microsNow();
@@ -2167,23 +2175,23 @@ bool openVideo() {
 
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         for (int x = 0; x < kScreenWidth; ++x) {
-            scaled_x_map[x] = static_cast<uint16_t>(
+            scaled_x_map[x] = (uint16_t)(
                 (x * sequence_header.width) / kScreenWidth);
         }
         for (int y = 0; y < kScreenHeight; ++y) {
-            scaled_y_map[y] = static_cast<uint16_t>(
+            scaled_y_map[y] = (uint16_t)(
                 (y * sequence_header.height) / kScreenHeight);
         }
     }
 
-    if (video_codec == VideoCodec::kMpeg1) {
+    if (video_codec == VIDEO_CODEC_kMpeg1) {
         ESP_LOGI(kTag,
                  "Playing MPEG-1 in %s mode, frame storage=two YCbCr "
                  "reference frames",
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (video_codec == VIDEO_CODEC_kH263) {
         ESP_LOGI(kTag,
                  "Playing H.263/%s in %s mode, "
                  "frame storage=bounded YUV420 frame buffers",
@@ -2194,20 +2202,20 @@ bool openVideo() {
                          sequence_header.height == 288
                      ? "pixel-exact central-320x240-crop"
                      : "native-centred");
-    } else if (video_codec == VideoCodec::kMjpeg) {
+    } else if (video_codec == VIDEO_CODEC_kMjpeg) {
         ESP_LOGI(kTag,
                  "Playing MJPEG in %s mode, frame storage=RGB565 strip",
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
-    } else if (video_codec == VideoCodec::kDivx3) {
+    } else if (video_codec == VIDEO_CODEC_kDivx3) {
         ESP_LOGI(kTag,
                  "Playing DivX 3 in %s mode, frame storage=two compact "
                  "Y6/U5/V5 reference frames",
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
-    } else if (video_codec == VideoCodec::kBpv) {
+    } else if (video_codec == VIDEO_CODEC_kBpv) {
         ESP_LOGI(kTag,
                  "Playing BPV1 v%u in %s mode, frame storage=4x4 records",
                  bpv_header.version,
@@ -2231,7 +2239,7 @@ bool openVideo() {
             sequence_header.width, sequence_header.height,
             sequence_header.fps_num, sequence_header.fps_den,
             sequence_header.audio_sample_rate,
-            static_cast<unsigned>(sequence_header.frame_count));
+            (unsigned)(sequence_header.frame_count));
         esp_rom_printf(
             "#frame,sd_us,decode_us,render_us,work_us,present_us\n");
     }
@@ -2245,7 +2253,7 @@ void waitUntil(int64_t deadline) {
         if (remaining > 2000) {
             vTaskDelay(pdMS_TO_TICKS(1));
         } else {
-            esp_rom_delay_us(static_cast<uint32_t>(remaining));
+            esp_rom_delay_us((uint32_t)(remaining));
         }
     }
 }
@@ -2257,7 +2265,7 @@ bool renderFrame(const HLV1Frame *frame) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
-                std::min(rows_per_transfer, kScreenHeight - y0);
+                MIN(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -2266,7 +2274,7 @@ bool renderFrame(const HLV1Frame *frame) {
                     convertScaledRow(frame, source_y, scaled_rgb_row);
                     cached_source_y = source_y;
                 }
-                std::memcpy(pixels + row * kScreenWidth, scaled_rgb_row,
+                memcpy(pixels + row * kScreenWidth, scaled_rgb_row,
                             sizeof(uint16_t) * kScreenWidth);
             }
             if (cyd_display_draw_bitmap(
@@ -2280,7 +2288,7 @@ bool renderFrame(const HLV1Frame *frame) {
     const int x_offset = (kScreenWidth - frame->width) / 2;
     const int y_offset = (kScreenHeight - frame->height) / 2;
     for (int y0 = 0; y0 < frame->height; y0 += rows_per_transfer) {
-        const int rows = std::min(rows_per_transfer, frame->height - y0);
+        const int rows = MIN(rows_per_transfer, frame->height - y0);
         uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
@@ -2300,20 +2308,20 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, int first_source_x,
                     uint16_t *output, int output_width) {
     const uint8_t *y_row =
-        frame->y.data + static_cast<size_t>(source_y) * frame->y.stride;
+        frame->y.data + (size_t)(source_y) * frame->y.stride;
     const int chroma_y = source_y >> 1;
     const uint8_t *cb_row =
         frame->cb.data +
-        static_cast<size_t>(chroma_y) * frame->cb.stride;
+        (size_t)(chroma_y) * frame->cb.stride;
     const uint8_t *cr_row =
         frame->cr.data +
-        static_cast<size_t>(chroma_y) * frame->cr.stride;
+        (size_t)(chroma_y) * frame->cr.stride;
     const int chroma_width =
-        (static_cast<int>(frame->width) + 1) >> 1;
+        ((int)(frame->width) + 1) >> 1;
     if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
         plm_plane_unpack_compact_samples(
             &frame->y, 0, source_y, 6, native_y_row,
-            static_cast<int>(frame->width));
+            (int)(frame->width));
         y_row = native_y_row;
     }
 
@@ -2376,7 +2384,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         for (int y0 = 0; y0 < kScreenHeight;
              y0 += rows_per_transfer) {
             const int rows =
-                std::min(rows_per_transfer, kScreenHeight - y0);
+                MIN(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -2386,7 +2394,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
                                    scaled_rgb_row, kScreenWidth);
                     cached_source_y = source_y;
                 }
-                std::memcpy(
+                memcpy(
                     pixels + row * kScreenWidth, scaled_rgb_row,
                     sizeof(uint16_t) * kScreenWidth);
             }
@@ -2398,16 +2406,16 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         return true;
     }
 
-    const int source_width = static_cast<int>(frame->width);
-    const int source_height = static_cast<int>(frame->height);
-    const int width = std::min(source_width, kScreenWidth);
-    const int height = std::min(source_height, kScreenHeight);
+    const int source_width = (int)(frame->width);
+    const int source_height = (int)(frame->height);
+    const int width = MIN(source_width, kScreenWidth);
+    const int height = MIN(source_height, kScreenHeight);
     const int source_x = (source_width - width) / 2;
     const int source_y = (source_height - height) / 2;
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
-        const int rows = std::min(rows_per_transfer, height - y0);
+        const int rows = MIN(rows_per_transfer, height - y0);
         uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
@@ -2425,34 +2433,34 @@ bool renderMpegFrame(const plm_frame_t *frame) {
 
 bool renderH263Frame(const H2633gpFrame *frame) {
     if (!frame) return false;
-    plm_frame_t adapted{};
+    plm_frame_t adapted = {0};
     adapted.width = frame->width;
     adapted.height = frame->height;
     adapted.storage_mode = PLM_FRAME_STORAGE_YUV420;
-    adapted.y = {
+    adapted.y = (plm_plane_t){
         frame->width, frame->height, frame->y_stride,
-        const_cast<uint8_t *>(frame->y), 0, nullptr};
-    adapted.cb = {
-        static_cast<unsigned>(frame->width / 2),
-        static_cast<unsigned>(frame->height / 2),
-        frame->chroma_stride, const_cast<uint8_t *>(frame->u), 0, nullptr};
-    adapted.cr = {
-        static_cast<unsigned>(frame->width / 2),
-        static_cast<unsigned>(frame->height / 2),
-        frame->chroma_stride, const_cast<uint8_t *>(frame->v), 0, nullptr};
+        (uint8_t *)(frame->y), 0, NULL};
+    adapted.cb = (plm_plane_t){
+        (unsigned)(frame->width / 2),
+        (unsigned)(frame->height / 2),
+        frame->chroma_stride, (uint8_t *)(frame->u), 0, NULL};
+    adapted.cr = (plm_plane_t){
+        (unsigned)(frame->width / 2),
+        (unsigned)(frame->height / 2),
+        frame->chroma_stride, (uint8_t *)(frame->v), 0, NULL};
     const int rows_per_transfer =
         cyd_display_rows_per_transfer(&display);
     mpeg_cached_chroma_y = -1;
-    const int source_width = static_cast<int>(adapted.width);
-    const int source_height = static_cast<int>(adapted.height);
-    const int width = std::min(source_width, kScreenWidth);
-    const int height = std::min(source_height, kScreenHeight);
+    const int source_width = (int)(adapted.width);
+    const int source_height = (int)(adapted.height);
+    const int width = MIN(source_width, kScreenWidth);
+    const int height = MIN(source_height, kScreenHeight);
     const int source_x = (source_width - width) / 2;
     const int source_y = (source_height - height) / 2;
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
-        const int rows = std::min(rows_per_transfer, height - y0);
+        const int rows = MIN(rows_per_transfer, height - y0);
         uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) {
             endH263RowPipeline();
@@ -2474,30 +2482,30 @@ bool renderH263Frame(const H2633gpFrame *frame) {
     return true;
 }
 
-struct MjpegRenderContext {
-    uint32_t render_us = 0;
-    int next_scaled_y = 0;
-    bool display_failed = false;
-};
+typedef struct MjpegRenderContext {
+    uint32_t render_us;
+    int next_scaled_y;
+    bool display_failed;
+} MjpegRenderContext;
 
 uint16_t *acquireMjpegDmaStrip(void *opaque, uint16_t source_y,
                                uint16_t source_rows) {
-    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    MjpegRenderContext *context = (MjpegRenderContext *)(opaque);
     if (!context || !source_rows ||
         source_y + source_rows > mjpeg_info.height) {
-        return nullptr;
+        return NULL;
     }
     const int64_t render_start = microsNow();
     uint16_t *pixels = cyd_display_acquire_buffer(&display);
     context->render_us +=
-        static_cast<uint32_t>(microsNow() - render_start);
+        (uint32_t)(microsNow() - render_start);
     if (!pixels) context->display_failed = true;
     return pixels;
 }
 
 bool submitMjpegDmaStrip(void *opaque, const uint16_t *pixels,
                          uint16_t source_y, uint16_t source_rows) {
-    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    MjpegRenderContext *context = (MjpegRenderContext *)(opaque);
     if (!context || !pixels || !source_rows) return false;
     const int64_t render_start = microsNow();
     const int width = mjpeg_info.width;
@@ -2512,13 +2520,13 @@ bool submitMjpegDmaStrip(void *opaque, const uint16_t *pixels,
         return false;
     }
     context->render_us +=
-        static_cast<uint32_t>(microsNow() - render_start);
+        (uint32_t)(microsNow() - render_start);
     return true;
 }
 
 bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                       uint16_t source_y, uint16_t source_rows) {
-    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    MjpegRenderContext *context = (MjpegRenderContext *)(opaque);
     if (!context || !strip || !source_rows) return false;
     const int64_t render_start = microsNow();
     const int width = mjpeg_info.width;
@@ -2566,7 +2574,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
             context->next_scaled_y += rows;
         }
         context->render_us +=
-            static_cast<uint32_t>(microsNow() - render_start);
+            (uint32_t)(microsNow() - render_start);
         return true;
     }
 
@@ -2577,8 +2585,8 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
         context->display_failed = true;
         return false;
     }
-    std::memcpy(pixels, strip,
-                static_cast<size_t>(width) * source_rows *
+    memcpy(pixels, strip,
+                (size_t)(width) * source_rows *
                     sizeof(uint16_t));
     if (cyd_display_draw_bitmap(
             &display, x_offset, y_offset + source_y, width,
@@ -2587,7 +2595,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
         return false;
     }
     context->render_us +=
-        static_cast<uint32_t>(microsNow() - render_start);
+        (uint32_t)(microsNow() - render_start);
     return true;
 }
 
@@ -2610,7 +2618,7 @@ bool renderBpvFrame(const BPV1Frame *frame) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
-                std::min(rows_per_transfer, kScreenHeight - y0);
+                MIN(rows_per_transfer, kScreenHeight - y0);
             uint16_t *pixels = cyd_display_acquire_buffer(&display);
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
@@ -2618,7 +2626,7 @@ bool renderBpvFrame(const BPV1Frame *frame) {
                 if (source_y != cached_source_y) {
                     if (bpv1_frame_render_rgb565_row_cached(
                             &bpv_header, frame,
-                            static_cast<uint16_t>(source_y),
+                            (uint16_t)(source_y),
                             bpv_rgb565_palette,
                             BPV1_MAX_PALETTE_COLORS,
                             bpv_rgb_row, width) != BPV1_OK) {
@@ -2643,14 +2651,14 @@ bool renderBpvFrame(const BPV1Frame *frame) {
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
-        const int rows = std::min(rows_per_transfer, height - y0);
+        const int rows = MIN(rows_per_transfer, height - y0);
         uint16_t *pixels = cyd_display_acquire_buffer(&display);
         if (!pixels) return false;
         if (bpv1_frame_render_rgb565_rows_cached(
-                &bpv_header, frame, static_cast<uint16_t>(y0),
-                static_cast<uint16_t>(rows), bpv_rgb565_palette,
+                &bpv_header, frame, (uint16_t)(y0),
+                (uint16_t)(rows), bpv_rgb565_palette,
                 BPV1_MAX_PALETTE_COLORS, pixels, width,
-                static_cast<size_t>(width) * rows) != BPV1_OK) {
+                (size_t)(width) * rows) != BPV1_OK) {
             return false;
         }
         if (cyd_display_draw_bitmap(
@@ -2664,17 +2672,17 @@ bool renderBpvFrame(const BPV1Frame *frame) {
 
 void failPlayback(const char *title, int result) {
     const char *detail =
-        video_codec == VideoCodec::kMpeg1
+        video_codec == VIDEO_CODEC_kMpeg1
             ? "invalid, truncated or unsupported MPEG-1 stream"
-            : video_codec == VideoCodec::kH263
+            : video_codec == VIDEO_CODEC_kH263
             ? h263_3gp_strerror(result)
-            : video_codec == VideoCodec::kMjpeg
+            : video_codec == VIDEO_CODEC_kMjpeg
             ? mjpeg_avi_strerror(result)
-            : video_codec == VideoCodec::kDivx3
+            : video_codec == VIDEO_CODEC_kDivx3
             ? (result <= DIVX3_AVI_ERR_ARGUMENT
                    ? divx3_avi_strerror(result)
                    : divx3_strerror(result))
-            : video_codec == VideoCodec::kBpv
+            : video_codec == VIDEO_CODEC_kBpv
                 ? bpv1_strerror(result)
                 : hlv1_strerror(result);
     ESP_LOGE(kTag, "%s: %s", title, detail);
@@ -2690,8 +2698,8 @@ void failSdCardRead(const char *detail) {
     const bool reinitialize =
         consecutive_sd_read_failures >= kSdReadFailuresBeforeReinit;
     ESP_LOGE(kTag, "SD card read failed (%u/%u): %s",
-             static_cast<unsigned>(consecutive_sd_read_failures),
-             static_cast<unsigned>(kSdReadFailuresBeforeReinit), detail);
+             (unsigned)(consecutive_sd_read_failures),
+             (unsigned)(kSdReadFailuresBeforeReinit), detail);
     showStatus(reinitialize ? "SD CARD REINIT"
                             : "SD CARD READ ERROR",
                detail);
@@ -2722,7 +2730,7 @@ void advanceTimerDeadline() {
 }
 
 uint64_t frameAudioTarget(uint32_t frame_index) {
-    return (static_cast<uint64_t>(frame_index) *
+    return ((uint64_t)(frame_index) *
             sequence_header.audio_sample_rate *
             sequence_header.fps_den) /
            sequence_header.fps_num;
@@ -2735,7 +2743,7 @@ bool waitForAudioTarget(uint64_t target_samples) {
             return false;
         }
         const uint64_t estimated_position =
-            static_cast<uint64_t>(audio_played_samples) +
+            (uint64_t)(audio_played_samples) +
             kAudioDmaSamples;
         if (estimated_position >= target_samples) return true;
         if (audio_prefetch_eof &&
@@ -2749,40 +2757,40 @@ bool waitForAudioTarget(uint64_t target_samples) {
     return false;
 }
 
-using RenderFunction = bool (*)(const void *);
+typedef bool (*RenderFunction)(const void *);
 
 bool renderHlvOpaque(const void *frame) {
-    return renderFrame(static_cast<const HLV1Frame *>(frame));
+    return renderFrame((const HLV1Frame *)(frame));
 }
 
 bool renderBpvOpaque(const void *frame) {
-    return renderBpvFrame(static_cast<const BPV1Frame *>(frame));
+    return renderBpvFrame((const BPV1Frame *)(frame));
 }
 
 bool renderMpegOpaque(const void *frame) {
-    return renderMpegFrame(static_cast<const plm_frame_t *>(frame));
+    return renderMpegFrame((const plm_frame_t *)(frame));
 }
 
-struct PresentationState {
-    int64_t start_us = 0;
-    bool render = true;
-};
+typedef struct PresentationState {
+    int64_t start_us;
+    bool render;
+} PresentationState;
 
 PresentationState beginPresentation() {
-    PresentationState state{microsNow(), true};
+    PresentationState state = {microsNow(), true};
     if (audio_enabled) {
         if (!audio_started) {
             startAudio();
             const uint64_t lead_us =
-                (static_cast<uint64_t>(kAudioDmaDescriptors - 1) *
+                ((uint64_t)(kAudioDmaDescriptors - 1) *
                  kAudioDmaSamples * 1000000ULL) /
                 sequence_header.audio_sample_rate;
-            waitUntil(microsNow() + static_cast<int64_t>(lead_us));
+            waitUntil(microsNow() + (int64_t)(lead_us));
         }
 
         const uint64_t target_samples = frameAudioTarget(decoded_frames);
         const uint64_t frame_samples =
-            (static_cast<uint64_t>(sequence_header.audio_sample_rate) *
+            ((uint64_t)(sequence_header.audio_sample_rate) *
                  sequence_header.fps_den +
              sequence_header.fps_num - 1U) /
             sequence_header.fps_num;
@@ -2797,7 +2805,7 @@ PresentationState beginPresentation() {
             fallBackToTimerClock("Audio clock stopped");
         } else {
             uint64_t estimated_position =
-                static_cast<uint64_t>(audio_played_samples) +
+                (uint64_t)(audio_played_samples) +
                 kAudioDmaSamples;
             const uint64_t latest_on_time_sample =
                 target_samples + frame_samples;
@@ -2813,7 +2821,7 @@ PresentationState beginPresentation() {
                 fallBackToTimerClock("Audio clock stopped");
             } else if (audio_enabled && !audio_loop_hold) {
                 estimated_position =
-                    static_cast<uint64_t>(audio_played_samples) +
+                    (uint64_t)(audio_played_samples) +
                     kAudioDmaSamples;
                 if (estimated_position > latest_on_time_sample) {
                     if (loop_every_late_frame ||
@@ -2839,7 +2847,7 @@ PresentationState beginPresentation() {
     return state;
 }
 
-void finishPresentation(const PresentationState &state, uint32_t read_us,
+void finishPresentation(PresentationState state, uint32_t read_us,
                         uint32_t decode_us, uint32_t render_us) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
@@ -2855,7 +2863,7 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
     }
 
     const uint32_t present_us =
-        static_cast<uint32_t>(microsNow() - state.start_us);
+        (uint32_t)(microsNow() - state.start_us);
     const uint32_t work_us = read_us + decode_us + render_us;
     if (PLAYER_LOG_FRAME_TIMINGS) {
         // Capture every value before printing. UART overhead is therefore not
@@ -2867,18 +2875,18 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
             esp_rom_printf(
                 "A,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 decoded_frames,
-                static_cast<unsigned>(
+                (unsigned)(
                     xStreamBufferBytesAvailable(audio_stream)),
-                static_cast<unsigned>(audio_pending_samples),
-                static_cast<unsigned>(audio_played_samples),
-                static_cast<unsigned>(audio_rebuffers),
-                static_cast<unsigned>(audio_underrun_samples),
-                static_cast<unsigned>(audio_silence_chunks),
-                static_cast<unsigned>(audio_loop_events),
-                static_cast<unsigned>(audio_loop_chunks),
-                static_cast<unsigned>(mpeg_audio_decode_frames),
-                static_cast<unsigned>(mpeg_audio_decode_us),
-                static_cast<unsigned>(mpeg_audio_convert_us));
+                (unsigned)(audio_pending_samples),
+                (unsigned)(audio_played_samples),
+                (unsigned)(audio_rebuffers),
+                (unsigned)(audio_underrun_samples),
+                (unsigned)(audio_silence_chunks),
+                (unsigned)(audio_loop_events),
+                (unsigned)(audio_loop_chunks),
+                (unsigned)(mpeg_audio_decode_frames),
+                (unsigned)(mpeg_audio_decode_us),
+                (unsigned)(mpeg_audio_convert_us));
         }
     }
 }
@@ -2890,7 +2898,7 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
     if (state.render) {
         const int64_t render_start = microsNow();
         if (!render_function(frame)) return false;
-        render_us = static_cast<uint32_t>(microsNow() - render_start);
+        render_us = (uint32_t)(microsNow() - render_start);
     }
     finishPresentation(state, read_us, decode_us, render_us);
     return true;
@@ -2917,7 +2925,7 @@ bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
     if (state.render) {
         const int64_t render_start = microsNow();
         if (!renderH263Frame(frame)) return false;
-        render_us = static_cast<uint32_t>(microsNow() - render_start);
+        render_us = (uint32_t)(microsNow() - render_start);
     } else {
         endH263RowPipeline();
     }
@@ -2928,7 +2936,7 @@ bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
 uint32_t readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
     *result = hlv_esp32_decoder_read_packet(&decoder, video_file, packet);
-    return static_cast<uint32_t>(microsNow() - read_start);
+    return (uint32_t)(microsNow() - read_start);
 }
 
 void finishVideoLoop() {
@@ -2954,16 +2962,16 @@ void finishVideoLoop() {
              "%u missing audio samples, %u silence chunks, "
              "%u audio loops (%u DMA chunks)",
              decoded_frames, dropped_deadlines, skipped_presentations,
-             static_cast<unsigned>(audio_rebuffers),
-             static_cast<unsigned>(audio_underrun_samples),
-             static_cast<unsigned>(audio_silence_chunks),
-             static_cast<unsigned>(audio_loop_events),
-             static_cast<unsigned>(audio_loop_chunks));
+             (unsigned)(audio_rebuffers),
+             (unsigned)(audio_underrun_samples),
+             (unsigned)(audio_silence_chunks),
+             (unsigned)(audio_loop_events),
+             (unsigned)(audio_loop_chunks));
     if (!openVideo()) last_retry_ms = millisNow();
 }
 
 void playOneFrameSequential() {
-    HLV1Packet packet{};
+    HLV1Packet packet = {0};
     int packet_result = HLV1_OK;
     const uint32_t read_us = readPacket(&packet, &packet_result);
     if (packet_result == HLV1_EOF) {
@@ -2978,12 +2986,12 @@ void playOneFrameSequential() {
         failPlayback("Packet read error", packet_result);
         return;
     }
-    const HLV1Frame *frame = nullptr;
+    const HLV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result =
         hlv_esp32_decoder_decode(&decoder, &packet, &frame);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     hlv1_packet_free(&packet);
     if (decode_result != HLV1_OK) {
         failPlayback("Decode error", decode_result);
@@ -2999,9 +3007,9 @@ void playOneMpegFrameSequential() {
     const int64_t decode_start = microsNow();
     plm_frame_t *frame = plm_decode_video(mpeg_video);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (!frame) {
-        if (video_file && std::ferror(video_file)) {
+        if (video_file && ferror(video_file)) {
             failSdCardRead("cannot read MPEG video");
             return;
         }
@@ -3014,12 +3022,12 @@ void playOneMpegFrameSequential() {
 }
 
 void playOneH263Frame() {
-    H2633gpFrame frame{};
+    H2633gpFrame frame = {0};
     const int64_t decode_start = microsNow();
     const int result =
         h263_3gp_decoder_decode_next(h263_decoder, video_file, &frame);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (result == H263_3GP_EOF) {
         finishVideoLoop();
         return;
@@ -3043,8 +3051,8 @@ void playOneH263FramePipelined() {
             failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
             return;
         }
-        DecodeResult first{};
-        if (!waitDecode(&first) || first.codec != VideoCodec::kH263) {
+        DecodeResult first = {0};
+        if (!waitDecode(&first) || first.codec != VIDEO_CODEC_kH263) {
             failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
             return;
         }
@@ -3076,19 +3084,19 @@ void playOneH263FramePipelined() {
     }
 
     const bool rendered = presentH263Frame(&frame, decode_us);
-    DecodeResult next{};
+    DecodeResult next = {0};
     const bool received = waitDecode(&next);
     if (h263_row_pipelined) {
         endH263RowPipeline();
         const uint32_t wait_us = __atomic_load_n(
             &h263_row_guard_wait_us, __ATOMIC_RELAXED);
-        next.decode_us -= std::min(next.decode_us, wait_us);
+        next.decode_us -= MIN(next.decode_us, wait_us);
     }
     if (!rendered) {
         failPlayback("Display DMA error", H263_3GP_ERR_IO);
         return;
     }
-    if (!received || next.codec != VideoCodec::kH263) {
+    if (!received || next.codec != VIDEO_CODEC_kH263) {
         failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
         return;
     }
@@ -3116,7 +3124,7 @@ void playOneMpegFramePipelined() {
             failPlayback("Decode pipeline error", HLV1_ERR_IO);
             return;
         }
-        DecodeResult first{};
+        DecodeResult first = {0};
         if (!waitDecode(&first)) {
             failPlayback("MPEG-1 decode error", HLV1_ERR_BITSTREAM);
             return;
@@ -3147,7 +3155,7 @@ void playOneMpegFramePipelined() {
     }
 
     const bool rendered = presentMpegFrame(&frame, decode_us);
-    DecodeResult next{};
+    DecodeResult next = {0};
     const bool received = waitDecode(&next);
     if (!rendered) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
@@ -3175,7 +3183,7 @@ void playOneMpegFramePipelined() {
 }
 
 void playOneMjpegFrame() {
-    mjpeg_avi_packet_t packet{};
+    mjpeg_avi_packet_t packet = {0};
     const int64_t read_start = microsNow();
     int packet_result = mjpeg_avi_decoder_read_packet(
         &mjpeg_decoder, video_file, &packet);
@@ -3198,7 +3206,7 @@ void playOneMjpegFrame() {
         }
     }
     const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
+        (uint32_t)(microsNow() - read_start);
     if (packet_result == MJPEG_AVI_EOF) {
         finishVideoLoop();
         return;
@@ -3216,7 +3224,7 @@ void playOneMjpegFrame() {
     uint32_t decode_us = 0;
     uint32_t render_us = 0;
     if (presentation.render) {
-        MjpegRenderContext render_context{};
+        MjpegRenderContext render_context = {0};
         const int64_t decode_start = microsNow();
         const int decode_result =
             PLAYER_SCALE_VIDEO_TO_DISPLAY
@@ -3227,7 +3235,7 @@ void playOneMjpegFrame() {
                       &mjpeg_decoder, &packet, acquireMjpegDmaStrip,
                       submitMjpegDmaStrip, &render_context);
         const uint32_t combined_us =
-            static_cast<uint32_t>(microsNow() - decode_start);
+            (uint32_t)(microsNow() - decode_start);
         render_us = render_context.render_us;
         decode_us = combined_us > render_us
                         ? combined_us - render_us
@@ -3248,8 +3256,8 @@ void playOneMjpegFrame() {
     finishPresentation(presentation, read_us, decode_us, render_us);
 }
 
-plm_frame_t makeDivx3RenderFrame(const Divx3Frame &source) {
-    plm_frame_t frame{};
+plm_frame_t makeDivx3RenderFrame(Divx3Frame source) {
+    plm_frame_t frame = {0};
     frame.width = source.width;
     frame.height = source.height;
     frame.storage_mode =
@@ -3259,30 +3267,30 @@ plm_frame_t makeDivx3RenderFrame(const Divx3Frame &source) {
     frame.y.width = source.width;
     frame.y.height = source.height;
     frame.y.stride = source.y_stride;
-    frame.y.data = const_cast<uint8_t *>(source.y);
+    frame.y.data = (uint8_t *)(source.y);
     frame.y.correction_stride = source.correction_stride_y;
     frame.y.correction =
-        const_cast<int8_t *>(source.correction_y);
+        (int8_t *)(source.correction_y);
     frame.cb.width = (source.width + 1U) / 2U;
     frame.cb.height = (source.height + 1U) / 2U;
     frame.cb.stride = source.c_stride;
-    frame.cb.data = const_cast<uint8_t *>(source.cb);
+    frame.cb.data = (uint8_t *)(source.cb);
     frame.cb.correction_stride = source.correction_stride_c;
     frame.cb.correction =
-        const_cast<int8_t *>(source.correction_cb);
+        (int8_t *)(source.correction_cb);
     frame.cr.width = frame.cb.width;
     frame.cr.height = frame.cb.height;
     frame.cr.stride = source.c_stride;
-    frame.cr.data = const_cast<uint8_t *>(source.cr);
+    frame.cr.data = (uint8_t *)(source.cr);
     frame.cr.correction_stride = source.correction_stride_c;
     frame.cr.correction =
-        const_cast<int8_t *>(source.correction_cr);
+        (int8_t *)(source.correction_cr);
     return frame;
 }
 
 void playOneDivx3Frame() {
     size_t packet_size = 0;
-    const long retry_offset = std::ftell(video_file);
+    const long retry_offset = ftell(video_file);
     const int64_t read_start = microsNow();
     int packet_result = divx3_avi_read_video_packet(
         video_file, &divx3_info, divx3_packet,
@@ -3305,7 +3313,7 @@ void playOneDivx3Frame() {
         }
     }
     const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
+        (uint32_t)(microsNow() - read_start);
     if (packet_result == DIVX3_AVI_EOF) {
         finishVideoLoop();
         return;
@@ -3319,12 +3327,12 @@ void playOneDivx3Frame() {
         return;
     }
 
-    Divx3Frame decoded{};
+    Divx3Frame decoded = {0};
     const int64_t decode_start = microsNow();
     const int decode_result = divx3_decoder_decode(
         divx3_decoder, divx3_packet, packet_size, &decoded);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (decode_result != DIVX3_OK) {
         failPlayback("DivX 3 decode error", decode_result);
         return;
@@ -3338,7 +3346,7 @@ void playOneDivx3Frame() {
 
 void playOneDivx3FramePipelined() {
     size_t packet_size = 0;
-    const long retry_offset = std::ftell(video_file);
+    const long retry_offset = ftell(video_file);
     const int64_t read_start = microsNow();
     int packet_result = divx3_avi_read_video_packet(
         video_file, &divx3_info, divx3_packet,
@@ -3361,7 +3369,7 @@ void playOneDivx3FramePipelined() {
         }
     }
     const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
+        (uint32_t)(microsNow() - read_start);
     if (packet_result == DIVX3_AVI_EOF) {
         if (pending_divx3_frame_valid) {
             const plm_frame_t render_frame =
@@ -3403,7 +3411,7 @@ void playOneDivx3FramePipelined() {
         pending_divx3_frame_valid = false;
     }
 
-    DecodeResult result{};
+    DecodeResult result = {0};
     const bool received = waitDecode(&result);
     if (!rendered) {
         failPlayback("Display DMA error", DIVX3_ERR_BITSTREAM);
@@ -3414,7 +3422,7 @@ void playOneDivx3FramePipelined() {
                      DIVX3_ERR_BITSTREAM);
         return;
     }
-    if (result.codec != VideoCodec::kDivx3 ||
+    if (result.codec != VIDEO_CODEC_kDivx3 ||
         result.result != DIVX3_OK) {
         failPlayback("DivX 3 decode error", result.result);
         return;
@@ -3426,12 +3434,12 @@ void playOneDivx3FramePipelined() {
 }
 
 void playOneBpvFrameSequential() {
-    BPV1Packet packet{};
+    BPV1Packet packet = {0};
     const int64_t read_start = microsNow();
     const int packet_result = bpv_esp32_decoder_read_packet(
         &bpv_decoder, video_file, &packet);
     const uint32_t read_us =
-        static_cast<uint32_t>(microsNow() - read_start);
+        (uint32_t)(microsNow() - read_start);
     if (packet_result == BPV1_EOF) {
         finishVideoLoop();
         return;
@@ -3445,12 +3453,12 @@ void playOneBpvFrameSequential() {
         return;
     }
 
-    const BPV1Frame *frame = nullptr;
+    const BPV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result =
         bpv_esp32_decoder_decode(&bpv_decoder, &packet, &frame);
     const uint32_t decode_us =
-        static_cast<uint32_t>(microsNow() - decode_start);
+        (uint32_t)(microsNow() - decode_start);
     if (decode_result != BPV1_OK) {
         failPlayback("BPV1 decode error", decode_result);
         return;
@@ -3481,7 +3489,7 @@ void playOneBpvFramePipelined() {
         const int packet_result = bpv_esp32_decoder_read_packet(
             &bpv_decoder, video_file, &ready_bpv_packet);
         ready_bpv_read_us =
-            static_cast<uint32_t>(microsNow() - read_start);
+            (uint32_t)(microsNow() - read_start);
         if (packet_result == BPV1_EOF) {
             bpv_stream_eof = true;
             return;
@@ -3527,11 +3535,11 @@ void playOneBpvFramePipelined() {
         pending_bpv_frame_valid = false;
     }
 
-    DecodeResult result{};
+    DecodeResult result = {0};
     const bool received = rendered && waitDecode(&result);
     if (!rendered) {
         if (decode_in_flight) {
-            DecodeResult ignored{};
+            DecodeResult ignored = {0};
             waitDecode(&ignored);
         }
         failPlayback("Display DMA error", BPV1_ERR_IO);
@@ -3541,7 +3549,7 @@ void playOneBpvFramePipelined() {
         failPlayback("BPV1 decode pipeline error", BPV1_ERR_IO);
         return;
     }
-    if (result.codec != VideoCodec::kBpv ||
+    if (result.codec != VIDEO_CODEC_kBpv ||
         result.result != BPV1_OK || !result.bpv_frame) {
         failPlayback("BPV1 decode error", result.result);
         return;
@@ -3565,7 +3573,7 @@ void playOneBpvFramePipelined() {
 }
 
 void playOneFramePipelined() {
-    HLV1Packet packet{};
+    HLV1Packet packet = {0};
     int packet_result = HLV1_OK;
     const uint32_t read_us = readPacket(&packet, &packet_result);
     if (packet_result == HLV1_EOF) {
@@ -3602,7 +3610,7 @@ void playOneFramePipelined() {
         pending_frame_valid = false;
     }
 
-    DecodeResult result{};
+    DecodeResult result = {0};
     const bool received = waitDecode(&result);
     hlv1_packet_free(&packet);
     if (!received) {
@@ -3613,7 +3621,7 @@ void playOneFramePipelined() {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    if (result.codec != VideoCodec::kHlv ||
+    if (result.codec != VIDEO_CODEC_kHlv ||
         result.result != HLV1_OK || !result.hlv_frame) {
         failPlayback("Decode error", result.result);
         return;
@@ -3624,9 +3632,8 @@ void playOneFramePipelined() {
     pending_frame_valid = true;
 }
 
-}  // namespace
-
-extern "C" void app_main(void) {
+void app_main(void) {
+    initializeYuvTables();
     ESP_LOGI(kTag, "Multi-codec ESP-IDF SD player starting");
     const esp_err_t display_result = cyd_display_init(&display);
     if (display_result != ESP_OK) {
@@ -3650,7 +3657,7 @@ extern "C" void app_main(void) {
     }
 
     for (;;) {
-        uart_upload_request_t upload_request{};
+        uart_upload_request_t upload_request = {0};
         if (uart_file_upload_poll_request(&uart_upload,
                                           &upload_request)) {
             if (!sd_mounted && !mountSdCard()) {
@@ -3660,11 +3667,11 @@ extern "C" void app_main(void) {
             }
             closeVideo();
             beginUploadProgress();
-            char stored_path[128]{};
+            char stored_path[128] = {0};
             const bool stored = uart_file_upload_receive(
                 &uart_upload, &upload_request, PLAYER_VIDEO_DIRECTORY,
                 stored_path, sizeof stored_path, updateUploadProgress,
-                nullptr);
+                NULL);
             cyd_display_flush(&display);
             showStatus(stored ? "UART upload complete"
                               : "UART upload failed",
@@ -3682,7 +3689,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        char crc_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U]{};
+        char crc_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
         if (uart_file_upload_take_crc_request(
                 &uart_upload, crc_filename, sizeof crc_filename)) {
             if (!sd_mounted && !mountSdCard()) {
@@ -3696,7 +3703,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kMpeg1 &&
+        if (video_file && video_codec == VIDEO_CODEC_kMpeg1 &&
             mpeg_video) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneMpegFramePipelined();
@@ -3705,7 +3712,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kH263 &&
+        if (video_file && video_codec == VIDEO_CODEC_kH263 &&
             h263_decoder) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE &&
                 (h263_dual_buffered || h263_row_pipelined)) {
@@ -3715,12 +3722,12 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kMjpeg &&
+        if (video_file && video_codec == VIDEO_CODEC_kMjpeg &&
             mjpeg_avi_decoder_ready(&mjpeg_decoder)) {
             playOneMjpegFrame();
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kDivx3 &&
+        if (video_file && video_codec == VIDEO_CODEC_kDivx3 &&
             divx3_decoder && divx3_packet) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneDivx3FramePipelined();
@@ -3729,7 +3736,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kBpv &&
+        if (video_file && video_codec == VIDEO_CODEC_kBpv &&
             bpv_esp32_decoder_ready(&bpv_decoder)) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneBpvFramePipelined();
@@ -3738,7 +3745,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kHlv &&
+        if (video_file && video_codec == VIDEO_CODEC_kHlv &&
             hlv_esp32_decoder_ready(&decoder)) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneFramePipelined();

@@ -198,7 +198,7 @@ elseif(HLV_QEMU_BENCHMARK)
 else()
     idf_component_register(
         SRCS
-            "hlv_player.cpp"
+            "hlv_player.c"
             "cyd_display.c"
             "bpv_esp32_decoder.c"
             "hlv_esp32_decoder.c"
