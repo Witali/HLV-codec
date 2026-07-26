@@ -207,8 +207,10 @@ parallelize entropy decoding within one JPEG frame.
       and retain the current byte path for `0xff`, markers and short tails.
 - [ ] Specialize the aligned, restart-free YUV420/RGB565LE MCU loop with
       hoisted table pointers and direct Huffman/IDCT/color calls.
-- [ ] A/B paired 32-bit RGB565 stores independently from MAC16 chroma
-      arithmetic and small chroma-contribution tables.
+- [x] Reject paired 32-bit RGB565 stores as a standalone change: packing each
+      pair needs `SLLI`, `OR` and `S32I` instead of two `S16I` instructions.
+- [x] A/B exact `MUL16S` chroma products independently from tables; reject the
+      DSP substitution because it has zero cycle benefit on the ESP32.
 - [ ] Reuse variable-size Huffman allocations while still rebuilding the
       frame-specific canonical and lookup tables.
 - [ ] A/B sparse coefficient clearing only after the larger decode-loop
@@ -256,6 +258,17 @@ per frame (1.38%). Five identical reset-to-reset COM8 trials improved
 decoder-only cycles (1.41%). Heap and largest-free-block values were
 unchanged. `MJPEG_IDCT_REDUCED_ROWS=ON` is retained by default and can be
 disabled independently while keeping the DC-only wrapper.
+
+The RGB565LE kernel has two chroma products whose inputs and constants fit
+signed 16-bit operands. A temporary derived-archive patch replaced only those
+two `MULL` instructions with `MUL16S`; it did not modify the managed component.
+The raw-object variant preserved relocations, decoded all 60 QEMU frames and
+retained hash `436f6b344bed074e`. QEMU instruction counts were identical, as
+expected. Five physical-board reset trials then matched the `MULL` control
+exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame.
+The substitution was removed. Chroma contribution tables would exchange the
+same two products for DRAM loads while costing at least 2 KiB, so they are not
+retained either.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
