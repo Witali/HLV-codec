@@ -57,9 +57,12 @@ typedef struct {
 #include "divx3_tables.inc"
 
 typedef struct {
-    const uint8_t *data;
+    const uint8_t *next;
+    const uint8_t *end;
+    uint32_t cache;
     size_t bits;
     size_t position;
+    unsigned cached;
     int failed;
 } BitReader;
 
@@ -132,30 +135,55 @@ static const uint8_t kScanAltVertical[64] = {
 
 static int bit_read(BitReader *reader) {
     int value;
+    if (!reader->cached) {
+        if (reader->next >= reader->end) {
+            reader->failed = 1;
+            ++reader->position;
+            return 0;
+        }
+        reader->cache = (uint32_t)*reader->next++ << 24;
+        reader->cached = 8;
+    }
     if (reader->position >= reader->bits) {
         reader->failed = 1;
         ++reader->position;
         return 0;
     }
-    value = (reader->data[reader->position >> 3] >>
-             (7U - (reader->position & 7U))) &
-            1U;
+    value = (int)(reader->cache >> 31);
+    reader->cache <<= 1;
+    --reader->cached;
     ++reader->position;
     return value;
 }
 
 static uint32_t bits_read(BitReader *reader, unsigned count) {
-    uint32_t value = 0;
-    while (count--) value = (value << 1) | (uint32_t)bit_read(reader);
+    uint32_t value;
+    unsigned requested = count;
+    if (!count) return 0;
+    while (reader->cached < count && reader->next < reader->end) {
+        reader->cache |=
+            (uint32_t)*reader->next++ << (24U - reader->cached);
+        reader->cached += 8;
+    }
+    if (reader->cached < count || reader->position > reader->bits ||
+        count > reader->bits - reader->position) {
+        reader->failed = 1;
+        reader->position += count;
+        reader->cache = 0;
+        reader->cached = 0;
+        return 0;
+    }
+    value = reader->cache >> (32U - count);
+    reader->cache <<= count;
+    reader->cached -= requested;
+    reader->position += requested;
     return value;
 }
 
 static uint32_t bits_peek(BitReader *reader, unsigned count) {
-    size_t position = reader->position;
-    int failed = reader->failed;
+    BitReader saved = *reader;
     uint32_t value = bits_read(reader, count);
-    reader->position = position;
-    reader->failed = failed;
+    *reader = saved;
     return value;
 }
 
@@ -1359,10 +1387,13 @@ int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
     int result;
     if (!decoder || !packet || !packet_size || !frame)
         return DIVX3_ERR_ARGUMENT;
-    reader.data = packet;
+    reader.next = packet;
+    reader.end = packet + packet_size;
+    reader.cache = 0;
     reader.bits = packet_size > SIZE_MAX / 8U ? SIZE_MAX
                                               : packet_size * 8U;
     reader.position = 0;
+    reader.cached = 0;
     reader.failed = 0;
     picture_type = bits_read(&reader, 2);
     quantizer = (int)bits_read(&reader, 5);
