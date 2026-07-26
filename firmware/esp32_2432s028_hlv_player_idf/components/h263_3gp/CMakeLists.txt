@@ -34,6 +34,42 @@ idf_component_register(
         "${PV_ROOT}/src"
 )
 
+set(PV_H263_IRAM_BITSTREAM_FILL ON CACHE BOOL
+    "Place the H.263 32-bit bitstream cache refill in IRAM")
+set(PV_H263_IRAM_VLC_DEQUANT ON CACHE BOOL
+    "Place the active H.263+ intra VLC/dequant helper in IRAM")
+set(PV_H263_IRAM_INTRA_IDCT ON CACHE BOOL
+    "Place the active H.263+ intra IDCT kernel in IRAM")
+if(PV_H263_IRAM_BITSTREAM_FILL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_BITSTREAM_FILL=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_BITSTREAM_FILL=0
+    )
+endif()
+
+if(PV_H263_IRAM_VLC_DEQUANT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_VLC_DEQUANT=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_VLC_DEQUANT=0
+    )
+endif()
+
+if(PV_H263_IRAM_INTRA_IDCT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_INTRA_IDCT=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_INTRA_IDCT=0
+    )
+endif()
+
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3

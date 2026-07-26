@@ -40,7 +40,7 @@ private:
     size_t dma_buffer_count_ = 2;
     int rows_per_transfer_ = kRowsPerTransfer;
 
-    alignas(4) uint16_t primary_dma_buffer_[
+    alignas(16) uint16_t primary_dma_buffer_[
         kWidth * kRowsPerTransfer]{};
     uint16_t *secondary_dma_buffer_ = nullptr;
 };

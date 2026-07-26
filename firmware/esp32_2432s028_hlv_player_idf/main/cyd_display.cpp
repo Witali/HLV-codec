@@ -130,8 +130,10 @@ esp_err_t CydDisplay::setDoubleBuffered(bool enabled) {
     ESP_RETURN_ON_ERROR(flush(), kTag,
                         "LCD DMA flush before buffer change failed");
     if (enabled && !secondary_dma_buffer_) {
-        secondary_dma_buffer_ = static_cast<uint16_t *>(heap_caps_malloc(
-            sizeof primary_dma_buffer_, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+        secondary_dma_buffer_ = static_cast<uint16_t *>(
+            heap_caps_aligned_alloc(
+                16, sizeof primary_dma_buffer_,
+                MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
         ESP_RETURN_ON_FALSE(secondary_dma_buffer_, ESP_ERR_NO_MEM, kTag,
                             "LCD secondary DMA buffer unavailable");
     } else if (!enabled && secondary_dma_buffer_) {

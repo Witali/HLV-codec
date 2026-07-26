@@ -103,6 +103,17 @@
 #include "idct.h"
 #include "motion_comp.h"
 
+#ifndef PV_H263_IRAM_INTRA_IDCT
+#define PV_H263_IRAM_INTRA_IDCT 0
+#endif
+
+#if PV_H263_IRAM_INTRA_IDCT
+#include "esp_attr.h"
+#define PV_H263_INTRA_IDCT_ATTR IRAM_ATTR
+#else
+#define PV_H263_INTRA_IDCT_ATTR
+#endif
+
 #define OSCL_DISABLE_WARNING_CONV_POSSIBLE_LOSS_OF_DATA
 /*----------------------------------------------------------------------------
 ; MACROS
@@ -121,8 +132,9 @@
 ----------------------------------------------------------------------------*/
 /* private prototypes */
 static void idctrow(int16 *blk, uint8 *pred, uint8 *dst, int width);
-static void idctrow_intra(int16 *blk, PIXEL *, int width);
-static void idctcol(int16 *blk);
+static PV_H263_INTRA_IDCT_ATTR
+void idctrow_intra(int16 *blk, PIXEL *, int width);
+static PV_H263_INTRA_IDCT_ATTR void idctcol(int16 *blk);
 
 #ifdef FAST_IDCT
 // mapping from nz_coefs to functions to be used
@@ -219,7 +231,7 @@ static void (*const idctrowVCA2_intra[8])(int16*, PIXEL *, int) =
 /*----------------------------------------------------------------------------
 ; FUNCTION CODE
 ----------------------------------------------------------------------------*/
-void MBlockIDCT(VideoDecData *video)
+PV_H263_INTRA_IDCT_ATTR void MBlockIDCT(VideoDecData *video)
 {
     Vop *currVop = video->currVop;
     MacroBlock *mblock = video->mblock;
@@ -247,7 +259,7 @@ void MBlockIDCT(VideoDecData *video)
 }
 
 
-void BlockIDCT_intra(
+PV_H263_INTRA_IDCT_ATTR void BlockIDCT_intra(
     MacroBlock *mblock, PIXEL *c_comp, int comp, int width)
 {
     /*----------------------------------------------------------------------------

@@ -217,6 +217,7 @@ static int test_active_palettes(void) {
     BPV1Header header;
     BPV1Decoder *decoder = NULL;
     uint8_t expected[2][3] = {{255, 0, 0}, {0, 255, 0}};
+    uint16_t palette565[BPV1_MAX_PALETTE_COLORS];
     int frame_index;
     int result = 1;
     red_palette[0] = 255;
@@ -246,13 +247,21 @@ static int test_active_palettes(void) {
         BPV1Packet packet;
         const BPV1Frame *frame = NULL;
         uint8_t row[12];
+        uint16_t row565[4];
         if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
             bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
             bpv1_frame_render_rgb24_row(
                 &header, frame, 0, row, sizeof row) != BPV1_OK ||
+            bpv1_palette_build_rgb565(
+                &header, frame, palette565,
+                BPV1_MAX_PALETTE_COLORS) != BPV1_OK ||
+            bpv1_frame_render_rgb565_row_cached(
+                &header, frame, 0, palette565,
+                BPV1_MAX_PALETTE_COLORS, row565, 4) != BPV1_OK ||
             row[0] != expected[frame_index][0] ||
             row[1] != expected[frame_index][1] ||
-            row[2] != expected[frame_index][2]) {
+            row[2] != expected[frame_index][2] ||
+            row565[0] != (frame_index ? 0x07e0 : 0xf800)) {
             fprintf(stderr, "BPV1 v5 active palette frame %d failed\n",
                     frame_index);
             goto cleanup;
@@ -412,7 +421,10 @@ int main(int argc, char **argv) {
         const BPV1Frame *frame = NULL;
         uint8_t row[12];
         uint16_t row565[4];
+        uint16_t cached_row565[4];
         uint16_t rows565[16];
+        uint16_t cached_rows565[16];
+        uint16_t palette565[BPV1_MAX_PALETTE_COLORS];
         int x;
         if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
             bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
@@ -422,7 +434,19 @@ int main(int argc, char **argv) {
             bpv1_frame_render_rgb565_row(
                 &header, frame, 0, row565, 4) != BPV1_OK ||
             bpv1_frame_render_rgb565_rows(
-                &header, frame, 0, 4, rows565, 4, 16) != BPV1_OK) {
+                &header, frame, 0, 4, rows565, 4, 16) != BPV1_OK ||
+            bpv1_palette_build_rgb565(
+                &header, frame, palette565,
+                BPV1_MAX_PALETTE_COLORS) != BPV1_OK ||
+            bpv1_frame_render_rgb565_row_cached(
+                &header, frame, 0, palette565,
+                BPV1_MAX_PALETTE_COLORS, cached_row565, 4) != BPV1_OK ||
+            bpv1_frame_render_rgb565_rows_cached(
+                &header, frame, 0, 4, palette565,
+                BPV1_MAX_PALETTE_COLORS, cached_rows565, 4, 16) !=
+                BPV1_OK ||
+            memcmp(row565, cached_row565, sizeof row565) ||
+            memcmp(rows565, cached_rows565, sizeof rows565)) {
             fprintf(stderr, "BPV1 frame %d failed\n", frame_index);
             goto cleanup;
         }

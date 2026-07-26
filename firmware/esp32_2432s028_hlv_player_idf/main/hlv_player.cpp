@@ -263,6 +263,8 @@ uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t bpv_rgb_row[kScreenWidth];
+uint16_t bpv_rgb565_palette[BPV1_MAX_PALETTE_COLORS];
+bool bpv_rgb565_palette_valid = false;
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
@@ -1473,6 +1475,7 @@ void closeVideo() {
     h263_dual_buffered = false;
     h263_row_pipelined = false;
     pending_bpv_frame_valid = false;
+    bpv_rgb565_palette_valid = false;
     ready_bpv_packet = {};
     ready_bpv_packet_valid = false;
     bpv_stream_eof = false;
@@ -1939,7 +1942,9 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VideoCodec::kMjpeg) {
-        int result = mjpeg_decoder.begin(video_file, &mjpeg_info);
+        int result = mjpeg_decoder.begin(
+            video_file, &mjpeg_info,
+            player_settings::kScaleVideoToDisplay);
         if (result == MJPEG_AVI_OK &&
             (mjpeg_info.fps_num > UINT16_MAX ||
              mjpeg_info.fps_den > UINT16_MAX ||
@@ -2456,6 +2461,41 @@ struct MjpegRenderContext {
     bool display_failed = false;
 };
 
+uint16_t *acquireMjpegDmaStrip(void *opaque, uint16_t source_y,
+                               uint16_t source_rows) {
+    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    if (!context || !source_rows ||
+        source_y + source_rows > mjpeg_info.height) {
+        return nullptr;
+    }
+    const int64_t render_start = microsNow();
+    uint16_t *pixels = display.acquireBuffer();
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    if (!pixels) context->display_failed = true;
+    return pixels;
+}
+
+bool submitMjpegDmaStrip(void *opaque, const uint16_t *pixels,
+                         uint16_t source_y, uint16_t source_rows) {
+    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    if (!context || !pixels || !source_rows) return false;
+    const int64_t render_start = microsNow();
+    const int width = mjpeg_info.width;
+    const int height = mjpeg_info.height;
+    if (source_y + source_rows > height) return false;
+    const int x_offset = (kScreenWidth - width) / 2;
+    const int y_offset = (kScreenHeight - height) / 2;
+    if (display.drawBitmap(x_offset, y_offset + source_y, width,
+                           source_rows, pixels) != ESP_OK) {
+        context->display_failed = true;
+        return false;
+    }
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    return true;
+}
+
 bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                       uint16_t source_y, uint16_t source_rows) {
     auto *context = static_cast<MjpegRenderContext *>(opaque);
@@ -2530,6 +2570,15 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
 
 bool renderBpvFrame(const BPV1Frame *frame) {
     if (!frame) return false;
+    if (!bpv_rgb565_palette_valid || frame->keyframe) {
+        if (bpv1_palette_build_rgb565(
+                &bpv_header, frame, bpv_rgb565_palette,
+                BPV1_MAX_PALETTE_COLORS) != BPV1_OK) {
+            bpv_rgb565_palette_valid = false;
+            return false;
+        }
+        bpv_rgb565_palette_valid = true;
+    }
     const int width = frame->width;
     const int height = frame->height;
     const int rows_per_transfer = display.rowsPerTransfer();
@@ -2543,9 +2592,11 @@ bool renderBpvFrame(const BPV1Frame *frame) {
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
                 if (source_y != cached_source_y) {
-                    if (bpv1_frame_render_rgb565_row(
+                    if (bpv1_frame_render_rgb565_row_cached(
                             &bpv_header, frame,
                             static_cast<uint16_t>(source_y),
+                            bpv_rgb565_palette,
+                            BPV1_MAX_PALETTE_COLORS,
                             bpv_rgb_row, width) != BPV1_OK) {
                         return false;
                     }
@@ -2571,9 +2622,10 @@ bool renderBpvFrame(const BPV1Frame *frame) {
         const int rows = std::min(rows_per_transfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
-        if (bpv1_frame_render_rgb565_rows(
+        if (bpv1_frame_render_rgb565_rows_cached(
                 &bpv_header, frame, static_cast<uint16_t>(y0),
-                static_cast<uint16_t>(rows), pixels, width,
+                static_cast<uint16_t>(rows), bpv_rgb565_palette,
+                BPV1_MAX_PALETTE_COLORS, pixels, width,
                 static_cast<size_t>(width) * rows) != BPV1_OK) {
             return false;
         }
@@ -3140,8 +3192,13 @@ void playOneMjpegFrame() {
     if (presentation.render) {
         MjpegRenderContext render_context{};
         const int64_t decode_start = microsNow();
-        const int decode_result = mjpeg_decoder.decode(
-            packet, renderMjpegStrip, &render_context);
+        const int decode_result =
+            player_settings::kScaleVideoToDisplay
+                ? mjpeg_decoder.decode(
+                      packet, renderMjpegStrip, &render_context)
+                : mjpeg_decoder.decodeDirect(
+                      packet, acquireMjpegDmaStrip,
+                      submitMjpegDmaStrip, &render_context);
         const uint32_t combined_us =
             static_cast<uint32_t>(microsNow() - decode_start);
         render_us = render_context.render_us;

@@ -284,6 +284,97 @@ the reconstructed-frame hash, decoder allocation, free heap and largest free
 block. The wrapper verifies that the generated embedded clip remains
 `msmpeg4v3`/`DIV3`, 320x240 and contains the requested number of frames.
 
+The MPEG-1 benchmark similarly embeds 60 frames of the validated 240x180
+Program Stream and runs the Player's compact `pl_mpeg` component:
+
+```powershell
+.\qemu-mpeg1-benchmark.ps1
+.\qemu-mpeg1-benchmark.ps1 -InputFile input.mpg -Frames 60
+```
+
+It prints an `M` record containing the decode-only cycle distribution,
+reconstructed-frame hash, free heap and largest free block. The preparation
+step copies the original MPEG-1 video packets without re-encoding and rejects
+the clip unless its dimensions and frame count match the requested profile.
+
+The H.263 benchmark embeds 60 frames of the validated intra-only 320x240 3GP
+and uses one output frame because no display pipeline overlaps the decode:
+
+```powershell
+.\qemu-h263-benchmark.ps1
+.\qemu-h263-benchmark.ps1 -InputFile input.3gp -Frames 60
+```
+
+It prints an `H` record containing the decode-only cycle distribution,
+reconstructed YUV420 hash, decoder allocation, free heap and largest free
+block. The preparation step copies video samples without re-encoding and
+rejects any clip that is not H.263 at 320x240 with the requested frame count.
+
+The BPV renderer benchmark generates deterministic 320x240 block records and
+measures complete 16-row-strip RGB565 conversion without display DMA:
+
+```powershell
+.\qemu-bpv-render-benchmark.ps1
+```
+
+It prints a `P` record with the render-only cycle distribution, RGB565 output
+hash, free heap and largest free block. The same synthetic frame is rendered
+repeatedly so the benchmark isolates renderer changes from decode and SD I/O.
+The Player caches the active 64x16 BPV palette as RGB565 and rebuilds the
+2 KiB table only for a keyframe, avoiding per-block RGB888 conversion.
+
+The MJPEG benchmark copies a bounded number of original compressed frames
+without re-encoding. By default it measures the Player's `esp_new_jpeg`
+RGB565 block decoder and direct output:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1
+```
+
+The production build selectively places the active Huffman, YUV420 process and
+RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. It
+also links bit-exact Xtensa DC-only and one-/two-column reduced-row shortcuts
+around the fixed 8x8 IDCT. Compare the DC wrapper against the unchanged
+library kernel while retaining the same hot-section placement:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct ON
+```
+
+Compare the retained reduced-row extension independently from the DC-only
+wrapper:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -ReducedIdct OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -ReducedIdct ON
+```
+
+Compare the retained aligned zero-128 coefficient clear against libc:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -FastClear OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -FastClear ON
+```
+
+To run the historical all-Flash control variant (which also disables the
+IRAM-only IDCT wrapper unless explicitly overridden):
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -HotIram OFF
+```
+
+The `J` record includes per-frame cycles, the complete submitted RGB565 hash
+and appended decoder-only, header, geometry, JPEG-process and correctness
+callback averages. The callback average measures RGB565 hashing and is
+subtracted from `decoder_avg`; phase counters are compiled only into this
+benchmark. `MJPEG_OPTIMIZED_IDCT=ON` and
+`MJPEG_IDCT_REDUCED_ROWS=ON` are the production defaults. The aligned
+coefficient clear is enabled with `MJPEG_FAST_COEFFICIENT_CLEAR=ON`. The old
+ROM TJpgDec implementation and its benchmark modes were removed after the
+accelerated backend passed the A/B checks. Display SPI/DMA time is measured
+only on the physical board.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
@@ -299,10 +390,9 @@ display DMA timing.
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
   (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV uses nine
   reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
-  JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
-  uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
-  39,678 bytes for these three MJPEG allocations instead of a full-frame
-  design's 144,638 bytes.
+  JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
+  two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
+  TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
 - Video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
   8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
   instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction

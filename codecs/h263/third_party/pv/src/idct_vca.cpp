@@ -19,6 +19,17 @@
 #include "idct.h"
 #include "motion_comp.h"
 
+#ifndef PV_H263_IRAM_INTRA_IDCT
+#define PV_H263_IRAM_INTRA_IDCT 0
+#endif
+
+#if PV_H263_IRAM_INTRA_IDCT
+#include "esp_attr.h"
+#define PV_H263_INTRA_IDCT_ATTR IRAM_ATTR
+#else
+#define PV_H263_INTRA_IDCT_ATTR
+#endif
+
 #ifdef FAST_IDCT
 
 /****************************************************************
@@ -32,7 +43,7 @@ void idctrow0(int16 *, uint8 *, uint8 *, int)
 {
     return ;
 }
-void idctcol0(int16 *)
+PV_H263_INTRA_IDCT_ATTR void idctcol0(int16 *)
 {
     return ;
 }
@@ -88,7 +99,7 @@ void idctrow1(int16 *blk, uint8 *pred, uint8 *dst, int width)
     return;
 }
 
-void idctcol1(int16 *blk)
+PV_H263_INTRA_IDCT_ATTR void idctcol1(int16 *blk)
 { /* shortcut */
     blk[0] = blk[8] = blk[16] = blk[24] = blk[32] = blk[40] = blk[48] = blk[56] =
                                               blk[0] << 3;
@@ -158,7 +169,7 @@ void idctrow2(int16 *blk, uint8 *pred, uint8 *dst, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
-void idctcol2(int16 *blk)
+PV_H263_INTRA_IDCT_ATTR void idctcol2(int16 *blk)
 {
     int32 x0, x1, x3, x5, x7;//, x8;
 
@@ -259,7 +270,7 @@ void idctrow3(int16 *blk, uint8 *pred, uint8 *dst, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
-void idctcol3(int16 *blk)
+PV_H263_INTRA_IDCT_ATTR void idctcol3(int16 *blk)
 {
     int32 x0, x1, x2, x3, x4, x5, x6, x7, x8;
 
@@ -375,7 +386,7 @@ void idctrow4(int16 *blk, uint8 *pred, uint8 *dst, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
-void idctcol4(int16 *blk)
+PV_H263_INTRA_IDCT_ATTR void idctcol4(int16 *blk)
 {
     int32 x0, x1, x2, x3, x4, x5, x6, x7, x8;
     x2 = blk[16];
@@ -418,11 +429,12 @@ void idctcol4(int16 *blk)
     return ;
 }
 
-void idctrow0_intra(int16 *, PIXEL *, int)
+PV_H263_INTRA_IDCT_ATTR void idctrow0_intra(int16 *, PIXEL *, int)
 {
     return ;
 }
 
+PV_H263_INTRA_IDCT_ATTR
 void idctrow1_intra(int16 *blk, PIXEL *comp, int width)
 {
     /* shortcut */
@@ -453,6 +465,7 @@ void idctrow1_intra(int16 *blk, PIXEL *comp, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
+PV_H263_INTRA_IDCT_ATTR
 void idctrow2_intra(int16 *blk, PIXEL *comp, int width)
 {
     int32 x0, x1, x2, x4, x5, temp;
@@ -511,6 +524,7 @@ void idctrow2_intra(int16 *blk, PIXEL *comp, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
+PV_H263_INTRA_IDCT_ATTR
 void idctrow3_intra(int16 *blk, PIXEL *comp, int width)
 {
     int32 x0, x1, x2, x3, x4, x5, x6, x7, x8, temp;
@@ -585,6 +599,7 @@ void idctrow3_intra(int16 *blk, PIXEL *comp, int width)
 }
 
 __attribute__((no_sanitize("signed-integer-overflow")))
+PV_H263_INTRA_IDCT_ATTR
 void idctrow4_intra(int16 *blk, PIXEL *comp, int width)
 {
     int32 x0, x1, x2, x3, x4, x5, x6, x7, x8, temp;

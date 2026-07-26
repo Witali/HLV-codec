@@ -18,6 +18,17 @@
 #include "bitstream.h"
 #include "mp4dec_lib.h"
 
+#ifndef PV_H263_IRAM_BITSTREAM_FILL
+#define PV_H263_IRAM_BITSTREAM_FILL 0
+#endif
+
+#if PV_H263_IRAM_BITSTREAM_FILL
+#include "esp_attr.h"
+#define PV_H263_BITSTREAM_FILL_ATTR IRAM_ATTR
+#else
+#define PV_H263_BITSTREAM_FILL_ATTR
+#endif
+
 
 #define OSCL_DISABLE_WARNING_CONDITIONAL_IS_CONSTANT
 /* to mask the n least significant bits of an integer */
@@ -46,6 +57,7 @@ static const uint32 msk[33] =
 /*  Return   : PV_SUCCESS if successed, PV_FAIL if failed.                  */
 /*  Modified : 4/16/01  : removed return of PV_END_OF_BUFFER                */
 /* ======================================================================== */
+PV_H263_BITSTREAM_FILL_ATTR
 PV_STATUS BitstreamFillCache(BitstreamDecVideo *stream)
 {
     uint8 *bitstreamBuffer = stream->bitstreamBuffer;
