@@ -80,7 +80,9 @@ The production defaults for every format accepted by the ESP32 player are
 stored in `out/source/esp32-transcode.yaml`. It records source preparation,
 quality mode, rate control, audio profile and decoder limits in one place.
 HLV uses adaptive 35–42 dB quality, H.263 uses profile-specific CBR/VBV, and
-the remaining codecs target 40 dB where that quality is attainable.
+the remaining codecs target 40 dB where that quality is attainable. DivX 3
+always uses half of the source frame rate (12 fps for Bunny, 15 fps for
+Danila).
 
 Example H.263 and BPV calls:
 

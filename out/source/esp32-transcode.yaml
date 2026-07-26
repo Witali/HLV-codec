@@ -93,8 +93,8 @@ formats:
     container: AVI
     videoCodec: msmpeg4v3
     codecTag: DIV3
-    fps: 12
-    gop: 12
+    fps: sourceHalf
+    gop: oneSecond
     bFrames: 0
     maximumPacketBytes: 98304
     qualityMode: targetPsnr

@@ -4,7 +4,7 @@ param(
     [ValidateRange(2, 31)]
     [int]$Quality = 4,
 
-    [ValidateRange(1, 30)]
+    [ValidateSet(12)]
     [int]$Fps = 12,
 
     [ValidateRange(1, 300)]
