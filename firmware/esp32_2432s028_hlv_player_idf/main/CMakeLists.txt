@@ -182,7 +182,7 @@ elseif(DIVX3_QEMU_BENCHMARK)
 elseif(HLV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_benchmark.cpp"
+            "qemu_benchmark.c"
             "hlv_esp32_decoder.c"
         INCLUDE_DIRS "."
         REQUIRES
