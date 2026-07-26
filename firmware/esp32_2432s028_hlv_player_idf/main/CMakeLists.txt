@@ -149,7 +149,7 @@ elseif(H263_QEMU_BENCHMARK)
 elseif(MPEG1_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_mpeg1_benchmark.cpp"
+            "qemu_mpeg1_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             compact_yuv420
