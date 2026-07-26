@@ -9,6 +9,10 @@ Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
 and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
+The strict C99 migration plan, preserved C++ baseline and physical all-codec
+A/B acceptance matrix are documented in
+[`../../../docs/ESP32_C99_MIGRATION.md`](../../../docs/ESP32_C99_MIGRATION.md).
+
 AVI is the preferred H.263 container for this firmware. Its interleaved video
 and PCM chunks are streamed without retaining an AVI index in RAM. 3GP remains
 supported for AMR-NB and compatibility, but its sample-size and chunk-offset

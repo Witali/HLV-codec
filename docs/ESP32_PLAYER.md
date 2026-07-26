@@ -5,6 +5,10 @@ two-USB ESP32-2432S028 variant commonly called CYD2USB. It normally uses an
 ST7789 display controller and an NS8002/8002A-class mono amplifier driven by
 DAC GPIO26.
 
+The staged rewrite of this firmware from C++ to strict C99, including its
+preserved baseline and all-codec physical A/B matrix, is tracked in
+[`ESP32_C99_MIGRATION.md`](ESP32_C99_MIGRATION.md).
+
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
