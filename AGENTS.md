@@ -18,6 +18,21 @@
 - Do not add H.263+, custom-size, or 3GP encoding presets. Legacy decoder
   support for those files does not make them valid encoding targets.
 
+## ESP32 compressed input buffering
+
+- In the ESP32 player, consume compressed video and audio through a reusable
+  fixed-size refill, ring, or stream buffer whenever the codec can decode
+  sequential input.
+- Keep compressed-input buffer capacity independent of the maximum encoded
+  packet or frame size. Do not silently grow a streaming buffer until it holds
+  a complete packet.
+- Retain a complete compressed packet only when the decoder requires
+  contiguous or random-access input. Document that exception next to the
+  decoder, enforce a strict packet-size limit, and do not copy the packet
+  between tasks.
+- Test every streaming input path with a valid packet larger than its refill
+  buffer and compare decoded-frame checksums with the contiguous-input path.
+
 ## Permission review timeouts
 
 - If an automatic permission review times out before the requested command

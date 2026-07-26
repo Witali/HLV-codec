@@ -51,6 +51,33 @@ references use packed Y6/U5/V5 samples with signed Q4 block-average
 corrections. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by
 this decoder.
 
+## Compressed input buffering
+
+Compressed input should use a fixed-size refill, ring, or stream buffer whose
+capacity does not depend on the largest encoded packet. A decoder may retain a
+complete packet only when its API requires contiguous or random-access input;
+such an exception must have a strict size limit and must not copy the payload
+between tasks. A streaming-path test must include a valid packet larger than
+the refill buffer and compare the decoded-frame checksum with contiguous
+decoding.
+
+The current decoder audit is:
+
+| Path | Compressed input | Status |
+| --- | --- | --- |
+| HLV v14 video | One reusable 7,680-byte refill buffer used by `hlv1_decoder_decode_file()` | Compliant; packets may exceed the buffer |
+| H.263 video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer |
+| MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
+| Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
+| Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
+| BPV v1-v5 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
+| DivX 3 video | One complete AVI video packet, capped at 96 KiB by the player | Technical debt: make the bit reader refill-aware and let the AVI reader expose a bounded packet span; the optimized VLC prefix path currently accesses contiguous bytes directly |
+| MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
+
+AVI container traversal itself is sequential and retains no chunk index.
+Legacy 3GP retains compact sample-size and chunk-offset metadata, but H.263
+sample payloads are still decoded through the 4 KiB refill buffer.
+
 ## Build and flash
 
 All generated dependencies are placed below this directory in `.tools`:
