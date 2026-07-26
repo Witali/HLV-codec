@@ -229,14 +229,14 @@ parallelize entropy decoding within one JPEG frame.
 - [x] Independently A/B two packed 256-entry U/V contribution tables after the
       fixed-geometry colour result is known. Charge the 2 KiB internal-DRAM
       cost separately and do not combine both changes in the first build.
-- [ ] Prototype a complete paired Huffman table-builder/decoder replacement
+- [x] Prototype a complete paired Huffman table-builder/decoder replacement
       with packed 16-bit `{nbits,symbol}` primary entries and marker-safe
       multi-byte refill at every refill site. Do not repeat the rejected
       entry-only refill wrapper.
-- [ ] Measure a fixed aligned, restart-free YUV420 MCU call path only after the
+- [x] Measure a fixed aligned, restart-free YUV420 MCU call path only after the
       isolated colour kernel. Preserve the original 0x5ea-byte process
       function for restart-coded, rotated, scaled and edge MCUs.
-- [ ] Instrument the first excluded coefficient pair for reduced-IDCT
+- [x] Instrument the first excluded coefficient pair for reduced-IDCT
       fallbacks, reorder the checks by measured rejection frequency, and keep
       the order only if both QEMU and COM8 improve.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
@@ -369,6 +369,38 @@ direct calls therefore requires maintaining a complete reconstructed private
 decoder structure and kernel, not a small independently reversible assembly
 replacement. No production fork is retained without source or a measurable
 isolated patch point.
+
+The follow-up direct-call audit inspected the exact
+`.text.jpeg_dec_proc_yuv420_0_block` relocations and instructions. The common
+MCU path performs three Huffman, six IDCT and one colour call using adjacent
+`L32R`/`CALLX8` pairs; the restart and edge variants are interleaved in the
+same 0x61e-byte section. At 300 MCUs per 320x240 frame, removing every common
+path `L32R` has an upper bound of about 3,000 instructions, only 0.23% of the
+current 1.30-million-cycle QEMU decoder. The object format has no relocation
+or function boundary at which those pairs can be replaced independently:
+introducing `CALL8` relocations requires rebuilding the complete private
+kernel. This fails the isolated-patch and maintenance-cost gate, so no binary
+patch is retained or flashed.
+
+The paired Huffman prototype reached the same source-availability gate. The
+available object exposes one 0x520-byte decoder containing all DC/AC refill,
+marker, stuffing, slow-code and restart paths, while the table builder uses
+private `jpeg_decoder_t` fields and allocator-owned arrays. A packed primary
+table therefore cannot be consumed without replacing both complete functions
+and freezing the reconstructed private structure ABI. The earlier measured
+stream profile also shows that the existing 8-bit primary lookup already
+handles all DC and 97.263% of AC symbols. Because there is no independently
+linkable refill or lookup seam and the expected remaining ceiling is small,
+the unsafe pseudo-C reconstruction was rejected before firmware generation;
+there is no valid candidate image to run in QEMU or on COM8.
+
+For reduced-IDCT rejection order, a candidate sorted the 24 excluded pairs by
+the first JPEG zigzag position in each pair. It retained all 60 frames and hash
+`436f6b344bed074e`, but improved QEMU decoder-only cycles by only 119
+(0.009%) and total cycles by 138 (0.008%). Five deterministic COM8 resets
+improved decoder-only cycles from 7,043,932 to 7,042,838 (0.016%) and total
+cycles from 8,510,492 to 8,509,341 (0.014%). This is below the threshold for
+another hand-maintained ordering, so the original order was restored.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
