@@ -108,6 +108,7 @@ $fpsLabel = if ([Math]::Abs(
 else {
     $sourceFps.ToString("0.###", $culture).Replace(".", "p")
 }
+$sourceRateExpression = $sourceFps.ToString("0.########", $culture)
 
 if (-not $OutputFile) {
     $baseName = [IO.Path]::GetFileNameWithoutExtension($InputFile)
@@ -146,7 +147,7 @@ $contentHeight = if ($isCif) { 240 } else { $height }
 $cifPadding = if ($isCif) { ",pad=${width}:${height}:16:24:black" } else { "" }
 $videoFilter = if ($FitMode -eq "Crop") {
     (
-        "setpts=PTS-STARTPTS,fps=${sourceRate}," +
+        "setpts=N/(${sourceRateExpression}*TB)," +
         "crop=" +
         "'trunc(min(iw\,ih*4/3)/2)*2':" +
         "'trunc(min(ih\,iw*3/4)/2)*2':" +
@@ -158,7 +159,7 @@ $videoFilter = if ($FitMode -eq "Crop") {
 }
 else {
     (
-        "setpts=PTS-STARTPTS,fps=${sourceRate}," +
+        "setpts=N/(${sourceRateExpression}*TB)," +
         "pad=" +
         "'ceil(max(iw\,ih*4/3)/2)*2':" +
         "'ceil(max(ih\,iw*3/4)/2)*2':" +
