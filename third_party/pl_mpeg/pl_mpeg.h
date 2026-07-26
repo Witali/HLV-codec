@@ -146,6 +146,18 @@ See below for detailed the API documentation.
 #include <stddef.h>
 #include <stdint.h>
 #include "compact_yuv420.h"
+
+#ifndef PLM_MPEG_IRAM_BITREADER
+#define PLM_MPEG_IRAM_BITREADER 0
+#endif
+
+#if PLM_MPEG_IRAM_BITREADER
+#include "esp_attr.h"
+#define PLM_MPEG_BITREADER_ATTR IRAM_ATTR
+#else
+#define PLM_MPEG_BITREADER_ATTR
+#endif
+
 #ifndef PLM_NO_STDIO
 #include <stdio.h>
 #endif
@@ -1742,7 +1754,8 @@ int plm_buffer_has_ended(plm_buffer_t *self) {
 	return self->has_ended;
 }
 
-int plm_buffer_has(plm_buffer_t *self, size_t count) {
+int PLM_MPEG_BITREADER_ATTR
+plm_buffer_has(plm_buffer_t *self, size_t count) {
 	if (((self->length << 3) - self->bit_index) >= count) {
 		return TRUE;
 	}
@@ -1761,7 +1774,8 @@ int plm_buffer_has(plm_buffer_t *self, size_t count) {
 	return FALSE;
 }
 
-static void plm_buffer_refill_bit_cache(plm_buffer_t *self) {
+static void PLM_MPEG_BITREADER_ATTR
+plm_buffer_refill_bit_cache(plm_buffer_t *self) {
 	size_t available = (self->length << 3) - self->bit_index;
 	unsigned count = available > 32U ? 32U : (unsigned)available;
 	size_t bit_index = self->bit_index;
@@ -1806,7 +1820,8 @@ static void plm_buffer_refill_bit_cache(plm_buffer_t *self) {
 	self->bit_cache_count = (uint8_t)count;
 }
 
-int plm_buffer_read(plm_buffer_t *self, int count) {
+int PLM_MPEG_BITREADER_ATTR
+plm_buffer_read(plm_buffer_t *self, int count) {
 	if (count <= 0 || count > 32) {
 		return 0;
 	}
@@ -1902,7 +1917,8 @@ int plm_buffer_peek_non_zero(plm_buffer_t *self, int bit_count) {
 	return val != 0;
 }
 
-int16_t plm_buffer_read_vlc(plm_buffer_t *self, const plm_vlc_t *table) {
+int16_t PLM_MPEG_BITREADER_ATTR
+plm_buffer_read_vlc(plm_buffer_t *self, const plm_vlc_t *table) {
 	enum { PLM_VLC_LOOKAHEAD_BITS = 16 };
 	if (
 		(self->bit_cache_count >= PLM_VLC_LOOKAHEAD_BITS &&
@@ -1950,7 +1966,9 @@ int16_t plm_buffer_read_vlc(plm_buffer_t *self, const plm_vlc_t *table) {
 	return state.value;
 }
 
-uint16_t plm_buffer_read_vlc_uint(plm_buffer_t *self, const plm_vlc_uint_t *table) {
+uint16_t PLM_MPEG_BITREADER_ATTR
+plm_buffer_read_vlc_uint(plm_buffer_t *self,
+                         const plm_vlc_uint_t *table) {
 	return (uint16_t)plm_buffer_read_vlc(self, (const plm_vlc_t *)table);
 }
 

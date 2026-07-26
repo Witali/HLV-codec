@@ -6,6 +6,18 @@ idf_component_register(
     REQUIRES compact_yuv420
 )
 
+set(PLM_MPEG_IRAM_BITREADER ON CACHE BOOL
+    "Place the MPEG bitreader and VLC traversal helpers in IRAM")
+if(PLM_MPEG_IRAM_BITREADER)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_IRAM_BITREADER=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_IRAM_BITREADER=0
+    )
+endif()
+
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -ffunction-sections

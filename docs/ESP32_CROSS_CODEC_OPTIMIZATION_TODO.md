@@ -58,8 +58,8 @@ sequence gaps, audio rebuffers, missing samples or inserted silence.
 
 ## MPEG-1
 
-- [ ] Establish a fresh QEMU and physical-board baseline.
-- [ ] A/B-test IRAM placement for the bitreader and hot VLC helpers.
+- [x] Establish a fresh QEMU and physical-board baseline.
+- [x] A/B-test IRAM placement for the bitreader and hot VLC helpers.
 - [ ] Add a small direct lookup for the most frequent coefficient prefixes.
 - [ ] Verify bit-exact output, QEMU cycles and physical-board timing after each
       independent change.
@@ -69,6 +69,25 @@ The decoder already has a 32-bit reader and 16-bit lookahead in
 `third_party/pl_mpeg/pl_mpeg.h`. The remaining candidates are fewer flash-cache
 misses and less traversal of frequent DCT coefficient VLCs, not another generic
 bitreader.
+
+The selective IRAM experiment was retained. It covers the buffer availability,
+32-bit cache refill/read and VLC traversal helpers. The complete 3,359-frame
+compact regression retained checksum `6bc59309b0d7dc23`. The 60-frame QEMU
+benchmark retained hash `14d6bd4e019da037`; its average changed only from
+1,753,290 to 1,753,288 guest cycles per frame.
+
+| MPEG-1 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Flash helpers | 44,478.2 us | 44,421 us | 59,702 us | 67,226 us | baseline |
+| IRAM helpers | 43,833.3 us | 43,779 us | 58,696 us | 64,737 us | accepted |
+
+These values are the medians of three 300-frame physical-board runs per
+variant. The average improves by 1.45% with no frame-sequence gaps. The change
+uses 1,096 additional IRAM bytes, removes 1,020 bytes of Flash code, leaves
+DRAM unchanged and increases the padded application binary by 80 bytes.
+Both variants report the same known audio underrun pattern because this
+240x180 stream is 30 fps while total decode/render work exceeds its frame
+period.
 
 ## H.263
 
