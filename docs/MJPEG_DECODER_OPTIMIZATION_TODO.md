@@ -195,13 +195,26 @@ parallelize entropy decoding within one JPEG frame.
 
 ## Priority 5: optimize the remaining hot loops
 
-- [ ] Process two or four RGB888 pixels per loop iteration and compare the
-      generated Xtensa assembly with the current scalar loop.
-- [ ] A/B test small RGB565 component lookup tables against packed arithmetic.
 - [x] Place only proven hot output/conversion code in IRAM and record
       instruction-cache effects.
 - [x] Add a first-party Xtensa DC-only IDCT shortcut and retain the original
       `esp_new_jpeg` kernel as the fallback.
+- [ ] Separate header/process/correctness-callback cycles in the benchmark so
+      RGB565 hashing does not dilute decoder-only deltas.
+- [ ] Extend the Xtensa IDCT with exact one-column and two-column reduced-row
+      paths; retain the original kernel for every unmatched coefficient mask.
+- [ ] Add a three- or four-byte Huffman reservoir refill for marker-free input
+      and retain the current byte path for `0xff`, markers and short tails.
+- [ ] Specialize the aligned, restart-free YUV420/RGB565LE MCU loop with
+      hoisted table pointers and direct Huffman/IDCT/color calls.
+- [ ] A/B paired 32-bit RGB565 stores independently from MAC16 chroma
+      arithmetic and small chroma-contribution tables.
+- [ ] Reuse variable-size Huffman allocations while still rebuilding the
+      frame-specific canonical and lookup tables.
+- [ ] A/B sparse coefficient clearing only after the larger decode-loop
+      candidates have been exhausted.
+- [x] Reject a wider primary VLC lookup for the current stream: no measured DC
+      symbols and only 2.737% of AC symbols exceed eight Huffman bits.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
 - [ ] Test source-built TJpgDec `JD_FASTDECODE=2` only after measuring its
       approximately 65.5 KiB work-buffer cost on the real firmware.
@@ -232,6 +245,22 @@ guest cycles from 1,832,549 to 1,771,053 (3.36%). Seven physical-board runs
 retained the same hash and reduced average decode time from 39.542 to
 38.509 ms per frame (2.61%); P50 improved by 2.73%. The optimized path is
 enabled by default with `MJPEG_OPTIMIZED_IDCT=ON`.
+
+The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
+account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
+and 32.93% use only columns zero and one. The decoder clears 13,824,000
+coefficient bytes over the run (230,400 bytes per frame). All frames are
+YUV420 with `2x2,1x1,1x1` sampling, dimensions aligned to complete 16x16 MCUs
+and no restart interval. DQT, SOF and SOS are stable, but 58 of 60 DHT sets are
+unique, so full header/table caching is not applicable to the current encoder
+output.
+
+Apply each unchecked experiment as an independently switchable A/B change.
+Require the same complete RGB565 hash and frame count in QEMU, then repeat the
+same baseline/candidate builds on COM8. Retain production code only when the
+physical-board improvement is consistent, larger than run-to-run noise and
+does not compromise heap, largest-free-block, IRAM or Flash limits. Record and
+remove rejected candidate code.
 
 Espressif's published S3 comparison shows source TJpgDec with
 `JD_FASTDECODE=2` improving approximately 52 ms to 46 ms, while direct RGB565
