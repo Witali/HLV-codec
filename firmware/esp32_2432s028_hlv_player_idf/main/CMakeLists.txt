@@ -203,7 +203,7 @@ else()
             "bpv_esp32_decoder.c"
             "hlv_esp32_decoder.c"
             "mjpeg_avi_decoder.cpp"
-            "uart_file_upload.cpp"
+            "uart_file_upload.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
         INCLUDE_DIRS "."

@@ -36,7 +36,7 @@
 #include "mjpeg_avi_decoder.hpp"
 #include "player_settings.h"
 #include "pl_mpeg.h"
-#include "uart_file_upload.hpp"
+#include "uart_file_upload.h"
 
 namespace {
 
@@ -249,7 +249,7 @@ H2633gpInfo h263_info{};
 AmrNb3gpDecoder *amrnb_audio_decoder = nullptr;
 AmrNb3gpInfo amrnb_audio_info{};
 H263AviPcmReader *h263_avi_audio_reader = nullptr;
-UartFileUpload uart_upload;
+uart_file_upload_t uart_upload = {};
 HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
 const char *active_video_path = nullptr;
@@ -3630,8 +3630,8 @@ extern "C" void app_main(void) {
                  esp_err_to_name(display_result));
         return;
     }
-    const esp_err_t uart_result =
-        uart_upload.begin(CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+    const esp_err_t uart_result = uart_file_upload_begin(
+        &uart_upload, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
     if (uart_result != ESP_OK) {
         ESP_LOGE(kTag, "UART upload initialization failed: %s",
                  esp_err_to_name(uart_result));
@@ -3646,18 +3646,19 @@ extern "C" void app_main(void) {
     }
 
     for (;;) {
-        UartUploadRequest upload_request{};
-        if (uart_upload.pollRequest(&upload_request)) {
+        uart_upload_request_t upload_request{};
+        if (uart_file_upload_poll_request(&uart_upload,
+                                          &upload_request)) {
             if (!sd_mounted && !mountSdCard()) {
-                uart_upload.reject("NO_SD");
+                uart_file_upload_reject(&uart_upload, "NO_SD");
                 last_retry_ms = millisNow();
                 continue;
             }
             closeVideo();
             beginUploadProgress();
             char stored_path[128]{};
-            const bool stored = uart_upload.receive(
-                upload_request, PLAYER_VIDEO_DIRECTORY,
+            const bool stored = uart_file_upload_receive(
+                &uart_upload, &upload_request, PLAYER_VIDEO_DIRECTORY,
                 stored_path, sizeof stored_path, updateUploadProgress,
                 nullptr);
             cyd_display_flush(&display);
@@ -3667,26 +3668,26 @@ extern "C" void app_main(void) {
             if (!openVideo()) last_retry_ms = millisNow();
             continue;
         }
-        if (uart_upload.takeListRequest()) {
+        if (uart_file_upload_take_list_request(&uart_upload)) {
             if (!sd_mounted && !mountSdCard()) {
-                uart_upload.reject("NO_SD");
+                uart_file_upload_reject(&uart_upload, "NO_SD");
                 last_retry_ms = millisNow();
             } else {
-                uart_upload.listDirectory(
-                    PLAYER_VIDEO_DIRECTORY);
+                uart_file_upload_list_directory(
+                    &uart_upload, PLAYER_VIDEO_DIRECTORY);
             }
             continue;
         }
-        char crc_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
-        if (uart_upload.takeCrcRequest(
-                crc_filename, sizeof crc_filename)) {
+        char crc_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U]{};
+        if (uart_file_upload_take_crc_request(
+                &uart_upload, crc_filename, sizeof crc_filename)) {
             if (!sd_mounted && !mountSdCard()) {
-                uart_upload.reject("NO_SD");
+                uart_file_upload_reject(&uart_upload, "NO_SD");
                 last_retry_ms = millisNow();
             } else {
                 closeVideo();
-                uart_upload.checksumFile(
-                    PLAYER_VIDEO_DIRECTORY, crc_filename);
+                uart_file_upload_checksum_file(
+                    &uart_upload, PLAYER_VIDEO_DIRECTORY, crc_filename);
                 if (!openVideo()) last_retry_ms = millisNow();
             }
             continue;
