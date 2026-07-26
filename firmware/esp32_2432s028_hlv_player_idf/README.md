@@ -6,15 +6,16 @@ application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
 MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v5
 with PCM_U8 audio, active per-GOP palettes, adaptive RAW and direct 5–16-color
 blocks, and the constrained MPEG-1 Video/MP2 profile up to 320x240. It also
-supports baseline H.263 at `176x144` and intra-only H.263+ at `256x144`,
-`256x192`, `320x180`, or `320x240`, with optional 8 kHz mono AMR-NB audio in
-3GP or PCM S16LE audio in AVI.
+supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
+intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
+optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
-AVI is the preferred H.263 container for this firmware. Its interleaved video
-and PCM chunks are streamed without retaining an AVI index in RAM. 3GP remains
-supported for AMR-NB and compatibility, but its sample-size and chunk-offset
-tables consume memory proportional to the number of samples, reducing the
-margin available for long or high-bitrate CIF playback.
+New project H.263 assets use only baseline H.263 in AVI at standard QCIF
+`176x144` or CIF `352x288`, always at the full source frame rate. Custom-size
+H.263+ and 3GP/AMR-NB remain decoder-only compatibility paths. AVI's
+interleaved video and PCM chunks are streamed without retaining an index in
+RAM; the legacy 3GP reader's sample-size and chunk-offset tables consume memory
+proportional to the number of samples.
 
 The only application components are:
 

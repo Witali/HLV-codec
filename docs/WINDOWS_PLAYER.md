@@ -21,13 +21,12 @@ adaptive 2/4/7-byte RAW records, packed local palette indices, and 9-byte
 direct records for blocks using 5–16 colors.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
-The repository encoder treats CIF as anamorphic during preparation as well as
-playback. It crops or pads the source to 4:3 at the original large resolution,
-then performs one Lanczos downscale to the central `320x240` active area. It
-pads that area to the coded `352x288` grid with 16 black columns on each side
-and 24 black rows above and below. It does not write a SAR or DAR override.
-Unlike the ESP32, the Windows Player retains and displays this complete
-bordered frame.
+New project H.263 assets are restricted to baseline H.263 in AVI at standard
+QCIF `176x144` or CIF `352x288`, preserving the full source frame rate. The
+encoder prepares a complete 4:3 QCIF/CIF frame with one Lanczos downscale.
+Legacy 3GP and custom-size H.263+ support above is playback compatibility only.
+The Windows Player displays the complete CIF frame, while the ESP32 crops its
+central `320x240` area for the panel.
 
 ## Setup and build
 

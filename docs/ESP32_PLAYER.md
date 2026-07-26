@@ -250,63 +250,43 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 
-### Recommended H.263 container
+### H.263 encoding rule
 
-Prefer **AVI** for H.263 files intended for this ESP32 player. AVI video and
-PCM chunks are consumed sequentially through bounded buffers, and the reader
-does not retain the AVI index in RAM. This leaves more internal memory
-available for the maximum compressed packet, the CIF output frame, and decoder
-tables.
+Encode new H.263 assets only as **baseline H.263 in AVI**, using one of the two
+standard picture sizes:
 
-The 3GP reader is supported, but it caches its sample-size and chunk-offset
-tables at open time. The extra memory grows with clip length and can prevent a
-long or high-bitrate CIF file from opening even when the same H.263 video
-works in AVI. Choose 3GP when AMR-NB audio or an existing 3GP workflow is more
-important than the ESP32 memory margin.
+- QCIF: `176x144`;
+- CIF: `352x288`.
 
-For the supported 3GP/H.263 alternative with default AMR-NB audio:
+The encoder always preserves the full source frame rate. It has no half-rate
+preset and refuses a source above the supported 30 fps limit rather than
+silently dropping frames. `-FitMode Crop` fills the 4:3 frame by cropping equal
+margins; `-FitMode Contain` retains the complete picture with black padding.
+Both modes fit at the original source resolution and then perform one Lanczos
+downscale to the complete QCIF or CIF frame. CIF is intra-only for the bounded
+ESP32 decoder memory profile.
 
-```powershell
-.\scripts\encode_h263_3gp.ps1 `
-    -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.3gp
-```
-
-The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
-1536 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
-trellis encoder decisions, fills the canvas, and crops equal margins from the
-source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
-source with black padding. `-Profile` also accepts baseline H.263 `176x144`
-and intra-only `352x288` CIF, H.263+ `256x144` and `320x180` for 16:9, or
-`256x192` and `320x240` for 4:3. For CIF, the script crops or pads the source
-to 4:3 at its original large resolution and performs one anti-aliased Lanczos
-downscale to the active `320x240` area, with accurate rounding and full chroma
-interpolation. It pads that area to `352x288` with 16 black columns on each
-side and 24 black rows above and below. No SAR or DAR override is written. The
-ESP32 discards that border and copies the active centre without scaling. All
-profiles except predictive QCIF
-are encoded intra-only (effective GOP 1), allowing the ESP32 to decode them
-with one padded YUV420 frame whose Y, U, and V planes are allocated
-separately. This avoids a single 115,200-byte allocation at 320x240.
-When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
-12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
-audio codecs, and other dimensions are outside these profiles.
-
-For an AVI with H.263 video and PCM S16LE mono at 8 kHz:
+Create a CIF AVI with PCM S16LE mono audio at 8 kHz:
 
 ```powershell
 .\scripts\encode_h263_avi.ps1 `
     -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.avi
+    -OutputFile .\out\video_cif.avi `
+    -Profile 352x288
 ```
 
 The AVI reader skips muxer timing chunks, streams video and audio through
 separate file cursors, and converts PCM16 to PCM_U8 for the DAC without
 retaining the AVI index in RAM.
 
-The complete source encoded with this default was exercised for 900 frames on
-the physical ESP32. The run measured 14.999 fps, 62.20 ms average and
-67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
+The decoder still accepts older 3GP/AMR-NB and custom-size H.263+ assets for
+backward compatibility. Those combinations are not valid targets for new
+encodes. The 3GP reader caches sample-size and chunk-offset tables, so its
+memory use also grows with clip length.
+
+The retired custom `320x240` 15 fps profile was exercised for 900 frames on
+the physical ESP32. This historical run measured 14.999 fps, 62.20 ms average
+and 67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
 gaps, audio rebuffers, underrun samples, or silence chunks and omitted one
 display transfer.
 

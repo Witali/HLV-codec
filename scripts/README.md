@@ -71,8 +71,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `prepare_esp32_video.ps1` | Produces an HLV file for ESP32 with configurable dimensions, frame rate, quality, duration, and 16 kHz audio normalization. Without `-InputFile`, it generates a deterministic test clip. |
 | `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
-| `encode_h263_3gp.ps1` | Encodes the supported H.263/H.263+ profiles into 3GP or AVI, with crop/contain fitting and optional AMR-NB audio. Non-QCIF profiles use the Player's supported intra-only H.263+ profile. |
-| `encode_h263_avi.ps1` | Convenience wrapper around `encode_h263_3gp.ps1` that selects AVI with PCM audio and provides a default output name. |
+| `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. |
 | `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v5 profile with its own source, resolution, FPS, format and target quality. |
@@ -80,10 +79,10 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 Example H.263 and BPV calls:
 
 ```powershell
-.\scripts\encode_h263_3gp.ps1 `
+.\scripts\encode_h263_avi.ps1 `
     -InputFile .\out\sources\input.mp4 `
-    -OutputFile .\out\input_320x240_h263.3gp `
-    -Profile 320x240 -FitMode Crop -Fps 15
+    -OutputFile .\out\input_352x288_h263.avi `
+    -Profile 352x288 -FitMode Crop
 
 .\scripts\encode_bpv.ps1 `
     -InputFile .\out\sources\input.mp4 `
@@ -135,7 +134,7 @@ Do not substitute the 320x180 download or another reduced copy.
 | `encode_big_buck_bunny_v13.ps1` | Encodes the approved 1080p MOV to HLV stream version 13 at 320x180, with optional frame-rate override, threading, frame limit, and SIMD disable switch. |
 | `encode_big_buck_bunny_mjpeg.ps1` | Encodes the approved MOV to the native-frame-rate 320x180 MJPEG/AVI profile and updates `out/play.txt` unless another selection file is supplied. |
 | `encode_big_buck_bunny_divx3.ps1` | Encodes the approved MOV to the 320x240 DivX 3 AVI profile with configurable quality, FPS, GOP, and frame limit; also updates the selection file. |
-| `encode_big_buck_bunny_h263_3gp.ps1` | Applies the supported H.263/3GP profile to the approved MOV. |
+| `encode_big_buck_bunny_h263_avi.ps1` | Encodes the approved MOV as baseline H.263 in CIF or QCIF AVI at the full source frame rate. |
 | `encode_big_buck_bunny_bpv.ps1` | Applies the 320x180 BPV profile to the approved MOV and writes its JSON report. |
 | `encode_vid_20260522_181611_mpeg1.ps1` | Reproducible 240x180 MPEG-1/MP2 preset for `out/sources/VID_20260522_181611.mp4`. |
 
@@ -163,7 +162,7 @@ Examples:
 | `test_divx3.ps1` | Builds the DivX 3 regression decoder, creates a deterministic 256x144 sample from the approved MOV, and verifies pixel-exact output against FFmpeg, including AVI with ignored MP3 audio. |
 | `compare_divx3_compact.ps1` | Builds and runs a frame-by-frame comparison of exact and compact DivX 3 decoder storage for a supplied AVI. |
 | `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
-| `test_h263_3gp.ps1` | Generates a synthetic source and exercises every supported H.263/H.263+ 3GP and AVI+PCM encoding/decoding profile. |
+| `test_h263_avi.ps1` | Generates a 30 fps synthetic source and verifies standard QCIF/CIF H.263 AVI encoding and decoding without frame-rate reduction. |
 | `test_threaded_encode.py` | Verifies that parallel HLV GOP encoding is enabled by default and remains byte-exact against the serial encoder. |
 | `test_windowed_two_pass.py` | Smoke-tests bounded local two-pass HLV rate control through an FFmpeg Y4M pipe. |
 

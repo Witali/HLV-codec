@@ -73,35 +73,24 @@ function Assert-FfmpegCapability {
     }
 }
 
-# H.263 source decoding is built into both project players. FFmpeg is needed
-# only to produce and inspect the constrained 3GP profiles, so reject a
-# stripped-down installation before an encode fails much later.
+# H.263 source decoding is built into both project players. New project assets
+# use only standard baseline H.263 QCIF/CIF in AVI.
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
     -Pattern '^\s*V\S*\s+h263(?:\s|$)' `
     -Description "the H.263 encoder"
-Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
-    -Pattern '^\s*V\S*\s+h263p(?:\s|$)' `
-    -Description "the H.263+ encoder"
-Assert-FfmpegCapability -Arguments @("-hide_banner", "-encoders") `
-    -Pattern '^\s*A\S*\s+libopencore_amrnb(?:\s|$)' `
-    -Description "the libopencore AMR-NB encoder"
-Assert-FfmpegCapability -Arguments @("-hide_banner", "-muxers") `
-    -Pattern '^\s*E\s+3gp(?:\s|$)' `
-    -Description "the 3GP muxer"
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-demuxers") `
     -Pattern '^\s*D\s+mov,mp4,m4a,3gp(?:,|\s)' `
-    -Description "the MOV/MP4/3GP demuxer"
+    -Description "the MOV/MP4/3GP source demuxer"
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-muxers") `
     -Pattern '^\s*E\s+avi(?:\s|$)' `
-    -Description "the AVI muxer used for custom-size H.263+"
+    -Description "the AVI muxer used for standard H.263"
 Assert-FfmpegCapability -Arguments @("-hide_banner", "-demuxers") `
     -Pattern '^\s*D\s+avi(?:\s|$)' `
-    -Description "the AVI demuxer used for custom-size H.263+"
+    -Description "the AVI demuxer used for standard H.263"
 
 $versionOutput | Select-Object -First 1
 Write-Host "Project-local FFmpeg is ready: $ffmpeg"
 Write-Host "Project-local FFprobe is ready: $ffprobe"
 Write-Host (
-    "H.263, H.263+, and AMR-NB encoders plus AVI/3GP mux/demux support " +
-    "are available."
+    "The baseline H.263 encoder and AVI mux/demux support are available."
 )
