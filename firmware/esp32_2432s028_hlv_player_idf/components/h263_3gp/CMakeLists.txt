@@ -34,6 +34,18 @@ idf_component_register(
         "${PV_ROOT}/src"
 )
 
+set(PV_H263_IRAM_BITSTREAM_FILL ON CACHE BOOL
+    "Place the H.263 32-bit bitstream cache refill in IRAM")
+if(PV_H263_IRAM_BITSTREAM_FILL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_BITSTREAM_FILL=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_BITSTREAM_FILL=0
+    )
+endif()
+
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3

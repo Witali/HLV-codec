@@ -109,8 +109,8 @@ and reproduced only the stream's known audio-underrun pattern.
 
 ## H.263
 
-- [ ] Establish a fresh QEMU and physical-board baseline.
-- [ ] A/B-test selective IRAM placement for `BitstreamFillCache`.
+- [x] Establish a fresh QEMU and physical-board baseline.
+- [x] A/B-test selective IRAM placement for `BitstreamFillCache`.
 - [ ] Independently A/B-test the hot VLC/dequant helpers.
 - [ ] Independently A/B-test the hottest IDCT kernel.
 - [ ] Verify output and record QEMU, board and IRAM-size results.
@@ -118,6 +118,21 @@ and reproduced only the stream's known audio-underrun pattern.
 PacketVideo already uses a 32-bit cache, VLC tables, byte-sized prediction,
 fused IDCT-add and variable-complexity IDCT. Do not duplicate the DivX
 algorithmic changes without profiler evidence.
+
+The isolated `BitstreamFillCache` placement was retained. The complete host
+profile smoke test passed, and both QEMU variants produced hash
+`e2f9d3b5a212be20` with an identical average of 428,624 guest cycles per
+320x240 frame. Three 300-frame physical-board runs per variant gave:
+
+| H.263 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Flash cache refill | 18,114.6 us | 17,473 us | 21,173 us | 68,993 us | baseline |
+| IRAM cache refill | 16,706.5 us | 15,836 us | 19,677 us | 66,755 us | accepted |
+
+The physical decode average improves by 7.77%. The change moves 272 bytes from
+Flash code to IRAM, leaves DRAM and total image size unchanged, and preserves
+all 300 frame indices with no audio rebuffers, underrun samples or inserted
+silence.
 
 ## BPV
 
