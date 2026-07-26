@@ -311,6 +311,14 @@ fell from 1,335,338 to 1,297,128 (2.86%) and total cycles from 1,667,638 to
 (2.05%). The hash and reported heap values were unchanged, so the tables are
 retained by default.
 
+A subsequent production Player run collected 3,000 consecutive 320x240/30
+packet records after both retained colour changes. Conditional decode latency
+was 33.729 ms average, 34.001 ms P50, 37.269 ms P95 and 38.311 ms P99. The
+Player displayed 2,001 frames (20.010 fps effective) with no sequence gaps or
+audio errors. The summary, comparison with the preceding production baseline,
+and raw CSV are preserved in
+[`MJPEG_PLAYER_320X240_POST_RGB565_BENCHMARK.md`](MJPEG_PLAYER_320X240_POST_RGB565_BENCHMARK.md).
+
 The retained coefficient-clear wrapper recognizes only aligned
 `memset(buffer, 0, 128)` calls and emits 32 unrolled `S32I` stores. Every
 unmatched call uses the original libc implementation. It costs 118 bytes of
