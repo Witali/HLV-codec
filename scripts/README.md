@@ -76,6 +76,12 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v5 profile with its own source, resolution, FPS, format and target quality. |
 
+The production defaults for every format accepted by the ESP32 player are
+stored in `out/source/esp32-transcode.yaml`. It records source preparation,
+quality mode, rate control, audio profile and decoder limits in one place.
+HLV uses adaptive 35–42 dB quality, H.263 uses profile-specific CBR/VBV, and
+the remaining codecs target 40 dB where that quality is attainable.
+
 Example H.263 and BPV calls:
 
 ```powershell
