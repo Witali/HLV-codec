@@ -120,7 +120,7 @@ if(MJPEG_QEMU_BENCHMARK)
 elseif(BPV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_bpv_render_benchmark.cpp"
+            "qemu_bpv_render_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             bpv1
