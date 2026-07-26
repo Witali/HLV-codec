@@ -1,0 +1,161 @@
+# Project scripts
+
+This directory contains the Windows setup, build, encoding, test, benchmark,
+and ESP32 deployment entry points. Run the PowerShell examples from the
+repository root.
+
+## Quick start
+
+Prepare the repository-local toolchains and build the Windows tools:
+
+```powershell
+.\scripts\setup.ps1
+.\scripts\build_msvc.ps1
+```
+
+Build the pure ESP-IDF firmware:
+
+```powershell
+.\scripts\build_esp32.ps1
+```
+
+Encode a 320x240 MJPEG/AVI file:
+
+```powershell
+.\scripts\encode_mjpeg.ps1 `
+    -InputFile .\out\sources\input.mp4 `
+    -OutputFile .\out\input_320x240_mjpeg.avi `
+    -Width 320 -Height 240 -ResizeMode Crop -Quality 5
+```
+
+Use the project-local Python and its pinned packages for Python utilities:
+
+```powershell
+.\scripts\python.ps1 .\scripts\benchmark.py --help
+```
+
+Generated tool installations belong under `local_tools/`, build products under
+`build/`, encoded media under `out/`, and benchmark results under
+`bench/results/`.
+
+## Environment and tool wrappers
+
+| Script | Purpose |
+| --- | --- |
+| `bootstrap.ps1` | Compatibility entry point that runs the complete `setup.ps1` workflow. |
+| `setup.ps1` | Prepares MSVC, portable Python, FFmpeg, and the repository-local ESP-IDF environment. Use `-ForceDownload` to refresh downloaded tools or `-SkipVisualStudioInstall` when MSVC is managed separately. |
+| `setup_msvc.ps1` | Locates Visual Studio C++ Build Tools and optionally installs the required workload with `winget`. |
+| `setup_python.ps1` | Installs the verified portable Python distribution and packages from `requirements-tools.txt` into `local_tools/python`. |
+| `bootstrap_ffmpeg.ps1` | Downloads and verifies the project FFmpeg/FFprobe build in `local_tools/ffmpeg`; it also checks the codecs and filters required by the encoding scripts. |
+| `bootstrap_arduino.ps1` | Installs the repository-local Arduino CLI and ESP32 Arduino packages used by the remaining Arduino/LittleFS utilities. Normal Player firmware builds use ESP-IDF instead. |
+| `python.ps1` | Runs the portable Python with project FFmpeg and MSVC tools added to `PATH`. Remaining arguments are passed directly to Python. |
+| `arduino.ps1` | Runs the repository-local `arduino-cli` with `arduino-cli.yaml`. It does not install the CLI automatically. |
+
+## Build scripts
+
+| Script | Purpose |
+| --- | --- |
+| `build_msvc.ps1` | Builds the HLV command-line tools and tests (`hlvenc`, `hlvdec`, `hlvinfo`, decoder benchmarks, and error/round-trip tests), then builds the Windows Player. |
+| `build_windows_player.ps1` | Builds `hlvplay.exe` with the HLV, BPV, MPEG-1, H.263, DivX 3, AMR-NB, and compact-frame-buffer decoders. |
+| `build_bpv_msvc.ps1` | Builds the native BPV encoder and decoder test, runs the decoder test, and runs the JavaScript/C encoder compatibility test when Node.js is available. |
+| `build_esp32.ps1` | Builds `firmware/esp32_2432s028_hlv_player_idf` with the pinned pure ESP-IDF environment. Pass `-Clean` for a clean build. |
+| `build_littlefs.ps1` | Creates the legacy ESP32 LittleFS image from one HLV file. The current SD-card Player normally uses `copy_video_to_sd.ps1` instead. |
+
+## General-purpose encoders
+
+These scripts validate their output with FFprobe and normally create a JSON
+report next to the encoded file. `MaxFrames=0` means encode the complete input.
+
+| Script | Purpose and important options |
+| --- | --- |
+| `prepare_esp32_video.ps1` | Produces an HLV file for ESP32 with configurable dimensions, frame rate, quality, duration, and 16 kHz audio normalization. Without `-InputFile`, it generates a deterministic test clip. |
+| `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
+| `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
+| `encode_h263_3gp.ps1` | Encodes the supported H.263/H.263+ profiles into 3GP or AVI, with crop/contain fitting and optional AMR-NB audio. Non-QCIF profiles use the Player's supported intra-only H.263+ profile. |
+| `encode_h263_avi.ps1` | Convenience wrapper around `encode_h263_3gp.ps1` that selects AVI with PCM audio and provides a default output name. |
+| `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
+
+Example H.263 and BPV calls:
+
+```powershell
+.\scripts\encode_h263_3gp.ps1 `
+    -InputFile .\out\sources\input.mp4 `
+    -OutputFile .\out\input_320x240_h263.3gp `
+    -Profile 320x240 -FitMode Crop -Fps 15
+
+.\scripts\encode_bpv.ps1 `
+    -InputFile .\out\sources\input.mp4 `
+    -OutputFile .\out\input_320x240.bpv `
+    -Width 320 -Height 240 -ResizeMode Crop -Lambda 64
+```
+
+## Reproducible source-specific profiles
+
+For every Big Buck Bunny transcode, the authoritative source is:
+
+```text
+out/sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov
+```
+
+Do not substitute the 320x180 download or another reduced copy.
+
+| Script | Purpose |
+| --- | --- |
+| `encode_big_buck_bunny_v13.ps1` | Encodes the approved 1080p MOV to HLV stream version 13 at 320x180, with optional frame-rate override, threading, frame limit, and SIMD disable switch. |
+| `encode_big_buck_bunny_mjpeg.ps1` | Encodes the approved MOV to the native-frame-rate 320x180 MJPEG/AVI profile and updates `out/play.txt` unless another selection file is supplied. |
+| `encode_big_buck_bunny_divx3.ps1` | Encodes the approved MOV to the 320x240 DivX 3 AVI profile with configurable quality, FPS, GOP, and frame limit; also updates the selection file. |
+| `encode_big_buck_bunny_h263_3gp.ps1` | Applies the supported H.263/3GP profile to the approved MOV. |
+| `encode_big_buck_bunny_bpv.ps1` | Applies the 320x180 BPV profile to the approved MOV and writes its JSON report. |
+| `encode_vid_20260522_181611_mpeg1.ps1` | Reproducible 240x180 MPEG-1/MP2 preset for `out/sources/VID_20260522_181611.mp4`. |
+
+## ESP32 deployment and media transfer
+
+| Script | Purpose |
+| --- | --- |
+| `upload_esp32.ps1` | Builds and flashes the pure ESP-IDF Player through the specified serial port. `-SkipBuild` flashes the existing build and `-Baud` selects the upload rate. |
+| `upload_video_uart.ps1` | Uploads one media file through the Player's UART file-transfer protocol. `-Name` overrides the destination name and `-DataBaud` controls the high-speed data phase. |
+| `copy_video_to_sd.ps1` | Copies a selected video to the mounted SD card, verifies it with SHA-256, and writes `HLV/play.txt` so the Player selects it at boot. |
+
+Examples:
+
+```powershell
+.\scripts\upload_esp32.ps1 -Port COM8
+.\scripts\upload_video_uart.ps1 -Port COM8 -File .\out\video.hlv
+.\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ -InputFile .\out\video.hlv
+```
+
+## Regression and smoke tests
+
+| Script | Purpose |
+| --- | --- |
+| `test_compact_yuv420.ps1` | Builds and runs the native packed Y6/U5/V5 frame-buffer and correction-map tests. |
+| `test_divx3.ps1` | Builds the DivX 3 regression decoder, creates a deterministic 256x144 sample from the approved MOV, and verifies pixel-exact output against FFmpeg, including AVI with ignored MP3 audio. |
+| `compare_divx3_compact.ps1` | Builds and runs a frame-by-frame comparison of exact and compact DivX 3 decoder storage for a supplied AVI. |
+| `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
+| `test_h263_3gp.ps1` | Generates a synthetic source and exercises every supported H.263/H.263+ 3GP and AVI+PCM encoding/decoding profile. |
+| `test_threaded_encode.py` | Verifies that parallel HLV GOP encoding is enabled by default and remains byte-exact against the serial encoder. |
+| `test_windowed_two_pass.py` | Smoke-tests bounded local two-pass HLV rate control through an FFmpeg Y4M pipe. |
+
+## Benchmarks, comparisons, and data sets
+
+| Script | Purpose |
+| --- | --- |
+| `benchmark.py` | Runs reproducible rate-distortion benchmarks for HLV, BPV, MJPEG, MPEG-1/2, H.264, VP8/9, and optionally AV1. It records bitrate, quality, encoding speed, and decoding speed. |
+| `matched_bitrate.py` | Searches codec settings to match requested measured bitrates and compares PSNR/SSIM at those rates. Supports resumable HLV, BPV, and reference-codec runs. |
+| `benchmark_encoder.py` | Measures exact HLV encoder variants and reports algorithmic work and throughput over repeated runs. |
+| `compare_hlv_versions.py` | Compares two HLV syntax or encoder configurations on identical source frames and target bitrates. |
+| `summarize_results.py` | Converts benchmark JSON into compact per-source and aggregate Markdown plus CSV reports. |
+| `make_local_suite.py` | Generates deterministic synthetic and UI-style benchmark clips without network access. |
+| `fetch_open_sources.py` | Downloads the explicitly listed openly licensed sources for the extended benchmark suite. |
+| `fetch_big_buck_bunny.ps1` | Downloads and verifies the small 320x180 Big Buck Bunny fixture. It is for tests only and must not be used as a Big Buck Bunny transcoding source. |
+
+Typical benchmark workflow:
+
+```powershell
+.\scripts\python.ps1 .\scripts\make_local_suite.py --duration 60 --fps 15
+.\scripts\python.ps1 .\scripts\benchmark.py `
+    --sources .\bench\sources\*.mp4 `
+    --duration 10 --fps 15 --prefix local
+.\scripts\python.ps1 .\scripts\summarize_results.py `
+    .\bench\results\local.json
+```
