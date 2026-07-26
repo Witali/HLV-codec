@@ -297,6 +297,19 @@ reconstructed-frame hash, free heap and largest free block. The preparation
 step copies the original MPEG-1 video packets without re-encoding and rejects
 the clip unless its dimensions and frame count match the requested profile.
 
+The H.263 benchmark embeds 60 frames of the validated intra-only 320x240 3GP
+and uses one output frame because no display pipeline overlaps the decode:
+
+```powershell
+.\qemu-h263-benchmark.ps1
+.\qemu-h263-benchmark.ps1 -InputFile input.3gp -Frames 60
+```
+
+It prints an `H` record containing the decode-only cycle distribution,
+reconstructed YUV420 hash, decoder allocation, free heap and largest free
+block. The preparation step copies video samples without re-encoding and
+rejects any clip that is not H.263 at 320x240 with the requested frame count.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the

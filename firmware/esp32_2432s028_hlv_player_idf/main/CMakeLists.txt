@@ -1,4 +1,20 @@
-if(MPEG1_QEMU_BENCHMARK)
+if(H263_QEMU_BENCHMARK)
+    idf_component_register(
+        SRCS
+            "qemu_h263_benchmark.cpp"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_rom
+            esp_system
+            freertos
+            h263_3gp
+            heap
+            log
+            vfs
+    )
+    target_add_binary_data(
+        ${COMPONENT_LIB} "qemu_h263_benchmark.3gp" BINARY)
+elseif(MPEG1_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_mpeg1_benchmark.cpp"
