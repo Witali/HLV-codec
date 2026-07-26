@@ -187,6 +187,12 @@ static uint32_t bits_peek(BitReader *reader, unsigned count) {
     return value;
 }
 
+static void bits_drop_cached(BitReader *reader, unsigned count) {
+    reader->cache <<= count;
+    reader->cached -= count;
+    reader->position += count;
+}
+
 static int abs_int(int value) { return value < 0 ? -value : value; }
 
 static uint8_t clamp_byte(int value) {
@@ -197,8 +203,32 @@ static int decode_vlc_index(BitReader *reader,
                             const Divx3VlcNode *nodes,
                             size_t entry_count, size_t *entry_index) {
     int node_index = 0;
-    unsigned depth;
-    for (depth = 0; depth < 30U; ++depth) {
+    unsigned depth = 0;
+    if (reader->position <= reader->bits &&
+        reader->bits - reader->position >= 8U) {
+        uint32_t prefix;
+        while (reader->cached < 8U) {
+            reader->cache |=
+                (uint32_t)*reader->next++ << (24U - reader->cached);
+            reader->cached += 8U;
+        }
+        prefix = reader->cache;
+        for (; depth < 8U; ++depth) {
+            int child =
+                nodes[node_index].child[(prefix >> (31U - depth)) & 1U];
+            if (child == INT16_MAX) return DIVX3_ERR_BITSTREAM;
+            if (child < 0) {
+                size_t index = (size_t)(-child - 1);
+                if (index >= entry_count) return DIVX3_ERR_BITSTREAM;
+                bits_drop_cached(reader, depth + 1U);
+                *entry_index = index;
+                return DIVX3_OK;
+            }
+            node_index = child;
+        }
+        bits_drop_cached(reader, 8U);
+    }
+    for (; depth < 30U; ++depth) {
         int child = nodes[node_index].child[bit_read(reader)];
         if (reader->failed || child == INT16_MAX)
             return DIVX3_ERR_BITSTREAM;
