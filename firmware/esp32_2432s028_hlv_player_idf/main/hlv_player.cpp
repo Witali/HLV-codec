@@ -33,7 +33,7 @@
 #include "h263_3gp.h"
 #include "hlv1.h"
 #include "hlv_esp32_decoder.h"
-#include "mjpeg_avi_decoder.hpp"
+#include "mjpeg_avi_decoder.h"
 #include "player_settings.h"
 #include "pl_mpeg.h"
 #include "uart_file_upload.h"
@@ -235,8 +235,8 @@ cyd_display_t display{};
 FILE *video_file = nullptr;
 FILE *audio_file = nullptr;
 hlv_esp32_decoder_t decoder = {};
-MjpegAviDecoder mjpeg_decoder;
-MjpegAviInfo mjpeg_info{};
+mjpeg_avi_decoder_t mjpeg_decoder{};
+mjpeg_avi_info_t mjpeg_info{};
 Divx3Decoder *divx3_decoder = nullptr;
 Divx3AviInfo divx3_info{};
 uint8_t *divx3_packet = nullptr;
@@ -937,7 +937,8 @@ int prefetchHlvAudioPacket() {
 int prefetchMjpegAudioChunk() {
     uint32_t payload_size = 0;
     const int result =
-        mjpeg_avi_next_audio_chunk(audio_file, mjpeg_info, &payload_size);
+        mjpeg_avi_next_audio_chunk(audio_file, &mjpeg_info,
+                                   &payload_size);
     if (result != MJPEG_AVI_OK) return result;
     const int audio_result = prefetchAudioBytes(payload_size);
     if (audio_result != HLV1_OK) return audio_result;
@@ -1330,7 +1331,7 @@ bool prepareAudio(const HLV1Header &header) {
             }
         }
     } else if (video_codec == VideoCodec::kMjpeg) {
-        MjpegAviInfo audio_info{};
+        mjpeg_avi_info_t audio_info{};
         if (mjpeg_avi_read_info(audio_file, &audio_info) != MJPEG_AVI_OK ||
             audio_info.width != header.width ||
             audio_info.height != header.height ||
@@ -1488,7 +1489,7 @@ void closeVideo() {
     pending_decode_us = 0;
     stopAudio();
     hlv_esp32_decoder_end(&decoder);
-    mjpeg_decoder.end();
+    mjpeg_avi_decoder_end(&mjpeg_decoder);
     mjpeg_info = {};
     divx3_decoder_destroy(divx3_decoder);
     divx3_decoder = nullptr;
@@ -1947,8 +1948,8 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VideoCodec::kMjpeg) {
-        int result = mjpeg_decoder.begin(
-            video_file, &mjpeg_info,
+        int result = mjpeg_avi_decoder_begin(
+            &mjpeg_decoder, video_file, &mjpeg_info,
             PLAYER_SCALE_VIDEO_TO_DISPLAY);
         if (result == MJPEG_AVI_OK &&
             (mjpeg_info.fps_num > UINT16_MAX ||
@@ -1983,7 +1984,8 @@ bool openVideo() {
                  static_cast<unsigned>(sequence_header.frame_count),
                  sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
-                     mjpeg_decoder.compressedCapacity()));
+                     mjpeg_avi_decoder_compressed_capacity(
+                         &mjpeg_decoder)));
     } else if (video_codec == VideoCodec::kDivx3) {
         int result = divx3_avi_read_info(video_file, &divx3_info);
         const uint32_t macroblocks =
@@ -3173,19 +3175,20 @@ void playOneMpegFramePipelined() {
 }
 
 void playOneMjpegFrame() {
-    MjpegAviPacket packet{};
+    mjpeg_avi_packet_t packet{};
     const int64_t read_start = microsNow();
-    int packet_result =
-        mjpeg_decoder.readPacket(video_file, &packet);
+    int packet_result = mjpeg_avi_decoder_read_packet(
+        &mjpeg_decoder, video_file, &packet);
     if (packet_result == MJPEG_AVI_ERR_IO) {
-        const long retry_offset = mjpeg_decoder.lastPacketOffset();
+        const long retry_offset =
+            mjpeg_avi_decoder_last_packet_offset(&mjpeg_decoder);
         for (unsigned attempt = 1; attempt <= 2; ++attempt) {
             ESP_LOGW(kTag,
                      "Recovering MJPEG packet at %ld, attempt %u/2",
                      retry_offset, attempt);
             if (!reopenVideoAt(retry_offset)) break;
-            packet_result =
-                mjpeg_decoder.readPacket(video_file, &packet);
+            packet_result = mjpeg_avi_decoder_read_packet(
+                &mjpeg_decoder, video_file, &packet);
             if (packet_result == MJPEG_AVI_OK) {
                 ESP_LOGI(kTag, "MJPEG packet recovered at %ld",
                          retry_offset);
@@ -3217,10 +3220,11 @@ void playOneMjpegFrame() {
         const int64_t decode_start = microsNow();
         const int decode_result =
             PLAYER_SCALE_VIDEO_TO_DISPLAY
-                ? mjpeg_decoder.decode(
-                      packet, renderMjpegStrip, &render_context)
-                : mjpeg_decoder.decodeDirect(
-                      packet, acquireMjpegDmaStrip,
+                ? mjpeg_avi_decoder_decode(
+                      &mjpeg_decoder, &packet, renderMjpegStrip,
+                      &render_context)
+                : mjpeg_avi_decoder_decode_direct(
+                      &mjpeg_decoder, &packet, acquireMjpegDmaStrip,
                       submitMjpegDmaStrip, &render_context);
         const uint32_t combined_us =
             static_cast<uint32_t>(microsNow() - decode_start);
@@ -3712,7 +3716,7 @@ extern "C" void app_main(void) {
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMjpeg &&
-            mjpeg_decoder.ready()) {
+            mjpeg_avi_decoder_ready(&mjpeg_decoder)) {
             playOneMjpegFrame();
             continue;
         }

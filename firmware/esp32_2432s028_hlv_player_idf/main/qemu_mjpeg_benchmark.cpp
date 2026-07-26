@@ -11,7 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "mjpeg_avi_decoder.hpp"
+#include "mjpeg_avi_decoder.h"
 
 namespace {
 
@@ -77,9 +77,10 @@ extern "C" void app_main(void) {
         fmemopen(const_cast<uint8_t *>(kVideoStart), video_size, "rb");
     if (!file) finish(1);
 
-    MjpegAviDecoder decoder;
-    MjpegAviInfo info{};
-    const int begin_result = decoder.begin(file, &info, false);
+    mjpeg_avi_decoder_t decoder{};
+    mjpeg_avi_info_t info{};
+    const int begin_result =
+        mjpeg_avi_decoder_begin(&decoder, file, &info, false);
     if (begin_result != MJPEG_AVI_OK ||
         info.width != 320 || info.height != 240) {
         finish(2);
@@ -101,22 +102,25 @@ extern "C" void app_main(void) {
     uint32_t frame_cycles[kFrameLimit]{};
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
-        MjpegAviPacket packet{};
-        if (decoder.readPacket(file, &packet) != MJPEG_AVI_OK) finish(6);
+        mjpeg_avi_packet_t packet{};
+        if (mjpeg_avi_decoder_read_packet(&decoder, file, &packet) !=
+            MJPEG_AVI_OK) {
+            finish(6);
+        }
         const uint64_t callback_before = output.callback_cycles;
         const uint32_t start = esp_cpu_get_cycle_count();
-        const int decode_result = decoder.decodeDirect(
-            packet, acquireStrip, submitStrip, &output);
+        const int decode_result = mjpeg_avi_decoder_decode_direct(
+            &decoder, &packet, acquireStrip, submitStrip, &output);
         if (decode_result != MJPEG_AVI_OK)
             finish(8);
         const uint32_t elapsed = esp_cpu_get_cycle_count() - start;
         frame_cycles[frames++] = elapsed;
         total_cycles += elapsed;
-        const MjpegAviDecodeCycles &phases =
-            decoder.lastDecodeCycles();
-        total_header_cycles += phases.parse_header;
-        total_geometry_cycles += phases.geometry;
-        total_process_cycles += phases.process;
+        const mjpeg_avi_decode_cycles_t *phases =
+            mjpeg_avi_decoder_last_decode_cycles(&decoder);
+        total_header_cycles += phases->parse_header;
+        total_geometry_cycles += phases->geometry;
+        total_process_cycles += phases->process;
         total_callback_cycles +=
             output.callback_cycles - callback_before;
     }

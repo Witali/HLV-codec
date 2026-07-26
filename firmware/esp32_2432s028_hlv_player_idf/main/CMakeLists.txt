@@ -92,7 +92,7 @@ if(MJPEG_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_mjpeg_benchmark.cpp"
-            "mjpeg_avi_decoder.cpp"
+            "mjpeg_avi_decoder.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
         INCLUDE_DIRS "."
@@ -202,7 +202,7 @@ else()
             "cyd_display.c"
             "bpv_esp32_decoder.c"
             "hlv_esp32_decoder.c"
-            "mjpeg_avi_decoder.cpp"
+            "mjpeg_avi_decoder.c"
             "uart_file_upload.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
