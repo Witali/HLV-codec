@@ -593,11 +593,11 @@ static void quantize_v14_reference_mb(MB *macroblock, int x, int y) {
         for (int tile_x = 0; tile_x < 16; tile_x += 8)
             hlv1_quantize_v14_reference_tile(
                 macroblock->y + tile_y * 16 + tile_x, 16,
-                x + tile_x, y + tile_y, 2);
+                x + tile_x, y + tile_y, 1);
     hlv1_quantize_v14_reference_tile(
-        macroblock->u, 8, x >> 1, y >> 1, 3);
+        macroblock->u, 8, x >> 1, y >> 1, 2);
     hlv1_quantize_v14_reference_tile(
-        macroblock->v, 8, x >> 1, y >> 1, 3);
+        macroblock->v, 8, x >> 1, y >> 1, 2);
 }
 
 static double score_candidate(HLV1Encoder *encoder, const MB *source,
@@ -1129,13 +1129,13 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
                         int qy, int quv, double ac_deadzone,
                         int *had_residual);
 
-/* v13 literal rows use the same little-endian Y6/U5/V5 packing as the ESP32
+/* v14 literal rows use the same little-endian Y7/U6/V6 packing as the ESP32
  * compact reference frame.  Reconstruct the quantized samples here so future
  * P-frames see exactly the values produced by every decoder. */
 static int put_literal_row(HLV1BitWriter *bw, const uint8_t *source,
                            uint8_t *reconstructed, int samples,
                            unsigned sample_bits) {
-    uint8_t packed[12] = {0};
+    uint8_t packed[14] = {0};
     unsigned output_shift = 8U - sample_bits;
     unsigned maximum = (1U << sample_bits) - 1U;
     unsigned bit = 0;
@@ -1159,22 +1159,42 @@ static int put_literal_row(HLV1BitWriter *bw, const uint8_t *source,
 
 static int encode_literal_candidate(const MB *source, unsigned version,
                                     int frame_type, int use_global,
+                                    int macroblock_x, int macroblock_y,
                                     Candidate *out) {
     out->mode = HLV1_MODE_LITERAL;
     int r = put_mode(&out->bits, version, frame_type,
                      HLV1_MODE_LITERAL, use_global);
-    /* All v13 macroblocks begin on a byte boundary.  The fixed four-bit mode
+    /* All v14 macroblocks begin on a byte boundary.  The fixed four-bit mode
        therefore needs exactly four zero bits before the byte-copy payload. */
     if (r >= 0) r = hlv1_bw_put(&out->bits, 0, 4);
     for (int y = 0; r >= 0 && y < 16; ++y)
         r = put_literal_row(&out->bits, source->y + y * 16,
-                            out->rec.y + y * 16, 16, 6);
+                            out->rec.y + y * 16, 16, 7);
     for (int y = 0; r >= 0 && y < 8; ++y)
         r = put_literal_row(&out->bits, source->u + y * 8,
-                            out->rec.u + y * 8, 8, 5);
+                            out->rec.u + y * 8, 8, 6);
     for (int y = 0; r >= 0 && y < 8; ++y)
         r = put_literal_row(&out->bits, source->v + y * 8,
-                            out->rec.v + y * 8, 8, 5);
+                            out->rec.v + y * 8, 8, 6);
+    int8_t correction[6] = {0};
+    if (r >= 0) {
+        int index = 0;
+        for (int tile_y = 0; tile_y < 16; tile_y += 8)
+            for (int tile_x = 0; tile_x < 16; tile_x += 8)
+                correction[index++] = hlv1_correct_v14_reference_tile(
+                    out->rec.y + tile_y * 16 + tile_x, 16,
+                    source->y + tile_y * 16 + tile_x, 16,
+                    macroblock_x + tile_x, macroblock_y + tile_y);
+        correction[4] = hlv1_correct_v14_reference_tile(
+            out->rec.u, 8, source->u, 8,
+            macroblock_x >> 1, macroblock_y >> 1);
+        correction[5] = hlv1_correct_v14_reference_tile(
+            out->rec.v, 8, source->v, 8,
+            macroblock_x >> 1, macroblock_y >> 1);
+        for (int i = 0; r >= 0 && i < 6; ++i)
+            r = hlv1_bw_put(&out->bits, (uint8_t)correction[i], 8);
+        out->reference_quantized = 1;
+    }
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     return r;
 }
@@ -2705,8 +2725,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                    use_global, lambda_bits, cg)) < 0)
                     goto fail_mb;
                 Candidate *cl = &c[count++];
-                if ((r = encode_literal_candidate(&src, version, frame_type,
-                                                  use_global, cl)) < 0)
+                if ((r = encode_literal_candidate(
+                         &src, version, frame_type, use_global, x, y, cl)) < 0)
                     goto fail_mb;
             }
 

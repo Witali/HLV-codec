@@ -25,11 +25,11 @@ enum class AvSyncMode {
 // pixel-for-pixel.
 constexpr bool kScaleVideoToDisplay = false;
 
-// Store both predictive YUV420 frames as packed Y6/U5/V5 planes with one Q4
-// local-average correction per 8x8 block. This saves about 42 KiB at 320x180
-// (including the decoder's row working area) while preventing coherent
-// luma/chroma quantization drift.
-constexpr bool kUseCompactY6U5V5 = true;
+// Store both predictive YUV420 frames as packed Y7/U6/V6 planes with a
+// separate signed Q4 local-average correction for every 8x8 block in Y, U and
+// V. This prevents coherent luma/chroma prediction drift while retaining the
+// compact v14 reference representation.
+constexpr bool kUseCompactHlvReference = true;
 
 // Decode frame N on CPU1 while CPU0 converts and queues frame N-1 to the
 // display. Predictive decoding itself remains ordered between frames.

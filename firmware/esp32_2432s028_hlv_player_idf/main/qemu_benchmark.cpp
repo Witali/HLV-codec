@@ -85,22 +85,12 @@ extern "C" void app_main(void) {
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
         HLV1Packet packet{};
-        result = decoder.readPacket(file, &packet);
-        if (result == HLV1_EOF) break;
-        if (result < 0) {
-            ESP_LOGE(kTag, "Packet %" PRIu32 " read failed: %s", frames,
-                     hlv1_strerror(result));
-            hlv1_packet_free(&packet);
-            fclose(file);
-            finish(4);
-        }
-
         const HLV1Frame *frame = nullptr;
         uint32_t start = esp_cpu_get_cycle_count();
-        result = decoder.decode(&packet, &frame);
+        result = decoder.decodeNext(file, &frame, &packet);
         uint32_t elapsed = esp_cpu_get_cycle_count() - start;
+        if (result == HLV1_EOF) break;
         const uint8_t frame_type = packet.frame_type;
-        hlv1_packet_free(&packet);
         if (result < 0 || !frame) {
             ESP_LOGE(kTag, "Frame %" PRIu32 " decode failed: %s", frames,
                      hlv1_strerror(result));

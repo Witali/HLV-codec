@@ -43,6 +43,12 @@ uint32_t hlv1_crc32(const uint8_t *data, size_t size);
 void hlv1_frame_quantize_v14_reference_mb(HLV1Frame *frame,
                                           int macroblock_x,
                                           int macroblock_y);
+int8_t hlv1_correct_v14_reference_tile(
+    uint8_t *quantized, int quantized_stride,
+    const uint8_t *source, int source_stride,
+    int origin_x, int origin_y);
+void hlv1_apply_v14_reference_correction_tile(
+    uint8_t *base, int stride, int origin_x, int origin_y, int8_t q4);
 uint32_t hlv1_crc32_begin(void);
 uint32_t hlv1_crc32_update(uint32_t crc, const uint8_t *data, size_t size);
 uint32_t hlv1_crc32_end(uint32_t crc);

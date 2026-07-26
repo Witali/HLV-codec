@@ -1,5 +1,8 @@
 # ESP32 decoder performance TODO
 
+> Historical baseline: these measurements predate stable v14. The current HLV
+> path uses normative Y7/U6/V6+Q4 references and one streaming refill buffer.
+
 All changes in this list must keep ESP32 heap, static DRAM and decoder stack
 usage at or below the current build. Each accepted step is tested with the
 host-side compact-decoder simulator and the Xtensa QEMU benchmark, and must

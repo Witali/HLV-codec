@@ -83,9 +83,12 @@ branches. The stable syntax includes:
 - compact residual masks and coefficient VLC;
 - directional intra prediction;
 - strict 2/4/8-colour palette blocks;
-- byte-aligned Y6/U5/V5 literal macroblocks for bounded decode time;
-- normative Y6/U5/V5 reference reconstruction with signed Q4 local-average
-  correction, shared bit-for-bit by the encoder, Windows and ESP32 decoders;
+- byte-aligned Y7/U6/V6 literal macroblocks for bounded decode time;
+- normative Y7/U6/V6 reference reconstruction with separate signed Q4
+  local-average corrections for every 8×8 Y, U and V block, including
+  LITERAL blocks, shared bit-for-bit by the encoder, Windows and ESP32
+  decoders;
+- bounded packet streaming on ESP32 through one reusable 7,680-byte buffer;
 - complexity-aware RDO that trades a configurable amount of bitrate for
   lower decoder work;
 - the original simple 4×4 integer WHT reconstruction.

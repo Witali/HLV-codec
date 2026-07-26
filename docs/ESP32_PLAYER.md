@@ -8,7 +8,7 @@ DAC GPIO26.
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
-- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, DivX 3
+- decodes stable standalone HLV-1 v14, standard AVI/MJPEG, DivX 3
   (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
   v1 through v5 including adaptive RAW records and active per-GOP palettes,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
@@ -24,7 +24,7 @@ DAC GPIO26.
   without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
   stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263 and 16 KiB otherwise); HLV then
-  fills nine reusable 7680-byte packet blocks (67.5 KiB total), while MJPEG
+  streams each packet through one reusable 7,680-byte refill buffer, while MJPEG
   and BPV use bounded maximum-frame packet buffers;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
   DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
@@ -39,27 +39,26 @@ DAC GPIO26.
 - prints decode/render timing, audio underruns and free heap to the 460800-baud
   serial console.
 
-The test build enables packed Y6/U5/V5 4:2:0 frame storage. At 320x180 the two
-packed frames and the decoder's macroblock-row work area consume 138,240 bytes,
+The test build enables packed Y7/U6/V6 4:2:0 frame storage. At 320x180 the two
+packed frames, Q4 maps and decoder macroblock-row work area consume 164,160 bytes,
 instead of 184,320 bytes for two padded 8-bit frames. The 320x180 profile pads
 internally to 320x192, preserves the official movie resolution and leaves 30
 black rows above and below the picture.
 
-The compile-time flag `kUseCompactY6U5V5` in
+The compile-time flag `kUseCompactHlvReference` in
 `firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp` is currently
-`true`. Ordinary v1-v12 predictors remain 8-bit in the bitstream. A v13
-`LITERAL` macroblock is stored directly as packed Y6/U5/V5, while other modes
-are rounded to that precision when committed to the compact reference. This
-saves 46,080 bytes at 320x180, but the compact treatment of non-literal modes
-is intentionally not bit-exact: banding and gradual P-frame prediction drift
-are possible. Set the flag to `false` for the original 8-bit reference path.
+`true`. Stable v14 makes Y7/U6/V6 plus a separate signed Q4 local-average
+coefficient for every 8x8 Y, U and V block normative. A `LITERAL` macroblock
+carries four Y coefficients plus one U and one V coefficient. The packed and
+expanded decoders reconstruct identical samples, preventing coherent
+prediction drift. Set the flag to `false` for the expanded validation path.
 The compact path expands consecutive reference spans and display rows in
 batches; literal blocks bypass the temporary 8-bit macroblock completely.
 The application and decoder components are compiled with `-O3`.
 
 The current build sets `kEnableAudio = true` in the same settings file. Its
 4 KiB FreeRTOS audio stream is statically allocated, while DAC descriptors and
-the audio task are created only after the large decoder frames and packet pool.
+the audio task are created only after the large decoder frames and stream buffer.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
 
@@ -132,34 +131,24 @@ way and finishes rendering the preceding frame before a v4 keyframe replaces
 the active palette. Set the flag to `false` to retain the sequential
 comparison mode.
 
-## Segmented ESP32 decoder
+## Streaming ESP32 decoder
 
 The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
-portable predictive decoder first and then allocates a nine-block packet
-pool from internal SRAM. Every block preferentially uses DMA-capable memory;
-if decoder fragmentation exhausts that heap, only the remaining blocks fall
-back to ordinary 8-bit internal SRAM. Its 69,120-byte capacity covers a fully
-literal 320x180 Y6/U5/V5 key frame plus one 16 kHz mono audio interval without
-requiring one equally large contiguous heap region.
-
-Packet data is read sequentially into the blocks and CRC-32 is updated during
-the read. The bit reader advances to the next block without joining or copying
-the payload. PCM at the packet tail is likewise sent to the FreeRTOS audio
-stream one contiguous span at a time. The blocks are retained for the complete
-playback session, so the frame loop performs no packet `malloc` or `free`.
-The startup log reports the actual DMA-capable block count; the ESP-IDF SD
-driver supplies its DMA-safe fallback for any ordinary internal block.
+portable predictive decoder first and then allocates one reusable 7,680-byte
+refill buffer. The CPU1 decoder requests sequential spans directly from the
+video file, updates CRC-32 as they arrive and drains the packet tail before
+returning at the next frame header. Packet size is therefore not bounded by
+heap, and the frame loop performs no packet `malloc` or `free`. The separate
+audio cursor reads PCM tails independently.
 
 The stdio layer uses a fixed 16 KiB aligned read-ahead buffer. This costs 16
 KiB of the RAM saved by compact frame storage, but combines small packet/header
 reads into longer SDSPI transactions. On the reference card it reduced average
 packet-read time from roughly 50--55 ms to 5--6 ms.
 
-The pool capacity is 69,120 bytes. A packet larger than that is rejected with
-an out-of-memory error instead of fragmenting the ESP32 heap. The ninth block
-uses 7,680 additional bytes compared with the v12 player and leaves roughly
-28 KiB free in the current 320x180 compact memory-budget estimate; confirm the
-actual minimum heap from the serial log on physical hardware.
+The stream buffer replaces the former 69,120-byte packet pool. Together with
+the 164,160-byte Y7/U6/V6+Q4 frame working set it reduces HLV's two dominant
+allocations to 171,840 bytes, leaving packet size independent of RAM.
 
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
 ten-second file. The DAC DMA clock uses APLL rather than frame timing, while

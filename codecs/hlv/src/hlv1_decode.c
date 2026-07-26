@@ -344,16 +344,36 @@ static int decode_literal(HLV1Decoder *d, HLV1BitReader *br, int x, int y) {
     for (int yy = 0; r >= 0 && yy < 16; ++yy)
         r = read_literal_row(br,
                              cur->y + (y + yy) * cur->stride_y + x,
-                             16, 6);
+                             16, 7);
     int cx = x / 2, cy = y / 2;
     for (int yy = 0; r >= 0 && yy < 8; ++yy)
         r = read_literal_row(br,
                              cur->u + (cy + yy) * cur->stride_u + cx,
-                             8, 5);
+                             8, 6);
     for (int yy = 0; r >= 0 && yy < 8; ++yy)
         r = read_literal_row(br,
                              cur->v + (cy + yy) * cur->stride_v + cx,
-                             8, 5);
+                             8, 6);
+    int8_t correction[6] = {0};
+    for (int i = 0; r >= 0 && i < 6; ++i) {
+        correction[i] = (int8_t)hlv1_br_get(br, 8);
+        if (br->error) r = br->error;
+    }
+    if (r >= 0) {
+        int index = 0;
+        for (int tile_y = 0; tile_y < 16; tile_y += 8)
+            for (int tile_x = 0; tile_x < 16; tile_x += 8)
+                hlv1_apply_v14_reference_correction_tile(
+                    cur->y + (y + tile_y) * cur->stride_y + x + tile_x,
+                    cur->stride_y, x + tile_x, y + tile_y,
+                    correction[index++]);
+        hlv1_apply_v14_reference_correction_tile(
+            cur->u + cy * cur->stride_u + cx, cur->stride_u,
+            cx, cy, correction[4]);
+        hlv1_apply_v14_reference_correction_tile(
+            cur->v + cy * cur->stride_v + cx, cur->stride_v,
+            cx, cy, correction[5]);
+    }
     if (r >= 0) d->stats.literal_samples += 384;
     return r;
 }
@@ -1124,7 +1144,8 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 return HLV1_ERR_BITSTREAM;
             }
             if (r < 0) return r;
-            hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
+            if (mode != HLV1_MODE_LITERAL)
+                hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;

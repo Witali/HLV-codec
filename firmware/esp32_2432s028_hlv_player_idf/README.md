@@ -388,18 +388,18 @@ display DMA timing.
   and releases the second allocation before creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV uses nine
-  reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV streams
+  each packet through one reusable 7,680-byte refill buffer; MJPEG uses the maximum indexed
   JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
   two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
   TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
-- HLV video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
-  8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
+- HLV video: two packed Y7/U6/V6 4:2:0 frames, one signed Q4 local correction per
+  8x8 plane block and a macroblock-row work area; 164,160 bytes at 320x180
   instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
   tables preserve each block's discarded average to 1/16 sample. Stable HLV
   v14 makes this compact reconstruction normative, so packed and expanded
-  decoders predict from identical samples. Literal blocks are copied directly
-  into packed storage with zero correction. BPV instead retains two
+  decoders predict from identical samples. Literal blocks carry four separate
+  Y corrections plus one U and one V correction. BPV instead retains two
   32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
@@ -453,7 +453,7 @@ large-resolution source to 4:3 and applying one anti-aliased Lanczos downscale
 to 320x240. They add the black 16/24-pixel CIF border without a SAR or DAR
 override. `kScaleVideoToDisplay` continues to control stretching for the
 other video codecs; CIF deliberately ignores it.
-`kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
+`kUseCompactHlvReference` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
