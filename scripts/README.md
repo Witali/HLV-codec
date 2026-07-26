@@ -88,6 +88,35 @@ Generated videos and their sidecar reports are grouped under `out` by codec:
 `HLV`, `BPV`, `H263`, `DivX3`, `MJPEG`, and `MPEG1`. Input media and
 transcoding configuration remain in `out/sources` and `out/source`.
 
+## Production profile wrappers
+
+Use the `transcode_*.ps1` wrappers for ordinary one-video conversions. They
+select the production parameters and output directory automatically:
+
+| Wrapper | Fixed production rules |
+| --- | --- |
+| `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
+| `transcode_bpv5.ps1` | BPV v5, source FPS, target RGB PSNR 40 dB, lambda 0–4096, three active palettes, GOP 48. |
+| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, CBR 2048 kbit/s, VBV 1024 kbit, full source FPS, intra-only. |
+| `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
+| `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
+| `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
+
+All wrappers refuse to overwrite an existing video unless `-Force` is
+specified. Width and height default to 320x240; use 320x180 for the 16:9
+variant. `ResizeMode=Auto` crops the 320x240 variant and stretches 320x180.
+Big Buck Bunny is always restricted to the approved repository 1080p MOV.
+
+Examples:
+
+```powershell
+.\scripts\transcode_h263.ps1 .\out\sources\input.mp4
+.\scripts\transcode_divx3.ps1 .\out\sources\input.mp4 -Height 180
+.\scripts\transcode_hlv14.ps1 .\out\sources\input.mp4 -Height 180
+.\scripts\transcode_bpv5.ps1 .\out\sources\input.mp4 `
+    -Height 180 -TargetPsnrDb 40
+```
+
 Example H.263 and BPV calls:
 
 ```powershell
