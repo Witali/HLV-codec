@@ -1,0 +1,9 @@
+codec,container,profile,test_file,cpp_result,c99_result,cpp_fps,c99_fps,fps_delta_percent,cpp_decode_avg_ms,c99_decode_avg_ms,decode_delta_percent,cpp_render_avg_ms,c99_render_avg_ms,render_delta_percent,cpp_work_avg_ms,c99_work_avg_ms,work_delta_percent,cpp_display_skips,c99_display_skips,cpp_audio,c99_audio,notes
+HLV,HLV,320x180 24 fps,hlvcbr.hlv,FAIL,FAIL,,,,,,,,,,,,,,,not started,not started,Packet block 9 of 9 allocation failed before the first frame
+BPV1,BPV1,320x240 30 fps,VID_20260522_181611_v4.bpv1,PASS,PASS,30.041,29.993,-0.16,5.678,5.677,-0.02,16.714,16.703,-0.07,39.290,39.254,-0.09,0,0,PASS,PASS,Zero frame gaps and audio errors
+MJPEG,AVI,320x240 30 fps,VID_20260522_320x240_mjpeg.avi,PARTIAL,PARTIAL,29.900,29.993,0.31,24.242,24.186,-0.23,1.137,1.131,-0.58,33.418,33.324,-0.28,79,79,PASS,PASS,79 of 300 presentations skipped in both versions
+MPEG-1,MPEG-PS,320x240 30 fps,VID_20260522_320x240_mpeg1.mpg,FAIL,FAIL,12.939,13.747,6.25,77.184,72.569,-5.98,36.688,37.998,3.57,113.873,110.567,-2.90,0,0,FAIL,FAIL,Too slow for 30 fps and MP2 audio did not initialize
+DivX 3,AVI,256x144 12 fps,VID_20260522_181611_divx3_q4_12fps_256x144.avi,PASS,PASS,12.005,12.005,0.00,38.517,38.517,0.00,20.147,20.619,2.34,63.829,64.266,0.69,0,0,PASS,PASS,Zero frame gaps and audio errors
+H.263,3GP,320x240 15 fps,vid320max.3gp,PASS,PASS,15.009,15.009,0.00,31.698,31.589,-0.34,20.863,20.388,-2.28,52.561,51.977,-1.11,0,0,PASS,PASS,AMR-NB audio; zero frame gaps and audio errors
+H.263,3GP,CIF 352x288 30 fps,cif30.3gp,FAIL,FAIL,,,,,,,,,,,,,,,not started,not started,Frame-buffer allocation failed before the first frame
+H.263,AVI,CIF 352x288 30 fps,cif30.avi,PASS,PASS,30.041,29.993,-0.16,20.916,20.853,-0.30,19.652,19.079,-2.92,40.568,39.932,-1.57,0,0,PASS,PASS,PCM audio; zero frame gaps and audio errors

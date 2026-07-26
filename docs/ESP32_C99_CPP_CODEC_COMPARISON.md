@@ -20,6 +20,8 @@ Date: 2026-07-26
 - A negative delta means that C99 used less time than C++.
 
 Raw timing CSV files are stored locally under `out/esp32_c99_ab`.
+The complete one-row-per-test summary is tracked as
+`docs/ESP32_C99_CPP_CODEC_COMPARISON.csv`.
 
 ## Results
 
