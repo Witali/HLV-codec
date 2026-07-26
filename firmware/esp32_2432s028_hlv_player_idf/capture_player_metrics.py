@@ -153,6 +153,7 @@ def main() -> int:
     port.open()
     try:
         if args.reset:
+            port.reset_input_buffer()
             # Normal application reset: keep GPIO0 released (DTR=0), hold EN
             # low through RTS for 200 ms, then release EN. This is deliberately
             # different from the ROM-download sequence in esptool.cfg.
