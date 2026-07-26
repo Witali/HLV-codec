@@ -74,6 +74,19 @@ PV_STATUS BitstreamFillCache(BitstreamDecVideo *stream)
         stream->incnt = 32;
         return PV_SUCCESS;
     }
+
+    if (stream->read_point >= stream->data_end_pos &&
+            stream->readBitstreamData != NULL &&
+            stream->refill_buffer_size > 0)
+    {
+        const int bytes_read = stream->readBitstreamData(
+            bitstreamBuffer, stream->refill_buffer_size,
+            stream->applicationData);
+        stream->read_point = 0;
+        stream->data_end_pos =
+            bytes_read > 0 ? bytes_read : 0;
+    }
+
     /* this check can be removed if there is additional extra 4 bytes at the end of the bitstream */
     v = bitstreamBuffer + stream->read_point;
 
@@ -135,8 +148,15 @@ PV_STATUS BitstreamFillCache(BitstreamDecVideo *stream)
 /* ======================================================================== */
 void BitstreamReset(BitstreamDecVideo *stream, uint8 *buffer, int32 buffer_size)
 {
+    int (*readBitstreamData)(uint8 *, int, void *) =
+        stream->readBitstreamData;
+    void *applicationData = stream->applicationData;
     /* set up frame-based bitstream buffer */
     oscl_memset(stream, 0, sizeof(BitstreamDecVideo));
+    stream->readBitstreamData = readBitstreamData;
+    stream->applicationData = applicationData;
+    stream->refill_buffer_size =
+        readBitstreamData != NULL ? buffer_size : 0;
     stream->data_end_pos = buffer_size;
     stream->bitstreamBuffer = buffer;
 }
@@ -426,7 +446,23 @@ uint32 BitstreamReadBits32HC(BitstreamDecVideo *stream)
 /* ======================================================================== */
 PV_STATUS BitstreamCheckEndBuffer(BitstreamDecVideo *stream)
 {
-    if (stream->read_point >= stream->data_end_pos && stream->incnt <= 0) return PV_END_OF_VOP;
+    if (stream->read_point >= stream->data_end_pos &&
+            stream->incnt <= 0)
+    {
+        if (stream->readBitstreamData != NULL &&
+                stream->refill_buffer_size > 0)
+        {
+            const int bytes_read = stream->readBitstreamData(
+                stream->bitstreamBuffer,
+                stream->refill_buffer_size,
+                stream->applicationData);
+            stream->read_point = 0;
+            stream->data_end_pos =
+                bytes_read > 0 ? bytes_read : 0;
+            if (bytes_read > 0) return PV_SUCCESS;
+        }
+        return PV_END_OF_VOP;
+    }
     return PV_SUCCESS;
 }
 

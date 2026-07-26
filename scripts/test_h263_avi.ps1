@@ -10,6 +10,30 @@ $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
 $work = Join-Path $repo ".tmp\h263-avi-test"
 $source = Join-Path $work "source.mkv"
 
+function Invoke-PlayerCheck {
+    param(
+        [Parameter(Mandatory)][string]$Executable,
+        [Parameter(Mandatory)][string]$MediaFile
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Executable
+    $quotedMediaFile = '"' + $MediaFile.Replace('"', '\"') + '"'
+    $startInfo.Arguments = "--check $quotedMediaFile"
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Output = ($stdout + $stderr).Trim()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
 }
@@ -53,12 +77,19 @@ foreach ($profile in @("176x144", "352x288")) {
         )
     }
 
-    $quotedAvi = '"' + $avi.Replace('"', '\"') + '"'
-    $playerProcess = Start-Process -FilePath $Player `
-        -ArgumentList "--check $quotedAvi" `
-        -Wait -PassThru -WindowStyle Hidden
-    if ($playerProcess.ExitCode -ne 0) {
-        throw "The project decoder rejected the $profile AVI smoke test."
+    $check = Invoke-PlayerCheck -Executable $Player -MediaFile $avi
+    if ($check.ExitCode -ne 0) {
+        throw (
+            "The project decoder rejected the $profile AVI smoke test. " +
+            $check.Output
+        )
+    }
+    if ($profile -eq "352x288" -and
+        $check.Output -notmatch "checksum 52a68290e93f2fe5") {
+        throw (
+            "The CIF pixel checksum changed while decoding packets larger " +
+            "than the streaming input buffer. " + $check.Output
+        )
     }
 }
 
