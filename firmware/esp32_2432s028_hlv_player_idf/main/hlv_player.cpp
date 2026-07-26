@@ -24,7 +24,7 @@
 #include "sdkconfig.h"
 #include "sdmmc_cmd.h"
 
-#include "board_config.hpp"
+#include "board_config.h"
 #include "amrnb_3gp.h"
 #include "bpv_esp32_decoder.hpp"
 #include "cyd_display.hpp"
@@ -34,7 +34,7 @@
 #include "hlv1.h"
 #include "hlv_esp32_decoder.hpp"
 #include "mjpeg_avi_decoder.hpp"
-#include "player_settings.hpp"
+#include "player_settings.h"
 #include "pl_mpeg.h"
 #include "uart_file_upload.hpp"
 
@@ -175,13 +175,13 @@ constexpr uint8_t kStatusFont[95][5] = {
 };
 
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
-                  !player_settings::kUseDualCorePipeline,
+                  !PLAYER_USE_DUAL_CORE_PIPELINE,
               "Dual-core playback requires a two-core FreeRTOS build");
 static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
               "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
-static_assert(player_settings::kAudioPrerollFrames > 0,
+static_assert(PLAYER_AUDIO_PREROLL_FRAMES > 0,
               "Audio preroll must cover at least one video frame");
-static_assert(player_settings::kMaxConsecutiveVideoSkips > 0,
+static_assert(PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS > 0,
               "Hybrid A/V sync must permit at least one video skip");
 
 enum class VideoCodec {
@@ -477,7 +477,7 @@ void decodeTask(void *) {
 }
 
 bool startDecodeWorker() {
-    if (!player_settings::kUseDualCorePipeline) {
+    if (!PLAYER_USE_DUAL_CORE_PIPELINE) {
         ESP_LOGI(kTag, "Playback pipeline: single-core sequential mode");
         return true;
     }
@@ -813,9 +813,9 @@ bool mountSdCard() {
 
     if (!sd_bus_initialized) {
         spi_bus_config_t bus{};
-        bus.mosi_io_num = board::kSdMosi;
-        bus.miso_io_num = board::kSdMiso;
-        bus.sclk_io_num = board::kSdSck;
+        bus.mosi_io_num = BOARD_SD_MOSI;
+        bus.miso_io_num = BOARD_SD_MISO;
+        bus.sclk_io_num = BOARD_SD_SCK;
         bus.quadwp_io_num = GPIO_NUM_NC;
         bus.quadhd_io_num = GPIO_NUM_NC;
         bus.data4_io_num = GPIO_NUM_NC;
@@ -835,11 +835,11 @@ bool mountSdCard() {
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI3_HOST;
-    host.max_freq_khz = player_settings::kSdClockKhz;
+    host.max_freq_khz = PLAYER_SD_CLOCK_KHZ;
 
     sdspi_device_config_t device = SDSPI_DEVICE_CONFIG_DEFAULT();
     device.host_id = SPI3_HOST;
-    device.gpio_cs = board::kSdCs;
+    device.gpio_cs = BOARD_SD_CS;
 
     esp_vfs_fat_mount_config_t mount{};
     mount.format_if_mount_failed = false;
@@ -856,18 +856,18 @@ bool mountSdCard() {
         return false;
     }
     sd_mounted = true;
-    if (mkdir(player_settings::kVideoDirectory, 0775) != 0 &&
+    if (mkdir(PLAYER_VIDEO_DIRECTORY, 0775) != 0 &&
         errno != EEXIST) {
         ESP_LOGE(kTag, "Cannot create %s: errno=%d",
-                 player_settings::kVideoDirectory, errno);
+                 PLAYER_VIDEO_DIRECTORY, errno);
         esp_vfs_fat_sdcard_unmount("/sdcard", sd_card);
         sd_card = nullptr;
         sd_mounted = false;
         return false;
     }
     ESP_LOGI(kTag, "microSD: SPI3 at %d kHz with DMA",
-             player_settings::kSdClockKhz);
-    if (!player_settings::kLogFrameTimings) {
+             PLAYER_SD_CLOCK_KHZ);
+    if (!PLAYER_LOG_FRAME_TIMINGS) {
         sdmmc_card_print_info(stdout, sd_card);
     }
     return true;
@@ -1253,7 +1253,7 @@ bool prepareAudio(const HLV1Header &header) {
         ESP_LOGI(kTag, "Audio clock unavailable: video has no audio track");
         return true;
     }
-    if (!player_settings::kEnableAudio) {
+    if (!PLAYER_ENABLE_AUDIO) {
         ESP_LOGI(kTag,
                  "Audio output disabled; using the ESP timer video clock");
         return true;
@@ -1417,7 +1417,7 @@ bool prepareAudio(const HLV1Header &header) {
     audio_preroll_bytes = static_cast<size_t>(std::min<uint64_t>(
         kAudioStreamBytes,
         audio_samples_per_frame *
-            player_settings::kAudioPrerollFrames));
+            PLAYER_AUDIO_PREROLL_FRAMES));
 
     audio_reader_stop_requested = false;
     audio_prefetch_eof = false;
@@ -1448,7 +1448,7 @@ bool prepareAudio(const HLV1Header &header) {
     ESP_LOGI(kTag,
              "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
-             header.audio_sample_rate, board::kAudioDac,
+             header.audio_sample_rate, BOARD_AUDIO_DAC,
              static_cast<unsigned>(kAudioStreamBytes),
              static_cast<unsigned>(kAudioDmaDescriptors),
              static_cast<unsigned>(kAudioDmaSamples),
@@ -1573,7 +1573,7 @@ bool isSafeVideoFilename(const char *name) {
 SelectionReadResult readSelectedVideoPath() {
     errno = 0;
     FILE *selection =
-        std::fopen(player_settings::kVideoSelectionPath, "rb");
+        std::fopen(PLAYER_VIDEO_SELECTION_PATH, "rb");
     if (!selection) {
         return errno == ENOENT
                    ? SelectionReadResult::kMissingOrInvalid
@@ -1603,7 +1603,7 @@ SelectionReadResult readSelectedVideoPath() {
 
     const int written = std::snprintf(
         selected_video_path, sizeof selected_video_path, "%s/%s",
-        player_settings::kVideoDirectory, start);
+        PLAYER_VIDEO_DIRECTORY, start);
     return written > 0 &&
                    static_cast<size_t>(written) <
                        sizeof selected_video_path
@@ -1850,7 +1850,7 @@ bool openVideo() {
         }
     } else if (video_codec == VideoCodec::kH263) {
         h263_decoder = h263_3gp_decoder_create();
-        if (h263_decoder && player_settings::kUseDualCorePipeline) {
+        if (h263_decoder && PLAYER_USE_DUAL_CORE_PIPELINE) {
             h263_3gp_decoder_set_output_buffer_count(h263_decoder, 2);
         }
         int result =
@@ -1859,7 +1859,7 @@ bool openVideo() {
                       h263_decoder, video_file, &h263_info)
                 : H263_3GP_ERR_MEMORY;
         if (result == H263_3GP_ERR_FRAME_MEMORY &&
-            player_settings::kUseDualCorePipeline && h263_decoder) {
+            PLAYER_USE_DUAL_CORE_PIPELINE && h263_decoder) {
             ESP_LOGW(kTag,
                      "H.263 second output buffer unavailable; "
                      "falling back to sequential decode");
@@ -1944,7 +1944,7 @@ bool openVideo() {
     } else if (video_codec == VideoCodec::kMjpeg) {
         int result = mjpeg_decoder.begin(
             video_file, &mjpeg_info,
-            player_settings::kScaleVideoToDisplay);
+            PLAYER_SCALE_VIDEO_TO_DISPLAY);
         if (result == MJPEG_AVI_OK &&
             (mjpeg_info.fps_num > UINT16_MAX ||
              mjpeg_info.fps_den > UINT16_MAX ||
@@ -2095,7 +2095,7 @@ bool openVideo() {
                  static_cast<unsigned>(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
         const int decoder_result = decoder.begin(
-            sequence_header, player_settings::kUseCompactY6U5V5);
+            sequence_header, PLAYER_USE_COMPACT_Y6_U5_V5);
         if (decoder_result != HLV1_OK) {
             showStatus("Not enough RAM", "use at most the 320x180 profile");
             reportHeap("decoder or packet-pool allocation failed");
@@ -2153,7 +2153,7 @@ bool openVideo() {
     consecutive_skipped_presentations = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
-    if (player_settings::kScaleVideoToDisplay) {
+    if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         for (int x = 0; x < kScreenWidth; ++x) {
             scaled_x_map[x] = static_cast<uint16_t>(
                 (x * sequence_header.width) / kScreenWidth);
@@ -2168,7 +2168,7 @@ bool openVideo() {
         ESP_LOGI(kTag,
                  "Playing MPEG-1 in %s mode, frame storage=two YCbCr "
                  "reference frames",
-                 player_settings::kScaleVideoToDisplay
+                 PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
     } else if (video_codec == VideoCodec::kH263) {
@@ -2185,34 +2185,34 @@ bool openVideo() {
     } else if (video_codec == VideoCodec::kMjpeg) {
         ESP_LOGI(kTag,
                  "Playing MJPEG in %s mode, frame storage=RGB565 strip",
-                 player_settings::kScaleVideoToDisplay
+                 PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
     } else if (video_codec == VideoCodec::kDivx3) {
         ESP_LOGI(kTag,
                  "Playing DivX 3 in %s mode, frame storage=two compact "
                  "Y6/U5/V5 reference frames",
-                 player_settings::kScaleVideoToDisplay
+                 PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
     } else if (video_codec == VideoCodec::kBpv) {
         ESP_LOGI(kTag,
                  "Playing BPV1 v%u in %s mode, frame storage=4x4 records",
                  bpv_header.version,
-                 player_settings::kScaleVideoToDisplay
+                 PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred");
     } else {
         ESP_LOGI(kTag, "Playing HLV v%u in %s mode, frame storage=%s",
                  sequence_header.version,
-                 player_settings::kScaleVideoToDisplay
+                 PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred",
                  decoder.compactYuv() ? "packed Y6/U5/V5 + Q4 corrections"
                                       : "8-bit YUV 4:2:0");
     }
     reportHeap("decoder ready");
-    if (player_settings::kLogFrameTimings) {
+    if (PLAYER_LOG_FRAME_TIMINGS) {
         esp_rom_printf(
             "V,%u,%u,%u,%u,%u,%u\n",
             sequence_header.width, sequence_header.height,
@@ -2239,7 +2239,7 @@ void waitUntil(int64_t deadline) {
 
 bool renderFrame(const HLV1Frame *frame) {
     const int rows_per_transfer = display.rowsPerTransfer();
-    if (player_settings::kScaleVideoToDisplay) {
+    if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
@@ -2355,7 +2355,7 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
     const int rows_per_transfer = display.rowsPerTransfer();
     mpeg_cached_chroma_y = -1;
-    if (player_settings::kScaleVideoToDisplay) {
+    if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight;
              y0 += rows_per_transfer) {
@@ -2507,7 +2507,7 @@ bool renderMjpegStrip(void *opaque, const uint16_t *strip,
     const int source_end = source_y + source_rows;
     if (source_end > height) return false;
 
-    if (player_settings::kScaleVideoToDisplay) {
+    if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         while (context->next_scaled_y < kScreenHeight &&
                scaled_y_map[context->next_scaled_y] < source_end) {
             const int destination_y = context->next_scaled_y;
@@ -2582,7 +2582,7 @@ bool renderBpvFrame(const BPV1Frame *frame) {
     const int width = frame->width;
     const int height = frame->height;
     const int rows_per_transfer = display.rowsPerTransfer();
-    if (player_settings::kScaleVideoToDisplay) {
+    if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
         for (int y0 = 0; y0 < kScreenHeight; y0 += rows_per_transfer) {
             const int rows =
@@ -2761,13 +2761,13 @@ PresentationState beginPresentation() {
                  sequence_header.fps_den +
              sequence_header.fps_num - 1U) /
             sequence_header.fps_num;
-        const auto av_sync_mode = player_settings::kAvSyncMode;
+        const player_av_sync_mode_t av_sync_mode = PLAYER_AV_SYNC_MODE;
         const bool loop_every_late_frame =
             av_sync_mode ==
-            player_settings::AvSyncMode::kLoopAudioForLateVideo;
+            PLAYER_AV_SYNC_LOOP_AUDIO_FOR_LATE_VIDEO;
         const bool hybrid_sync =
             av_sync_mode ==
-            player_settings::AvSyncMode::kDropThenLoopAudio;
+            PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO;
         if (audio_output_failed || audio_reader_result < HLV1_OK) {
             fallBackToTimerClock("Audio clock stopped");
         } else {
@@ -2794,8 +2794,7 @@ PresentationState beginPresentation() {
                     if (loop_every_late_frame ||
                         (hybrid_sync &&
                          consecutive_skipped_presentations >=
-                             player_settings::
-                                 kMaxConsecutiveVideoSkips)) {
+                             PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS)) {
                         audio_loop_hold = true;
                         audio_loop_events = audio_loop_events + 1;
                         consecutive_skipped_presentations = 0;
@@ -2833,7 +2832,7 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
     const uint32_t present_us =
         static_cast<uint32_t>(microsNow() - state.start_us);
     const uint32_t work_us = read_us + decode_us + render_us;
-    if (player_settings::kLogFrameTimings) {
+    if (PLAYER_LOG_FRAME_TIMINGS) {
         // Capture every value before printing. UART overhead is therefore not
         // charged to this record, although it can consume slack before the
         // following frame.
@@ -3193,7 +3192,7 @@ void playOneMjpegFrame() {
         MjpegRenderContext render_context{};
         const int64_t decode_start = microsNow();
         const int decode_result =
-            player_settings::kScaleVideoToDisplay
+            PLAYER_SCALE_VIDEO_TO_DISPLAY
                 ? mjpeg_decoder.decode(
                       packet, renderMjpegStrip, &render_context)
                 : mjpeg_decoder.decodeDirect(
@@ -3212,7 +3211,7 @@ void playOneMjpegFrame() {
                          decode_result);
             return;
         }
-        if (player_settings::kScaleVideoToDisplay &&
+        if (PLAYER_SCALE_VIDEO_TO_DISPLAY &&
             render_context.next_scaled_y != kScreenHeight) {
             failPlayback("JPEG output error", MJPEG_AVI_ERR_DECODE);
             return;
@@ -3633,7 +3632,7 @@ extern "C" void app_main(void) {
             beginUploadProgress();
             char stored_path[128]{};
             const bool stored = uart_upload.receive(
-                upload_request, player_settings::kVideoDirectory,
+                upload_request, PLAYER_VIDEO_DIRECTORY,
                 stored_path, sizeof stored_path, updateUploadProgress,
                 nullptr);
             display.flush();
@@ -3649,7 +3648,7 @@ extern "C" void app_main(void) {
                 last_retry_ms = millisNow();
             } else {
                 uart_upload.listDirectory(
-                    player_settings::kVideoDirectory);
+                    PLAYER_VIDEO_DIRECTORY);
             }
             continue;
         }
@@ -3662,14 +3661,14 @@ extern "C" void app_main(void) {
             } else {
                 closeVideo();
                 uart_upload.checksumFile(
-                    player_settings::kVideoDirectory, crc_filename);
+                    PLAYER_VIDEO_DIRECTORY, crc_filename);
                 if (!openVideo()) last_retry_ms = millisNow();
             }
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMpeg1 &&
             mpeg_video) {
-            if (player_settings::kUseDualCorePipeline) {
+            if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneMpegFramePipelined();
             } else {
                 playOneMpegFrameSequential();
@@ -3678,7 +3677,7 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kH263 &&
             h263_decoder) {
-            if (player_settings::kUseDualCorePipeline &&
+            if (PLAYER_USE_DUAL_CORE_PIPELINE &&
                 (h263_dual_buffered || h263_row_pipelined)) {
                 playOneH263FramePipelined();
             } else {
@@ -3693,7 +3692,7 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kDivx3 &&
             divx3_decoder && divx3_packet) {
-            if (player_settings::kUseDualCorePipeline) {
+            if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneDivx3FramePipelined();
             } else {
                 playOneDivx3Frame();
@@ -3702,7 +3701,7 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kBpv &&
             bpv_decoder.ready()) {
-            if (player_settings::kUseDualCorePipeline) {
+            if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneBpvFramePipelined();
             } else {
                 playOneBpvFrameSequential();
@@ -3711,7 +3710,7 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kHlv &&
             decoder.ready()) {
-            if (player_settings::kUseDualCorePipeline) {
+            if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneFramePipelined();
             } else {
                 playOneFrameSequential();

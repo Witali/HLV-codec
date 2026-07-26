@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include "board_config.hpp"
+#include "board_config.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
@@ -14,7 +14,7 @@
 #include "esp_lcd_panel_st7789.h"
 #include "esp_log.h"
 #include "hal/lcd_types.h"
-#include "player_settings.hpp"
+#include "player_settings.h"
 
 namespace {
 
@@ -40,9 +40,9 @@ esp_err_t CydDisplay::init() {
                         "LCD secondary DMA buffer allocation failed");
 
     spi_bus_config_t bus{};
-    bus.mosi_io_num = board::kTftMosi;
-    bus.miso_io_num = board::kTftMiso;
-    bus.sclk_io_num = board::kTftSck;
+    bus.mosi_io_num = BOARD_TFT_MOSI;
+    bus.miso_io_num = BOARD_TFT_MISO;
+    bus.sclk_io_num = BOARD_TFT_SCK;
     bus.quadwp_io_num = GPIO_NUM_NC;
     bus.quadhd_io_num = GPIO_NUM_NC;
     bus.data4_io_num = GPIO_NUM_NC;
@@ -54,10 +54,10 @@ esp_err_t CydDisplay::init() {
                         kTag, "LCD SPI2 DMA initialization failed");
 
     esp_lcd_panel_io_spi_config_t io_config{};
-    io_config.cs_gpio_num = board::kTftCs;
-    io_config.dc_gpio_num = board::kTftDc;
+    io_config.cs_gpio_num = BOARD_TFT_CS;
+    io_config.dc_gpio_num = BOARD_TFT_DC;
     io_config.spi_mode = 0;
-    io_config.pclk_hz = player_settings::kDisplayClockHz;
+    io_config.pclk_hz = PLAYER_DISPLAY_CLOCK_HZ;
     io_config.trans_queue_depth = kDmaBufferCount;
     io_config.on_color_trans_done = onColorTransferDone;
     io_config.user_ctx = this;
@@ -96,15 +96,15 @@ esp_err_t CydDisplay::init() {
                         "ST7789 display enable failed");
 
     gpio_config_t backlight{};
-    backlight.pin_bit_mask = 1ULL << board::kTftBacklight;
+    backlight.pin_bit_mask = 1ULL << BOARD_TFT_BACKLIGHT;
     backlight.mode = GPIO_MODE_OUTPUT;
     ESP_RETURN_ON_ERROR(gpio_config(&backlight), kTag,
                         "Backlight GPIO setup failed");
-    ESP_RETURN_ON_ERROR(gpio_set_level(board::kTftBacklight, 1), kTag,
+    ESP_RETURN_ON_ERROR(gpio_set_level(BOARD_TFT_BACKLIGHT, 1), kTag,
                         "Backlight enable failed");
 
     ESP_LOGI(kTag, "ST7789: SPI2 DMA, %d Hz, double %dx%d-row buffers",
-             player_settings::kDisplayClockHz, kWidth, kRowsPerTransfer);
+             PLAYER_DISPLAY_CLOCK_HZ, kWidth, kRowsPerTransfer);
     return clear(0x0000);
 }
 
