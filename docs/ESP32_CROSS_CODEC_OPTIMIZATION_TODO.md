@@ -207,11 +207,13 @@ The allocation-free legacy renderer and portable RGB24 path remain available.
 - [x] Run correctness checks and three physical-board trials for each
       retained backend/output combination.
 - [x] Record memory, flash/IRAM size, decode, render and total frame timing.
+- [x] A/B-test selective IRAM placement for the active Huffman, YUV420 block
+      process and RGB565 conversion kernels.
 
-DivX bitreader and sparse-IDCT changes do not apply to MJPEG because the current
-ROM entropy decode and IDCT run inside TJpgDec. Both useful independent
-candidates were measured: direct display-DMA output for the ROM path and the
-official `esp_new_jpeg` 1.0.2 block decoder with direct RGB565 output.
+DivX bitreader and sparse-IDCT changes do not apply directly to MJPEG. The
+useful independent candidates were measured instead: direct display-DMA output,
+the official `esp_new_jpeg` 1.0.2 block decoder with direct RGB565 output, and
+selective IRAM placement of that decoder's active hot kernels.
 
 The deterministic 12-frame QEMU benchmark retained a stable output per backend.
 Removing the ROM strip copy improved 3,512,537 to 3,489,447 guest cycles per
@@ -247,8 +249,32 @@ heap bytes, 14,344 more than the first new-backend integration and 2,104 more
 than the ROM direct-DMA benchmark; its largest free block remains 118,784
 bytes. The linked component increases Flash code by 59,020 bytes, Flash data
 by 2,656 bytes, IRAM by 7,108 bytes and static DRAM by 3,304 bytes relative to
-the pre-MJPEG experiment build. The final image is 705,723 bytes with 57,553
-IRAM and 136,364 static DRAM bytes remaining.
+the pre-MJPEG experiment build. Before selective IRAM placement, the image was
+705,723 bytes with 57,553 IRAM and 136,364 static DRAM bytes remaining.
+
+The retained selective placement covers `jpeg_dec_huffman`,
+`jpeg_dec_proc_yuv420_0_block`, `jpeg_dec_process_0` and
+`yuv420_to_rgb565le`. The public component supplies only headers, tests and
+prebuilt archives, so the build creates a derived archive and renames only
+these function sections to `.iram1.*`; the managed official archive is not
+modified. `MJPEG_HOT_IRAM=OFF` preserves a reproducible control build.
+
+Both 12-frame QEMU variants retained hash `6b9ad099d4648dfe` and averaged
+1,859,905 guest cycles per frame. QEMU counts the same instructions and does
+not model the physical Flash-cache benefit. Three 300-packet board trials per
+variant gave the following medians after excluding `decode_us=0` packets that
+the scheduler deliberately skipped:
+
+| `esp_new_jpeg` variant | Average per decoded frame | Decoded packets | Display skips | Decision |
+| --- | ---: | ---: | ---: | --- |
+| Flash hot kernels | 35,157.0 us | 207 / 300 | 93 | baseline |
+| IRAM hot kernels | 34,912.5 us | 209 / 300 | 91 | accepted |
+
+On frame indices decoded by both variants, all three paired trials improved by
+267.5-307.7 us per frame. The normalized median average improves by 0.70%.
+IRAM rises from 73,519 to 77,239 bytes, Flash code falls from 457,696 to
+454,872 bytes, DRAM is unchanged, and the final image is 706,619 bytes. The
+Player retains 53,833 IRAM and 136,364 static DRAM bytes free.
 
 ## Priority order
 

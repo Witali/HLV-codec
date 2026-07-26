@@ -198,12 +198,28 @@ parallelize entropy decoding within one JPEG frame.
 - [ ] Process two or four RGB888 pixels per loop iteration and compare the
       generated Xtensa assembly with the current scalar loop.
 - [ ] A/B test small RGB565 component lookup tables against packed arithmetic.
-- [ ] Place only proven hot output/conversion code in IRAM and record
+- [x] Place only proven hot output/conversion code in IRAM and record
       instruction-cache effects.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
 - [ ] Test source-built TJpgDec `JD_FASTDECODE=2` only after measuring its
       approximately 65.5 KiB work-buffer cost on the real firmware.
 - [ ] Record cycle and operation-count deltas for every experiment.
+
+The IRAM experiment retained four active `esp_new_jpeg` functions: Huffman
+decode, the YUV420 block process kernel, the top-level non-rotated process
+kernel and YUV420-to-RGB565LE packing. The public component does not ship the
+decoder implementation, only API headers, tests and per-SoC prebuilt archives.
+Its ESP32 archive does retain object boundaries, function sections, symbols and
+DWARF data. The build therefore makes a derived archive with only the selected
+sections renamed to `.iram1.*`, leaving the managed archive unchanged.
+
+QEMU ON/OFF builds remained bit exact with hash `6b9ad099d4648dfe` and the same
+1,859,905 guest cycles per frame. Three 300-packet physical-board trials found
+a 35,157.0 to 34,912.5 us median reduction per actually decoded frame (0.70%).
+Paired common-frame gains were 267.5-307.7 us in all trials. The faster path
+decoded 209 rather than 207 packets before their deadlines, reducing display
+skips from 93 to 91. It costs 3,720 IRAM bytes, leaves 53,833 IRAM bytes free
+and is retained by default. Set `MJPEG_HOT_IRAM=OFF` for the control build.
 
 Espressif's published S3 comparison shows source TJpgDec with
 `JD_FASTDECODE=2` improving approximately 52 ms to 46 ms, while direct RGB565

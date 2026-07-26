@@ -331,6 +331,14 @@ RGB565 block decoder and direct output:
 .\qemu-mjpeg-benchmark.ps1
 ```
 
+The production build selectively places the active Huffman, YUV420 process and
+RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. To run
+the reproducible Flash control variant:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -HotIram OFF
+```
+
 The `J` record includes per-frame cycles and the complete submitted RGB565
 hash. The old ROM TJpgDec implementation and its benchmark modes were removed
 after the accelerated backend passed the A/B checks. Display SPI/DMA time is
