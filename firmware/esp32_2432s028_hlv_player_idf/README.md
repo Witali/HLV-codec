@@ -318,9 +318,10 @@ display DMA timing.
   request to 83,400 bytes. The player also uses one 10 KiB display allocation,
   4 KiB stdio read-ahead and one compressed packet capped at 96 KiB. It is
   decoded on CPU1 while CPU0 renders the preceding ping-pong output. Physical
-  300-frame tests completed without sequence gaps or audio underruns.
-  Optimized q4 playback reaches 12.005 observed fps with no display skips at
-  320x180, and 11.827 fps with 5 skips at 320x240.
+  tests completed without sequence gaps or audio underruns. Optimized q4
+  playback reaches 12.005 observed fps with no display skips at 320x180.
+  A complete 360-frame 320x240 run reaches 11.998 fps with no skips; its
+  decode p95 is 67.35 ms and its maximum is 80.30 ms.
 - MPEG-1: two packed Y6/U5/V5 reference frames, one signed Q4 local correction
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded

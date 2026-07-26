@@ -105,13 +105,13 @@ performed on the host and in QEMU before a board became available.
   used 293,576 bytes, so rolling predictors plus compact references save
   119,568 bytes (40.7%).
 - The normal ESP-IDF Player build succeeds. Its application image is
-  632,816 bytes and leaves 940,048 bytes free in the 1.5 MiB application
+  632,800 bytes and leaves 940,064 bytes free in the 1.5 MiB application
   partition.
 - Espressif QEMU decodes the validated 60-frame 320x240 clip successfully.
   The compact decoder is 173,916 bytes with 32-bit pointers. Average,
-  p50, p95 and maximum decode costs are 1,847,744, 1,763,681,
-  2,614,435 and 2,701,825 guest cycles. The decode-only rate calculated
-  at 240 MHz is 129.888 fps.
+  p50, p95 and maximum decode costs are 1,474,119, 1,435,202,
+  1,910,165 and 1,984,085 guest cycles. The decode-only rate calculated
+  at 240 MHz is 162.809 fps.
 - QEMU and the host compact decoder produce the same visible-frame hash,
   `1463ec78314286a3`, for that clip.
 
@@ -133,10 +133,18 @@ the same visible-frame hash:
 | DC-only and row-shortcut IDCT | 2,119,266 | -13.7% |
 | Specialized compact block packing | 1,986,728 | -6.3% |
 | Reuse Q4 correction spans | 1,847,744 | -7.0% |
+| Batch rolling predictor-row resets | 1,834,174 | -0.7% |
+| 32-bit cached bit reader | 1,821,006 | -0.7% |
+| Eight-bit VLC tree lookahead | 1,774,515 | -2.6% |
+| Byte-sized motion predictions and direct block writes | 1,534,029 | -13.6% |
+| Direct sparse inter coefficients and IDCT rows | 1,474,119 | -3.9% |
 
-Together these changes reduce average guest cycles by 44.8%. A tested
+Together these changes reduce average guest cycles by 56.0%. A tested
 64-bit bit-reader reservoir increased the average cost by 3.1%, so it was
-reverted rather than retained.
+reverted rather than retained. Replacing the single 83,400-byte QVGA
+reference-frame copy with many skipped-macroblock copies also retained the
+hash but increased the average from 1,474,119 to 1,486,341 cycles (+0.83%),
+so the contiguous copy remains.
 
 ### Xtensa DSP experiments
 
@@ -185,3 +193,17 @@ Both optimized runs had zero sequence gaps, rebuffers, underrun samples and
 silence chunks. The 320x180 profile now sustains its saved 12 fps. QVGA is
 close to the target but its heaviest frames can still exceed the 83.33 ms
 frame period.
+
+After the additional predictor, bit-reader, VLC, byte-prediction and sparse
+coefficient optimizations, physical-board tests of commit `28af428` produced:
+
+- 320x180, 300 frames: 31.59 ms average, 50.43 ms p95 and 67.05 ms maximum
+  decode time, 12.005 observed fps and zero display skips.
+- 320x240, 300 frames: 39.27 ms average, 64.39 ms p95 and 80.30 ms maximum
+  decode time, 11.997 observed fps and zero display skips.
+- 320x240, the complete 360-frame file: 43.38 ms average, 67.35 ms p95 and
+  80.30 ms maximum decode time, 11.998 observed fps and zero display skips.
+
+All three runs had zero sequence gaps, rebuffers, underrun samples and silence
+chunks. The complete QVGA run keeps even its maximum decode time below the
+83.33 ms frame period.
