@@ -203,20 +203,23 @@ parallelize entropy decoding within one JPEG frame.
       RGB565 hashing does not dilute decoder-only deltas.
 - [x] Extend the Xtensa IDCT with exact one-column and two-column reduced-row
       paths; retain the original kernel for every unmatched coefficient mask.
-- [ ] Add a three- or four-byte Huffman reservoir refill for marker-free input
-      and retain the current byte path for `0xff`, markers and short tails.
-- [ ] Specialize the aligned, restart-free YUV420/RGB565LE MCU loop with
-      hoisted table pointers and direct Huffman/IDCT/color calls.
+- [x] Extend the reduced-row IDCT A/B to natural-order column two; reject the
+      repeatable slowdown and keep the two-column limit.
+- [x] A/B a three-byte marker-free Huffman reservoir prefill at each decoder
+      entry; reject the wrapper overhead and retain the current byte path.
+- [x] Inspect specialization of the aligned, restart-free YUV420/RGB565LE MCU
+      loop; do not fork the complete prebuilt kernel without a source seam.
 - [x] Reject paired 32-bit RGB565 stores as a standalone change: packing each
       pair needs `SLLI`, `OR` and `S32I` instead of two `S16I` instructions.
 - [x] A/B exact `MUL16S` chroma products independently from tables; reject the
       DSP substitution because it has zero cycle benefit on the ESP32.
-- [ ] Reuse variable-size Huffman allocations while still rebuilding the
-      frame-specific canonical and lookup tables.
+- [x] A/B reuse of variable-size Huffman allocations while still rebuilding
+      the frame-specific canonical and lookup tables; reject the negligible
+      result and retain normal allocation.
 - [x] Replace the aligned zero-128 coefficient `memset` with a bit-exact
       unrolled IRAM clear and keep libc for every unmatched call.
-- [ ] A/B sparse coefficient clearing only after the larger decode-loop
-      candidates have been exhausted.
+- [x] A/B sparse coefficient clearing after the retained fast-clear wrapper;
+      reject the physical-board slowdown and remove the candidate.
 - [x] Reject a wider primary VLC lookup for the current stream: no measured DC
       symbols and only 2.737% of AC symbols exceed eight Huffman bits.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
@@ -281,6 +284,55 @@ cycles per frame (0.42%). Five identical COM8 reset trials improved 9,133,439
 to 9,073,825 total cycles (0.65%) and 7,666,750 to 7,607,262 decoder-only
 cycles (0.78%). Heap and largest-free-block results were unchanged.
 `MJPEG_FAST_COEFFICIENT_CLEAR=ON` is retained by default.
+
+A bounded temporary allocation pool reused all 218 variable-size Huffman
+allocations in the 60-frame corpus while still rebuilding every frame's
+canonical and lookup tables. It preserved all frames and hash
+`436f6b344bed074e`, but improved total QEMU cycles by only 558 (0.03%). Five
+identical COM8 trials improved total time by 0.029% and decoder-only time by
+0.037%, while permanently consuming another 608 bytes of heap. This is below
+measurement significance and worsens memory headroom, so the pool was removed.
+
+The sparse-clear experiment made the DC-only and reduced-row IDCT paths clear
+only their proven coefficient footprint, then used a 16-entry pointer table to
+skip the following 128-byte clear. It preserved the complete QEMU and COM8
+hash. QEMU improved by only 939 cycles per frame (0.054%), while five
+deterministic COM8 trials regressed from 9,073,825 to 9,079,944 total cycles
+(0.067%) and from 7,607,262 to 7,613,242 decoder-only cycles (0.079%). It also
+cost 64 bytes of DRAM. The sparse path and table were removed; the simpler
+unrolled full clear remains.
+
+The three-column reduced-row IDCT extension added a bit-exact even-term row
+transform for blocks confined to natural-order DCT columns zero through two.
+All 60 QEMU frames retained hash `436f6b344bed074e`, but average cycles
+regressed from 1,739,381 to 1,741,689 (0.13%). Five COM8 reset trials retained
+the same hash and memory readings while regressing from 9,073,825 to about
+9,090,505 total cycles (0.18%) and from 7,607,262 to about 7,623,998
+decoder-only cycles (0.22%). The additional mask checks and row arithmetic
+cost more than the saved fallback work, so the extension was removed.
+
+The marker-safe entropy experiment wrapped `jpeg_dec_huffman` and appended
+three bytes to its existing 32-bit reservoir only when fewer than eight bits
+remained, at least three bytes were available and none equalled `0xff`.
+Markers, byte stuffing and tails retained the original path. The complete
+QEMU hash stayed `436f6b344bed074e`, but total cycles regressed from 1,739,381
+to 1,741,324 (0.11%) and decoder-only cycles from 1,407,085 to 1,409,036
+(0.14%). Five deterministic COM8 trials retained the same hash and memory,
+but regressed to 9,090,475 total cycles (0.18%) and 7,624,101 decoder-only
+cycles (0.22%). The wrapper was removed. A true multi-site bulk refill would
+require replacing all duplicated refill loops inside the complete 0x520-byte
+prebuilt Huffman function; there is no separately linkable refill seam.
+
+The selected backend path is already the dedicated
+`jpeg_dec_proc_yuv420_0_block` kernel, not the general rotate/scale output
+loop. It handles one 16x16 MCU with fixed YUV420 work areas and calls the
+three Huffman groups, six IDCT blocks and RGB565LE conversion through internal
+function pointers. Restart and edge checks are embedded in the 0x5ea-byte
+prebuilt function. Hoisting those checks and converting indirect calls to
+direct calls therefore requires maintaining a complete reconstructed private
+decoder structure and kernel, not a small independently reversible assembly
+replacement. No production fork is retained without source or a measurable
+isolated patch point.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
