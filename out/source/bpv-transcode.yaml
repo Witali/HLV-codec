@@ -1,0 +1,38 @@
+# BPV1 v5 transcoding profiles.
+# Paths are resolved relative to this YAML file.
+version: 1
+outputDirectory: ..
+summaryFile: ../BPVv5_yaml_summary.json
+
+videos:
+  - name: Danila
+    input: ../sources/VID_20260522_181611.mp4
+    width: 320
+    height: 180
+    fps: 30
+    format: bpv1
+    codec: BPVv5
+    targetPsnrDb: 35
+    toleranceDb: 0.10
+    resizeMode: Stretch
+    audio: true
+    threads: 8
+    gop: 48
+    candidatePalettes: 3
+    activePalettes: true
+
+  - name: Danila
+    input: ../sources/VID_20260522_181611.mp4
+    width: 320
+    height: 240
+    fps: 30
+    format: bpv1
+    codec: BPVv5
+    targetPsnrDb: 35
+    toleranceDb: 0.10
+    resizeMode: Crop
+    audio: true
+    threads: 8
+    gop: 48
+    candidatePalettes: 3
+    activePalettes: true

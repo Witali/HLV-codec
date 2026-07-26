@@ -74,7 +74,8 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `encode_h263_3gp.ps1` | Encodes the supported H.263/H.263+ profiles into 3GP or AVI, with crop/contain fitting and optional AMR-NB audio. Non-QCIF profiles use the Player's supported intra-only H.263+ profile. |
 | `encode_h263_avi.ps1` | Convenience wrapper around `encode_h263_3gp.ps1` that selects AVI with PCM audio and provides a default output name. |
 | `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
-| `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It writes per-video reports and a combined JSON summary. |
+| `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
+| `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v5 profile with its own source, resolution, FPS, format and target quality. |
 
 Example H.263 and BPV calls:
 
@@ -97,6 +98,9 @@ Example H.263 and BPV calls:
     -OutputName @("VideoOne", "VideoTwo") `
     -TargetPsnrDb 35 `
     -Width 320 -Height 240 -ResizeMode Crop
+
+.\scripts\encode_bpv_from_yaml.ps1 `
+    -ConfigFile .\out\source\bpv-transcode.yaml
 ```
 
 The target-quality script prepares each input only once and searches `lambda`
@@ -107,6 +111,14 @@ the adjacent JSON report records the requested value, tolerance, selected
 lambda and every search trial. A zero-error result is marked `lossless`
 instead of being misreported as 0 dB. If a Big Buck Bunny input is detected,
 the script accepts only the approved 1080p MOV listed below.
+
+The YAML runner uses a strict dependency-free subset of YAML: scalar
+top-level settings and a flat `videos` list. Relative input, output and summary
+paths are resolved from the directory containing the YAML file. The supplied
+configuration contains separate `320x180` and cropped `320x240` Danila
+profiles at 30 fps. Command-line `-MaxFrames` and `-NoAudio` are useful for
+short validation runs without changing the saved profiles. Use
+`-ValidateOnly` to check the schema, values and input paths without encoding.
 
 ## Reproducible source-specific profiles
 

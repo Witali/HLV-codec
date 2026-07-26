@@ -34,6 +34,9 @@ param(
     [ValidateSet("Stretch", "Crop")]
     [string]$ResizeMode = "Stretch",
 
+    [ValidateRange(0.0, 240.0)]
+    [double]$Fps = 0,
+
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
@@ -78,6 +81,8 @@ param(
     [switch]$NoAudio,
 
     [string]$SummaryFile,
+
+    [switch]$NoSummary,
 
     [switch]$Force
 )
@@ -126,17 +131,19 @@ New-Item -ItemType Directory -Force -Path $temporaryRoot | Out-Null
 
 $targetText = $TargetPsnrDb.ToString("0.##", $culture)
 $targetFileText = $targetText.Replace(".", "p")
-if (-not $SummaryFile) {
-    $SummaryFile = Join-Path $OutputDirectory (
-        "BPVv5_target_${targetFileText}dB_summary.json"
-    )
+if (-not $NoSummary) {
+    if (-not $SummaryFile) {
+        $SummaryFile = Join-Path $OutputDirectory (
+            "BPVv5_target_${targetFileText}dB_summary.json"
+        )
+    }
+    $SummaryFile = [IO.Path]::GetFullPath($SummaryFile)
+    if ((Test-Path -LiteralPath $SummaryFile) -and -not $Force) {
+        throw "Summary file already exists; use -Force: $SummaryFile"
+    }
+    $summaryParent = Split-Path $SummaryFile -Parent
+    New-Item -ItemType Directory -Force -Path $summaryParent | Out-Null
 }
-$SummaryFile = [IO.Path]::GetFullPath($SummaryFile)
-if ((Test-Path -LiteralPath $SummaryFile) -and -not $Force) {
-    throw "Summary file already exists; use -Force: $SummaryFile"
-}
-$summaryParent = Split-Path $SummaryFile -Parent
-New-Item -ItemType Directory -Force -Path $summaryParent | Out-Null
 
 $resolvedOutputNames = @(
     for (
@@ -318,9 +325,14 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
             "-y", "-hide_banner", "-loglevel", "error", "-nostats",
             "-i", $source,
             "-map", "0:v:0", "-an",
-            "-vf", $videoFilter,
-            "-fps_mode", "cfr"
+            "-vf", $videoFilter
         )
+        if ($Fps) {
+            $videoArguments += @(
+                "-r", $Fps.ToString("0.########", $culture)
+            )
+        }
+        $videoArguments += @("-fps_mode", "cfr")
         if ($MaxFrames) {
             $videoArguments += @("-frames:v", $MaxFrames)
         }
@@ -632,9 +644,11 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
     }
 }
 
-$summaryJson = ConvertTo-Json -InputObject @($summary) -Depth 6
-$summaryJson |
-    Set-Content -LiteralPath $SummaryFile -Encoding utf8NoBOM
-Write-Host ""
-Write-Host "Summary: $SummaryFile"
+if (-not $NoSummary) {
+    $summaryJson = ConvertTo-Json -InputObject @($summary) -Depth 6
+    $summaryJson |
+        Set-Content -LiteralPath $SummaryFile -Encoding utf8NoBOM
+    Write-Host ""
+    Write-Host "Summary: $SummaryFile"
+}
 $summary
