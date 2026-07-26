@@ -6,6 +6,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef DIVX3_IRAM_BITREADER
+#define DIVX3_IRAM_BITREADER 0
+#endif
+
+#if DIVX3_IRAM_BITREADER
+#include "esp_attr.h"
+#define DIVX3_BITREADER_ATTR IRAM_ATTR
+#else
+#define DIVX3_BITREADER_ATTR
+#endif
+
 typedef struct {
     uint8_t length;
     uint32_t code;
@@ -133,7 +144,7 @@ static const uint8_t kScanAltVertical[64] = {
     53, 61, 22, 30, 7,  15, 23, 31, 38, 46, 54, 62, 39, 47, 55, 63,
 };
 
-static int bit_read(BitReader *reader) {
+static int DIVX3_BITREADER_ATTR bit_read(BitReader *reader) {
     int value;
     if (!reader->cached) {
         if (reader->next >= reader->end) {
@@ -156,7 +167,8 @@ static int bit_read(BitReader *reader) {
     return value;
 }
 
-static uint32_t bits_read(BitReader *reader, unsigned count) {
+static uint32_t DIVX3_BITREADER_ATTR bits_read(BitReader *reader,
+                                               unsigned count) {
     uint32_t value;
     unsigned requested = count;
     if (!count) return 0;
@@ -199,9 +211,9 @@ static uint8_t clamp_byte(int value) {
     return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
 }
 
-static int decode_vlc_index(BitReader *reader,
-                            const Divx3VlcNode *nodes,
-                            size_t entry_count, size_t *entry_index) {
+static int DIVX3_BITREADER_ATTR
+decode_vlc_index(BitReader *reader, const Divx3VlcNode *nodes,
+                 size_t entry_count, size_t *entry_index) {
     int node_index = 0;
     unsigned depth = 0;
     if (reader->position <= reader->bits &&

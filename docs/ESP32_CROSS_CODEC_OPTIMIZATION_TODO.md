@@ -30,16 +30,31 @@ cache widths, VLC or Exp-Golomb semantics and inlining requirements differ.
 
 ## DivX 3
 
-- [ ] Establish a fresh QEMU and physical-board baseline.
-- [ ] Place only `bit_read`, `bits_read` and `decode_vlc_index` in IRAM.
-- [ ] Verify the QEMU output hash and record QEMU cycles.
-- [ ] Run three physical-board trials and measure the flash-cache-sensitive
+- [x] Establish a fresh QEMU and physical-board baseline.
+- [x] Place only `bit_read`, `bits_read` and `decode_vlc_index` in IRAM.
+- [x] Verify the QEMU output hash and record QEMU cycles.
+- [x] Run three physical-board trials and measure the flash-cache-sensitive
       effect.
-- [ ] Keep or reject the IRAM placement and document IRAM consumption.
+- [x] Keep or reject the IRAM placement and document IRAM consumption.
 
 Do not place the complete approximately 6 KiB `decode_inter_picture` path in
 IRAM. QEMU is not expected to predict the flash-cache benefit: selective HLV
 IRAM placement was QEMU-neutral but improved the physical board by 14.74%.
+
+The selective placement was retained. The portable 256x144 regression remained
+pixel exact. Both QEMU variants produced hash `1463ec78314286a3` and averaged
+1,474,119 guest cycles per 320x240 frame. Three 300-frame board runs for each
+variant were deterministic:
+
+| DivX 3 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Flash helpers | 39,274.0 us | 43,250 us | 64,392 us | 80,304 us | baseline |
+| IRAM helpers | 38,685.8 us | 42,356 us | 63,345 us | 79,844 us | accepted |
+
+The board decode average improves by 1.50%. The change moves 496 bytes from
+Flash code to IRAM, leaves DRAM unchanged, and increases the padded application
+binary by 16 bytes. All six board runs decoded frames 1 through 300 without
+sequence gaps, audio rebuffers, missing samples or inserted silence.
 
 ## MPEG-1
 
