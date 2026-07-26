@@ -310,6 +310,17 @@ reconstructed YUV420 hash, decoder allocation, free heap and largest free
 block. The preparation step copies video samples without re-encoding and
 rejects any clip that is not H.263 at 320x240 with the requested frame count.
 
+The BPV renderer benchmark generates deterministic 320x240 block records and
+measures complete 16-row-strip RGB565 conversion without display DMA:
+
+```powershell
+.\qemu-bpv-render-benchmark.ps1
+```
+
+It prints a `P` record with the render-only cycle distribution, RGB565 output
+hash, free heap and largest free block. The same synthetic frame is rendered
+repeatedly so the benchmark isolates renderer changes from decode and SD I/O.
+
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the

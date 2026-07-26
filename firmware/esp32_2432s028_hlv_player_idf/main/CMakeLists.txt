@@ -1,4 +1,17 @@
-if(H263_QEMU_BENCHMARK)
+if(BPV_QEMU_BENCHMARK)
+    idf_component_register(
+        SRCS
+            "qemu_bpv_render_benchmark.cpp"
+        INCLUDE_DIRS "."
+        REQUIRES
+            bpv1
+            esp_rom
+            esp_system
+            freertos
+            heap
+            log
+    )
+elseif(H263_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_h263_benchmark.cpp"
