@@ -64,7 +64,7 @@ $profileName = if ($isCif) { "CIF" } else { "QCIF" }
 $effectiveGop = if ($isCif) { 1 } else { $Gop }
 $constantQuality = $VideoQuality -gt 0
 if (-not $constantQuality -and -not $VideoBitrateKbps) {
-    $VideoBitrateKbps = if ($isCif) { 1536 } else { 384 }
+    $VideoBitrateKbps = if ($isCif) { 2048 } else { 384 }
 }
 if (-not $constantQuality -and -not $VideoBufferKbps) {
     $VideoBufferKbps = if ($isCif) { 1024 } else { 512 }

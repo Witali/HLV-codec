@@ -85,7 +85,7 @@ foreach ($profile in @("176x144", "352x288")) {
         )
     }
     if ($profile -eq "352x288" -and
-        $check.Output -notmatch "checksum 0505763c92a11c73") {
+        $check.Output -notmatch "checksum 4e31541b0204ec7e") {
         throw (
             "The CIF pixel checksum changed while decoding packets larger " +
             "than the streaming input buffer. " + $check.Output

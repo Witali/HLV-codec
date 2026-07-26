@@ -44,7 +44,7 @@ $effectiveBitrate = if ($VideoBitrateKbps) {
     $VideoBitrateKbps
 }
 elseif ($Profile -eq "352x288") {
-    1536
+    2048
 }
 else {
     384
