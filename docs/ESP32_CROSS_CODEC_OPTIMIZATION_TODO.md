@@ -112,8 +112,8 @@ and reproduced only the stream's known audio-underrun pattern.
 - [x] Establish a fresh QEMU and physical-board baseline.
 - [x] A/B-test selective IRAM placement for `BitstreamFillCache`.
 - [x] Independently A/B-test the hot VLC/dequant helpers.
-- [ ] Independently A/B-test the hottest IDCT kernel.
-- [ ] Verify output and record QEMU, board and IRAM-size results.
+- [x] Independently A/B-test the hottest IDCT kernel.
+- [x] Verify output and record QEMU, board and IRAM-size results.
 
 PacketVideo already uses a 32-bit cache, VLC tables, byte-sized prediction,
 fused IDCT-add and variable-complexity IDCT. Do not duplicate the DivX
@@ -149,6 +149,24 @@ to the all-Flash H.263 baseline. It moves another 1,240 bytes into IRAM,
 removes 1,208 bytes of Flash code, leaves DRAM unchanged and adds 32 bytes to
 the application image. Only the active 1.2 KiB H.263+ intra path is placed;
 the unused approximately 4 KiB MPEG-4 intra helper remains in Flash.
+
+Finally, the active intra-only IDCT dispatcher, fallback and variable-
+complexity row/column kernels were tested as one isolated transform unit and
+retained. Inter prediction IDCT remains in Flash. QEMU remained bit exact at
+hash `e2f9d3b5a212be20` and 428,624 average guest cycles per frame. The final
+full host test passed all supported H.263/H.263+, 3GP/AVI and AMR/PCM profiles.
+
+| H.263 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| IRAM refill + VLC/dequant | 15,900.1 us | 15,159 us | 19,155 us | 64,239 us | baseline |
+| Above + intra IDCT | 14,438.0 us | 13,753 us | 17,596 us | 63,278 us | accepted |
+
+The IDCT placement improves board decode by another 9.20%, or 20.30%
+cumulatively from the original H.263 baseline. It moves 3,368 more bytes into
+IRAM, removes 3,292 bytes of Flash code, leaves DRAM unchanged and adds 76
+bytes to the image. Across all three H.263 changes, the cost is 4,880 IRAM
+bytes and 108 image bytes; 64,661 IRAM bytes remain free. Every physical run
+decoded 300 consecutive frames with no playback or audio errors.
 
 ## BPV
 
