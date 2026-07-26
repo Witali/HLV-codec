@@ -39,7 +39,7 @@ $decoder = Join-Path $hlv "src\hlv1_decode.c"
 $bpvDecoder = Join-Path $bpv "src\bpv1_decode.c"
 $mpegDecoder = Join-Path $mpeg "src\pl_mpeg.c"
 $h263Sources = @(
-    (Join-Path $h263 "src\h263_3gp.cpp")
+    (Join-Path $h263 "src\h263_3gp.c")
 ) + @(Get-ChildItem -LiteralPath (Join-Path $pv "src") -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName })
 $h263SourceArguments = ($h263Sources | ForEach-Object {

@@ -3,7 +3,7 @@ set(PV_ROOT "${H263_ROOT}/third_party/pv")
 
 idf_component_register(
     SRCS
-        "${H263_ROOT}/src/h263_3gp.cpp"
+        "${H263_ROOT}/src/h263_3gp.c"
         "${PV_ROOT}/src/bitstream.c"
         "${PV_ROOT}/src/block_idct.c"
         "${PV_ROOT}/src/cal_dc_scaler.c"
@@ -70,7 +70,7 @@ else()
     )
 endif()
 
-target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99 cxx_std_17)
+target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -Wno-unused-parameter
