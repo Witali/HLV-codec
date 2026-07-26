@@ -200,6 +200,8 @@ parallelize entropy decoding within one JPEG frame.
 - [ ] A/B test small RGB565 component lookup tables against packed arithmetic.
 - [x] Place only proven hot output/conversion code in IRAM and record
       instruction-cache effects.
+- [x] Add a first-party Xtensa DC-only IDCT shortcut and retain the original
+      `esp_new_jpeg` kernel as the fallback.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
 - [ ] Test source-built TJpgDec `JD_FASTDECODE=2` only after measuring its
       approximately 65.5 KiB work-buffer cost on the real firmware.
@@ -220,6 +222,16 @@ Paired common-frame gains were 267.5-307.7 us in all trials. The faster path
 decoded 209 rather than 207 packets before their deadlines, reducing display
 skips from 93 to 91. It costs 3,720 IRAM bytes, leaves 53,833 IRAM bytes free
 and is retained by default. Set `MJPEG_HOT_IRAM=OFF` for the control build.
+
+The retained IDCT experiment adds an IRAM assembly wrapper around
+`idct_block_8_8`. It checks whether all 63 AC coefficients are zero, emits the
+same rounded/clipped sample directly into the 8x8 block with 32-bit stores,
+and calls the unchanged library kernel for every other block. A complete
+60-frame QEMU run remained bit exact (`436f6b344bed074e`) and improved average
+guest cycles from 1,832,549 to 1,771,053 (3.36%). Seven physical-board runs
+retained the same hash and reduced average decode time from 39.542 to
+38.509 ms per frame (2.61%); P50 improved by 2.73%. The optimized path is
+enabled by default with `MJPEG_OPTIMIZED_IDCT=ON`.
 
 Espressif's published S3 comparison shows source TJpgDec with
 `JD_FASTDECODE=2` improving approximately 52 ms to 46 ms, while direct RGB565

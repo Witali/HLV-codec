@@ -15,8 +15,12 @@
 
 namespace {
 
+#ifndef MJPEG_QEMU_FRAME_LIMIT
+#define MJPEG_QEMU_FRAME_LIMIT 12
+#endif
+
 constexpr char kTag[] = "mjpeg-qemu-bench";
-constexpr uint32_t kFrameLimit = 12;
+constexpr uint32_t kFrameLimit = MJPEG_QEMU_FRAME_LIMIT;
 constexpr uint32_t kTargetCpuHz = 240000000;
 constexpr size_t kStripPixels = 320U * 16U;
 

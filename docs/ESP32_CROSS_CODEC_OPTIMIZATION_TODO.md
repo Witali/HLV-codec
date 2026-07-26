@@ -209,6 +209,8 @@ The allocation-free legacy renderer and portable RGB24 path remain available.
 - [x] Record memory, flash/IRAM size, decode, render and total frame timing.
 - [x] A/B-test selective IRAM placement for the active Huffman, YUV420 block
       process and RGB565 conversion kernels.
+- [x] Replace the hottest fixed 8x8 IDCT entry with a bit-exact Xtensa
+      DC-only fast path and original-kernel fallback.
 
 DivX bitreader and sparse-IDCT changes do not apply directly to MJPEG. The
 useful independent candidates were measured instead: direct display-DMA output,
@@ -275,6 +277,16 @@ On frame indices decoded by both variants, all three paired trials improved by
 IRAM rises from 73,519 to 77,239 bytes, Flash code falls from 457,696 to
 454,872 bytes, DRAM is unchanged, and the final image is 706,619 bytes. The
 Player retains 53,833 IRAM and 136,364 static DRAM bytes free.
+
+The next retained MJPEG step is a first-party assembly wrapper for
+`idct_block_8_8`. Fully DC-only blocks bypass the original two-pass transform;
+all AC-containing blocks call the untouched `esp_new_jpeg` implementation.
+Over the complete 60-frame QEMU clip, both variants produced RGB565 hash
+`436f6b344bed074e`; average guest cycles fell from 1,832,549 to 1,771,053
+(3.36%). Seven repeated physical ESP32 runs produced the same hash and reduced
+average decode time from 39.542 to 38.509 ms (2.61%), with P50 improving
+2.73%. The ordinary Player was rebuilt, flashed and verified decoding the
+320x240, 30 fps MJPEG stream after the A/B run.
 
 ## Priority order
 

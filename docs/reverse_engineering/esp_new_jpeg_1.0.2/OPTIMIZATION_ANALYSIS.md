@@ -27,7 +27,7 @@ The linked Player map currently reports:
 
 ## Recommended experiments
 
-### 1. Add an IDCT row/DC-only shortcut
+### 1. Add an IDCT row/DC-only shortcut — implemented
 
 This is the best first algorithmic candidate.
 
@@ -42,8 +42,17 @@ the same rounding and scaling as the full path, and writes the repeated clipped
 sample. Entropy instrumentation should also count DC-only blocks so the gain
 can be predicted for each test video.
 
-This can remain ABI-compatible by replacing only `idct_block_8_8`; rotation and
-scaled variants can continue using the original implementation.
+The retained implementation is ABI-compatible and replaces only the
+`idct_block_8_8` call edge. A first-party IRAM assembly wrapper recognizes a
+fully DC-only block, writes its exact repeated result, and reaches the
+unchanged library function through GNU ld `--wrap` for every other block.
+Rotation and scaled variants remain untouched.
+
+The complete 60-frame QEMU A/B run retained RGB565 hash
+`436f6b344bed074e` and improved average guest cycles by 3.36%. Seven repeated
+physical ESP32 runs retained that hash and improved average decode time by
+2.61% (39.542 to 38.509 ms); P50 improved by 2.73%. This exceeds run-to-run
+noise and is enabled by default.
 
 ### 2. Specialize the interior YUV420/RGB565LE MCU loop
 

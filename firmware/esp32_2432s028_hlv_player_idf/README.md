@@ -332,17 +332,28 @@ RGB565 block decoder and direct output:
 ```
 
 The production build selectively places the active Huffman, YUV420 process and
-RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. To run
-the reproducible Flash control variant:
+RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. It
+also links a bit-exact Xtensa DC-only shortcut around the fixed 8x8 IDCT.
+Compare that shortcut against the unchanged library kernel while retaining the
+same hot-section placement:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct OFF
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -OptimizedIdct ON
+```
+
+To run the historical all-Flash control variant (which also disables the
+IRAM-only IDCT wrapper unless explicitly overridden):
 
 ```powershell
 .\qemu-mjpeg-benchmark.ps1 -HotIram OFF
 ```
 
 The `J` record includes per-frame cycles and the complete submitted RGB565
-hash. The old ROM TJpgDec implementation and its benchmark modes were removed
-after the accelerated backend passed the A/B checks. Display SPI/DMA time is
-measured only on the physical board.
+hash. `MJPEG_OPTIMIZED_IDCT=ON` is the production default. The old ROM TJpgDec
+implementation and its benchmark modes were removed after the accelerated
+backend passed the A/B checks. Display SPI/DMA time is measured only on the
+physical board.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for

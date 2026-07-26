@@ -1,5 +1,11 @@
 set(MJPEG_HOT_IRAM ON CACHE BOOL
     "Place the hottest esp_new_jpeg decode kernels in IRAM")
+set(MJPEG_OPTIMIZED_IDCT ON CACHE BOOL
+    "Use the bit-exact DC-only Xtensa IDCT shortcut")
+set(mjpeg_idct_sources)
+if(MJPEG_OPTIMIZED_IDCT AND MJPEG_HOT_IRAM)
+    list(APPEND mjpeg_idct_sources "mjpeg_idct_optimized.S")
+endif()
 
 function(enable_mjpeg_hot_iram component_target)
     idf_component_get_property(jpeg_component espressif__esp_new_jpeg
@@ -41,18 +47,33 @@ function(enable_mjpeg_hot_iram component_target)
             "-Wl,--start-group;${hot_archive};-Wl,--end-group")
 endfunction()
 
+function(enable_mjpeg_optimized_idct_link)
+    if(MJPEG_OPTIMIZED_IDCT)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,--wrap=idct_block_8_8" APPEND)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,-u,__wrap_idct_block_8_8" APPEND)
+    endif()
+endfunction()
+
 function(schedule_mjpeg_hot_iram component_target)
     if(MJPEG_HOT_IRAM)
         cmake_language(DEFER DIRECTORY "${PROJECT_DIR}"
             CALL enable_mjpeg_hot_iram "${component_target}")
+    elseif(MJPEG_OPTIMIZED_IDCT)
+        message(FATAL_ERROR
+            "MJPEG_OPTIMIZED_IDCT requires MJPEG_HOT_IRAM")
     endif()
 endfunction()
 
 if(MJPEG_QEMU_BENCHMARK)
+    set(MJPEG_QEMU_FRAME_LIMIT 12 CACHE STRING
+        "Number of embedded MJPEG frames decoded by the QEMU benchmark")
     idf_component_register(
         SRCS
             "qemu_mjpeg_benchmark.cpp"
             "mjpeg_avi_decoder.cpp"
+            ${mjpeg_idct_sources}
         INCLUDE_DIRS "."
         REQUIRES
             esp_rom
@@ -63,6 +84,9 @@ if(MJPEG_QEMU_BENCHMARK)
             log
             vfs
     )
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT})
+    enable_mjpeg_optimized_idct_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
     target_add_binary_data(
         ${COMPONENT_LIB} "qemu_mjpeg_benchmark.avi" BINARY)
@@ -153,6 +177,7 @@ else()
             "hlv_esp32_decoder.cpp"
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
+            ${mjpeg_idct_sources}
         INCLUDE_DIRS "."
         REQUIRES
             amrnb_3gp
@@ -177,6 +202,7 @@ else()
             sdmmc
             vfs
     )
+    enable_mjpeg_optimized_idct_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
 endif()
 
