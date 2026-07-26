@@ -410,6 +410,22 @@ improved decoder-only cycles from 7,043,932 to 7,042,838 (0.016%) and total
 cycles from 8,510,492 to 8,509,341 (0.014%). This is below the threshold for
 another hand-maintained ordering, so the original order was restored.
 
+The Xtensa DSP IDCT experiment replaced the complete reduced horizontal row
+pass, clipping and four packed stores with a hand-written IRAM assembly
+kernel. Its two-column specialization explicitly used `MUL16S` for the three
+fixed-point IDCT products. The complete 60-frame RGB565 hash remained
+`436f6b344bed074e`, and heap readings were unchanged. However, QEMU regressed
+from 1,629,483 to 1,630,376 total cycles per frame (0.055%) and from 1,297,128
+to 1,298,029 decoder-only cycles (0.069%). Five deterministic COM8 runs made
+the regression clearer: total cycles increased from 8,510,492 to 8,532,849
+(0.263%), decoder-only cycles from 7,043,932 to 7,065,911 (0.312%), and
+`jpeg_dec_process` from 7,001,393 to 7,023,398 (0.314%). Disassembly of the
+retained `-O3` C++ helper showed that GCC already emits `MUL16S` for the
+coefficient/dequantization and narrow row products. The hand-written path
+therefore added pointer saves and register-packing overhead without replacing
+full-width multiplication. The assembly kernel and its build switch were
+removed.
+
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,
 and 32.93% use only columns zero and one. The decoder clears 13,824,000
