@@ -16,6 +16,9 @@ param(
     [ValidateRange(0, 4096)]
     [int]$VideoBufferKbps = 0,
 
+    [ValidateRange(0, 31)]
+    [int]$VideoQuality = 0,
+
     [ValidateRange(1, 300)]
     [int]$Gop = 30,
 
@@ -47,9 +50,15 @@ else {
     384
 }
 if (-not $OutputFile) {
+    $qualityLabel = if ($VideoQuality) {
+        "q${VideoQuality}"
+    }
+    else {
+        "${effectiveBitrate}k"
+    }
     $OutputFile = Join-Path $repo (
         "out\BigBuckBunny_${Profile}_nativefps_" +
-        "H263_${profileName}_${effectiveBitrate}k.avi"
+        "H263_${profileName}_${qualityLabel}.avi"
     )
 }
 
@@ -60,6 +69,7 @@ $arguments = @{
     FitMode = $FitMode
     VideoBitrateKbps = $VideoBitrateKbps
     VideoBufferKbps = $VideoBufferKbps
+    VideoQuality = $VideoQuality
     Gop = $Gop
     MaxFrames = $MaxFrames
 }

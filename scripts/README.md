@@ -71,7 +71,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `prepare_esp32_video.ps1` | Produces an HLV file for ESP32 with configurable dimensions, frame rate, quality, duration, and 16 kHz audio normalization. Without `-InputFile`, it generates a deterministic test clip. |
 | `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
-| `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. |
+| `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Use `VideoQuality=1..31` for constant-quantizer encoding or leave it at zero for bitrate control. |
 | `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v5 profile with its own source, resolution, FPS, format and target quality. |

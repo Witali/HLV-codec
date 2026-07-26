@@ -55,7 +55,9 @@ are rejected. `-FitMode Crop` fills the 4:3 frame and crops equal margins;
 `-FitMode Contain` retains the complete source with black padding. Fitting is
 performed at source resolution before one Lanczos downscale to the complete
 QCIF/CIF frame. AVI uses the `H263` FourCC and optional PCM S16LE mono audio at
-8 kHz. CIF is intra-only for the bounded ESP32 memory profile.
+8 kHz. CIF is intra-only for the bounded ESP32 memory profile. Set
+`-VideoQuality 1` for the highest constant-quantizer quality, or leave it at
+zero to use the profile's bitrate and VBV defaults.
 
 The ESP32 decodes CIF at its native `352x288` size, copies the central
 `320x240` area pixel-for-pixel to the panel and performs no scaling. The

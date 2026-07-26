@@ -20,6 +20,9 @@ param(
     [ValidateRange(0, 4096)]
     [int]$VideoBufferKbps = 0,
 
+    [ValidateRange(0, 31)]
+    [int]$VideoQuality = 0,
+
     [ValidateRange(1, 300)]
     [int]$Gop = 30,
 
@@ -59,10 +62,11 @@ $height = [int]$profileSize[1]
 $isCif = $Profile -eq "352x288"
 $profileName = if ($isCif) { "CIF" } else { "QCIF" }
 $effectiveGop = if ($isCif) { 1 } else { $Gop }
-if (-not $VideoBitrateKbps) {
+$constantQuality = $VideoQuality -gt 0
+if (-not $constantQuality -and -not $VideoBitrateKbps) {
     $VideoBitrateKbps = if ($isCif) { 1536 } else { 384 }
 }
-if (-not $VideoBufferKbps) {
+if (-not $constantQuality -and -not $VideoBufferKbps) {
     $VideoBufferKbps = if ($isCif) { 1024 } else { 512 }
 }
 
@@ -104,9 +108,15 @@ else {
 
 if (-not $OutputFile) {
     $baseName = [IO.Path]::GetFileNameWithoutExtension($InputFile)
+    $qualityLabel = if ($constantQuality) {
+        "q${VideoQuality}"
+    }
+    else {
+        "${VideoBitrateKbps}k"
+    }
     $OutputFile = Join-Path $repo (
         "out\${baseName}_${Profile}_${fpsLabel}fps_" +
-        "H263_${profileName}_${VideoBitrateKbps}k.avi"
+        "H263_${profileName}_${qualityLabel}.avi"
     )
 }
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
@@ -128,7 +138,7 @@ New-Item -ItemType Directory -Force -Path (
 # then perform one Lanczos downscale to the complete QCIF/CIF frame.
 $videoFilter = if ($FitMode -eq "Crop") {
     (
-        "fps=${sourceRate}," +
+        "setpts=PTS-STARTPTS,fps=${sourceRate}," +
         "crop=" +
         "'trunc(min(iw\,ih*4/3)/2)*2':" +
         "'trunc(min(ih\,iw*3/4)/2)*2':" +
@@ -140,7 +150,7 @@ $videoFilter = if ($FitMode -eq "Crop") {
 }
 else {
     (
-        "fps=${sourceRate}," +
+        "setpts=PTS-STARTPTS,fps=${sourceRate}," +
         "pad=" +
         "'ceil(max(iw\,ih*4/3)/2)*2':" +
         "'ceil(max(ih\,iw*3/4)/2)*2':" +
@@ -159,14 +169,21 @@ $arguments = @(
     "-fps_mode", "cfr",
     "-c:v", "h263",
     "-tag:v", "H263",
-    "-b:v", "${VideoBitrateKbps}k",
-    "-maxrate", "${VideoBitrateKbps}k",
-    "-bufsize", "${VideoBufferKbps}k",
     "-g", $effectiveGop,
     "-bf", "0",
     "-pix_fmt", "yuv420p",
     "-threads", $Threads
 )
+if ($constantQuality) {
+    $arguments += @("-q:v", $VideoQuality)
+}
+else {
+    $arguments += @(
+        "-b:v", "${VideoBitrateKbps}k",
+        "-maxrate", "${VideoBitrateKbps}k",
+        "-bufsize", "${VideoBufferKbps}k"
+    )
+}
 if ($isCif) {
     # CIF remains intra-only for the bounded ESP32 decoder memory profile.
     $arguments += @(
@@ -195,13 +212,17 @@ $arguments += @("-f", "avi", $OutputFile)
 Write-Host (
     (
         "Encoding baseline H.263/AVI: {0} {1}, full source rate " +
-        "{2} fps, {3} kbps, VBV {4}k, {5} fit, GOP {6}, {7}..."
+        "{2} fps, {3}, {4} fit, GOP {5}, {6}..."
     ) -f
     $profileName,
     $Profile,
     $sourceFps.ToString("0.###", $culture),
-    $VideoBitrateKbps,
-    $VideoBufferKbps,
+    $(if ($constantQuality) {
+        "constant quality q=$VideoQuality"
+    }
+    else {
+        "${VideoBitrateKbps} kbps, VBV ${VideoBufferKbps}k"
+    }),
     $FitMode,
     $effectiveGop,
     $(if ($NoAudio) {
