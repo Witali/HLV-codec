@@ -1942,7 +1942,9 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VideoCodec::kMjpeg) {
-        int result = mjpeg_decoder.begin(video_file, &mjpeg_info);
+        int result = mjpeg_decoder.begin(
+            video_file, &mjpeg_info,
+            player_settings::kScaleVideoToDisplay);
         if (result == MJPEG_AVI_OK &&
             (mjpeg_info.fps_num > UINT16_MAX ||
              mjpeg_info.fps_den > UINT16_MAX ||
@@ -2458,6 +2460,41 @@ struct MjpegRenderContext {
     int next_scaled_y = 0;
     bool display_failed = false;
 };
+
+uint16_t *acquireMjpegDmaStrip(void *opaque, uint16_t source_y,
+                               uint16_t source_rows) {
+    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    if (!context || !source_rows ||
+        source_y + source_rows > mjpeg_info.height) {
+        return nullptr;
+    }
+    const int64_t render_start = microsNow();
+    uint16_t *pixels = display.acquireBuffer();
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    if (!pixels) context->display_failed = true;
+    return pixels;
+}
+
+bool submitMjpegDmaStrip(void *opaque, const uint16_t *pixels,
+                         uint16_t source_y, uint16_t source_rows) {
+    auto *context = static_cast<MjpegRenderContext *>(opaque);
+    if (!context || !pixels || !source_rows) return false;
+    const int64_t render_start = microsNow();
+    const int width = mjpeg_info.width;
+    const int height = mjpeg_info.height;
+    if (source_y + source_rows > height) return false;
+    const int x_offset = (kScreenWidth - width) / 2;
+    const int y_offset = (kScreenHeight - height) / 2;
+    if (display.drawBitmap(x_offset, y_offset + source_y, width,
+                           source_rows, pixels) != ESP_OK) {
+        context->display_failed = true;
+        return false;
+    }
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    return true;
+}
 
 bool renderMjpegStrip(void *opaque, const uint16_t *strip,
                       uint16_t source_y, uint16_t source_rows) {
@@ -3155,8 +3192,13 @@ void playOneMjpegFrame() {
     if (presentation.render) {
         MjpegRenderContext render_context{};
         const int64_t decode_start = microsNow();
-        const int decode_result = mjpeg_decoder.decode(
-            packet, renderMjpegStrip, &render_context);
+        const int decode_result =
+            player_settings::kScaleVideoToDisplay
+                ? mjpeg_decoder.decode(
+                      packet, renderMjpegStrip, &render_context)
+                : mjpeg_decoder.decodeDirect(
+                      packet, acquireMjpegDmaStrip,
+                      submitMjpegDmaStrip, &render_context);
         const uint32_t combined_us =
             static_cast<uint32_t>(microsNow() - decode_start);
         render_us = render_context.render_us;

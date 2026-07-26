@@ -338,11 +338,12 @@ rows directly into the two existing display DMA strips, so no 115,200-byte
 RGB565 frame is allocated. With PCM_U8 audio it uses the DAC clock; video-only
 streams use the rational ESP timer clock.
 
-The MJPEG decoder likewise does not retain a complete RGB565 frame. TJpgDec
-converts one MCU row into a reusable 320x16 RGB565 strip and submits it through
-the two display DMA buffers before decoding the next row. For the Big Buck
-Bunny q5 AVI, the maximum 25,342-byte JPEG packet, 10,240-byte strip and
-4,096-byte TJpgDec work area require 39,678 bytes instead of 144,638 bytes.
+The MJPEG decoder likewise does not retain a complete RGB565 frame.
+`esp_new_jpeg` emits one aligned RGB565 block at a time straight into one of
+the two display DMA strips. The Player therefore retains only the bounded
+compressed JPEG packet; it does not allocate the former separate 10,240-byte
+strip or 4,096-byte ROM TJpgDec work area. The superseded ROM decoder path has
+been removed.
 
 ### Big Buck Bunny example
 

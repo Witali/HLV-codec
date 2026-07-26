@@ -38,6 +38,8 @@ struct MjpegAviPacket {
 
 using MjpegAviStripOutput = bool (*)(
     void *context, const uint16_t *rgb565, uint16_t y, uint16_t rows);
+using MjpegAviStripAcquire = uint16_t *(*)(
+    void *context, uint16_t y, uint16_t rows);
 
 const char *mjpeg_avi_strerror(int result);
 int mjpeg_avi_read_info(FILE *file, MjpegAviInfo *info);
@@ -50,12 +52,12 @@ int mjpeg_avi_next_audio_chunk(FILE *file, const MjpegAviInfo &info,
 
 class MjpegAviDecoder {
 public:
-    int begin(FILE *file, MjpegAviInfo *info);
+    int begin(FILE *file, MjpegAviInfo *info, bool need_strip = true);
     void end();
 
     bool ready() const {
-        return compressed_ != nullptr && strip_ != nullptr &&
-               work_buffer_ != nullptr;
+        return compressed_ != nullptr && decoder_ != nullptr &&
+               (!need_strip_ || strip_ != nullptr);
     }
     const MjpegAviInfo &info() const { return info_; }
     size_t compressedCapacity() const { return compressed_capacity_; }
@@ -68,6 +70,9 @@ public:
     int readPacket(FILE *file, MjpegAviPacket *packet);
     int decode(const MjpegAviPacket &packet, MjpegAviStripOutput output,
                void *output_context);
+    int decodeDirect(const MjpegAviPacket &packet,
+                     MjpegAviStripAcquire acquire,
+                     MjpegAviStripOutput output, void *output_context);
 
 private:
     static constexpr size_t kStripRows = 16;
@@ -76,7 +81,12 @@ private:
     uint8_t *compressed_ = nullptr;
     size_t compressed_capacity_ = 0;
     uint16_t *strip_ = nullptr;
-    uint8_t *work_buffer_ = nullptr;
+    void *decoder_ = nullptr;
     uint32_t packet_index_ = 0;
     long packet_offset_ = -1;
+    bool need_strip_ = false;
+
+    int decodeImpl(const MjpegAviPacket &packet,
+                   MjpegAviStripAcquire acquire,
+                   MjpegAviStripOutput output, void *output_context);
 };

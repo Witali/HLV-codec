@@ -31,18 +31,21 @@ struct OutputContext {
     uint64_t hash = UINT64_C(1469598103934665603);
 };
 
+uint16_t *acquireStrip(void *opaque, uint16_t, uint16_t rows) {
+    auto *context = static_cast<OutputContext *>(opaque);
+    if (!context || !rows || rows > 16U) return nullptr;
+    return context->buffers[context->next_buffer++ & 1U];
+}
+
 bool submitStrip(void *opaque, const uint16_t *rgb565, uint16_t,
                  uint16_t rows) {
     auto *context = static_cast<OutputContext *>(opaque);
     if (!context || !rgb565 || !rows || rows > 16U) return false;
-    uint16_t *destination =
-        context->buffers[context->next_buffer++ & 1U];
     const size_t pixels = static_cast<size_t>(320U) * rows;
-    memcpy(destination, rgb565, pixels * sizeof(uint16_t));
     for (size_t i = 0; i < pixels; ++i) {
-        context->hash ^= static_cast<uint8_t>(destination[i]);
+        context->hash ^= static_cast<uint8_t>(rgb565[i]);
         context->hash *= UINT64_C(1099511628211);
-        context->hash ^= static_cast<uint8_t>(destination[i] >> 8);
+        context->hash ^= static_cast<uint8_t>(rgb565[i] >> 8);
         context->hash *= UINT64_C(1099511628211);
     }
     return true;
@@ -68,17 +71,18 @@ extern "C" void app_main(void) {
 
     MjpegAviDecoder decoder;
     MjpegAviInfo info{};
-    if (decoder.begin(file, &info) != MJPEG_AVI_OK ||
+    const int begin_result = decoder.begin(file, &info, false);
+    if (begin_result != MJPEG_AVI_OK ||
         info.width != 320 || info.height != 240) {
         finish(2);
     }
     OutputContext output{};
     output.buffers[0] = static_cast<uint16_t *>(
-        heap_caps_malloc(kStripPixels * sizeof(uint16_t),
-                         MALLOC_CAP_8BIT));
+        heap_caps_aligned_alloc(
+            16, kStripPixels * sizeof(uint16_t), MALLOC_CAP_8BIT));
     output.buffers[1] = static_cast<uint16_t *>(
-        heap_caps_malloc(kStripPixels * sizeof(uint16_t),
-                         MALLOC_CAP_8BIT));
+        heap_caps_aligned_alloc(
+            16, kStripPixels * sizeof(uint16_t), MALLOC_CAP_8BIT));
     if (!output.buffers[0] || !output.buffers[1]) finish(3);
 
     uint64_t total_cycles = 0;
@@ -86,10 +90,12 @@ extern "C" void app_main(void) {
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
         MjpegAviPacket packet{};
-        if (decoder.readPacket(file, &packet) != MJPEG_AVI_OK) finish(4);
+        if (decoder.readPacket(file, &packet) != MJPEG_AVI_OK) finish(6);
         const uint32_t start = esp_cpu_get_cycle_count();
-        if (decoder.decode(packet, submitStrip, &output) != MJPEG_AVI_OK)
-            finish(5);
+        const int decode_result = decoder.decodeDirect(
+            packet, acquireStrip, submitStrip, &output);
+        if (decode_result != MJPEG_AVI_OK)
+            finish(8);
         const uint32_t elapsed = esp_cpu_get_cycle_count() - start;
         frame_cycles[frames++] = elapsed;
         total_cycles += elapsed;
@@ -127,6 +133,6 @@ extern "C" void app_main(void) {
             heap_caps_get_free_size(MALLOC_CAP_8BIT)),
         static_cast<unsigned>(
             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-    ESP_LOGI(kTag, "ROM TJpgDec strip-copy benchmark complete");
+    ESP_LOGI(kTag, "esp_new_jpeg block benchmark complete");
     finish(0);
 }

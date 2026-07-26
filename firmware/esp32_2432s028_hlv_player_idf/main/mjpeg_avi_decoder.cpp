@@ -5,14 +5,13 @@
 #include <cstring>
 
 #include "esp_heap_caps.h"
+#include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
-#include "esp32/rom/tjpgd.h"
 
 namespace {
 
 constexpr char kTag[] = "mjpeg-avi";
-constexpr size_t kJpegWorkBytes = 4096;
 constexpr uint32_t kFallbackFrameBytes = 128 * 1024;
 constexpr uint32_t kMaximumFrameBytes = 1024 * 1024;
 constexpr unsigned kIoAttempts = 3;
@@ -275,76 +274,6 @@ int nextPayload(FILE *file, const MjpegAviInfo &info, bool video,
     }
 }
 
-struct DecodeContext {
-    const uint8_t *input = nullptr;
-    size_t input_size = 0;
-    size_t input_offset = 0;
-    uint16_t *strip = nullptr;
-    uint16_t width = 0;
-    uint16_t height = 0;
-    uint16_t strip_y = UINT16_MAX;
-    uint16_t strip_rows = 0;
-    MjpegAviStripOutput output = nullptr;
-    void *output_context = nullptr;
-    bool output_failed = false;
-};
-
-UINT jpegInput(JDEC *decoder, BYTE *buffer, UINT requested) {
-    auto *context = static_cast<DecodeContext *>(decoder->device);
-    if (!context || context->input_offset > context->input_size) return 0;
-    const size_t available = context->input_size - context->input_offset;
-    const size_t count = std::min<size_t>(requested, available);
-    if (buffer && count) {
-        std::memcpy(buffer, context->input + context->input_offset, count);
-    }
-    context->input_offset += count;
-    return static_cast<UINT>(count);
-}
-
-UINT jpegOutput(JDEC *decoder, void *bitmap, JRECT *rect) {
-    auto *context = static_cast<DecodeContext *>(decoder->device);
-    if (!context || !bitmap || !rect ||
-        rect->right >= context->width || rect->bottom >= context->height)
-        return 0;
-    if (context->strip_y == UINT16_MAX) {
-        context->strip_y = rect->top;
-        context->strip_rows =
-            static_cast<uint16_t>(rect->bottom - rect->top + 1U);
-    } else if (rect->top != context->strip_y ||
-               rect->bottom - rect->top + 1U != context->strip_rows) {
-        return 0;
-    }
-    if (context->strip_rows > 16U) return 0;
-
-    const auto *rgb = static_cast<const uint8_t *>(bitmap);
-    const size_t block_width = rect->right - rect->left + 1U;
-    for (size_t y = rect->top; y <= rect->bottom; ++y) {
-        uint16_t *destination =
-            context->strip +
-            (y - context->strip_y) * context->width + rect->left;
-        for (size_t x = 0; x < block_width; ++x) {
-            const uint8_t red = *rgb++;
-            const uint8_t green = *rgb++;
-            const uint8_t blue = *rgb++;
-            destination[x] =
-                static_cast<uint16_t>(((red & 0xf8U) << 8) |
-                                      ((green & 0xfcU) << 3) |
-                                      (blue >> 3));
-        }
-    }
-    if (rect->right + 1U == context->width) {
-        if (!context->output(
-                context->output_context, context->strip,
-                context->strip_y, context->strip_rows)) {
-            context->output_failed = true;
-            return 0;
-        }
-        context->strip_y = UINT16_MAX;
-        context->strip_rows = 0;
-    }
-    return 1;
-}
-
 }  // namespace
 
 const char *mjpeg_avi_strerror(int result) {
@@ -435,7 +364,8 @@ int mjpeg_avi_next_audio_chunk(FILE *file, const MjpegAviInfo &info,
     return nextPayload(file, info, false, payload_size);
 }
 
-int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info) {
+int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info,
+                           bool need_strip) {
     end();
     int result = mjpeg_avi_read_info(file, &info_);
     if (result != MJPEG_AVI_OK) return result;
@@ -444,34 +374,44 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info) {
     compressed_capacity_ = info_.max_video_frame_size;
     packet_index_ = 0;
     packet_offset_ = -1;
+    need_strip_ = need_strip;
     compressed_ = static_cast<uint8_t *>(
         heap_caps_malloc(compressed_capacity_, MALLOC_CAP_8BIT));
-    strip_ = static_cast<uint16_t *>(
-        heap_caps_malloc(stripBufferBytes(), MALLOC_CAP_8BIT));
-    work_buffer_ = static_cast<uint8_t *>(
-        heap_caps_malloc(kJpegWorkBytes, MALLOC_CAP_8BIT));
+    if (need_strip_) {
+        strip_ = static_cast<uint16_t *>(
+            heap_caps_aligned_alloc(
+                16, stripBufferBytes(), MALLOC_CAP_8BIT));
+    }
+    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
+    config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    config.block_enable = true;
+    jpeg_dec_handle_t decoder = nullptr;
+    if (jpeg_dec_open(&config, &decoder) == JPEG_ERR_OK) {
+        decoder_ = decoder;
+    }
     if (!ready()) {
         end();
         return MJPEG_AVI_ERR_MEMORY;
     }
-    ESP_LOGI(kTag,
-             "MJPEG buffers: compressed=%u, RGB565 strip=%u, work=%u bytes",
+    ESP_LOGI(kTag, "MJPEG buffers: compressed=%u, RGB565 strip=%u bytes",
              static_cast<unsigned>(compressed_capacity_),
-             static_cast<unsigned>(stripBufferBytes()),
-             static_cast<unsigned>(kJpegWorkBytes));
+             static_cast<unsigned>(
+                 strip_ ? stripBufferBytes() : 0));
     return MJPEG_AVI_OK;
 }
 
 void MjpegAviDecoder::end() {
+    if (decoder_)
+        jpeg_dec_close(static_cast<jpeg_dec_handle_t>(decoder_));
     heap_caps_free(compressed_);
     heap_caps_free(strip_);
-    heap_caps_free(work_buffer_);
     compressed_ = nullptr;
     strip_ = nullptr;
-    work_buffer_ = nullptr;
+    decoder_ = nullptr;
     compressed_capacity_ = 0;
     packet_index_ = 0;
     packet_offset_ = -1;
+    need_strip_ = false;
     info_ = {};
 }
 
@@ -539,27 +479,76 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
 int MjpegAviDecoder::decode(const MjpegAviPacket &packet,
                             MjpegAviStripOutput output,
                             void *output_context) {
+    return decodeImpl(packet, nullptr, output, output_context);
+}
+
+int MjpegAviDecoder::decodeDirect(const MjpegAviPacket &packet,
+                                  MjpegAviStripAcquire acquire,
+                                  MjpegAviStripOutput output,
+                                  void *output_context) {
+    if (!acquire) return MJPEG_AVI_ERR_ARGUMENT;
+    return decodeImpl(packet, acquire, output, output_context);
+}
+
+int MjpegAviDecoder::decodeImpl(
+    const MjpegAviPacket &packet, MjpegAviStripAcquire acquire,
+    MjpegAviStripOutput output, void *output_context) {
     if (!ready() || !packet.jpeg || !packet.jpeg_size || !output)
         return MJPEG_AVI_ERR_ARGUMENT;
-    DecodeContext context{
-        packet.jpeg, packet.jpeg_size, 0, strip_,
-        info_.width, info_.height, UINT16_MAX, 0,
-        output, output_context, false};
-    JDEC decoder{};
-    const JRESULT prepare = jd_prepare(
-        &decoder, jpegInput, work_buffer_, kJpegWorkBytes, &context);
-    if (prepare != JDR_OK || decoder.width != info_.width ||
-        decoder.height != info_.height) {
-        ESP_LOGE(kTag, "jd_prepare failed: %d (%ux%u)",
-                 static_cast<int>(prepare), decoder.width, decoder.height);
+    if (!acquire && !strip_) return MJPEG_AVI_ERR_ARGUMENT;
+    jpeg_dec_io_t io{};
+    jpeg_dec_header_info_t header{};
+    io.inbuf = const_cast<uint8_t *>(packet.jpeg);
+    io.inbuf_len = static_cast<int>(packet.jpeg_size);
+    auto decoder = static_cast<jpeg_dec_handle_t>(decoder_);
+    if (jpeg_dec_parse_header(decoder, &io, &header) != JPEG_ERR_OK ||
+        header.width != info_.width || header.height != info_.height) {
+        ESP_LOGE(kTag, "esp_new_jpeg header failed (%ux%u)",
+                 header.width, header.height);
         return MJPEG_AVI_ERR_DECODE;
     }
-    const JRESULT decoded = jd_decomp(&decoder, jpegOutput, 0);
-    if (context.output_failed) return MJPEG_AVI_ERR_IO;
-    if (decoded != JDR_OK || context.strip_y != UINT16_MAX) {
-        ESP_LOGE(kTag, "jd_decomp failed: %d",
-                 static_cast<int>(decoded));
+
+    int output_bytes = 0;
+    int process_count = 0;
+    if (jpeg_dec_get_outbuf_len(decoder, &output_bytes) !=
+            JPEG_ERR_OK ||
+        jpeg_dec_get_process_count(decoder, &process_count) !=
+            JPEG_ERR_OK ||
+        output_bytes <= 0 ||
+        output_bytes > static_cast<int>(stripBufferBytes()) ||
+        output_bytes %
+            (info_.width * static_cast<int>(sizeof(uint16_t))) ||
+        process_count <= 0) {
+        ESP_LOGE(kTag, "esp_new_jpeg block geometry failed");
         return MJPEG_AVI_ERR_DECODE;
     }
-    return MJPEG_AVI_OK;
+
+    const uint16_t block_rows = static_cast<uint16_t>(
+        output_bytes / (info_.width * sizeof(uint16_t)));
+    uint16_t output_y = 0;
+    for (int block = 0; block < process_count; ++block) {
+        const uint16_t expected_rows = std::min<uint16_t>(
+            block_rows, info_.height - output_y);
+        uint16_t *destination =
+            acquire ? acquire(output_context, output_y, expected_rows)
+                    : strip_;
+        if (!destination) return MJPEG_AVI_ERR_IO;
+        io.outbuf = reinterpret_cast<uint8_t *>(destination);
+        if (jpeg_dec_process(decoder, &io) != JPEG_ERR_OK ||
+            io.out_size <= 0 ||
+            io.out_size %
+                (info_.width * static_cast<int>(sizeof(uint16_t)))) {
+            ESP_LOGE(kTag, "esp_new_jpeg block %d failed", block);
+            return MJPEG_AVI_ERR_DECODE;
+        }
+        const uint16_t rows = static_cast<uint16_t>(
+            io.out_size / (info_.width * sizeof(uint16_t)));
+        if (rows != expected_rows ||
+            !output(output_context, destination, output_y, rows)) {
+            return MJPEG_AVI_ERR_IO;
+        }
+        output_y = static_cast<uint16_t>(output_y + rows);
+    }
+    return output_y == info_.height ? MJPEG_AVI_OK
+                                    : MJPEG_AVI_ERR_DECODE;
 }

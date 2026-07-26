@@ -7,6 +7,7 @@ if(MJPEG_QEMU_BENCHMARK)
         REQUIRES
             esp_rom
             esp_system
+            espressif__esp_new_jpeg
             freertos
             heap
             log
@@ -116,6 +117,7 @@ else()
             esp_lcd
             esp_rom
             esp_timer
+            espressif__esp_new_jpeg
             fatfs
             freertos
             heap

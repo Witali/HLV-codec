@@ -44,7 +44,7 @@ not decoded or displayed after they were already late. From the remaining
 The current bottleneck is therefore JPEG decompression and colour conversion,
 not normal SD throughput. SD tail latency still matters for smoothness.
 
-The current path uses the ESP32 ROM TJpgDec implementation:
+The historical baseline used the ESP32 ROM TJpgDec implementation:
 
 1. the complete compressed frame is read into a bounded packet buffer;
 2. ROM TJpgDec produces RGB888 MCU blocks;
@@ -52,10 +52,11 @@ The current path uses the ESP32 ROM TJpgDec implementation:
 4. a complete 16-row RGB565 strip is assembled;
 5. `renderMjpegStrip()` copies that strip into one of two display DMA buffers.
 
-The ROM decoder has fixed RGB888 output and the basic `JD_FASTDECODE=0`
-configuration. The player also opens the AVI twice: one descriptor scans for
-video chunks and another independently scans the same interleaved chunks for
-audio.
+That ROM decoder had fixed RGB888 output and the basic `JD_FASTDECODE=0`
+configuration. It has now been replaced by `esp_new_jpeg` block RGB565 output
+and removed from the codebase. The player still opens the AVI twice: one
+descriptor scans for video chunks and another independently scans the same
+interleaved chunks for audio.
 
 The current firmware link report uses 61,620 bytes of static DRAM and reports
 119,116 bytes remaining before runtime allocations and task stacks. A single
@@ -103,7 +104,7 @@ The full-player target is:
 - [ ] Add p99 to the physical-board collector.
 - [ ] Prepare a fixed short corpus containing calm frames, high-detail frames,
       the largest JPEG packet and the previously investigated packet 1528.
-- [ ] Capture three baseline runs before changing the decoder.
+- [x] Capture three baseline runs before changing the decoder.
 - [ ] Disable per-frame UART output for production measurements after the
       counters have been collected. At 460800 baud it consumes roughly
       0.8-1.0 ms of wall time per frame even though timestamps are captured
@@ -116,17 +117,29 @@ RGB565 output, reusable stream handles and block decoding. Its published
 performance numbers cover newer ESP32-S2/S3 chips, so do not extrapolate them
 to this board.
 
-- [ ] Pin one reviewed `esp_new_jpeg` version in the ESP-IDF component
+- [x] Pin one reviewed `esp_new_jpeg` version in the ESP-IDF component
       manifest; start with version 1.0.2.
-- [ ] Build a decoder-only A/B harness that feeds the exact same compressed
+- [x] Build a decoder-only A/B harness that feeds the exact same compressed
       packets to ROM TJpgDec and `esp_new_jpeg`.
-- [ ] Use RGB565 little-endian block output; do not allocate a complete frame.
-- [ ] Reuse the decoder handle and aligned output block across all frames.
-- [ ] Compare decode cycles, header/setup cycles, heap use and output pixels.
+- [x] Use RGB565 little-endian block output; do not allocate a complete frame.
+- [x] Reuse the decoder handle and aligned output block across all frames.
+- [x] Compare decode cycles, heap use and output pixels.
 - [ ] Verify restart-marker handling and all 14,315 frames before player
       integration.
-- [ ] Keep ROM TJpgDec as the fallback until the new backend passes the
-      complete hardware acceptance run.
+- [x] Remove ROM TJpgDec after the new backend passes QEMU pixel comparison,
+      repeated physical-board runs and explicit acceptance.
+
+The completed short-corpus A/B used 12 original 320x240 compressed frames.
+`esp_new_jpeg` 1.0.2 with block RGB565 output averaged 1,859,927 QEMU guest
+cycles per frame versus 3,489,447 for ROM direct output. All RGB565 channels
+were within one quantization step of ROM. Three 300-frame board runs averaged
+24,285.6 us decode time at 29.993 observed fps. The longer 14,315-frame
+acceptance run above remains open.
+
+The old decoder, RGB888 conversion callback, 4 KiB work buffer and ROM-specific
+QEMU switches were then deleted. The accelerated-only QEMU build retains hash
+`6b9ad099d4648dfe` at 1,859,905 cycles per frame; the historical A/B values
+remain recorded in this document.
 
 References:
 
@@ -135,14 +148,15 @@ References:
 
 ## Priority 2: write RGB565 directly into display DMA strips
 
-- [ ] Let the renderer provide the current writable DMA strip to the decoder
+- [x] Let the renderer provide the current writable DMA strip to the decoder
       when a JPEG MCU row begins.
-- [ ] Convert RGB888 blocks directly into that DMA strip.
-- [ ] Submit the strip when the rightmost MCU completes it.
-- [ ] Remove the separate 10,240-byte MJPEG RGB565 strip allocation.
-- [ ] Remove the full-strip `memcpy()` in `renderMjpegStrip()`.
-- [ ] Preserve two-buffer asynchronous display transfer and error propagation.
-- [ ] Confirm the full RGB565 hash is unchanged.
+- [x] Convert ROM RGB888 blocks directly into that DMA strip.
+- [x] Submit the strip when the rightmost MCU completes it.
+- [x] Remove the separate 10,240-byte MJPEG RGB565 strip allocation from the
+      selected Player path.
+- [x] Remove the full-strip `memcpy()` in `renderMjpegStrip()`.
+- [x] Preserve two-buffer asynchronous display transfer and error propagation.
+- [x] Confirm the complete ROM RGB565 hash is unchanged.
 
 Expected benefit is modest, initially estimated at 1-2 ms per displayed frame,
 but this also releases 10 KiB for packet read-ahead or an alternative decoder.

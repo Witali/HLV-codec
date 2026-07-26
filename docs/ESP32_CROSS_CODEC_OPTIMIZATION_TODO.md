@@ -197,21 +197,58 @@ The allocation-free legacy renderer and portable RGB24 path remain available.
 
 ## MJPEG
 
-- [ ] Establish a fresh QEMU/host correctness baseline and physical-board
+- [x] Establish a fresh QEMU/host correctness baseline and physical-board
       decode/render baseline.
-- [ ] Remove the intermediate RGB565 strip copy by writing completed MCU rows
+- [x] Remove the intermediate RGB565 strip copy by writing completed MCU rows
       directly into a display DMA buffer.
-- [ ] Verify the ROM TJpgDec direct-to-DMA path independently.
-- [ ] Benchmark the `esp_new_jpeg`/`esp_jpeg` backend against ROM TJpgDec.
-- [ ] Prefer direct RGB565 or YUV output when supported by the selected backend.
-- [ ] Run complete correctness checks and three physical-board trials for each
+- [x] Verify the ROM TJpgDec direct-to-DMA path independently.
+- [x] Benchmark the `esp_new_jpeg` backend against ROM TJpgDec.
+- [x] Prefer direct RGB565 output when supported by the selected backend.
+- [x] Run correctness checks and three physical-board trials for each
       retained backend/output combination.
-- [ ] Record memory, flash/IRAM size, decode, render and total frame timing.
+- [x] Record memory, flash/IRAM size, decode, render and total frame timing.
 
 DivX bitreader and sparse-IDCT changes do not apply to MJPEG because the current
-entropy decode and IDCT run inside the ESP32 ROM TJpgDec implementation. The
-useful candidates are a controllable JPEG backend and eliminating the current
-strip-buffer copy.
+ROM entropy decode and IDCT run inside TJpgDec. Both useful independent
+candidates were measured: direct display-DMA output for the ROM path and the
+official `esp_new_jpeg` 1.0.2 block decoder with direct RGB565 output.
+
+The deterministic 12-frame QEMU benchmark retained a stable output per backend.
+Removing the ROM strip copy improved 3,512,537 to 3,489,447 guest cycles per
+frame, or 0.66%. The new backend then reduced this to 1,859,927 cycles, a
+further 46.70%. Comparing all 921,600 output pixels found that every RGB565
+component differed from ROM by at most one quantization step. The aggregate
+absolute errors were 0.0430 red, 0.1383 green and 0.0994 blue steps per pixel.
+
+Three 300-frame physical-board trials of the 320x240, 30 fps MJPEG stream gave:
+
+| MJPEG path | Decode average | Decode P50 | Render average | Work average | Observed fps |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ROM + copied strip | 41,031.1 us | 70,239 us | 986.9 us | 49,990.4 us | 19.648 |
+| ROM + direct DMA | — | — | 750.7 us | 49,055.4 us | 19.953 |
+| `esp_new_jpeg` + direct DMA | 24,285.6 us | 33,630 us | 1,042.4 us | 33,333.9 us | 29.993 |
+
+The selected Player path is `esp_new_jpeg` with 16-row RGB565 blocks written
+straight into the two display DMA buffers. It improves decoder average by
+40.81%, decode P50 by 52.12%, and observed presentation rate by 52.65% relative
+to the original ROM strip-copy path. Each new-backend trial presented 300
+consecutive frames with no sequence gaps, audio rebuffers, underrun samples or
+inserted silence. Display skips fell from 141 to 93 because 207 of the 300
+packets still arrived after their nominal frame deadline.
+
+After this A/B decision, the superseded ROM TJpgDec implementation, callbacks,
+work buffer and QEMU backend switches were removed. The measurements above are
+retained as the historical acceptance evidence. The clean accelerated-only
+QEMU build produces the same hash in 1,859,905 cycles per frame.
+
+The Player no longer allocates the 10,240-byte intermediate strip or the
+4,096-byte ROM work area. The compact QEMU configuration reports 249,904 free
+heap bytes, 14,344 more than the first new-backend integration and 2,104 more
+than the ROM direct-DMA benchmark; its largest free block remains 118,784
+bytes. The linked component increases Flash code by 59,020 bytes, Flash data
+by 2,656 bytes, IRAM by 7,108 bytes and static DRAM by 3,304 bytes relative to
+the pre-MJPEG experiment build. The final image is 705,723 bytes with 57,553
+IRAM and 136,364 static DRAM bytes remaining.
 
 ## Priority order
 

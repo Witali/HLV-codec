@@ -324,15 +324,17 @@ The Player caches the active 64x16 BPV palette as RGB565 and rebuilds the
 2 KiB table only for a keyframe, avoiding per-block RGB888 conversion.
 
 The MJPEG benchmark copies a bounded number of original compressed frames
-without re-encoding and measures ROM TJpgDec plus RGB565 strip output:
+without re-encoding. By default it measures the Player's `esp_new_jpeg`
+RGB565 block decoder and direct output:
 
 ```powershell
 .\qemu-mjpeg-benchmark.ps1
 ```
 
-Its `J` record includes per-frame cycles and the complete submitted RGB565
-hash. This provides a QEMU correctness and CPU baseline for output-buffer
-experiments; display SPI/DMA time is measured only on the physical board.
+The `J` record includes per-frame cycles and the complete submitted RGB565
+hash. The old ROM TJpgDec implementation and its benchmark modes were removed
+after the accelerated backend passed the A/B checks. Display SPI/DMA time is
+measured only on the physical board.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
@@ -349,10 +351,9 @@ display DMA timing.
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
   (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV uses nine
   reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
-  JPEG chunk size, a 320x16 RGB565 strip and a 4 KiB TJpgDec work area; BPV
-  uses one bounded maximum-size packet buffer. The Big Buck Bunny q5 AVI needs
-  39,678 bytes for these three MJPEG allocations instead of a full-frame
-  design's 144,638 bytes.
+  JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
+  two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
+  TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
 - Video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
   8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
   instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
