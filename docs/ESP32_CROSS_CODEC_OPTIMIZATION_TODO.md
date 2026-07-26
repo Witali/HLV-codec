@@ -1,0 +1,110 @@
+# ESP32 cross-codec optimization TODO
+
+This plan tracks decoder and renderer optimizations that may transfer between
+the HLV, DivX 3, MPEG-1, H.263, BPV and MJPEG playback paths on the original
+dual-core ESP32-2432S028 board.
+
+Every candidate is an A/B experiment. Keep it only when it preserves decoded
+output and produces a repeatable benefit on the physical ESP32. QEMU is the
+first correctness and instruction-count gate, but it cannot model SPI flash
+cache misses, DMA contention or the exact Xtensa pipeline.
+
+## Common acceptance process
+
+For every candidate:
+
+1. Record the current QEMU and physical-board baseline from the same build,
+   stream, frame range and clock configuration.
+2. Apply one focused change.
+3. Rebuild and run native tests where available.
+4. Run the matching QEMU benchmark and verify frame count and output hash.
+5. Build, flash and run at least three physical-board trials.
+6. Compare average, p50, p95 and maximum decode/render time as applicable.
+7. Keep and commit the change only when the result is repeatable and no
+   correctness, memory or binary-size regression outweighs the gain.
+8. Remove rejected code and record the measured result in this document.
+
+Shared infrastructure and correctness criteria may be reused. Hot bitreader,
+VLC and transform implementations should remain codec-specific because their
+cache widths, VLC or Exp-Golomb semantics and inlining requirements differ.
+
+## DivX 3
+
+- [ ] Establish a fresh QEMU and physical-board baseline.
+- [ ] Place only `bit_read`, `bits_read` and `decode_vlc_index` in IRAM.
+- [ ] Verify the QEMU output hash and record QEMU cycles.
+- [ ] Run three physical-board trials and measure the flash-cache-sensitive
+      effect.
+- [ ] Keep or reject the IRAM placement and document IRAM consumption.
+
+Do not place the complete approximately 6 KiB `decode_inter_picture` path in
+IRAM. QEMU is not expected to predict the flash-cache benefit: selective HLV
+IRAM placement was QEMU-neutral but improved the physical board by 14.74%.
+
+## MPEG-1
+
+- [ ] Establish a fresh QEMU and physical-board baseline.
+- [ ] A/B-test IRAM placement for the bitreader and hot VLC helpers.
+- [ ] Add a small direct lookup for the most frequent coefficient prefixes.
+- [ ] Verify bit-exact output, QEMU cycles and physical-board timing after each
+      independent change.
+- [ ] Keep only individually justified changes and record IRAM/table size.
+
+The decoder already has a 32-bit reader and 16-bit lookahead in
+`third_party/pl_mpeg/pl_mpeg.h`. The remaining candidates are fewer flash-cache
+misses and less traversal of frequent DCT coefficient VLCs, not another generic
+bitreader.
+
+## H.263
+
+- [ ] Establish a fresh QEMU and physical-board baseline.
+- [ ] A/B-test selective IRAM placement for `BitstreamFillCache`.
+- [ ] Independently A/B-test the hot VLC/dequant helpers.
+- [ ] Independently A/B-test the hottest IDCT kernel.
+- [ ] Verify output and record QEMU, board and IRAM-size results.
+
+PacketVideo already uses a 32-bit cache, VLC tables, byte-sized prediction,
+fused IDCT-add and variable-complexity IDCT. Do not duplicate the DivX
+algorithmic changes without profiler evidence.
+
+## BPV
+
+- [ ] Establish a fresh QEMU and physical-board decode/render baseline.
+- [ ] Build a 64x16 RGB565 palette lookup table only when a keyframe changes
+      the palette.
+- [ ] Use the cached table in the render path.
+- [ ] Verify output and measure decode, render and total frame time in QEMU and
+      in three physical-board trials.
+- [ ] Keep the change only if the renderer benefit justifies 2 KiB of memory.
+
+The current approximate split is 5.2 ms decode and 16.9 ms render, so renderer
+work is more important than further decoder micro-optimization.
+
+## MJPEG
+
+- [ ] Establish a fresh QEMU/host correctness baseline and physical-board
+      decode/render baseline.
+- [ ] Remove the intermediate RGB565 strip copy by writing completed MCU rows
+      directly into a display DMA buffer.
+- [ ] Verify the ROM TJpgDec direct-to-DMA path independently.
+- [ ] Benchmark the `esp_new_jpeg`/`esp_jpeg` backend against ROM TJpgDec.
+- [ ] Prefer direct RGB565 or YUV output when supported by the selected backend.
+- [ ] Run complete correctness checks and three physical-board trials for each
+      retained backend/output combination.
+- [ ] Record memory, flash/IRAM size, decode, render and total frame timing.
+
+DivX bitreader and sparse-IDCT changes do not apply to MJPEG because the current
+entropy decode and IDCT run inside the ESP32 ROM TJpgDec implementation. The
+useful candidates are a controllable JPEG backend and eliminating the current
+strip-buffer copy.
+
+## Priority order
+
+1. Selective IRAM placement for DivX, MPEG-1 and H.263.
+2. Frequent MPEG-1 coefficient VLC prefixes.
+3. BPV palette-to-RGB565 rendering.
+4. MJPEG direct-to-DMA output and alternative JPEG backend.
+
+HLV and H.263 are already close to algorithmic saturation. Common code should
+remain limited to compact frame-buffer operations, RGB565 conversion,
+benchmark infrastructure and bit-exact verification criteria.
