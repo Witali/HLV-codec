@@ -17,9 +17,9 @@
 extern "C" {
 #endif
 
-/* Bitstream syntax revisions accepted by the decoder.  HLV1_VERSION is the
- * newest stable syntax emitted by default; later experimental constants may
- * exist without being selected as the normative output version. */
+/* HLV v14 is a standalone format. Historical syntax constants remain named
+ * only while legacy branches are removed from the implementation; readers
+ * and writers accept v14 exclusively. */
 #define HLV1_STREAM_VERSION_1 1
 #define HLV1_STREAM_VERSION_2 2
 #define HLV1_STREAM_VERSION_3 3
@@ -33,7 +33,10 @@ extern "C" {
 #define HLV1_STREAM_VERSION_11 11
 #define HLV1_STREAM_VERSION_12 12
 #define HLV1_STREAM_VERSION_13 13
-#define HLV1_VERSION HLV1_STREAM_VERSION_13
+#define HLV1_STREAM_VERSION_14 14
+#define HLV1_MIN_VERSION HLV1_STREAM_VERSION_14
+#define HLV1_VERSION HLV1_STREAM_VERSION_14
+#define HLV1_MAX_VERSION HLV1_STREAM_VERSION_14
 
 /* Effective quantizer steps are represented as an 8-bit mantissa and a small
  * left shift.  2040 is therefore the largest stable v4+ step. */
@@ -96,7 +99,7 @@ typedef struct HLV1Header {
     uint8_t quality;         /**< Informational friendly quality setting. */
     uint8_t search_radius;   /**< Informational encoder search radius. */
     uint8_t flags;           /**< HLV1_FLAG_* sequence features. */
-    uint8_t version;         /**< Zero aliases syntax v1 for source compatibility. */
+    uint8_t version;         /**< Zero selects the current v14 syntax. */
     uint16_t audio_sample_rate; /**< Audio samples per second; zero without audio. */
     uint8_t audio_codec;     /**< HLV1_AUDIO_* value. */
     uint8_t audio_channels;  /**< Interleaved channels; PCM_U8 currently requires 1. */

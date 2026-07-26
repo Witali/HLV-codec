@@ -393,12 +393,14 @@ display DMA timing.
   JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
   two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
   TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
-- Video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
+- HLV video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
   8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
   instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
-  tables preserve each block's discarded average to 1/16 sample. Stream v13
-  literal blocks are copied directly into this packed storage with zero
-  correction. BPV instead retains two 32,400-byte block-record frames plus its
+  tables preserve each block's discarded average to 1/16 sample. Stable HLV
+  v14 makes this compact reconstruction normative, so packed and expanded
+  decoders predict from identical samples. Literal blocks are copied directly
+  into packed storage with zero correction. BPV instead retains two
+  32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
   at 320x180 and has no full RGB frame.
 - DivX 3: two packed Y6/U5/V5 reference frames, Q4 correction maps and rolling

@@ -26,7 +26,7 @@ $encoder = Join-Path $repo "build\msvc\hlvenc.exe"
 $fpsLabel = if ($Fps) { "${Fps}fps" } else { "native-fps" }
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
-        ("out\BigBuckBunny_1080p_video-settings_v13_{0}_level-curve.hlv" -f
+        ("out\BigBuckBunny_1080p_video-settings_v14_{0}_level-curve.hlv" -f
             $fpsLabel)
 }
 if (-not [IO.Path]::IsPathRooted($OutputFile)) {
@@ -53,7 +53,7 @@ if ($outputParent) {
 }
 
 $temporaryAudio = Join-Path ([IO.Path]::GetTempPath()) `
-    ("hlv-bbb-v13-{0}.u8" -f [guid]::NewGuid().ToString("N"))
+    ("hlv-bbb-v14-{0}.u8" -f [guid]::NewGuid().ToString("N"))
 $audioConversion = "aformat=channel_layouts=mono,aresample=16000"
 $audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
     "attack=0.01:release=250:knee=8:" +
@@ -137,7 +137,7 @@ try {
         "--preset", "balanced",
         "--quality", 45,
         "--gop", 30,
-        "--syntax", 13,
+        "--syntax", 14,
         "--threads", $Threads,
         "--audio-u8", $temporaryAudio,
         "--audio-rate", 16000
@@ -155,7 +155,7 @@ try {
         "the native source frame rate"
     }
     $profileMessage = (
-        "Encoding 320x180 at {0}, HLV v13, quality 45, " +
+        "Encoding 320x180 at {0}, stable HLV v14, quality 45, " +
         "GOP 30, threads {1}..."
     ) -f $frameRateMessage, $Threads
     Write-Host $profileMessage

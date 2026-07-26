@@ -74,6 +74,15 @@ int main(void) {
     CHECK(got.width == h.width && got.height == h.height && got.version == h.version);
     fclose(f);
 
+    HLV1Header legacy = test_header();
+    legacy.version = HLV1_STREAM_VERSION_13;
+    f = tmpfile();
+    CHECK(f != NULL);
+    CHECK(hlv1_header_write(f, &legacy) == HLV1_ERR_ARGUMENT);
+    fclose(f);
+    CHECK(hlv1_encoder_create(&legacy, 38.0) == NULL);
+    CHECK(hlv1_decoder_create(&legacy) == NULL);
+
     h.flags = HLV1_FLAG_AUDIO;
     h.audio_codec = HLV1_AUDIO_PCM_U8;
     h.audio_sample_rate = 16000;

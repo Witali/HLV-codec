@@ -318,7 +318,7 @@ static void usage(const char *p) {
         "  --two-pass-window X local first-pass window in seconds (e.g. 10)\n"
         "  --two-pass-trials N whole-window q probes 2..10 (default 5)\n"
         "  --two-pass-log FILE write per-window analysis as CSV\n"
-        "  --syntax N        stream syntax 1..13 (default latest)\n"
+        "  --syntax N        stable stream syntax 14 (default and only value)\n"
         "  --gop N           maximum keyframe interval (default by preset)\n"
         "  --adaptive-gop    compare K/P frames with encoder-only RDO\n"
         "  --min-key-interval N minimum frames between adaptive K frames (default 8)\n"
@@ -874,7 +874,7 @@ int main(int argc, char **argv) {
         min_key_interval < 1 || min_key_interval >= gop ||
         keyframe_bias < 1.0 || keyframe_bias > 1.25 ||
         bitrate_kbps < 0 || bitrate_kbps > 100000 ||
-        syntax < HLV1_STREAM_VERSION_1 || syntax > HLV1_VERSION ||
+        syntax < HLV1_MIN_VERSION || syntax > HLV1_MAX_VERSION ||
         chroma_scale < 0.25 || chroma_scale > 4.0 ||
         rd_luma_weight < 1 || rd_luma_weight > 16 ||
         rd_lambda_scale <= 0.0 || rd_lambda_scale > 16.0 ||

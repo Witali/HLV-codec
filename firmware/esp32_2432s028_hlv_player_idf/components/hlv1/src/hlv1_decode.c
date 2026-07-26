@@ -1184,6 +1184,11 @@ static int get_residual_mask(HLV1BitReader *br, unsigned version,
                              int block_count, uint32_t *mask,
                              int *coeff_mode) {
     *coeff_mode = 0;
+    if (version >= HLV1_STREAM_VERSION_14) {
+        *coeff_mode = (int)hlv1_br_get(br, 1);
+        *mask = hlv1_br_get(br, (unsigned)block_count);
+        return br->error ? br->error : HLV1_OK;
+    }
     int first = (int)hlv1_br_get(br, 1);
     if (br->error) return br->error;
     int pivot = block_count - 1;
@@ -1439,8 +1444,10 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
 /* --- Public decoder lifecycle ----------------------------------------- */
 static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
                                         int compact_y6_u5_v5) {
+    unsigned version = hlv1_stream_version(header);
     if (!header || !header->width || !header->height ||
-        hlv1_stream_version(header) > HLV1_VERSION) return NULL;
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     trace_decoder_heap("after state");
@@ -1481,17 +1488,15 @@ static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
         }
     }
     trace_decoder_heap("after frame storage");
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        d->mv_cols = d->current.padded_width / 16;
-        size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
-        d->mv_top_x = (int16_t *)malloc(bytes);
-        d->mv_top_y = (int16_t *)malloc(bytes);
-        d->mv_cur_x = (int16_t *)malloc(bytes);
-        d->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
-            hlv1_decoder_destroy(d);
-            return NULL;
-        }
+    d->mv_cols = d->current.padded_width / 16;
+    size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
+    d->mv_top_x = (int16_t *)malloc(bytes);
+    d->mv_top_y = (int16_t *)malloc(bytes);
+    d->mv_cur_x = (int16_t *)malloc(bytes);
+    d->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
+        hlv1_decoder_destroy(d);
+        return NULL;
     }
     trace_decoder_heap("after motion state");
     return d;
@@ -1527,7 +1532,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  const HLV1Frame **frame,
                                  int segmented) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
-    unsigned version = hlv1_stream_version(&d->header);
+    const unsigned version = HLV1_VERSION;
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
         (version < HLV1_STREAM_VERSION_4 && p->q_shift != 0) ||
         p->bit_length > p->payload_size * 8ULL)
@@ -1643,7 +1648,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
                 int partition = 0;
-                if (version >= 14) {
+                if (version >= 15) {
                     int first = (int)hlv1_br_get(&br, 1);
                     if (br.error) return br.error;
                     if (first) {
@@ -1784,6 +1789,8 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
             if (r < 0) return r;
             if (d->compact_y6_u5_v5 && !compact_output_ready)
                 compact_store_macroblock(d, x, y);
+            else if (!d->compact_y6_u5_v5)
+                hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;
