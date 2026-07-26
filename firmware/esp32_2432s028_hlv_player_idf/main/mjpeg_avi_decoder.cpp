@@ -8,6 +8,9 @@
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#ifdef MJPEG_PHASE_TIMING
+#include "esp_cpu.h"
+#endif
 
 namespace {
 
@@ -493,6 +496,9 @@ int MjpegAviDecoder::decodeDirect(const MjpegAviPacket &packet,
 int MjpegAviDecoder::decodeImpl(
     const MjpegAviPacket &packet, MjpegAviStripAcquire acquire,
     MjpegAviStripOutput output, void *output_context) {
+#ifdef MJPEG_PHASE_TIMING
+    last_decode_cycles_ = {};
+#endif
     if (!ready() || !packet.jpeg || !packet.jpeg_size || !output)
         return MJPEG_AVI_ERR_ARGUMENT;
     if (!acquire && !strip_) return MJPEG_AVI_ERR_ARGUMENT;
@@ -501,7 +507,16 @@ int MjpegAviDecoder::decodeImpl(
     io.inbuf = const_cast<uint8_t *>(packet.jpeg);
     io.inbuf_len = static_cast<int>(packet.jpeg_size);
     auto decoder = static_cast<jpeg_dec_handle_t>(decoder_);
-    if (jpeg_dec_parse_header(decoder, &io, &header) != JPEG_ERR_OK ||
+#ifdef MJPEG_PHASE_TIMING
+    uint32_t phase_start = esp_cpu_get_cycle_count();
+#endif
+    const jpeg_error_t header_result =
+        jpeg_dec_parse_header(decoder, &io, &header);
+#ifdef MJPEG_PHASE_TIMING
+    last_decode_cycles_.parse_header =
+        esp_cpu_get_cycle_count() - phase_start;
+#endif
+    if (header_result != JPEG_ERR_OK ||
         header.width != info_.width || header.height != info_.height) {
         ESP_LOGE(kTag, "esp_new_jpeg header failed (%ux%u)",
                  header.width, header.height);
@@ -510,9 +525,20 @@ int MjpegAviDecoder::decodeImpl(
 
     int output_bytes = 0;
     int process_count = 0;
-    if (jpeg_dec_get_outbuf_len(decoder, &output_bytes) !=
+#ifdef MJPEG_PHASE_TIMING
+    phase_start = esp_cpu_get_cycle_count();
+#endif
+    const jpeg_error_t output_length_result =
+        jpeg_dec_get_outbuf_len(decoder, &output_bytes);
+    const jpeg_error_t process_count_result =
+        jpeg_dec_get_process_count(decoder, &process_count);
+#ifdef MJPEG_PHASE_TIMING
+    last_decode_cycles_.geometry =
+        esp_cpu_get_cycle_count() - phase_start;
+#endif
+    if (output_length_result !=
             JPEG_ERR_OK ||
-        jpeg_dec_get_process_count(decoder, &process_count) !=
+        process_count_result !=
             JPEG_ERR_OK ||
         output_bytes <= 0 ||
         output_bytes > static_cast<int>(stripBufferBytes()) ||
@@ -534,7 +560,16 @@ int MjpegAviDecoder::decodeImpl(
                     : strip_;
         if (!destination) return MJPEG_AVI_ERR_IO;
         io.outbuf = reinterpret_cast<uint8_t *>(destination);
-        if (jpeg_dec_process(decoder, &io) != JPEG_ERR_OK ||
+#ifdef MJPEG_PHASE_TIMING
+        phase_start = esp_cpu_get_cycle_count();
+#endif
+        const jpeg_error_t process_result =
+            jpeg_dec_process(decoder, &io);
+#ifdef MJPEG_PHASE_TIMING
+        last_decode_cycles_.process +=
+            esp_cpu_get_cycle_count() - phase_start;
+#endif
+        if (process_result != JPEG_ERR_OK ||
             io.out_size <= 0 ||
             io.out_size %
                 (info_.width * static_cast<int>(sizeof(uint16_t)))) {

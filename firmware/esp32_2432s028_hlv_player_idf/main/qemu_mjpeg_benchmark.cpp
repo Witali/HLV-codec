@@ -33,6 +33,7 @@ struct OutputContext {
     uint16_t *buffers[2]{};
     unsigned next_buffer = 0;
     uint64_t hash = UINT64_C(1469598103934665603);
+    uint64_t callback_cycles = 0;
 };
 
 uint16_t *acquireStrip(void *opaque, uint16_t, uint16_t rows) {
@@ -45,6 +46,7 @@ bool submitStrip(void *opaque, const uint16_t *rgb565, uint16_t,
                  uint16_t rows) {
     auto *context = static_cast<OutputContext *>(opaque);
     if (!context || !rgb565 || !rows || rows > 16U) return false;
+    const uint32_t start = esp_cpu_get_cycle_count();
     const size_t pixels = static_cast<size_t>(320U) * rows;
     for (size_t i = 0; i < pixels; ++i) {
         context->hash ^= static_cast<uint8_t>(rgb565[i]);
@@ -52,6 +54,8 @@ bool submitStrip(void *opaque, const uint16_t *rgb565, uint16_t,
         context->hash ^= static_cast<uint8_t>(rgb565[i] >> 8);
         context->hash *= UINT64_C(1099511628211);
     }
+    context->callback_cycles +=
+        esp_cpu_get_cycle_count() - start;
     return true;
 }
 
@@ -90,11 +94,16 @@ extern "C" void app_main(void) {
     if (!output.buffers[0] || !output.buffers[1]) finish(3);
 
     uint64_t total_cycles = 0;
+    uint64_t total_header_cycles = 0;
+    uint64_t total_geometry_cycles = 0;
+    uint64_t total_process_cycles = 0;
+    uint64_t total_callback_cycles = 0;
     uint32_t frame_cycles[kFrameLimit]{};
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
         MjpegAviPacket packet{};
         if (decoder.readPacket(file, &packet) != MJPEG_AVI_OK) finish(6);
+        const uint64_t callback_before = output.callback_cycles;
         const uint32_t start = esp_cpu_get_cycle_count();
         const int decode_result = decoder.decodeDirect(
             packet, acquireStrip, submitStrip, &output);
@@ -103,6 +112,13 @@ extern "C" void app_main(void) {
         const uint32_t elapsed = esp_cpu_get_cycle_count() - start;
         frame_cycles[frames++] = elapsed;
         total_cycles += elapsed;
+        const MjpegAviDecodeCycles &phases =
+            decoder.lastDecodeCycles();
+        total_header_cycles += phases.parse_header;
+        total_geometry_cycles += phases.geometry;
+        total_process_cycles += phases.process;
+        total_callback_cycles +=
+            output.callback_cycles - callback_before;
     }
 
     for (uint32_t i = 1; i < frames; ++i) {
@@ -120,13 +136,24 @@ extern "C" void app_main(void) {
     const uint32_t p95 =
         frame_cycles[((frames * 95U + 99U) / 100U) - 1U];
     const uint32_t maximum = frame_cycles[frames - 1U];
+    const uint32_t header_average =
+        static_cast<uint32_t>(total_header_cycles / frames);
+    const uint32_t geometry_average =
+        static_cast<uint32_t>(total_geometry_cycles / frames);
+    const uint32_t process_average =
+        static_cast<uint32_t>(total_process_cycles / frames);
+    const uint32_t callback_average =
+        static_cast<uint32_t>(total_callback_cycles / frames);
+    const uint32_t decoder_average =
+        average > callback_average ? average - callback_average : 0;
     const uint64_t fps_milli =
         static_cast<uint64_t>(kTargetCpuHz) * frames * 1000U /
         total_cycles;
     esp_rom_printf(
-        "#J,frames,avg,p50,p95,max,fps_milli,hash,heap,largest\n");
+        "#J,frames,avg,p50,p95,max,fps_milli,hash,heap,largest,"
+        "decoder_avg,header_avg,geometry_avg,process_avg,callback_avg\n");
     esp_rom_printf(
-        "J,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u\n",
+        "J,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u,%u,%u,%u,%u\n",
         static_cast<unsigned>(frames),
         static_cast<unsigned>(average), static_cast<unsigned>(p50),
         static_cast<unsigned>(p95), static_cast<unsigned>(maximum),
@@ -136,7 +163,12 @@ extern "C" void app_main(void) {
         static_cast<unsigned>(
             heap_caps_get_free_size(MALLOC_CAP_8BIT)),
         static_cast<unsigned>(
-            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+        static_cast<unsigned>(decoder_average),
+        static_cast<unsigned>(header_average),
+        static_cast<unsigned>(geometry_average),
+        static_cast<unsigned>(process_average),
+        static_cast<unsigned>(callback_average));
     ESP_LOGI(kTag, "esp_new_jpeg block benchmark complete");
     finish(0);
 }

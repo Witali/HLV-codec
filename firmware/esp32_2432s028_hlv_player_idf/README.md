@@ -349,11 +349,14 @@ IRAM-only IDCT wrapper unless explicitly overridden):
 .\qemu-mjpeg-benchmark.ps1 -HotIram OFF
 ```
 
-The `J` record includes per-frame cycles and the complete submitted RGB565
-hash. `MJPEG_OPTIMIZED_IDCT=ON` is the production default. The old ROM TJpgDec
-implementation and its benchmark modes were removed after the accelerated
-backend passed the A/B checks. Display SPI/DMA time is measured only on the
-physical board.
+The `J` record includes per-frame cycles, the complete submitted RGB565 hash
+and appended decoder-only, header, geometry, JPEG-process and correctness
+callback averages. The callback average measures RGB565 hashing and is
+subtracted from `decoder_avg`; phase counters are compiled only into this
+benchmark. `MJPEG_OPTIMIZED_IDCT=ON` is the production default. The old ROM
+TJpgDec implementation and its benchmark modes were removed after the
+accelerated backend passed the A/B checks. Display SPI/DMA time is measured
+only on the physical board.
 
 The first run installs QEMU under this project's `.tools` directory. Generated
 clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for

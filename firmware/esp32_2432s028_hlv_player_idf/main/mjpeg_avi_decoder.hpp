@@ -36,6 +36,12 @@ struct MjpegAviPacket {
     size_t jpeg_size = 0;
 };
 
+struct MjpegAviDecodeCycles {
+    uint32_t parse_header = 0;
+    uint32_t geometry = 0;
+    uint32_t process = 0;
+};
+
 using MjpegAviStripOutput = bool (*)(
     void *context, const uint16_t *rgb565, uint16_t y, uint16_t rows);
 using MjpegAviStripAcquire = uint16_t *(*)(
@@ -62,6 +68,9 @@ public:
     const MjpegAviInfo &info() const { return info_; }
     size_t compressedCapacity() const { return compressed_capacity_; }
     long lastPacketOffset() const { return packet_offset_; }
+    const MjpegAviDecodeCycles &lastDecodeCycles() const {
+        return last_decode_cycles_;
+    }
     size_t stripBufferBytes() const {
         return static_cast<size_t>(info_.width) * kStripRows *
                sizeof(uint16_t);
@@ -85,6 +94,7 @@ private:
     uint32_t packet_index_ = 0;
     long packet_offset_ = -1;
     bool need_strip_ = false;
+    MjpegAviDecodeCycles last_decode_cycles_{};
 
     int decodeImpl(const MjpegAviPacket &packet,
                    MjpegAviStripAcquire acquire,

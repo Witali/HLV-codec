@@ -85,7 +85,8 @@ if(MJPEG_QEMU_BENCHMARK)
             vfs
     )
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
-        MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT})
+        MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT}
+        MJPEG_PHASE_TIMING=1)
     enable_mjpeg_optimized_idct_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
     target_add_binary_data(

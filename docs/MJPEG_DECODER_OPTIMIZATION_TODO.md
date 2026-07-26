@@ -199,7 +199,7 @@ parallelize entropy decoding within one JPEG frame.
       instruction-cache effects.
 - [x] Add a first-party Xtensa DC-only IDCT shortcut and retain the original
       `esp_new_jpeg` kernel as the fallback.
-- [ ] Separate header/process/correctness-callback cycles in the benchmark so
+- [x] Separate header/process/correctness-callback cycles in the benchmark so
       RGB565 hashing does not dilute decoder-only deltas.
 - [ ] Extend the Xtensa IDCT with exact one-column and two-column reduced-row
       paths; retain the original kernel for every unmatched coefficient mask.
@@ -261,6 +261,15 @@ same baseline/candidate builds on COM8. Retain production code only when the
 physical-board improvement is consistent, larger than run-to-run noise and
 does not compromise heap, largest-free-block, IRAM or Flash limits. Record and
 remove rejected candidate code.
+
+The phase benchmark is retained. On QEMU, the current optimized decoder
+averages 1,438,865 decoder-only guest cycles: 3,730 in header parsing, 35 in
+geometry queries and 1,434,787 in `jpeg_dec_process`. The RGB565 correctness
+hash costs another 332,242 cycles inside the historical total. Seven identical
+COM8 runs report 7,776,263 decoder-only cycles (32.401 ms at 240 MHz), of which
+7,734,619 are `jpeg_dec_process`; header parsing costs only 32,308 cycles.
+Correctness hashing costs 1,466,916 cycles (6.112 ms). Subsequent decisions use
+the decoder-only value while retaining the hash as acceptance evidence.
 
 Espressif's published S3 comparison shows source TJpgDec with
 `JD_FASTDECODE=2` improving approximately 52 ms to 46 ms, while direct RGB565
