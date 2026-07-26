@@ -222,11 +222,11 @@ parallelize entropy decoding within one JPEG frame.
       reject the physical-board slowdown and remove the candidate.
 - [x] Reject a wider primary VLC lookup for the current stream: no measured DC
       symbols and only 2.737% of AC symbols exceed eight Huffman bits.
-- [ ] A/B a fixed 16x16 YUV420-to-RGB565LE kernel for the 320-pixel output
+- [x] A/B a fixed 16x16 YUV420-to-RGB565LE kernel for the 320-pixel output
       stride. Unroll only the eight four-pixel groups, retain the exact
       fixed-point products and clipping-table semantics, and keep the original
       library function as the fallback for every other geometry.
-- [ ] Independently A/B two packed 256-entry U/V contribution tables after the
+- [x] Independently A/B two packed 256-entry U/V contribution tables after the
       fixed-geometry colour result is known. Charge the 2 KiB internal-DRAM
       cost separately and do not combine both changes in the first build.
 - [ ] Prototype a complete paired Huffman table-builder/decoder replacement
@@ -287,10 +287,29 @@ two `MULL` instructions with `MUL16S`; it did not modify the managed component.
 The raw-object variant preserved relocations, decoded all 60 QEMU frames and
 retained hash `436f6b344bed074e`. QEMU instruction counts were identical, as
 expected. Five physical-board reset trials then matched the `MULL` control
-exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame.
-The substitution was removed. Chroma contribution tables would exchange the
-same two products for DRAM loads while costing at least 2 KiB, so they are not
-retained either.
+exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame, so that
+substitution was removed.
+
+The retained fixed RGB565LE kernel specializes only complete 16x16 YUV420 MCUs
+written to a 320-pixel stride and calls the original library function for every
+other geometry. It unrolls the eight chroma groups but preserves the original
+fixed-point constants, common green rounding and `lips` clipping semantics.
+All 60 QEMU frames retained hash `436f6b344bed074e`; decoder-only cycles fell
+from 1,407,084 to 1,335,338 (5.10%) and total cycles from 1,739,380 to
+1,667,638 (4.12%). Five deterministic COM8 resets retained the same hash and
+improved decoder-only cycles from 7,607,262 to 7,221,856 (5.07%) and total
+cycles from 9,073,825 to 8,688,463 (4.25%).
+
+The follow-up table experiment packs each exact pre-shift green product and
+the already-shifted red or blue contribution into one 32-bit entry. Two
+256-entry Flash-resident tables therefore cost 2 KiB of image space without
+consuming heap or static DRAM, and preserve the original single rounding step
+for green. Relative to the retained fixed kernel, QEMU decoder-only cycles
+fell from 1,335,338 to 1,297,128 (2.86%) and total cycles from 1,667,638 to
+1,629,483 (2.29%). Five COM8 resets improved decoder-only cycles from
+7,221,856 to 7,043,932 (2.46%) and total cycles from 8,688,463 to 8,510,492
+(2.05%). The hash and reported heap values were unchanged, so the tables are
+retained by default.
 
 The retained coefficient-clear wrapper recognizes only aligned
 `memset(buffer, 0, 128)` calls and emits 32 unrolled `S32I` stores. Every

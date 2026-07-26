@@ -10,7 +10,11 @@ param(
     [ValidateSet("ON", "OFF")]
     [string]$ReducedIdct = "ON",
     [ValidateSet("ON", "OFF")]
-    [string]$FastClear = "ON"
+    [string]$FastClear = "ON",
+    [ValidateSet("ON", "OFF")]
+    [string]$FixedRgb565 = "ON",
+    [ValidateSet("ON", "OFF")]
+    [string]$ColorTables = "ON"
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +39,8 @@ $project = $PSScriptRoot
     "-D", "MJPEG_OPTIMIZED_IDCT=$OptimizedIdct",
     "-D", "MJPEG_IDCT_REDUCED_ROWS=$ReducedIdct",
     "-D", "MJPEG_FAST_COEFFICIENT_CLEAR=$FastClear",
+    "-D", "MJPEG_FIXED_RGB565=$FixedRgb565",
+    "-D", "MJPEG_COLOR_TABLES=$ColorTables",
     "qemu",
     "--qemu-extra-args=-no-reboot -icount shift=0,sleep=off"
 )

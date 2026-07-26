@@ -279,6 +279,10 @@ int nextPayload(FILE *file, const MjpegAviInfo &info, bool video,
 
 }  // namespace
 
+#ifdef MJPEG_FIXED_RGB565
+extern "C" void mjpeg_install_fixed_rgb565();
+#endif
+
 const char *mjpeg_avi_strerror(int result) {
     switch (result) {
         case MJPEG_AVI_OK: return "success";
@@ -388,6 +392,9 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info,
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     config.block_enable = true;
+#ifdef MJPEG_FIXED_RGB565
+    mjpeg_install_fixed_rgb565();
+#endif
     jpeg_dec_handle_t decoder = nullptr;
     if (jpeg_dec_open(&config, &decoder) == JPEG_ERR_OK) {
         decoder_ = decoder;
