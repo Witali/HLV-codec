@@ -10,7 +10,7 @@ The migration is complete only when the application and repository codec
 components used by the firmware:
 
 - contain no C++ translation units;
-- link without the ESP-IDF `cxx` component;
+- link without the built-in ESP-IDF `cxx` runtime component;
 - contain no `std::`, RTTI, exception, `new`/`delete`, `__cxa` or
   `__gxx_personality` symbols;
 - keep application code within the C99 language subset and retain the
@@ -68,6 +68,37 @@ and vtables. The final C99 build must reduce this count to zero.
 
 Each stage must build before the next one starts. Behavioural changes and
 performance optimisations are not mixed into the language migration.
+
+## Current verification status
+
+The production source migration is complete. The ESP-IDF application and
+every repository codec implementation linked into it contain only C and
+Xtensa assembly translation units. A clean default build and all six
+codec-specific benchmark configurations build successfully:
+
+| Configuration | Application binary |
+| --- | ---: |
+| Default player | 690496 bytes |
+| H.263 | 212192 bytes |
+| DivX 3 | 195056 bytes |
+| HLV | 183568 bytes |
+| MPEG-1 | 157632 bytes |
+| BPV | 108592 bytes |
+| MJPEG | 205136 bytes |
+
+Every configuration links with the C linker driver. Auditing all seven linker
+maps for `libstdc++`, `__cxa`, `operator new`, `operator delete`, `std::` and
+`__gxx_personality` produces zero matches. The default C99 application binary
+is 17456 bytes (2.47%) smaller than the preserved C++ baseline.
+
+The only `.cpp` files below the migrated AMR-NB source tree are the original
+Android command-line and gtest test harnesses in
+`codecs/amrnb/third_party/pv/dec/test`. They are not compiled into the ESP32
+firmware or the Windows player. The Windows player and the superseded Arduino
+firmware are separate targets and remain outside this migration.
+
+The physical A/B matrix remains pending while the shared ESP32 board is in use
+by another process. No firmware was flashed as part of the source migration.
 
 ## Physical A/B matrix
 
