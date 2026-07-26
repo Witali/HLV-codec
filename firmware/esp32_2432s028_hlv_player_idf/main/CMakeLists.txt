@@ -200,7 +200,7 @@ else()
         SRCS
             "hlv_player.cpp"
             "cyd_display.c"
-            "bpv_esp32_decoder.cpp"
+            "bpv_esp32_decoder.c"
             "hlv_esp32_decoder.cpp"
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"

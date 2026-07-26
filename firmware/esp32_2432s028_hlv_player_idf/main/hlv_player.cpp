@@ -26,7 +26,7 @@
 
 #include "board_config.h"
 #include "amrnb_3gp.h"
-#include "bpv_esp32_decoder.hpp"
+#include "bpv_esp32_decoder.h"
 #include "cyd_display.h"
 #include "divx3.h"
 #include "divx3_avi.h"
@@ -240,7 +240,7 @@ MjpegAviInfo mjpeg_info{};
 Divx3Decoder *divx3_decoder = nullptr;
 Divx3AviInfo divx3_info{};
 uint8_t *divx3_packet = nullptr;
-BpvEsp32Decoder bpv_decoder;
+bpv_esp32_decoder_t bpv_decoder{};
 BPV1Header bpv_header{};
 plm_t *mpeg_video = nullptr;
 plm_t *mpeg_audio = nullptr;
@@ -442,8 +442,8 @@ void decodeTask(void *) {
             result.result =
                 decoder.decode(request.hlv_packet, &result.hlv_frame);
         } else if (request.codec == VideoCodec::kBpv) {
-            result.result =
-                bpv_decoder.decode(request.bpv_packet, &result.bpv_frame);
+            result.result = bpv_esp32_decoder_decode(
+                &bpv_decoder, request.bpv_packet, &result.bpv_frame);
         } else if (request.codec == VideoCodec::kDivx3) {
             result.result =
                 divx3_decoder && request.divx3_packet &&
@@ -467,8 +467,8 @@ void decodeTask(void *) {
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {
             const int64_t read_start = microsNow();
-            result.bpv_read_result = bpv_decoder.readPacket(
-                request.bpv_file, &result.bpv_next_packet);
+            result.bpv_read_result = bpv_esp32_decoder_read_packet(
+                &bpv_decoder, request.bpv_file, &result.bpv_next_packet);
             result.bpv_read_us =
                 static_cast<uint32_t>(microsNow() - read_start);
         }
@@ -1495,7 +1495,7 @@ void closeVideo() {
     heap_caps_free(divx3_packet);
     divx3_packet = nullptr;
     divx3_info = {};
-    bpv_decoder.end();
+    bpv_esp32_decoder_end(&bpv_decoder);
     bpv_header = {};
     if (mpeg_video) {
         plm_destroy(mpeg_video);
@@ -2049,7 +2049,8 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VideoCodec::kBpv) {
-        const int result = bpv_decoder.begin(video_file, &bpv_header);
+        const int result =
+            bpv_esp32_decoder_begin(&bpv_decoder, video_file, &bpv_header);
         if (result != BPV1_OK) {
             showStatus("Invalid video.bpv1", bpv1_strerror(result));
             closeVideo();
@@ -2077,8 +2078,10 @@ bool openVideo() {
                  bpv_header.fps_num, bpv_header.fps_den,
                  static_cast<unsigned>(bpv_header.frame_count),
                  bpv_header.audio_sample_rate,
-                 static_cast<unsigned>(bpv_decoder.memoryBytes()),
-                 static_cast<unsigned>(bpv_decoder.packetCapacity()));
+                 static_cast<unsigned>(
+                     bpv_esp32_decoder_memory_bytes(&bpv_decoder)),
+                 static_cast<unsigned>(
+                     bpv_esp32_decoder_packet_capacity(&bpv_decoder)));
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
                        "cannot create CPU1 decoder task");
@@ -3417,8 +3420,8 @@ void playOneDivx3FramePipelined() {
 void playOneBpvFrameSequential() {
     BPV1Packet packet{};
     const int64_t read_start = microsNow();
-    const int packet_result =
-        bpv_decoder.readPacket(video_file, &packet);
+    const int packet_result = bpv_esp32_decoder_read_packet(
+        &bpv_decoder, video_file, &packet);
     const uint32_t read_us =
         static_cast<uint32_t>(microsNow() - read_start);
     if (packet_result == BPV1_EOF) {
@@ -3436,7 +3439,8 @@ void playOneBpvFrameSequential() {
 
     const BPV1Frame *frame = nullptr;
     const int64_t decode_start = microsNow();
-    const int decode_result = bpv_decoder.decode(&packet, &frame);
+    const int decode_result =
+        bpv_esp32_decoder_decode(&bpv_decoder, &packet, &frame);
     const uint32_t decode_us =
         static_cast<uint32_t>(microsNow() - decode_start);
     if (decode_result != BPV1_OK) {
@@ -3466,8 +3470,8 @@ void playOneBpvFramePipelined() {
 
     if (!ready_bpv_packet_valid) {
         const int64_t read_start = microsNow();
-        const int packet_result =
-            bpv_decoder.readPacket(video_file, &ready_bpv_packet);
+        const int packet_result = bpv_esp32_decoder_read_packet(
+            &bpv_decoder, video_file, &ready_bpv_packet);
         ready_bpv_read_us =
             static_cast<uint32_t>(microsNow() - read_start);
         if (packet_result == BPV1_EOF) {
@@ -3717,7 +3721,7 @@ extern "C" void app_main(void) {
             continue;
         }
         if (video_file && video_codec == VideoCodec::kBpv &&
-            bpv_decoder.ready()) {
+            bpv_esp32_decoder_ready(&bpv_decoder)) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneBpvFramePipelined();
             } else {
