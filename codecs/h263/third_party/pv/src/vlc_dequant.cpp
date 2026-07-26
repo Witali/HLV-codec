@@ -19,6 +19,17 @@
 #include "vlc_decode.h"
 #include "zigzag.h"
 
+#ifndef PV_H263_IRAM_VLC_DEQUANT
+#define PV_H263_IRAM_VLC_DEQUANT 0
+#endif
+
+#if PV_H263_IRAM_VLC_DEQUANT
+#include "esp_attr.h"
+#define PV_H263_VLC_DEQUANT_ATTR IRAM_ATTR
+#else
+#define PV_H263_VLC_DEQUANT_ATTR
+#endif
+
 
 typedef PV_STATUS(*VlcDecFuncP)(BitstreamDecVideo *stream, Tcoef *pTcoef);
 static const uint8 AC_rowcol[64] = {    0, 0, 0, 0, 0, 0, 0, 0,
@@ -802,6 +813,7 @@ int VlcDequantH263IntraBlock(VideoDecData *video, int comp, int switched,
     return i;
 }
 
+PV_H263_VLC_DEQUANT_ATTR
 int VlcDequantH263IntraBlock_SH(VideoDecData *video, int comp, uint8 *bitmapcol, uint8 *bitmaprow)
 {
     BitstreamDecVideo *stream = video->bitstream;

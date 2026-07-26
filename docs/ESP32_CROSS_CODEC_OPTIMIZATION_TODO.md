@@ -111,7 +111,7 @@ and reproduced only the stream's known audio-underrun pattern.
 
 - [x] Establish a fresh QEMU and physical-board baseline.
 - [x] A/B-test selective IRAM placement for `BitstreamFillCache`.
-- [ ] Independently A/B-test the hot VLC/dequant helpers.
+- [x] Independently A/B-test the hot VLC/dequant helpers.
 - [ ] Independently A/B-test the hottest IDCT kernel.
 - [ ] Verify output and record QEMU, board and IRAM-size results.
 
@@ -133,6 +133,22 @@ The physical decode average improves by 7.77%. The change moves 272 bytes from
 Flash code to IRAM, leaves DRAM and total image size unchanged, and preserves
 all 300 frame indices with no audio rebuffers, underrun samples or inserted
 silence.
+
+The active short-header `VlcDequantH263IntraBlock_SH` path was then tested
+independently and retained. QEMU again produced hash
+`e2f9d3b5a212be20` and 428,624 average guest cycles per frame with and
+without the placement.
+
+| H.263 variant | Decode average | P50 | P95 | Maximum | Decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| IRAM cache refill | 16,706.5 us | 15,836 us | 19,677 us | 66,755 us | baseline |
+| IRAM refill + VLC/dequant | 15,900.1 us | 15,159 us | 19,155 us | 64,239 us | accepted |
+
+The additional board improvement is 4.83%, or 12.22% cumulatively relative
+to the all-Flash H.263 baseline. It moves another 1,240 bytes into IRAM,
+removes 1,208 bytes of Flash code, leaves DRAM unchanged and adds 32 bytes to
+the application image. Only the active 1.2 KiB H.263+ intra path is placed;
+the unused approximately 4 KiB MPEG-4 intra helper remains in Flash.
 
 ## BPV
 

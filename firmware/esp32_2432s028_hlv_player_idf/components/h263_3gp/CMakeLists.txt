@@ -36,6 +36,8 @@ idf_component_register(
 
 set(PV_H263_IRAM_BITSTREAM_FILL ON CACHE BOOL
     "Place the H.263 32-bit bitstream cache refill in IRAM")
+set(PV_H263_IRAM_VLC_DEQUANT ON CACHE BOOL
+    "Place the active H.263+ intra VLC/dequant helper in IRAM")
 if(PV_H263_IRAM_BITSTREAM_FILL)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PV_H263_IRAM_BITSTREAM_FILL=1
@@ -43,6 +45,16 @@ if(PV_H263_IRAM_BITSTREAM_FILL)
 else()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PV_H263_IRAM_BITSTREAM_FILL=0
+    )
+endif()
+
+if(PV_H263_IRAM_VLC_DEQUANT)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_VLC_DEQUANT=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_VLC_DEQUANT=0
     )
 endif()
 
