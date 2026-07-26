@@ -159,3 +159,15 @@ Typical benchmark workflow:
 .\scripts\python.ps1 .\scripts\summarize_results.py `
     .\bench\results\local.json
 ```
+
+## Reverse-engineering helpers
+
+| Script | Purpose |
+| --- | --- |
+| `ghidra/ExportAnnotatedDecompilation.java` | Ghidra post-script that exports every retained function in the current program as byte-accurate annotated disassembly and matching pseudo-C. It adds a short semantic `Purpose` comment for each known ESP_NEW_JPEG decoder function. |
+
+The ESP_NEW_JPEG 1.0.2 decoder results and the exact headless command are
+documented in
+[`docs/reverse_engineering/esp_new_jpeg_1.0.2`](../docs/reverse_engineering/esp_new_jpeg_1.0.2/README.md).
+Keep Ghidra itself under `local_tools/ghidra` and Ghidra projects under `out/`;
+neither installation output belongs in Git.
