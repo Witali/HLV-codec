@@ -91,7 +91,7 @@ if(MJPEG_QEMU_BENCHMARK)
         "Number of embedded MJPEG frames decoded by the QEMU benchmark")
     idf_component_register(
         SRCS
-            "qemu_mjpeg_benchmark.cpp"
+            "qemu_mjpeg_benchmark.c"
             "mjpeg_avi_decoder.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
