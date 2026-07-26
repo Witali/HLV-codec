@@ -183,7 +183,7 @@ elseif(HLV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
             "qemu_benchmark.cpp"
-            "hlv_esp32_decoder.cpp"
+            "hlv_esp32_decoder.c"
         INCLUDE_DIRS "."
         REQUIRES
             hlv1
@@ -201,7 +201,7 @@ else()
             "hlv_player.cpp"
             "cyd_display.c"
             "bpv_esp32_decoder.c"
-            "hlv_esp32_decoder.cpp"
+            "hlv_esp32_decoder.c"
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
             ${mjpeg_idct_sources}

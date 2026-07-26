@@ -9,7 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "hlv_esp32_decoder.hpp"
+#include "hlv_esp32_decoder.h"
 
 namespace {
 
@@ -66,8 +66,8 @@ extern "C" void app_main(void) {
         finish(2);
     }
 
-    HlvEsp32Decoder decoder;
-    result = decoder.begin(header, true);
+    hlv_esp32_decoder_t decoder{};
+    result = hlv_esp32_decoder_begin(&decoder, &header, true);
     if (result < 0) {
         fclose(file);
         finish(3);
@@ -85,7 +85,7 @@ extern "C" void app_main(void) {
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
         HLV1Packet packet{};
-        result = decoder.readPacket(file, &packet);
+        result = hlv_esp32_decoder_read_packet(&decoder, file, &packet);
         if (result == HLV1_EOF) break;
         if (result < 0) {
             ESP_LOGE(kTag, "Packet %" PRIu32 " read failed: %s", frames,
@@ -97,7 +97,7 @@ extern "C" void app_main(void) {
 
         const HLV1Frame *frame = nullptr;
         uint32_t start = esp_cpu_get_cycle_count();
-        result = decoder.decode(&packet, &frame);
+        result = hlv_esp32_decoder_decode(&decoder, &packet, &frame);
         uint32_t elapsed = esp_cpu_get_cycle_count() - start;
         const uint8_t frame_type = packet.frame_type;
         hlv1_packet_free(&packet);
@@ -123,7 +123,7 @@ extern "C" void app_main(void) {
     }
 
     fclose(file);
-    decoder.end();
+    hlv_esp32_decoder_end(&decoder);
     if (!frames || !decode_cycles) finish(6);
 
     for (uint32_t i = 1; i < frames; ++i) {

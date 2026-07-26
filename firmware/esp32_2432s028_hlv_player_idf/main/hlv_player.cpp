@@ -32,7 +32,7 @@
 #include "divx3_avi.h"
 #include "h263_3gp.h"
 #include "hlv1.h"
-#include "hlv_esp32_decoder.hpp"
+#include "hlv_esp32_decoder.h"
 #include "mjpeg_avi_decoder.hpp"
 #include "player_settings.h"
 #include "pl_mpeg.h"
@@ -234,7 +234,7 @@ struct DecodeResult {
 cyd_display_t display{};
 FILE *video_file = nullptr;
 FILE *audio_file = nullptr;
-HlvEsp32Decoder decoder;
+hlv_esp32_decoder_t decoder = {};
 MjpegAviDecoder mjpeg_decoder;
 MjpegAviInfo mjpeg_info{};
 Divx3Decoder *divx3_decoder = nullptr;
@@ -439,8 +439,8 @@ void decodeTask(void *) {
                     ? HLV1_ERR_IO
                     : HLV1_OK;
         } else if (request.codec == VideoCodec::kHlv) {
-            result.result =
-                decoder.decode(request.hlv_packet, &result.hlv_frame);
+            result.result = hlv_esp32_decoder_decode(
+                &decoder, request.hlv_packet, &result.hlv_frame);
         } else if (request.codec == VideoCodec::kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
@@ -826,7 +826,7 @@ bool mountSdCard() {
         bus.data5_io_num = GPIO_NUM_NC;
         bus.data6_io_num = GPIO_NUM_NC;
         bus.data7_io_num = GPIO_NUM_NC;
-        bus.max_transfer_sz = HlvEsp32Decoder::kPacketBlockBytes;
+        bus.max_transfer_sz = HLV_ESP32_PACKET_BLOCK_BYTES;
         const esp_err_t bus_result =
             spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
         if (bus_result != ESP_OK) {
@@ -1487,7 +1487,7 @@ void closeVideo() {
     pending_read_us = 0;
     pending_decode_us = 0;
     stopAudio();
-    decoder.end();
+    hlv_esp32_decoder_end(&decoder);
     mjpeg_decoder.end();
     mjpeg_info = {};
     divx3_decoder_destroy(divx3_decoder);
@@ -2102,8 +2102,8 @@ bool openVideo() {
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
-        const int decoder_result = decoder.begin(
-            sequence_header, PLAYER_USE_COMPACT_Y6_U5_V5);
+        const int decoder_result = hlv_esp32_decoder_begin(
+            &decoder, &sequence_header, PLAYER_USE_COMPACT_Y6_U5_V5);
         if (decoder_result != HLV1_OK) {
             showStatus("Not enough RAM", "use at most the 320x180 profile");
             reportHeap("decoder or packet-pool allocation failed");
@@ -2111,10 +2111,12 @@ bool openVideo() {
             return false;
         }
         ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u DMA-capable",
-                 static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockCount),
-                 static_cast<unsigned>(HlvEsp32Decoder::kPacketBlockBytes),
-                 static_cast<unsigned>(decoder.packetCapacity()),
-                 static_cast<unsigned>(decoder.dmaBlockCount()));
+                 static_cast<unsigned>(HLV_ESP32_PACKET_BLOCK_COUNT),
+                 static_cast<unsigned>(HLV_ESP32_PACKET_BLOCK_BYTES),
+                 static_cast<unsigned>(
+                     hlv_esp32_decoder_packet_capacity(&decoder)),
+                 static_cast<unsigned>(
+                     hlv_esp32_decoder_dma_block_count(&decoder)));
         // Allocate the large predictive planes and packet blocks before the
         // worker stack, preserving the largest contiguous heap regions.
         if (!startDecodeWorker()) {
@@ -2216,8 +2218,9 @@ bool openVideo() {
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred",
-                 decoder.compactYuv() ? "packed Y6/U5/V5 + Q4 corrections"
-                                      : "8-bit YUV 4:2:0");
+                 hlv_esp32_decoder_compact_yuv(&decoder)
+                     ? "packed Y6/U5/V5 + Q4 corrections"
+                     : "8-bit YUV 4:2:0");
     }
     reportHeap("decoder ready");
     if (PLAYER_LOG_FRAME_TIMINGS) {
@@ -2922,7 +2925,7 @@ bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
 
 uint32_t readPacket(HLV1Packet *packet, int *result) {
     const int64_t read_start = microsNow();
-    *result = decoder.readPacket(video_file, packet);
+    *result = hlv_esp32_decoder_read_packet(&decoder, video_file, packet);
     return static_cast<uint32_t>(microsNow() - read_start);
 }
 
@@ -2975,7 +2978,8 @@ void playOneFrameSequential() {
     }
     const HLV1Frame *frame = nullptr;
     const int64_t decode_start = microsNow();
-    const int decode_result = decoder.decode(&packet, &frame);
+    const int decode_result =
+        hlv_esp32_decoder_decode(&decoder, &packet, &frame);
     const uint32_t decode_us =
         static_cast<uint32_t>(microsNow() - decode_start);
     hlv1_packet_free(&packet);
@@ -3730,7 +3734,7 @@ extern "C" void app_main(void) {
             continue;
         }
         if (video_file && video_codec == VideoCodec::kHlv &&
-            decoder.ready()) {
+            hlv_esp32_decoder_ready(&decoder)) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneFramePipelined();
             } else {
