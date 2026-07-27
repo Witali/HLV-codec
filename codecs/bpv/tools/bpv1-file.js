@@ -1,7 +1,9 @@
 "use strict";
 
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
-const VERSION = 5;
+const VERSION = 6;
+const FOUR_MODE_VERSION = 6;
+const ADAPTIVE_RAW_VERSION = 5;
 const AUDIO_VERSION = 3;
 const ACTIVE_PALETTE_VERSION = 4;
 const LEGACY_VERSION = 1;
@@ -83,7 +85,9 @@ function parseHeader(input) {
   }
   if (keyframeInterval === 0 ||
       maxBlockDictionary === 0 ||
-      maxPatternDictionary === 0) {
+      (version >= FOUR_MODE_VERSION
+        ? maxPatternDictionary !== 0 || searchRadius > 7
+        : maxPatternDictionary === 0)) {
     throw new RangeError("Invalid zero BPV1 coding parameter");
   }
   const paletteBytes = paletteCount * COLORS_PER_PALETTE * 3;
@@ -122,7 +126,8 @@ function walkFrames(input, onFrame) {
   const blocksX = Math.ceil(header.width / BLOCK_SIZE);
   const blocksY = Math.ceil(header.height / BLOCK_SIZE);
   const blockCount = blocksX * blocksY;
-  const requiredModeBytes = Math.ceil(blockCount * 3 / 8);
+  const modeBits = header.version >= FOUR_MODE_VERSION ? 2 : 3;
+  const requiredModeBytes = Math.ceil(blockCount * modeBits / 8);
   let previous = null;
   let blockDictionary = [];
   let patternDictionary = [];
@@ -199,8 +204,11 @@ function walkFrames(input, onFrame) {
     const blocks = new Uint8Array(blockCount * RECORD_BYTES);
 
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const mode = readBits(modes, blockIndex * 3, 3);
-      if (mode >= MODE_NAMES.length) {
+      const mode = readBits(modes, blockIndex * modeBits, modeBits);
+      const modeCount = header.version >= FOUR_MODE_VERSION
+        ? 4
+        : MODE_NAMES.length;
+      if (mode >= modeCount) {
         throw new RangeError(`Invalid BPV1 mode ${mode} at ${frameIndex}:${blockIndex}`);
       }
       modeCounts[mode] += 1;
@@ -211,10 +219,15 @@ function walkFrames(input, onFrame) {
         copyRecord(previous, destination, blocks, destination);
       } else if (mode === MODE_MOTION) {
         if (!previous) throw new RangeError(`MOTION without reference at ${frameIndex}:${blockIndex}`);
-        requireFrameBytes(offset, 2, frameEnd, frameIndex);
-        const dx = readI8(bytes, offset);
-        const dy = readI8(bytes, offset + 1);
-        offset += 2;
+        const motionBytes = header.version >= FOUR_MODE_VERSION ? 1 : 2;
+        requireFrameBytes(offset, motionBytes, frameEnd, frameIndex);
+        const dx = motionBytes === 1
+          ? readSignedNibble(bytes[offset] >>> 4)
+          : readI8(bytes, offset);
+        const dy = motionBytes === 1
+          ? readSignedNibble(bytes[offset] & 15)
+          : readI8(bytes, offset + 1);
+        offset += motionBytes;
         const bx = blockIndex % blocksX;
         const by = Math.floor(blockIndex / blocksX);
         const sourceX = bx + dx;
@@ -236,6 +249,27 @@ function walkFrames(input, onFrame) {
           throw new RangeError(`Invalid block dictionary index at ${frameIndex}:${blockIndex}`);
         }
         blocks.set(blockDictionary[index], destination);
+      } else if (header.version >= FOUR_MODE_VERSION &&
+                 mode === MODE_PATTERN_DICT) {
+        const decoded = readV6Raw(
+          bytes,
+          offset,
+          frameEnd,
+          frameIndex,
+          header.paletteCount,
+        );
+        blocks.set(decoded.record, destination);
+        offset = decoded.offset;
+        if (decoded.direct) {
+          rawDirectColorCounts[decoded.count] += 1;
+        } else {
+          rawColorCounts[decoded.count - 1] += 1;
+        }
+        addUnique(
+          blockDictionary,
+          blocks.subarray(destination, destination + RECORD_BYTES),
+          header.maxBlockDictionary,
+        );
       } else if (mode === MODE_PATTERN_DICT) {
         requireFrameBytes(offset, 2, frameEnd, frameIndex);
         const patternIndex = readU16(bytes, offset);
@@ -243,7 +277,7 @@ function walkFrames(input, onFrame) {
         if (patternIndex >= patternDictionary.length) {
           throw new RangeError(`Invalid pattern dictionary index at ${frameIndex}:${blockIndex}`);
         }
-        if (header.version >= VERSION) {
+        if (header.version >= ADAPTIVE_RAW_VERSION) {
           const count = patternColorCount(patternDictionary[patternIndex]);
           const prefix = readPackedPrefix(
             bytes,
@@ -279,7 +313,7 @@ function walkFrames(input, onFrame) {
           header.maxBlockDictionary,
         );
       } else if (mode === MODE_RAW) {
-        if (header.version >= VERSION) {
+        if (header.version >= ADAPTIVE_RAW_VERSION) {
           const prefix = readPackedPrefix(
             bytes,
             offset,
@@ -347,9 +381,11 @@ function walkFrames(input, onFrame) {
           header.maxBlockDictionary,
         );
       } else if (mode === MODE_RAW_DIRECT) {
-        if (header.version < VERSION) {
+        if (header.version < ADAPTIVE_RAW_VERSION ||
+            header.version >= FOUR_MODE_VERSION) {
           throw new RangeError(
-            `Direct RAW requires BPV1 v${VERSION} at ${frameIndex}:${blockIndex}`,
+            `Direct RAW requires BPV1 v${ADAPTIVE_RAW_VERSION} ` +
+            `at ${frameIndex}:${blockIndex}`,
           );
         }
         requireFrameBytes(offset, 9, frameEnd, frameIndex);
@@ -433,7 +469,12 @@ function walkFrames(input, onFrame) {
     audioChannels: header.audioChannels,
     audioBytes: totalAudioBytes,
     blockCount,
-    modeCounts: Object.fromEntries(MODE_NAMES.map((name, index) => [name, modeCounts[index]])),
+    modeCounts: Object.fromEntries(
+      (header.version >= FOUR_MODE_VERSION
+        ? ["skip", "motion", "blockDictionary", "raw"]
+        : MODE_NAMES
+      ).map((name, index) => [name, modeCounts[index]]),
+    ),
     rawColorCounts,
     rawDirectColorCounts,
     patternDictionaryColorCounts,
@@ -533,6 +574,76 @@ function readPackedPrefix(
     if (count > 3) recordPrefix[4] = second & 15;
   }
   return { count, offset, recordPrefix };
+}
+
+function readV6Raw(
+  bytes,
+  offset,
+  frameEnd,
+  frameIndex,
+  paletteCount,
+) {
+  requireFrameBytes(offset, 2, frameEnd, frameIndex);
+  const tag = bytes[offset++];
+  const subtype = tag >>> 6;
+  const paletteIndex = tag & 63;
+  if (paletteIndex >= paletteCount) {
+    throw new RangeError(
+      `Invalid RAW palette at ${frameIndex}`,
+    );
+  }
+  const record = new Uint8Array(RECORD_BYTES);
+  if (subtype === 3) {
+    requireFrameBytes(offset, 8, frameEnd, frameIndex);
+    record[0] = DIRECT_RECORD_FLAG | paletteIndex;
+    record.set(bytes.subarray(offset, offset + 8), 1);
+    offset += 8;
+    const count = popcount16(directUsedMask(record, 0));
+    if (count < 5 || count > 16) {
+      throw new RangeError(
+        `Non-canonical direct RAW in frame ${frameIndex}`,
+      );
+    }
+    return { record, offset, count, direct: true };
+  }
+
+  const capacity = subtype === 2 ? 4 : subtype + 1;
+  const localBytes = (capacity + 1) >> 1;
+  requireFrameBytes(offset, localBytes, frameEnd, frameIndex);
+  record[0] = paletteIndex;
+  record[1] = bytes[offset] >>> 4;
+  if (capacity > 1) record[2] = bytes[offset] & 15;
+  if (capacity > 2) {
+    record[3] = bytes[offset + 1] >>> 4;
+    record[4] = bytes[offset + 1] & 15;
+  }
+  offset += localBytes;
+  if (subtype === 1) {
+    requireFrameBytes(offset, 2, frameEnd, frameIndex);
+    record.set(expand1BitPattern(bytes, offset), PATTERN_OFFSET);
+    offset += 2;
+  } else if (subtype === 2) {
+    requireFrameBytes(offset, PATTERN_BYTES, frameEnd, frameIndex);
+    record.set(
+      bytes.subarray(offset, offset + PATTERN_BYTES),
+      PATTERN_OFFSET,
+    );
+    offset += PATTERN_BYTES;
+  }
+  const pattern = record.subarray(PATTERN_OFFSET);
+  const count = patternColorCount(pattern);
+  const mask = patternUsedMask(pattern);
+  if ((subtype === 0 && count !== 1) ||
+      (subtype === 1 && (count !== 2 || mask !== 3)) ||
+      (subtype === 2 &&
+       ((count !== 3 && count !== 4) ||
+        mask !== (1 << count) - 1 ||
+        (count === 3 && record[4] !== 0)))) {
+    throw new RangeError(
+      `Non-canonical BPV1 v6 RAW in frame ${frameIndex}`,
+    );
+  }
+  return { record, offset, count, direct: false };
 }
 
 function expand1BitPattern(bytes, offset) {
@@ -640,6 +751,10 @@ function readU8(bytes, offset) {
 function readI8(bytes, offset) {
   const value = readU8(bytes, offset);
   return value >= 128 ? value - 256 : value;
+}
+
+function readSignedNibble(value) {
+  return value & 8 ? value - 16 : value;
 }
 
 function readU16(bytes, offset) {

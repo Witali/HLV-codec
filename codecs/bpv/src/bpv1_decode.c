@@ -91,12 +91,13 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
     if (!header || !header->width || !header->height ||
         !header->fps_num || !header->fps_den || !header->frame_count ||
         !header->keyframe_interval || !header->max_block_dictionary ||
-        !header->max_pattern_dictionary ||
-        (header->version != BPV1_VERSION &&
-         header->version != BPV1_ACTIVE_PALETTE_VERSION &&
-         header->version != BPV1_AUDIO_VERSION &&
-         header->version != BPV1_VIDEO_VERSION &&
-         header->version != BPV1_LEGACY_VERSION) ||
+        (header->version >= BPV1_FOUR_MODE_VERSION
+             ? header->max_pattern_dictionary != 0
+             : header->max_pattern_dictionary == 0) ||
+        header->version < BPV1_LEGACY_VERSION ||
+        header->version > BPV1_VERSION ||
+        (header->version >= BPV1_FOUR_MODE_VERSION &&
+         header->search_radius > 7U) ||
         (header->version >= BPV1_VIDEO_VERSION &&
          header->palette_count != BPV1_PALETTE_COUNT) ||
         (header->version == BPV1_LEGACY_VERSION &&
@@ -121,11 +122,16 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
     if (multiply_size((size_t)*block_count, BPV1_RECORD_BYTES, &bytes))
         return BPV1_ERR_RANGE;
     *block_bytes = bytes;
-    if (count > (uint64_t)(SIZE_MAX - 7U) / 3U) return BPV1_ERR_RANGE;
-    *mode_bytes = (size_t)(count * 3U + 7U) / 8U;
+    {
+        const unsigned mode_bits =
+            header->version >= BPV1_FOUR_MODE_VERSION ? 2U : 3U;
+        if (count > (uint64_t)(SIZE_MAX - 7U) / mode_bits)
+            return BPV1_ERR_RANGE;
+        *mode_bytes = (size_t)(count * mode_bits + 7U) / 8U;
+    }
     {
         size_t payload_bytes = *block_bytes;
-        if (header->version >= BPV1_VERSION &&
+        if (header->version >= BPV1_ADAPTIVE_RAW_VERSION &&
             multiply_size((size_t)*block_count,
                           BPV1_PACKED_RECORD_BYTES, &payload_bytes)) {
             return BPV1_ERR_RANGE;
@@ -437,14 +443,19 @@ typedef struct {
     unsigned available;
 } ModeReader;
 
-static inline unsigned read_mode(ModeReader *reader) {
-    if (reader->available < 3U) {
+static inline unsigned read_mode(ModeReader *reader, unsigned bits) {
+    if (reader->available < bits) {
         reader->buffer =
             (reader->buffer << 8) | *reader->cursor++;
         reader->available += 8U;
     }
-    reader->available -= 3U;
-    return (reader->buffer >> reader->available) & 7U;
+    reader->available -= bits;
+    return (reader->buffer >> reader->available) &
+           ((1U << bits) - 1U);
+}
+
+static int signed_nibble(unsigned value) {
+    return value & 8U ? (int)value - 16 : (int)value;
 }
 
 static int validate_record(const BPV1Header *header,
@@ -480,6 +491,67 @@ static int decode_raw_direct(const BPV1Header *header,
     if (count < 5U || count > 16U) return BPV1_ERR_DECODE;
     *cursor += 9;
     return BPV1_OK;
+}
+
+static int decode_v6_raw(const BPV1Header *header,
+                         const uint8_t **cursor,
+                         const uint8_t *payload_end,
+                         uint8_t *destination) {
+    const uint8_t *source = *cursor;
+    uint8_t tag;
+    unsigned subtype;
+    unsigned count;
+    unsigned mask;
+    if ((size_t)(payload_end - source) < 2U)
+        return BPV1_ERR_DECODE;
+    tag = source[0];
+    subtype = tag >> 6;
+    if ((tag & 63U) >= header->palette_count)
+        return BPV1_ERR_DECODE;
+
+    if (subtype == 3U) {
+        if ((size_t)(payload_end - source) < 9U)
+            return BPV1_ERR_DECODE;
+        destination[0] =
+            (uint8_t)(BPV1_DIRECT_RECORD_FLAG | (tag & 63U));
+        memcpy(destination + 1, source + 1, 8);
+        count = popcount16(direct_used_mask(destination));
+        if (count < 5U || count > 16U)
+            return BPV1_ERR_DECODE;
+        *cursor += 9;
+        return BPV1_OK;
+    }
+
+    destination[0] = tag & 63U;
+    count = subtype == 2U ? 4U : subtype + 1U;
+    unpack_local_colors(destination + 1, source + 1, count);
+    source += 1U + ((count + 1U) >> 1);
+    if (subtype == 0U) {
+        memset(destination + PATTERN_OFFSET, 0, BPV1_PATTERN_BYTES);
+    } else if (subtype == 1U) {
+        if ((size_t)(payload_end - source) < 2U)
+            return BPV1_ERR_DECODE;
+        expand_1bpp_pattern(destination + PATTERN_OFFSET, source);
+        source += 2;
+    } else {
+        if ((size_t)(payload_end - source) < BPV1_PATTERN_BYTES)
+            return BPV1_ERR_DECODE;
+        memcpy(destination + PATTERN_OFFSET, source,
+               BPV1_PATTERN_BYTES);
+        source += BPV1_PATTERN_BYTES;
+    }
+    count = pattern_color_count(destination + PATTERN_OFFSET);
+    mask = pattern_used_mask(destination + PATTERN_OFFSET);
+    if ((subtype == 0U && count != 1U) ||
+        (subtype == 1U && (count != 2U || mask != 3U)) ||
+        (subtype == 2U &&
+         ((count != 3U && count != 4U) ||
+          mask != ((1U << count) - 1U) ||
+          (count == 3U && destination[4] != 0U)))) {
+        return BPV1_ERR_DECODE;
+    }
+    *cursor = source;
+    return validate_record(header, destination);
 }
 
 static void reset_references(BPV1Decoder *decoder) {
@@ -611,14 +683,17 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     if (dictionary_allocate(&decoder->blocks,
                             header->max_block_dictionary,
                             BPV1_RECORD_BYTES) != BPV1_OK ||
-        dictionary_allocate(&decoder->patterns,
-                            header->max_pattern_dictionary,
-                            BPV1_PATTERN_BYTES) != BPV1_OK) {
+        (header->version < BPV1_FOUR_MODE_VERSION &&
+         dictionary_allocate(&decoder->patterns,
+                             header->max_pattern_dictionary,
+                             BPV1_PATTERN_BYTES) != BPV1_OK)) {
         bpv1_decoder_destroy(decoder);
         return NULL;
     }
     if (!decoder->previous || !decoder->current || !decoder->packet_data ||
-        !decoder->blocks.entries || !decoder->patterns.entries) {
+        !decoder->blocks.entries ||
+        (header->version < BPV1_FOUR_MODE_VERSION &&
+         !decoder->patterns.entries)) {
         bpv1_decoder_destroy(decoder);
         return NULL;
     }
@@ -734,19 +809,37 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
 
     for (block_index = 0; block_index < decoder->frame.block_count;
          ++block_index) {
-        const unsigned mode = read_mode(&mode_reader);
-        if (mode >= MODE_COUNT) return BPV1_ERR_DECODE;
+        const unsigned mode_bits =
+            decoder->header.version >= BPV1_FOUR_MODE_VERSION ? 2U : 3U;
+        const unsigned mode = read_mode(&mode_reader, mode_bits);
+        if (mode >= (decoder->header.version >= BPV1_FOUR_MODE_VERSION
+                        ? 4U
+                        : MODE_COUNT)) {
+            return BPV1_ERR_DECODE;
+        }
         if (mode == MODE_SKIP) {
             if (!decoder->has_previous) return BPV1_ERR_DECODE;
             copy_record(destination, previous_at_position);
         } else if (mode == MODE_MOTION) {
             int source_x, source_y;
+            int motion_x, motion_y;
+            const size_t motion_bytes =
+                decoder->header.version >= BPV1_FOUR_MODE_VERSION
+                    ? 1U
+                    : 2U;
             if (!decoder->has_previous ||
-                (size_t)(payload_end - cursor) < 2U)
+                (size_t)(payload_end - cursor) < motion_bytes)
                 return BPV1_ERR_DECODE;
-            source_x = block_x + (int)(int8_t)cursor[0];
-            source_y = block_y + (int)(int8_t)cursor[1];
-            cursor += 2;
+            if (motion_bytes == 1U) {
+                motion_x = signed_nibble(cursor[0] >> 4);
+                motion_y = signed_nibble(cursor[0] & 15U);
+            } else {
+                motion_x = (int)(int8_t)cursor[0];
+                motion_y = (int)(int8_t)cursor[1];
+            }
+            source_x = block_x + motion_x;
+            source_y = block_y + motion_y;
+            cursor += motion_bytes;
             if (source_x < 0 || source_y < 0 ||
                 source_x >= decoder->frame.blocks_x ||
                 source_y >= decoder->frame.blocks_y) {
@@ -767,6 +860,14 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             source = dictionary_entry(&decoder->blocks, dictionary_index);
             if (!source) return BPV1_ERR_DECODE;
             copy_record(destination, source);
+        } else if (decoder->header.version >=
+                       BPV1_FOUR_MODE_VERSION &&
+                   mode == MODE_PATTERN_DICTIONARY) {
+            if (decode_v6_raw(&decoder->header, &cursor, payload_end,
+                              destination) != BPV1_OK) {
+                return BPV1_ERR_DECODE;
+            }
+            dictionary_add_unique(&decoder->blocks, destination);
         } else if (mode == MODE_PATTERN_DICTIONARY) {
             uint8_t *pattern;
             uint16_t dictionary_index;
@@ -777,7 +878,8 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             pattern = dictionary_entry(&decoder->patterns,
                                        dictionary_index);
             if (!pattern) return BPV1_ERR_DECODE;
-            if (decoder->header.version >= BPV1_VERSION) {
+            if (decoder->header.version >=
+                BPV1_ADAPTIVE_RAW_VERSION) {
                 const unsigned count = pattern_color_count(pattern);
                 if (decode_packed_prefix(&cursor, payload_end,
                                          destination, count) < 0) {
@@ -797,7 +899,8 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                 return BPV1_ERR_DECODE;
             dictionary_add_unique(&decoder->blocks, destination);
         } else if (mode == MODE_RAW) {
-            if (decoder->header.version >= BPV1_VERSION) {
+            if (decoder->header.version >=
+                BPV1_ADAPTIVE_RAW_VERSION) {
                 const int count = decode_packed_prefix(
                     &cursor, payload_end, destination, 0);
                 if (count < 0) return BPV1_ERR_DECODE;
@@ -839,7 +942,10 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                                   destination + PATTERN_OFFSET);
             dictionary_add_unique(&decoder->blocks, destination);
         } else if (mode == MODE_RAW_DIRECT) {
-            if (decoder->header.version < BPV1_VERSION ||
+            if (decoder->header.version <
+                    BPV1_ADAPTIVE_RAW_VERSION ||
+                decoder->header.version >=
+                    BPV1_FOUR_MODE_VERSION ||
                 decode_raw_direct(
                     &decoder->header, &cursor, payload_end,
                     destination) != BPV1_OK) {

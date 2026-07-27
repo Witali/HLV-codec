@@ -29,13 +29,14 @@ const encoded = codec.encodeVideo(video, { keyframeInterval: 30, searchRadius: 2
 const decoded = codec.decodeVideo(encoded.bytes);
 assert.equal(decoded.frames.length, 4);
 assert.equal(decoded.paletteCount, 64);
-assert.equal(codec.constants.VERSION, 5);
+assert.equal(codec.constants.VERSION, 6);
 assert.equal(codec.constants.PALETTE_COUNT, 64);
 assert.deepEqual(Array.from(decoded.frames[3].blocks[0].pattern), Array.from(c.pattern));
 assert.deepEqual(decoded.frames[3].blocks[0].localColors, c.localColors);
 assert.ok(encoded.stats.modeCounts[codec.constants.MODE_SKIP] >= 2);
 assert.ok(encoded.stats.modeCounts[codec.constants.MODE_MOTION] >= 2);
-assert.ok(encoded.stats.modeCounts[codec.constants.MODE_PATTERN_DICT] >= 1);
+assert.ok(encoded.stats.modeCounts[codec.constants.MODE_RAW] >= 1);
+assert.equal(encoded.stats.modeCounts.length, 4);
 assert.equal(codec.renderFrame(decoded, 0).length, 8 * 4 * 4);
 console.log("BPV1 tests passed", encoded.stats);
 
@@ -62,7 +63,7 @@ const adaptive = codec.encodeVideo({
 }, { keyframeInterval: 1 });
 assert.equal(
   adaptive.bytes.length,
-  29 + 13 + 3072 + 2 + 2 + 4 + 7 + 7,
+  29 + 13 + 3072 + 1 + 2 + 4 + 7 + 7,
   "RAW1/2/3/4 must occupy 2/4/7/7 bytes",
 );
 const adaptiveDecoded = codec.decodeVideo(adaptive.bytes);
@@ -98,7 +99,7 @@ assert.equal(
   "direct 5-8 and 9-16 color records must occupy 9 bytes",
 );
 assert.equal(
-  direct.stats.modeCounts[codec.constants.MODE_RAW_DIRECT],
+  direct.stats.modeCounts[codec.constants.MODE_RAW],
   2,
 );
 const directDecoded = codec.decodeVideo(direct.bytes);
@@ -126,6 +127,34 @@ assert.deepEqual(
   ],
 );
 console.log("BPV1 direct 8/16-color RAW passed");
+
+// A hand-built v5 stream protects the old 3-bit map and split RAW modes.
+const v5 = [];
+const v5u8 = (v) => v5.push(v & 255);
+const v5u16 = (v) => v5.push(v & 255, (v >>> 8) & 255);
+const v5u32 = (v) => v5.push(
+  v & 255,
+  (v >>> 8) & 255,
+  (v >>> 16) & 255,
+  (v >>> 24) & 255,
+);
+v5.push(0x42, 0x50, 0x56, 0x31);
+v5u8(5); v5u16(8); v5u16(4); v5u32(1);
+v5u16(24); v5u16(1); v5u16(1);
+v5u16(8); v5u16(8); v5u8(2); v5u8(0);
+v5u16(0); v5u8(0); v5u8(0);
+v5u8(1); v5u32(3072 + 1 + 2 + 9); v5u32(1); v5u32(0);
+for (let i = 0; i < 3072; i += 1) v5u8(i);
+v5u8(0x94); // modes 100 (RAW), 101 (RAW_DIRECT)
+v5.push(0x00, 0x50);
+v5.push(1, 0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40);
+const v5Decoded = codec.decodeVideo(Uint8Array.from(v5));
+assert.equal(v5Decoded.frames[0].blocks[0].localColors[0], 5);
+assert.deepEqual(
+  v5Decoded.frames[0].blocks[1].directColors.slice(0, 5),
+  [0, 1, 2, 3, 4],
+);
+console.log("BPV1 v5 backward decode passed");
 
 // A tiny hand-built legacy v1 stream verifies backward decoding.
 const legacy = [];

@@ -156,7 +156,7 @@ try {
   );
 
   const info = bpv.walkFrames(bytes4);
-  assert.equal(info.version, 5);
+  assert.equal(info.version, 6);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 6);
@@ -176,7 +176,7 @@ try {
     fs.readFileSync(outputAudio),
     (frame) => audioFrames.push(frame.audio),
   );
-  assert.equal(audioInfo.version, 5);
+  assert.equal(audioInfo.version, 6);
   assert.equal(audioInfo.audioCodec, 1);
   assert.equal(audioInfo.audioSampleRate, 16000);
   assert.equal(audioInfo.audioChannels, 1);
@@ -187,7 +187,7 @@ try {
   );
 
   const fixedInfo = bpv.walkFrames(fs.readFileSync(outputFixed));
-  assert.equal(fixedInfo.version, 5);
+  assert.equal(fixedInfo.version, 6);
   assert.equal(fixedInfo.paletteUpdates, 2);
 
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
@@ -198,11 +198,15 @@ try {
   assert.equal(report.paletteUpdates, 2);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
-  assert.ok(Number.isInteger(report.modeCounts.rawDirect));
+  assert.equal(report.version, 6);
+  assert.ok(Number.isInteger(report.modeCounts.raw));
   assert.equal(
-    report.modeCounts.rawDirect,
-    report.modeCounts.direct5To8 +
-      report.modeCounts.direct9To16,
+    report.modeCounts.raw,
+    report.rawSubtypeCounts.oneColor +
+      report.rawSubtypeCounts.twoColor +
+      report.rawSubtypeCounts.fourColor +
+      report.rawSubtypeCounts.direct5To8 +
+      report.rawSubtypeCounts.direct9To16,
   );
   const overrideReport =
     JSON.parse(fs.readFileSync(reportOverride4, "utf8"));

@@ -11,7 +11,7 @@
 #include <threads.h>
 #include <time.h>
 
-#define BPV_VERSION 5
+#define BPV_VERSION 6
 #define BLOCK_SIZE 4
 #define PIXELS_PER_BLOCK 16
 #define PALETTE_COUNT 64
@@ -26,10 +26,8 @@ enum {
     MODE_SKIP = 0,
     MODE_MOTION = 1,
     MODE_BLOCK_DICT = 2,
-    MODE_PATTERN_DICT = 3,
-    MODE_RAW = 4,
-    MODE_RAW_DIRECT = 5,
-    MODE_COUNT = 6
+    MODE_RAW = 3,
+    MODE_COUNT = 4
 };
 
 typedef struct {
@@ -81,7 +79,6 @@ typedef struct {
     int candidate_palettes;
     int search_radius;
     int max_block_dictionary;
-    int max_pattern_dictionary;
     size_t maximum_sample_blocks;
     int sample_blocks_per_frame;
     int block_iterations;
@@ -106,6 +103,9 @@ typedef struct {
 
 typedef struct {
     uint64_t mode_counts[MODE_COUNT];
+    uint64_t raw_1;
+    uint64_t raw_2;
+    uint64_t raw_4;
     uint64_t direct_5_to_8;
     uint64_t direct_9_to_16;
     uint64_t squared_error;
@@ -119,12 +119,6 @@ typedef struct {
     int count;
     int capacity;
 } BlockDictionary;
-
-typedef struct {
-    uint8_t (*items)[PATTERN_BYTES];
-    int count;
-    int capacity;
-} PatternDictionary;
 
 typedef struct {
     const Options *options;
@@ -149,14 +143,13 @@ static void usage(FILE *stream) {
         "  --gop N                        keyframe/GOP interval (default 48)\n"
         "  --lambda N                     RD multiplier (default 64)\n"
         "  --candidate-palettes N         nearby palettes 1..8 (default 3)\n"
-        "  --search-radius N              motion radius in blocks (default 2)\n"
+        "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
         "  --samples-per-frame N          training blocks/frame (default 16)\n"
         "  --block-iterations N           block k-means passes (default 10)\n"
         "  --color-iterations N           color k-means passes (default 10)\n"
         "  --colors-per-cluster N         color samples/palette (default 8192)\n"
         "  --max-block-dictionary N       block dictionary entries (default 256)\n"
-        "  --max-pattern-dictionary N     pattern dictionary entries (default 256)\n"
         "  --max-frames N                 encode a leading test fragment\n"
         "  --audio-u8 FILE                mux unsigned 8-bit mono raw PCM\n"
         "  --audio-rate N                 PCM sample rate (default 16000)\n"
@@ -168,9 +161,10 @@ static void usage(FILE *stream) {
         "  --no-progress                  suppress progress\n"
         "  -h, --help                     show help\n\n"
         "The input must be a seekable 8-bit YUV 4:2:0 Y4M file. In the default\n"
-        "BPV1 v5 mode every independent GOP carries a 64x16 RGB palette bank\n"
-        "and uses adaptive 2/4/7-byte RAW1-4 records plus 9-byte direct\n"
-        "RAW records for 5-16 colors. --fixed-palettes repeats one global\n"
+        "BPV1 v6 mode every independent GOP carries a 64x16 RGB palette bank\n"
+        "and uses a 2-bit mode map. Unified RAW records occupy 2 bytes for\n"
+        "one color, 4 bytes for two, 7 bytes for a four-color block, or\n"
+        "9 bytes for 5-16 direct colors. --fixed-palettes repeats one global\n"
         "bank in each GOP.\n");
 }
 
@@ -854,13 +848,6 @@ static int block_equal(const Block *left, const Block *right) {
     return !memcmp(left, right, sizeof *left);
 }
 
-static int pattern_equal(
-    const uint8_t left[PATTERN_BYTES],
-    const uint8_t right[PATTERN_BYTES]
-) {
-    return !memcmp(left, right, PATTERN_BYTES);
-}
-
 static int block_dictionary_find(
     const BlockDictionary *dictionary,
     const Block *block
@@ -868,16 +855,6 @@ static int block_dictionary_find(
     int index;
     for (index = dictionary->count - 1; index >= 0; --index)
         if (block_equal(&dictionary->items[index], block)) return index;
-    return -1;
-}
-
-static int pattern_dictionary_find(
-    const PatternDictionary *dictionary,
-    const uint8_t pattern[PATTERN_BYTES]
-) {
-    int index;
-    for (index = dictionary->count - 1; index >= 0; --index)
-        if (pattern_equal(dictionary->items[index], pattern)) return index;
     return -1;
 }
 
@@ -892,19 +869,6 @@ static void block_dictionary_add(
         dictionary->count--;
     }
     dictionary->items[dictionary->count++] = *block;
-}
-
-static void pattern_dictionary_add(
-    PatternDictionary *dictionary,
-    const uint8_t pattern[PATTERN_BYTES]
-) {
-    if (pattern_dictionary_find(dictionary, pattern) >= 0) return;
-    if (dictionary->count == dictionary->capacity) {
-        memmove(dictionary->items, dictionary->items + 1,
-            (size_t)(dictionary->capacity - 1) * sizeof *dictionary->items);
-        dictionary->count--;
-    }
-    memcpy(dictionary->items[dictionary->count++], pattern, PATTERN_BYTES);
 }
 
 static int block_is_direct(const Block *block) {
@@ -1143,15 +1107,11 @@ static int raw_payload_bits(const Block *block) {
     return count == 1 ? 16 : count == 2 ? 32 : 56;
 }
 
-static int pattern_dictionary_payload_bits(const Block *block) {
-    if (block_is_direct(block)) return INT_MAX;
-    return block_color_count(block) <= 2 ? 32 : 40;
-}
-
 static int buffer_packed_prefix(Buffer *output, const Block *block,
                                 unsigned count) {
+    const unsigned subtype = count == 1U ? 0U : count == 2U ? 1U : 2U;
     const uint8_t tag = (uint8_t)(
-        ((count - 1U) << 6) | block->palette_index);
+        (subtype << 6) | block->palette_index);
     const uint8_t first = (uint8_t)(
         (block->local_colors[0] << 4) |
         (count > 1 ? block->local_colors[1] : 0));
@@ -1166,7 +1126,7 @@ static int buffer_packed_prefix(Buffer *output, const Block *block,
     return 0;
 }
 
-static int buffer_adaptive_raw(Buffer *output, const Block *block) {
+static int buffer_v6_raw(Buffer *output, const Block *block) {
     const unsigned count = block_color_count(block);
     if (buffer_packed_prefix(output, block, count)) return -1;
     if (count == 1) return 0;
@@ -1189,7 +1149,8 @@ static int buffer_raw_direct(Buffer *output, const Block *block) {
     const unsigned count = block_color_count(block);
     if (!block_is_direct(block) || count < 5U || count > 16U)
         return -1;
-    return buffer_u8(output, (uint8_t)block_palette_index(block)) ||
+    return buffer_u8(output,
+                     (uint8_t)(0xc0U | block_palette_index(block))) ||
            buffer_write(output, block_direct_bytes_const(block), 8);
 }
 
@@ -1277,12 +1238,12 @@ static int find_motion(
 
 static void pack_modes(const uint8_t *modes, int count, uint8_t *output) {
     int index;
-    memset(output, 0, ((size_t)count * 3 + 7) / 8);
+    memset(output, 0, ((size_t)count * 2 + 7) / 8);
     for (index = 0; index < count; ++index) {
         int bit;
-        for (bit = 0; bit < 3; ++bit) {
-            int value = (modes[index] >> (2 - bit)) & 1;
-            int target = index * 3 + bit;
+        for (bit = 0; bit < 2; ++bit) {
+            int value = (modes[index] >> (1 - bit)) & 1;
+            int target = index * 2 + bit;
             output[target >> 3] |= (uint8_t)(value << (7 - (target & 7)));
         }
     }
@@ -1296,13 +1257,12 @@ static int encode_gop(GopJob *job) {
     int blocks_x = (info->width + BLOCK_SIZE - 1) / BLOCK_SIZE;
     int blocks_y = (info->height + BLOCK_SIZE - 1) / BLOCK_SIZE;
     int block_count = blocks_x * blocks_y;
-    size_t mode_bytes = ((size_t)block_count * 3 + 7) / 8;
+    size_t mode_bytes = ((size_t)block_count * 2 + 7) / 8;
     Block *previous = NULL;
     Block *current = NULL;
     uint8_t *modes = NULL;
     uint8_t *packed_modes = NULL;
     BlockDictionary block_dictionary = {0}, shadow_blocks = {0};
-    PatternDictionary pattern_dictionary = {0}, shadow_patterns = {0};
     int frame_index;
     if (options->active_palettes) {
         if (options->active_palette_path
@@ -1321,19 +1281,12 @@ static int encode_gop(GopJob *job) {
     packed_modes = (uint8_t *)malloc(mode_bytes);
     block_dictionary.capacity = options->max_block_dictionary;
     shadow_blocks.capacity = options->max_block_dictionary;
-    pattern_dictionary.capacity = options->max_pattern_dictionary;
-    shadow_patterns.capacity = options->max_pattern_dictionary;
     block_dictionary.items = (Block *)malloc(
         (size_t)block_dictionary.capacity * sizeof *block_dictionary.items);
     shadow_blocks.items = (Block *)malloc(
         (size_t)shadow_blocks.capacity * sizeof *shadow_blocks.items);
-    pattern_dictionary.items = (uint8_t (*)[PATTERN_BYTES])malloc(
-        (size_t)pattern_dictionary.capacity * PATTERN_BYTES);
-    shadow_patterns.items = (uint8_t (*)[PATTERN_BYTES])malloc(
-        (size_t)shadow_patterns.capacity * PATTERN_BYTES);
     if (!previous || !current || !modes || !packed_modes ||
-        !block_dictionary.items || !shadow_blocks.items ||
-        !pattern_dictionary.items || !shadow_patterns.items) goto fail;
+        !block_dictionary.items || !shadow_blocks.items) goto fail;
 
     for (frame_index = 0; frame_index < job->frame_count; ++frame_index) {
         const uint8_t *frame =
@@ -1386,12 +1339,6 @@ static int encode_gop(GopJob *job) {
                     } else if (block_dictionary_find(
                                    &shadow_blocks, &candidate) >= 0) {
                         bits = 16;
-                    } else if (!block_is_direct(&candidate) &&
-                               pattern_dictionary_find(
-                                   &shadow_patterns,
-                                   candidate.pattern) >= 0) {
-                        bits = pattern_dictionary_payload_bits(
-                            &candidate);
                     }
                     score = (double)error + options->lambda * bits;
                     if (best_score == HUGE_VAL ||
@@ -1416,17 +1363,7 @@ static int encode_gop(GopJob *job) {
             if (!(frame_index > 0 &&
                   block_equal(&best_block, &previous[block_index])) &&
                 block_dictionary_find(&shadow_blocks, &best_block) < 0) {
-                if (!block_is_direct(&best_block) &&
-                    pattern_dictionary_find(
-                        &shadow_patterns, best_block.pattern) >= 0) {
-                    block_dictionary_add(&shadow_blocks, &best_block);
-                } else {
-                    if (!block_is_direct(&best_block)) {
-                        pattern_dictionary_add(
-                            &shadow_patterns, best_block.pattern);
-                    }
-                    block_dictionary_add(&shadow_blocks, &best_block);
-                }
+                block_dictionary_add(&shadow_blocks, &best_block);
             }
 
             if (frame_index > 0 &&
@@ -1440,31 +1377,21 @@ static int encode_gop(GopJob *job) {
                         blocks_x, blocks_y, options->search_radius,
                         &motion_x, &motion_y)) {
                     modes[block_index] = MODE_MOTION;
-                    if (buffer_u8(&payload, (uint8_t)(int8_t)motion_x) ||
-                        buffer_u8(&payload, (uint8_t)(int8_t)motion_y))
+                    if (buffer_u8(
+                            &payload,
+                            (uint8_t)(((motion_x & 15) << 4) |
+                                      (motion_y & 15))))
                         goto frame_fail;
                 } else if ((dictionary_index = block_dictionary_find(
                                 &block_dictionary, &best_block)) >= 0) {
                     modes[block_index] = MODE_BLOCK_DICT;
                     if (buffer_u16(&payload, (uint16_t)dictionary_index))
                         goto frame_fail;
-                } else if (!block_is_direct(&best_block) &&
-                           (dictionary_index = pattern_dictionary_find(
-                                &pattern_dictionary,
-                                best_block.pattern)) >= 0) {
-                    modes[block_index] = MODE_PATTERN_DICT;
-                    if (buffer_u16(&payload, (uint16_t)dictionary_index) ||
-                        buffer_packed_prefix(
-                            &payload, &best_block,
-                            block_color_count(&best_block)))
-                        goto frame_fail;
-                    block_dictionary_add(
-                        &block_dictionary, &best_block);
                 } else {
+                    modes[block_index] = MODE_RAW;
                     if (block_is_direct(&best_block)) {
                         const unsigned direct_colors =
                             block_color_count(&best_block);
-                        modes[block_index] = MODE_RAW_DIRECT;
                         if (buffer_raw_direct(
                                 &payload, &best_block)) {
                             goto frame_fail;
@@ -1474,13 +1401,18 @@ static int encode_gop(GopJob *job) {
                         else
                             job->stats.direct_9_to_16++;
                     } else {
-                        modes[block_index] = MODE_RAW;
-                        if (buffer_adaptive_raw(
+                        const unsigned local_colors =
+                            block_color_count(&best_block);
+                        if (buffer_v6_raw(
                                 &payload, &best_block)) {
                             goto frame_fail;
                         }
-                        pattern_dictionary_add(
-                            &pattern_dictionary, best_block.pattern);
+                        if (local_colors == 1U)
+                            job->stats.raw_1++;
+                        else if (local_colors == 2U)
+                            job->stats.raw_2++;
+                        else
+                            job->stats.raw_4++;
                     }
                     block_dictionary_add(
                         &block_dictionary, &best_block);
@@ -1523,8 +1455,6 @@ frame_fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
-    free(pattern_dictionary.items);
-    free(shadow_patterns.items);
     return 0;
 fail:
     free(previous);
@@ -1533,8 +1463,6 @@ fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
-    free(pattern_dictionary.items);
-    free(shadow_patterns.items);
     buffer_free(&job->output);
     return -1;
 }
@@ -1585,7 +1513,7 @@ static int write_bpv_header(
         write_u16(output, (uint16_t)info->fps_denominator) ||
         write_u16(output, (uint16_t)options->gop) ||
         write_u16(output, (uint16_t)options->max_block_dictionary) ||
-        write_u16(output, (uint16_t)options->max_pattern_dictionary) ||
+        write_u16(output, 0) ||
         write_u8(output, (uint8_t)options->search_radius) ||
         write_u8(output, has_audio ? 1 : 0) ||
         write_u16(output,
@@ -1656,6 +1584,9 @@ static void stats_add(EncodeStats *target, const EncodeStats *source) {
     int mode;
     for (mode = 0; mode < MODE_COUNT; ++mode)
         target->mode_counts[mode] += source->mode_counts[mode];
+    target->raw_1 += source->raw_1;
+    target->raw_2 += source->raw_2;
+    target->raw_4 += source->raw_4;
     target->direct_5_to_8 += source->direct_5_to_8;
     target->direct_9_to_16 += source->direct_9_to_16;
     target->squared_error += source->squared_error;
@@ -1910,9 +1841,12 @@ static int write_report(
         "    \"skip\": %" PRIu64 ",\n"
         "    \"motion\": %" PRIu64 ",\n"
         "    \"blockDictionary\": %" PRIu64 ",\n"
-        "    \"patternDictionary\": %" PRIu64 ",\n"
-        "    \"raw\": %" PRIu64 ",\n"
-        "    \"rawDirect\": %" PRIu64 ",\n"
+        "    \"raw\": %" PRIu64 "\n"
+        "  },\n"
+        "  \"rawSubtypeCounts\": {\n"
+        "    \"oneColor\": %" PRIu64 ",\n"
+        "    \"twoColor\": %" PRIu64 ",\n"
+        "    \"fourColor\": %" PRIu64 ",\n"
         "    \"direct5To8\": %" PRIu64 ",\n"
         "    \"direct9To16\": %" PRIu64 "\n"
         "  },\n"
@@ -1943,9 +1877,10 @@ static int write_report(
         stats->mode_counts[MODE_SKIP],
         stats->mode_counts[MODE_MOTION],
         stats->mode_counts[MODE_BLOCK_DICT],
-        stats->mode_counts[MODE_PATTERN_DICT],
         stats->mode_counts[MODE_RAW],
-        stats->mode_counts[MODE_RAW_DIRECT],
+        stats->raw_1,
+        stats->raw_2,
+        stats->raw_4,
         stats->direct_5_to_8,
         stats->direct_9_to_16,
         mse, psnr, stats->previous_decisions, stats->quantized_decisions,
@@ -1955,7 +1890,7 @@ static int write_report(
 
 int main(int argc, char **argv) {
     Options options = {
-        8, 48, 64.0, 3, 2, 256, 256, 32768, 16, 10, 10, 8192,
+        8, 48, 64.0, 3, 2, 256, 32768, 16, 10, 10, 8192,
         0, NULL, 0, 1, NULL, 16000, 1, NULL
     };
     const char *input_path = NULL;
@@ -1999,7 +1934,7 @@ int main(int argc, char **argv) {
                     &options.candidate_palettes)) goto bad_option;
             index++;
         } else if (!strcmp(argument, "--search-radius") && value) {
-            if (parse_int_option(value, 0, 127, &options.search_radius))
+            if (parse_int_option(value, 0, 7, &options.search_radius))
                 goto bad_option;
             index++;
         } else if (!strcmp(argument, "--sample-blocks") && value) {
@@ -2025,10 +1960,6 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argument, "--max-block-dictionary") && value) {
             if (parse_int_option(value, 1, 65535,
                     &options.max_block_dictionary)) goto bad_option;
-            index++;
-        } else if (!strcmp(argument, "--max-pattern-dictionary") && value) {
-            if (parse_int_option(value, 1, 65535,
-                    &options.max_pattern_dictionary)) goto bad_option;
             index++;
         } else if (!strcmp(argument, "--max-frames") && value) {
             int parsed;
