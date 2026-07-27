@@ -62,18 +62,34 @@ Current local HLV v14 38 dB syntax profile:
 ## Phase 0: reproducible measurements
 
 - [ ] Record current native compact hashes and timing for both picture sizes.
-- [ ] Record current Xtensa QEMU cycles, size and heap for representative GOP
+- [x] Record current Xtensa QEMU cycles, size and heap for representative GOP
       windows from both files.
 - [ ] Port the opt-in stage profiler from commit `3f541bf` to the current C99
       Y7/U6/V6 decoder. Keep every timer read compiled out by default.
-- [ ] Add allocation-stage heap logging for `ESP_PLATFORM`, including the
+- [x] Add allocation-stage heap logging for `ESP_PLATFORM`, including the
       largest 8-bit and DMA-capable blocks.
 - [ ] Record three synchronized physical baselines at UART `460800`.
 
 ## Phase 1: reduce RAM and open 320x240
 
-- [ ] Use the primary LCD buffer as two 8-row ping-pong DMA strips for HLV;
-      do not allocate the optional 10,240-byte secondary buffer.
+- [ ] Add a one-reference HLV fast path modelled on BPV v7:
+  - enforce and validate the header motion-search radius for every actual
+    global, macroblock, subblock and rectangular motion vector;
+  - initially support a maximum eight-pixel vertical radius;
+  - reconstruct into bounded rows and delay replacement of old reference rows
+    until no future destination row can reach them;
+  - keep only the current top-neighbour state required by INTRA prediction;
+  - guard replacement against CPU0 render progress so CPU1 decode can continue
+    in parallel without overwriting an unrendered old row;
+  - use the existing two-reference decoder as a compatibility fallback when
+    memory permits, and reject a falsely declared radius rather than corrupting
+    the reference.
+- [ ] Measure the one-reference target at `320x240`: one 97,800-byte packed
+      Y7/U6/V6+Q4 reference plus bounded reconstruction/commit rows, instead
+      of two references.
+- [ ] Re-evaluate use of only the primary LCD buffer after the one-reference
+      path fits. The isolated attempt saved 10,240 bytes but made 320x180
+      render average 1.78% slower and still did not open 320x240.
 - [ ] Replace HLV's 16 KiB stdio read-ahead plus decoder refill allocation with
       one fixed-capacity asynchronous input ring/refill path. Start with an
       8 KiB ring and a 4 KiB SD read chunk.
@@ -90,7 +106,7 @@ Current local HLV v14 38 dB syntax profile:
 
 ## Phase 2: packed prediction and reconstruction
 
-- [ ] In vertical and bilinear packed prediction, reuse the previous bottom
+- [x] In vertical and bilinear packed prediction, reuse the previous bottom
       source row as the next top row instead of unpacking it twice.
 - [ ] Split integer, horizontal, vertical and bilinear packed prediction into
       fixed-denominator Y7/U6/V6 kernels so the compiler can fully specialise
@@ -152,4 +168,8 @@ These experiments were already below the acceptance threshold or regressed:
 
 | Experiment | Native | QEMU | Physical ESP32 | RAM | Decision |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Current Y7/U6/V6 baseline | pending | pending | 55.602 ms decode at 320x180 | 203,280-byte 320x240 core | baseline |
+| Current Y7/U6/V6 baseline | pending | 2,959,678 cycles at 320x180; 3,696,921 at 320x240 | 55.602 ms decode at 320x180 | 203,280-byte 320x240 core | baseline |
+| Stronger QEMU frame hash and large-packet coverage | pending | hashes `150eef90ad52b1ae` at 320x180 and `612a072f0b034761` at 320x240; packets 46,652 and 58,551 bytes through a 7,680-byte refill | not applicable | no player change | retained |
+| Primary-only LCD DMA storage | not applicable | not applicable | render 30.869 -> 31.419 ms (+1.78%); 320x240 still failed | -10,240 bytes | rejected in isolation |
+| Allocate both compact luma planes before chroma | unchanged hash | unchanged hash | second 320x240 frame allocation still failed with a 13,312-byte largest block for a 14,400-byte V plane | unchanged | rejected |
+| Reuse packed vertical/bilinear source row | pending | 2,622,911 cycles at 320x180 (-11.38%); 3,255,409 at 320x240 (-11.94%); hashes unchanged | three-run median 54.766 ms decode (-1.50%), about 0.88% lower complete work | unchanged | retained |
