@@ -73,11 +73,11 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 - [x] Record current native compact hashes and timing for both picture sizes.
 - [x] Record current Xtensa QEMU cycles, size and heap for representative GOP
       windows from both files.
-- [ ] Port the opt-in stage profiler from commit `3f541bf` to the current C99
+- [x] Port the opt-in stage profiler from commit `3f541bf` to the current C99
       Y7/U6/V6 decoder. Keep every timer read compiled out by default.
 - [x] Add allocation-stage heap logging for `ESP_PLATFORM`, including the
       largest 8-bit and DMA-capable blocks.
-- [ ] Record three synchronized physical baselines at UART `460800`.
+- [x] Record three synchronized physical baselines at UART `460800`.
 
 ## Phase 1: reduce RAM and open 320x240
 
@@ -121,7 +121,7 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Phase 1A: remove one-reference pipeline stalls
 
-- [ ] Measure row-guard wait time separately from prediction, residual,
+- [x] Measure row-guard wait time separately from prediction, residual,
       packing and input time.
 - [ ] Test a render-ahead watermark:
   - render at least the first 16 source rows before CPU1 starts decoding the
@@ -187,19 +187,38 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Current priority order
 
-1. current-C99 stage profile and row-guard wait measurement;
+1. fixed-capacity asynchronous zero-copy HLV input;
 2. adaptive dual-reference selection for smaller pictures;
 3. 16-row render-ahead for one-reference `320x240`;
 4. fixed-denominator packed prediction kernels;
 5. fused prediction/residual/packing;
 6. fused display unpack/Q4/RGB565;
-7. inverse-WHT and encoder decode-cost experiments;
-8. CRC only after the dominant stages have been reduced.
+7. inverse-WHT and encoder decode-cost experiments.
 
 At `320x240`, 30 fps requires both decode and render wall time below 33.3 ms.
 The current approximately 68.4 ms decode and 34.1 ms render measurements mean
 that isolated micro-optimisations cannot reach that target; retained work must
 reduce a measured dominant stage or remove pipeline serialization.
+
+The opt-in C99 profile on the 120-frame 320x240 49 dB asset reports:
+
+| Stage | Average |
+| --- | ---: |
+| Complete decode | 68.291 ms |
+| Compressed input | 35.686 ms |
+| CRC | 3.276 ms |
+| Prediction | 8.502 ms |
+| Residual, including WHT | 12.374 ms |
+| Inverse WHT alone | 1.569 ms |
+| Y7/U6/V6 packing | 2.376 ms |
+| Reference commit, including guard | 4.443 ms |
+| Row-guard wait alone | 4.004 ms |
+
+Each packet averages 91,310 compressed bytes and 12.41 refills through the
+fixed 7,680-byte decoder buffer. The median row-guard wait is only 10 us;
+occasional audio-clock/render scheduling stalls raise its average. Input is
+the first structural target. The measured stages overlap (inverse WHT is part
+of residual and row guard is part of commit), so they must not be summed.
 
 ## Do not repeat unchanged
 
@@ -229,3 +248,7 @@ These experiments were already below the acceptance threshold or regressed:
 | 64 instead of 32 rolling luma rows | unchanged | 3,280,647 cycles at 320x240, effectively unchanged | 320x180 work 86.461 -> 86.122 ms (-0.39%); periodic waits remained | +13,040 bytes | rejected |
 | Audio reader priority 3 -> 1 | not applicable | not applicable | no underrun, but decode 59.661 -> 60.940 ms and observed rate 16.801 -> 16.468 fps | unchanged | rejected |
 | Byte-aligned eight-sample Y7 pack | full 3,358-frame hash `005878155c7f3057` unchanged; all four decoder/input paths agree | 3,224,408 cycles at 320x240 (-1.71%); hash `612a072f0b034761` unchanged | three-run median decode 68.447 ms (-0.88%) and complete work 102.534 ms (-0.88%); no gaps/audio errors | unchanged | retained |
+| Opt-in current-C99 stage profiler | release build unchanged; every timer read compiled out with default `HLV1_STAGE_PROFILE=OFF` | 30-frame 320x240 hash `93531122144bec97`; 58,551-byte packet through 7,680-byte refill | 120 frames, no gaps/audio errors; input 35.686 of 68.291 ms decode; row guard 4.004 ms average, 10 us median | release unchanged | retained diagnostic |
+| 32 KiB instead of 16 KiB stdio read-ahead | not applicable | not applicable | two-run average decode 67.724 ms, about -0.9%; input only -0.5% | +16,384 bytes | rejected; wrong speed/RAM trade-off |
+| Remove stdio read-ahead, retain `_IONBF` `fread` | not applicable | not applicable | input 732.399 ms, decode 761.522 ms | -16,384 bytes | rejected; severe regression |
+| Remove stdio read-ahead, direct ESP VFS `read` | not applicable | not applicable | input 42.311 ms, decode 74.348 ms (+8.8%) | -16,384 bytes | rejected; speed regression |
