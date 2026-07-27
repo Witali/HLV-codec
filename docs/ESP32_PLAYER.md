@@ -425,12 +425,14 @@ written into the card's `/HLV` directory without removing the card:
 ```
 
 The command handshake remains at 460800 baud; the verified data-transfer
-default is 2 Mbaud. The player stops video and audio, allocates one temporary
-60 KiB receive block, shows a progress bar, and verifies per-block and
-whole-file CRC32 before replacing the target. On this CH340C board an 8 MiB
-transfer sustained 111.3 KiB/s. A 2.5 Mbaud experiment timed out, so 2 Mbaud is
-the maximum retained rate; 1.5 Mbaud, 921600 and 460800 are available as
-fallbacks.
+default is 2 Mbaud. The player stops video and audio, allocates two temporary
+16 KiB receive blocks, shows a progress bar, and verifies per-block and
+whole-file CRC32 before replacing the target. On this CH340C board,
+CRC-verified 5.19 MB transfers sustained 121.0 KiB/s at 2 Mbaud and
+121.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
+remains the default because the SD/pipeline path prevents a meaningful gain.
+A 2.5 Mbaud experiment did not enter normal data reception and timed out. The
+1.5 Mbaud, 921600 and 460800 rates remain available as fallbacks.
 
 The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in

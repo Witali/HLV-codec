@@ -24,6 +24,7 @@ constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;
 constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
+constexpr uint32_t kTransferBaud3000k = 3000000;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr size_t kBlockHeaderBytes = 14;
 constexpr uint32_t kWriterStackBytes = 4096;
@@ -128,7 +129,8 @@ bool validFilename(const char *filename) {
 
 bool supportedDataBaud(uint32_t baud) {
     return baud == kTransferBaud460k || baud == kTransferBaud921k ||
-           baud == kTransferBaud1500k || baud == kTransferBaud2000k;
+           baud == kTransferBaud1500k || baud == kTransferBaud2000k ||
+           baud == kTransferBaud3000k;
 }
 
 bool buildPath(char *destination, size_t destination_bytes,

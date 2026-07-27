@@ -122,8 +122,9 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The control handshake uses 460800 baud and block data uses
-2000000 baud by default. The verified fallback values are 1500000, 921600 and
-460800 baud.
+2000000 baud by default. The optional 3000000-baud mode is CRC-verified but
+does not improve end-to-end throughput on this board. The verified fallback
+values are 1500000, 921600 and 460800 baud.
 
 List the files currently stored in `/sdcard/HLV` without stopping playback:
 
@@ -184,9 +185,13 @@ supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
 baud delivered 70.4, 91.3 and 101.5 KiB/s. Enlarging the block to 16 KiB raised
 the 2 Mbaud result to 106.6 KiB/s. The retained 60 KiB block and ROM CRC32
 delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
-16 KiB UART receive and SD writes delivered 121.4 KiB/s in a CRC-verified
-5.19 MB BPV v7 transfer. An experimental 2.5 Mbaud transfer timed out, so
-2 Mbaud is the maximum verified setting for this board and driver.
+16 KiB UART receive and SD writes delivered 44.5, 79.6, 108.5 and 121.0 KiB/s
+at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
+transfers. The same full transfer passed at 3000000 baud but delivered only
+121.3 KiB/s, showing that the SD/pipeline path, rather than the UART line, is
+the current limit. An experimental 2500000-baud transfer never entered normal
+data reception and timed out. Therefore 2000000 baud remains the default;
+3000000 baud is retained only as an optional verified mode.
 
 The repository-level wrappers run the same commands:
 
