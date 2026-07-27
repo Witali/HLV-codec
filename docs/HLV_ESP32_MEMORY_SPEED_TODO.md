@@ -130,7 +130,7 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Phase 3: packing, entropy and transform
 
-- [ ] Add an unrolled byte-aligned eight-sample Y7 pack path. U6 already uses
+- [x] Add an unrolled byte-aligned eight-sample Y7 pack path. U6 already uses
       the existing specialised six-bit path.
 - [ ] Amortise Q4 correction setup over each 8-pixel span and test a four-phase
       correction pattern against the current per-sample threshold comparison.
@@ -187,3 +187,4 @@ These experiments were already below the acceptance threshold or regressed:
 | One reference + 32 rolling luma rows | full hashes `7ff021b48acfe095` at 320x180 and `005878155c7f3057` at 320x240; dual, expanded, segmented and 257-byte refill paths agree over 3,358 frames | 3,280,612 cycles at 320x240 (-11.26% from baseline, +0.77% from dual-reference row-reuse); hash `612a072f0b034761` unchanged | 320x240 opens; 120 frames, no gaps/audio errors, 69.052 ms decode and 103.448 ms complete work | 118,520-byte 320x240 core, -84,760 bytes; board heap 89,048, largest 81,920 | retained; required to open 320x240 |
 | 64 instead of 32 rolling luma rows | unchanged | 3,280,647 cycles at 320x240, effectively unchanged | 320x180 work 86.461 -> 86.122 ms (-0.39%); periodic waits remained | +13,040 bytes | rejected |
 | Audio reader priority 3 -> 1 | not applicable | not applicable | no underrun, but decode 59.661 -> 60.940 ms and observed rate 16.801 -> 16.468 fps | unchanged | rejected |
+| Byte-aligned eight-sample Y7 pack | full 3,358-frame hash `005878155c7f3057` unchanged; all four decoder/input paths agree | 3,224,408 cycles at 320x240 (-1.71%); hash `612a072f0b034761` unchanged | three-run median decode 68.447 ms (-0.88%) and complete work 102.534 ms (-0.88%); no gaps/audio errors | unchanged | retained |
