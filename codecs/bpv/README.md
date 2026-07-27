@@ -83,7 +83,9 @@ trains its own 64x16 RGB palette bank from a reservoir sample, encodes with
 that bank, and is written in presentation order. GOP training and encoding
 run in parallel. Eight worker threads, a 48-frame maximum GOP, a 12-frame
 minimum scene GOP, scene threshold 0.35, active palettes and lambda 64 are the
-defaults. `--no-scene-cuts` retains fixed-interval GOPs for comparison.
+defaults. Palette training samples 256 evenly spaced blocks from every frame
+and rotates the spatial phase between frames. `--no-scene-cuts` retains
+fixed-interval GOPs for comparison.
 
 ```sh
 ffmpeg -hide_banner -loglevel error -i input.mov -an \

@@ -23,6 +23,12 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,
 
+    [ValidateRange(1, 65535)]
+    [int]$MinGop = 12,
+
+    [ValidateRange(0.0, 1.0)]
+    [double]$SceneThreshold = 0.35,
+
     [ValidateRange(0, 1000000000)]
     [double]$Lambda = 64,
 
@@ -33,7 +39,7 @@ param(
     [int]$SampleBlocks = 32768,
 
     [ValidateRange(1, 4096)]
-    [int]$SamplesPerFrame = 16,
+    [int]$SamplesPerFrame = 256,
 
     [ValidateRange(1, 32)]
     [int]$BlockIterations = 10,
@@ -195,6 +201,9 @@ try {
         $OutputFile,
         "--threads", $Threads,
         "--gop", $Gop,
+        "--min-gop", $MinGop,
+        "--scene-threshold",
+            $SceneThreshold.ToString("0.######", $culture),
         "--lambda", $Lambda,
         "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,
@@ -224,7 +233,8 @@ try {
     }
     Write-Host (
         "Encoding BPV1 v${bpvVersion}: ${Width}x${Height}, native FPS, " +
-        "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $Gop, " +
+        "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $MinGop..$Gop, " +
+        "scene threshold $SceneThreshold, " +
         "$paletteMode, " +
         "$CandidatePalettes candidate palettes, $SampleBlocks training " +
         "blocks, $Threads worker threads..."

@@ -163,7 +163,7 @@ static void usage(FILE *stream) {
         "  --candidate-palettes N         nearby palettes 1..8 (default 3)\n"
         "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
-        "  --samples-per-frame N          training blocks/frame (default 16)\n"
+        "  --samples-per-frame N          training blocks/frame (default 256)\n"
         "  --block-iterations N           block k-means passes (default 10)\n"
         "  --color-iterations N           color k-means passes (default 10)\n"
         "  --colors-per-cluster N         color samples/palette (default 8192)\n"
@@ -898,12 +898,16 @@ static int train_gop_palette(
     memset(&reservoir, 0, sizeof reservoir);
     memset(training, 0, sizeof *training);
     if (!frames || frame_count <= 0 || block_count <= 0) return -1;
+    if (samples_per_frame > block_count) samples_per_frame = block_count;
     if ((size_t)frame_count * (size_t)samples_per_frame < PALETTE_COUNT) {
         samples_per_frame =
             (PALETTE_COUNT + frame_count - 1) / frame_count;
+        if (samples_per_frame > block_count) samples_per_frame = block_count;
     }
-    if ((size_t)frame_count > SIZE_MAX / (size_t)samples_per_frame)
+    if ((size_t)frame_count * (size_t)samples_per_frame < PALETTE_COUNT ||
+        (size_t)frame_count > SIZE_MAX / (size_t)samples_per_frame) {
         return -1;
+    }
     available = (size_t)frame_count * (size_t)samples_per_frame;
     reservoir.capacity = options->maximum_sample_blocks < available
         ? options->maximum_sample_blocks : available;
@@ -2026,8 +2030,8 @@ static int write_report(
 
 int main(int argc, char **argv) {
     Options options = {
-        8, 48, 12, 0.35, 64.0, 3, 2, 256, 32768, 16, 10, 10, 8192,
-        0, NULL, 0, 1, NULL, 16000, 1, NULL
+        8, 48, 12, 0.35, 64.0, 3, 2, 256, 32768, 256,
+        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL
     };
     const char *input_path = NULL;
     const char *output_path = NULL;

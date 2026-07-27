@@ -18,7 +18,10 @@ videos:
     audio: true
     threads: 6
     gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
     candidatePalettes: 3
+    samplesPerFrame: 256
     activePalettes: true
 
   - name: BigBuckBunny
@@ -34,7 +37,10 @@ videos:
     audio: true
     threads: 6
     gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
     candidatePalettes: 3
+    samplesPerFrame: 256
     activePalettes: true
 
   - name: Danila
@@ -50,7 +56,10 @@ videos:
     audio: true
     threads: 6
     gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
     candidatePalettes: 3
+    samplesPerFrame: 256
     activePalettes: true
 
   - name: Danila
@@ -66,5 +75,8 @@ videos:
     audio: true
     threads: 6
     gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
     candidatePalettes: 3
+    samplesPerFrame: 256
     activePalettes: true

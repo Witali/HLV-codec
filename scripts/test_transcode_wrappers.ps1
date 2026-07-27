@@ -90,6 +90,17 @@ try {
         @($bpvInfo.modeCounts.PSObject.Properties).Count -ne 4) {
         throw "BPV wrapper did not create a valid four-mode BPV v6 stream."
     }
+    $bpvReportPath = [IO.Path]::ChangeExtension(
+        $bpvFiles[0].FullName,
+        ".json"
+    )
+    $bpvReport = Get-Content -LiteralPath $bpvReportPath -Raw |
+        ConvertFrom-Json
+    if ($bpvReport.samplesPerFrame -ne 256 -or
+        $bpvReport.minimumGop -ne 12 -or
+        [Math]::Abs($bpvReport.sceneThreshold - 0.35) -gt 0.000001) {
+        throw "BPV wrapper did not use production palette/scene defaults."
+    }
 
     Write-Host "All six production transcode wrappers passed."
 }

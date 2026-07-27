@@ -43,6 +43,12 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,
 
+    [ValidateRange(1, 65535)]
+    [int]$MinGop = 12,
+
+    [ValidateRange(0.0, 1.0)]
+    [double]$SceneThreshold = 0.35,
+
     [ValidateRange(1, 8)]
     [int]$CandidatePalettes = 3,
 
@@ -50,7 +56,7 @@ param(
     [int]$SampleBlocks = 32768,
 
     [ValidateRange(1, 4096)]
-    [int]$SamplesPerFrame = 16,
+    [int]$SamplesPerFrame = 256,
 
     [ValidateRange(1, 32)]
     [int]$BlockIterations = 10,
@@ -216,6 +222,9 @@ function Invoke-BpvQualityTrial {
         $trialOutput,
         "--threads", $Threads,
         "--gop", $Gop,
+        "--min-gop", $MinGop,
+        "--scene-threshold",
+            $SceneThreshold.ToString("0.######", $culture),
         "--lambda", $lambdaText,
         "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,

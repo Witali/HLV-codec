@@ -43,12 +43,15 @@ formats:
     version: 6
     fps: source
     gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
     qualityMode: targetPsnr
     targetPsnrDb: 40.0
     toleranceDb: 0.10
     lambdaMin: 0
     lambdaMax: 4096
     candidatePalettes: 3
+    samplesPerFrame: 256
     activePalettes: true
     threads: 6
     audioCodec: pcm_u8

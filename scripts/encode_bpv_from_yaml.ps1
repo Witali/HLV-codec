@@ -236,7 +236,8 @@ if (-not $ValidateOnly) {
 $allowedVideoKeys = @(
     "name", "input", "width", "height", "fps", "format", "codec",
     "targetPsnrDb", "toleranceDb", "resizeMode", "audio", "threads",
-    "gop", "candidatePalettes", "sampleBlocks", "samplesPerFrame",
+    "gop", "minGop", "sceneThreshold", "candidatePalettes",
+    "sampleBlocks", "samplesPerFrame",
     "blockIterations", "colorIterations", "colorsPerCluster",
     "activePalettes", "initialLambda", "maximumLambda",
     "searchIterations"
@@ -310,12 +311,16 @@ foreach ($video in $config["videos"]) {
             -Map $video -Name "threads" -Default 8)
         Gop = [int](Get-OptionalSetting `
             -Map $video -Name "gop" -Default 48)
+        MinGop = [int](Get-OptionalSetting `
+            -Map $video -Name "minGop" -Default 12)
+        SceneThreshold = [double](Get-OptionalSetting `
+            -Map $video -Name "sceneThreshold" -Default 0.35)
         CandidatePalettes = [int](Get-OptionalSetting `
             -Map $video -Name "candidatePalettes" -Default 3)
         SampleBlocks = [int](Get-OptionalSetting `
             -Map $video -Name "sampleBlocks" -Default 32768)
         SamplesPerFrame = [int](Get-OptionalSetting `
-            -Map $video -Name "samplesPerFrame" -Default 16)
+            -Map $video -Name "samplesPerFrame" -Default 256)
         BlockIterations = [int](Get-OptionalSetting `
             -Map $video -Name "blockIterations" -Default 10)
         ColorIterations = [int](Get-OptionalSetting `
