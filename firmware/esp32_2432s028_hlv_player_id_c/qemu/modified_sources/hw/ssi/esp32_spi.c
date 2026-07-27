@@ -10,6 +10,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/dma.h"
@@ -58,6 +59,15 @@ static void esp32_spi_update_irq(Esp32SpiState *s)
         FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_INTEN);
 
     qemu_set_irq(s->irq, level);
+}
+
+static void esp32_spi_complete(void *opaque)
+{
+    Esp32SpiState *s = ESP32_SPI(opaque);
+
+    s->slave_reg =
+        FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 1);
+    esp32_spi_update_irq(s);
 }
 
 static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
@@ -451,10 +461,16 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
     default:
         return;
     }
-    esp32_spi_transaction(s, &t);
+    /*
+     * Real ESP32 hardware clears TRANS_DONE while a transaction is in
+     * progress.  Lower the interrupt before completing the synchronous QEMU
+     * transaction so back-to-back queued transfers produce a new IRQ edge.
+     */
     s->slave_reg =
-        FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 1);
+        FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 0);
     esp32_spi_update_irq(s);
+    esp32_spi_transaction(s, &t);
+    qemu_bh_schedule(s->done_bh);
 }
 
 
@@ -467,6 +483,7 @@ static const MemoryRegionOps esp32_spi_ops = {
 static void esp32_spi_reset_hold(Object *obj, ResetType type)
 {
     Esp32SpiState *s = ESP32_SPI(obj);
+    qemu_bh_cancel(s->done_bh);
     s->pin_reg = 0x6;
     s->user1_reg = FIELD_DP32(0, SPI_USER1, ADDR_BITLEN, 23);
     s->user1_reg = FIELD_DP32(s->user1_reg, SPI_USER1, DUMMY_CYCLELEN, 7);
@@ -496,6 +513,7 @@ static void esp32_spi_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     s->spi = ssi_create_bus(DEVICE(s), "spi");
+    s->done_bh = qemu_bh_new(esp32_spi_complete, s);
     qdev_init_gpio_out_named(DEVICE(s), &s->cs_gpio[0], SSI_GPIO_CS, ESP32_SPI_CS_COUNT);
 }
 
