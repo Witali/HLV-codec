@@ -77,12 +77,17 @@ try {
     "--no-progress",
   ]);
   const info = JSON.parse(run("bpv1info.js", [encoded, "--json"]).stdout);
-  assert.equal(info.version, 5);
+  assert.equal(info.version, 6);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 3);
   assert.equal(info.fpsNumerator, 12);
   assert.equal(info.fpsDenominator, 1);
+  assert.equal(info.maxPatternDictionary, 0);
+  assert.deepEqual(
+    Object.keys(info.modeCounts),
+    ["skip", "motion", "blockDictionary", "raw"],
+  );
   assert.ok(info.modeCounts.skip > 0 || info.modeCounts.motion > 0);
 
   run("bpv1dec.js", [encoded, decoded, "--no-progress"]);

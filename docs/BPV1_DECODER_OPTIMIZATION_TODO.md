@@ -22,6 +22,54 @@ The individual read, decode and render measurements sum to more than one
 frame period, but they are no longer serial. CPU1 decodes a packet and
 prefetches the next packet while CPU0 presents the preceding decoded frame.
 
+The experimental v7 direct-pixel path was separately measured with a
+300-frame 320x240 30 fps stream containing 389,840 pixel-motion blocks. It
+completed all frames without gaps at 29.716 observed fps. Sequential refill
+input plus decoding averaged 20,593 us, the interleaved SPI/DMA callbacks
+averaged 6,430 us, and total work averaged 27,023 us. The preceding
+nearest-color v7 implementation reached only 23.083 fps and averaged 58,272
+us of work. v7 now uses a 4 KiB refill buffer, a paged previous RGB565 frame
+and two alternating eight-row display buffers; v6 retains its faster
+dual-core compact-frame pipeline.
+
+Caching all 1024 active palette colors as RGB565 once per keyframe reduced
+median sequential refill/decode time over three identical physical-board runs
+from 20,593 to 19,014 us (7.7%). Median total work fell from 27,023 to
+26,228 us (2.9%), and frames exceeding the 33,333-us period fell from 51 to
+36 out of 300. All three runs decoded 300/300 frames without gaps or display
+skips. Display-callback time rose because the faster CPU path reaches the two
+fixed-rate SPI/DMA buffers earlier and waits for an outstanding transfer;
+that wait shifts between timing categories rather than representing extra
+RGB565 conversion.
+
+The retained per-frame profiler separates the v7 `Decode` category without
+putting a timer around every block. On the same physical 300-frame stream,
+18,936 us average decode time consists of 6,695 us compressed input (35.4%),
+11,773 us block parsing/reconstruction (62.2%), and 468 us progressive
+RGB565-reference commit (2.5%). An average frame reads 17,303 bytes through
+6.45 input calls. The reconstructed-frame hash remains
+`93682c11462696bc`.
+
+Specializing RGB565 reconstruction for the two canonical v7 record layouts
+reduced average block parsing/reconstruction from 11,773 to 9,711 us (17.5%)
+over two physical 300-frame runs. Local records resolve their four colors once
+and expand one packed pattern byte into four pixels; direct records expand two
+packed selector bytes per row. Average complete decode fell from 18,936 to
+16,885 us. Total work fell from 26,186 to 25,611 us because the faster decoder
+then waits longer for the fixed-rate display DMA. The two runs had zero display
+skips and respectively one and zero frames beyond the 33,333-us period.
+
+The retained v7 input path assigns SD reads to a dedicated CPU1 producer. It
+fills a fixed 16 KiB FreeRTOS stream buffer in 4 KiB chunks while CPU0 consumes
+sequential decoder requests; neither capacity depends on the maximum encoded
+frame. Two physical 300-frame runs measured 98.0 and 98.3 us average consumer
+input time, 10,916 us average complete decode, and 19,396 and 19,384 us average
+total work. Both runs decoded all frames without gaps, display skips or work
+beyond the 33,333-us period. The corresponding prefetch-free optimized run
+averaged 6,709 us input, 16,888 us decode and 25,614 us total work. A host
+validator also read the same real stream through 257-byte physical refills and
+matched the contiguous reconstruction hash `93682c11462696bc`.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD
@@ -53,13 +101,16 @@ clock then reached the native 30 fps.
       30 fps with no video gaps or audio underruns.
 - [x] Force a close/reopen through the UART CRC command and validate another
       300 frames at 29.993 fps with no gaps or audio errors.
+- [x] Replace the v7 main-task SD reads with a fixed 16 KiB CPU1 producer ring.
+      Validate packets larger than the decoder's 4 KiB refill against the
+      contiguous path and repeat the physical 300-frame measurement.
 
 ## Remaining work
 
 ### 1. Separate RGB conversion from display waiting
 
 - [x] Measure CPU conversion separately from SPI/DMA buffer waiting.
-- [x] A/B test a 64x16 RGB565 table. BPV v4/v5 rebuild the 2 KiB table only
+- [x] A/B test a 64x16 RGB565 table. BPV v4-v6 rebuild the 2 KiB table only
       when a keyframe replaces the active palette.
 - [x] Preserve the portable RGB24 path used by the Windows player and tests.
 
@@ -90,8 +141,8 @@ is unchanged. All 900 frames play without gaps or audio errors. The cost is
       hash the old value again.
 - [ ] Specialize or unroll hashing and equality checks for the fixed 4-byte
       pattern and 9-byte block records.
-- [ ] Add per-mode counters and cycle measurements for `SKIP`, `MOTION`,
-      block-dictionary, pattern-dictionary and raw modes.
+- [ ] Add per-mode counters and cycle measurements for v6 `SKIP`, `MOTION`,
+      block-dictionary and unified raw modes.
 - [ ] Record the operation-count estimate and RAM increase for each tested
       change.
 

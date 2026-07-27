@@ -98,26 +98,14 @@ void app_main(void) {
         uint32_t elapsed;
         uint8_t frame_type;
 
-        result =
-            hlv_esp32_decoder_read_packet(&decoder, file, &packet);
+        start = esp_cpu_get_cycle_count();
+        result = hlv_esp32_decoder_decode_next(
+            &decoder, file, &frame, &packet);
+        elapsed = esp_cpu_get_cycle_count() - start;
         if (result == HLV1_EOF) {
             break;
         }
-        if (result < 0) {
-            ESP_LOGE(k_tag,
-                     "Packet %" PRIu32 " read failed: %s",
-                     frames, hlv1_strerror(result));
-            hlv1_packet_free(&packet);
-            fclose(file);
-            finish(4);
-        }
-
-        start = esp_cpu_get_cycle_count();
-        result =
-            hlv_esp32_decoder_decode(&decoder, &packet, &frame);
-        elapsed = esp_cpu_get_cycle_count() - start;
         frame_type = packet.frame_type;
-        hlv1_packet_free(&packet);
         if (result < 0 || frame == NULL) {
             ESP_LOGE(k_tag,
                      "Frame %" PRIu32 " decode failed: %s",

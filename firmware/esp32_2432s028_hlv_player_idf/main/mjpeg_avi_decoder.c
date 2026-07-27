@@ -11,6 +11,10 @@
 #include "esp_cpu.h"
 #endif
 
+#ifdef MJPEG_FIXED_RGB565
+void mjpeg_install_fixed_rgb565(void);
+#endif
+
 #define FALLBACK_FRAME_BYTES (128U * 1024U)
 #define MAXIMUM_FRAME_BYTES (1024U * 1024U)
 #define IO_ATTEMPTS 3U
@@ -506,6 +510,9 @@ int mjpeg_avi_decoder_begin(mjpeg_avi_decoder_t *decoder,
     if (decoder == NULL) {
         return MJPEG_AVI_ERR_ARGUMENT;
     }
+#ifdef MJPEG_FIXED_RGB565
+    mjpeg_install_fixed_rgb565();
+#endif
     mjpeg_avi_decoder_end(decoder);
     result = mjpeg_avi_read_info(file, &decoder->info);
     if (result != MJPEG_AVI_OK) {

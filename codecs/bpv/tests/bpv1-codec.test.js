@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const codec = require("../src/bpv1-codec.js");
+const bpvFile = require("../tools/bpv1-file.js");
 
 function pattern(values) {
   const out = new Uint8Array(4);
@@ -29,15 +30,64 @@ const encoded = codec.encodeVideo(video, { keyframeInterval: 30, searchRadius: 2
 const decoded = codec.decodeVideo(encoded.bytes);
 assert.equal(decoded.frames.length, 4);
 assert.equal(decoded.paletteCount, 64);
-assert.equal(codec.constants.VERSION, 5);
+assert.equal(codec.constants.VERSION, 7);
+assert.equal(encoded.bytes[4], 6);
 assert.equal(codec.constants.PALETTE_COUNT, 64);
 assert.deepEqual(Array.from(decoded.frames[3].blocks[0].pattern), Array.from(c.pattern));
 assert.deepEqual(decoded.frames[3].blocks[0].localColors, c.localColors);
 assert.ok(encoded.stats.modeCounts[codec.constants.MODE_SKIP] >= 2);
 assert.ok(encoded.stats.modeCounts[codec.constants.MODE_MOTION] >= 2);
-assert.ok(encoded.stats.modeCounts[codec.constants.MODE_PATTERN_DICT] >= 1);
+assert.ok(encoded.stats.modeCounts[codec.constants.MODE_RAW] >= 1);
+assert.equal(encoded.stats.modeCounts.length, 4);
 assert.equal(codec.renderFrame(decoded, 0).length, 8 * 4 * 4);
 console.log("BPV1 tests passed", encoded.stats);
+
+const pixelPalette = palette.map((color) => ({ ...color }));
+for (let color = 0; color < 16; color += 1) {
+  pixelPalette[color] = {
+    r: color === 0 ? 0 : color === 1 ? 10 :
+      color === 2 ? 40 : 200,
+    g: 0,
+    b: 0,
+  };
+}
+pixelPalette[16] = { r: 40, g: 0, b: 0 };
+const pixelA = block(0, [0, 0, 0, 0], new Array(16).fill(0));
+const pixelB = block(1, [0, 0, 0, 0], new Array(16).fill(0));
+const shifted = block(
+  0,
+  [0, 2, 0, 0],
+  Array.from({ length: 16 }, (_, index) => index % 4 ? 1 : 0),
+);
+const pixelEncoded = codec.encodeVideo({
+  width: 8,
+  height: 4,
+  palette: pixelPalette,
+  frames: [
+    { blocks: [pixelA, pixelB] },
+    { blocks: [pixelA, shifted] },
+  ],
+}, {
+  keyframeInterval: 30,
+  searchRadius: 1,
+  pixelMotion: true,
+});
+assert.equal(pixelEncoded.bytes[4], 7);
+assert.ok(
+  pixelEncoded.stats.modeCounts[codec.constants.MODE_MOTION] > 0,
+);
+const pixelDecoded = codec.decodeVideo(pixelEncoded.bytes);
+assert.equal(pixelDecoded.frames[1].blocks[1], null);
+const pixelRendered = codec.renderFrame(pixelDecoded, 1);
+assert.deepEqual(
+  Array.from(pixelRendered.subarray(4 * 4, 8 * 4)),
+  [0, 0, 0, 255, 41, 0, 0, 255, 41, 0, 0, 255, 41, 0, 0, 255],
+);
+assert.equal(
+  bpvFile.walkFrames(pixelEncoded.bytes).version,
+  7,
+);
+console.log("BPV1 v7 pixel motion passed");
 
 const adaptiveBlocks = [
   block(1, [5, 6, 7, 8], new Array(16).fill(0)),
@@ -62,7 +112,7 @@ const adaptive = codec.encodeVideo({
 }, { keyframeInterval: 1 });
 assert.equal(
   adaptive.bytes.length,
-  29 + 13 + 3072 + 2 + 2 + 4 + 7 + 7,
+  29 + 13 + 3072 + 1 + 2 + 4 + 7 + 7,
   "RAW1/2/3/4 must occupy 2/4/7/7 bytes",
 );
 const adaptiveDecoded = codec.decodeVideo(adaptive.bytes);
@@ -77,6 +127,83 @@ assert.deepEqual(
   }, 0)),
 );
 console.log("BPV1 adaptive RAW sizes passed");
+
+const direct5 = {
+  paletteIndex: 5,
+  directColors: [0,1,2,3,4,0,1,2,3,4,0,1,2,3,4,0],
+};
+const direct16 = {
+  paletteIndex: 6,
+  directColors: Array.from({ length: 16 }, (_, index) => index),
+};
+const direct = codec.encodeVideo({
+  width: 8,
+  height: 4,
+  palette,
+  frames: [{ blocks: [direct5, direct16] }],
+}, { keyframeInterval: 1 });
+assert.equal(
+  direct.bytes.length,
+  29 + 13 + 3072 + 1 + 9 + 9,
+  "direct 5-8 and 9-16 color records must occupy 9 bytes",
+);
+assert.equal(
+  direct.stats.modeCounts[codec.constants.MODE_RAW],
+  2,
+);
+const directDecoded = codec.decodeVideo(direct.bytes);
+assert.deepEqual(
+  directDecoded.frames[0].blocks[0].directColors,
+  direct5.directColors,
+);
+assert.deepEqual(
+  directDecoded.frames[0].blocks[1].directColors,
+  direct16.directColors,
+);
+const directRendered = codec.renderFrame(directDecoded, 0);
+assert.equal(directRendered.length, 8 * 4 * 4);
+assert.deepEqual(
+  Array.from(directRendered.subarray(0, 8)),
+  [
+    palette[5 * 16].r,
+    palette[5 * 16].g,
+    palette[5 * 16].b,
+    255,
+    palette[5 * 16 + 1].r,
+    palette[5 * 16 + 1].g,
+    palette[5 * 16 + 1].b,
+    255,
+  ],
+);
+console.log("BPV1 direct 8/16-color RAW passed");
+
+// A hand-built v5 stream protects the old 3-bit map and split RAW modes.
+const v5 = [];
+const v5u8 = (v) => v5.push(v & 255);
+const v5u16 = (v) => v5.push(v & 255, (v >>> 8) & 255);
+const v5u32 = (v) => v5.push(
+  v & 255,
+  (v >>> 8) & 255,
+  (v >>> 16) & 255,
+  (v >>> 24) & 255,
+);
+v5.push(0x42, 0x50, 0x56, 0x31);
+v5u8(5); v5u16(8); v5u16(4); v5u32(1);
+v5u16(24); v5u16(1); v5u16(1);
+v5u16(8); v5u16(8); v5u8(2); v5u8(0);
+v5u16(0); v5u8(0); v5u8(0);
+v5u8(1); v5u32(3072 + 1 + 2 + 9); v5u32(1); v5u32(0);
+for (let i = 0; i < 3072; i += 1) v5u8(i);
+v5u8(0x94); // modes 100 (RAW), 101 (RAW_DIRECT)
+v5.push(0x00, 0x50);
+v5.push(1, 0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40);
+const v5Decoded = codec.decodeVideo(Uint8Array.from(v5));
+assert.equal(v5Decoded.frames[0].blocks[0].localColors[0], 5);
+assert.deepEqual(
+  v5Decoded.frames[0].blocks[1].directColors.slice(0, 5),
+  [0, 1, 2, 3, 4],
+);
+console.log("BPV1 v5 backward decode passed");
 
 // A tiny hand-built legacy v1 stream verifies backward decoding.
 const legacy = [];

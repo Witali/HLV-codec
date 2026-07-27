@@ -4,7 +4,7 @@ param(
     [ValidateRange(2, 31)]
     [int]$Quality = 4,
 
-    [ValidateRange(1, 30)]
+    [ValidateSet(12)]
     [int]$Fps = 12,
 
     [ValidateRange(1, 300)]
@@ -55,7 +55,7 @@ $ffprobe = Find-WorktreeFile $ffprobeRelative
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo (
-        "out\BigBuckBunny_1080p_divx3_q{0}_{1}fps_320x240.avi" -f
+        "out\DivX3\BigBuckBunny_1080p_divx3_q{0}_{1}fps_320x240.avi" -f
         $Quality, $Fps
     )
 }

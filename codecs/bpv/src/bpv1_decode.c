@@ -14,7 +14,8 @@ enum {
     MODE_BLOCK_DICTIONARY = 2,
     MODE_PATTERN_DICTIONARY = 3,
     MODE_RAW = 4,
-    MODE_COUNT = 5,
+    MODE_RAW_DIRECT = 5,
+    MODE_COUNT = 6,
     PATTERN_OFFSET = 5
 };
 
@@ -32,22 +33,97 @@ typedef struct {
 } Dictionary;
 
 #define DICTIONARY_NONE UINT16_MAX
+#define BPV1_STREAM_REFILL_BYTES 4096U
+#define BPV1_PIXEL_PAGE_ROWS 8U
 
 struct BPV1Decoder {
     BPV1Header header;
     BPV1Frame frame;
+    uint16_t *palette_rgb565;
     uint8_t *previous;
     uint8_t *current;
+    uint16_t **pixel_reference_rows;
+    uint16_t *pixel_rows;
+    uint8_t *mode_map;
+    uint8_t *stream_data;
     uint8_t *packet_data;
     size_t block_bytes;
+    size_t pixel_bytes;
+    size_t pixel_row_bytes;
+    size_t mode_capacity;
+    size_t stream_capacity;
+    uint32_t pixel_stride;
+    uint32_t pixel_reference_row_count;
+    uint32_t pixel_row_slots;
     size_t video_capacity;
     size_t packet_capacity;
     size_t memory_bytes;
     uint32_t frame_index;
     int has_previous;
+    BPV1ProfileClockMicros profile_clock;
+    void *profile_clock_opaque;
+    BPV1DecodeProfile last_profile;
     Dictionary blocks;
     Dictionary patterns;
 };
+
+static uint64_t profile_now_micros(const BPV1Decoder *decoder) {
+    return decoder->profile_clock
+               ? decoder->profile_clock(decoder->profile_clock_opaque)
+               : 0U;
+}
+
+static void profile_add_elapsed(uint32_t *total, uint64_t start,
+                                uint64_t end) {
+    const uint64_t elapsed = end >= start ? end - start : 0U;
+    if (elapsed >= UINT32_MAX - *total) {
+        *total = UINT32_MAX;
+    } else {
+        *total += (uint32_t)elapsed;
+    }
+}
+
+static int profile_input_read_exact(
+    BPV1Decoder *decoder, BPV1InputRead read, void *input_opaque,
+    void *data, size_t size
+) {
+    const uint64_t start = profile_now_micros(decoder);
+    const size_t count =
+        read(input_opaque, (uint8_t *)data, size);
+    profile_add_elapsed(
+        &decoder->last_profile.input_us, start,
+        profile_now_micros(decoder));
+    decoder->last_profile.input_calls++;
+    if (count >= UINT32_MAX - decoder->last_profile.input_bytes) {
+        decoder->last_profile.input_bytes = UINT32_MAX;
+    } else {
+        decoder->last_profile.input_bytes += (uint32_t)count;
+    }
+    return count == size ? BPV1_OK : BPV1_ERR_IO;
+}
+
+static int profile_input_discard(
+    BPV1Decoder *decoder, BPV1InputRead read, void *input_opaque,
+    size_t size
+) {
+    while (size) {
+        const size_t chunk =
+            size < decoder->stream_capacity
+                ? size
+                : decoder->stream_capacity;
+        const int result = profile_input_read_exact(
+            decoder, read, input_opaque, decoder->stream_data, chunk);
+        if (result != BPV1_OK) return result;
+        size -= chunk;
+    }
+    return BPV1_OK;
+}
+
+static size_t file_input_read(
+    void *opaque, uint8_t *destination, size_t size
+) {
+    return fread(destination, 1, size, (FILE *)opaque);
+}
 
 static int read_exact(FILE *file, void *data, size_t size) {
     return fread(data, 1, size, file) == size ? BPV1_OK : BPV1_ERR_IO;
@@ -90,12 +166,16 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
     if (!header || !header->width || !header->height ||
         !header->fps_num || !header->fps_den || !header->frame_count ||
         !header->keyframe_interval || !header->max_block_dictionary ||
-        !header->max_pattern_dictionary ||
-        (header->version != BPV1_VERSION &&
-         header->version != BPV1_ACTIVE_PALETTE_VERSION &&
-         header->version != BPV1_AUDIO_VERSION &&
-         header->version != BPV1_VIDEO_VERSION &&
-         header->version != BPV1_LEGACY_VERSION) ||
+        (header->version >= BPV1_FOUR_MODE_VERSION
+             ? header->max_pattern_dictionary != 0
+             : header->max_pattern_dictionary == 0) ||
+        header->version < BPV1_LEGACY_VERSION ||
+        header->version > BPV1_VERSION ||
+        (header->version >= BPV1_PIXEL_MOTION_VERSION &&
+         (header->width % BPV1_BLOCK_SIZE ||
+          header->height % BPV1_BLOCK_SIZE)) ||
+        (header->version >= BPV1_FOUR_MODE_VERSION &&
+         header->search_radius > 7U) ||
         (header->version >= BPV1_VIDEO_VERSION &&
          header->palette_count != BPV1_PALETTE_COUNT) ||
         (header->version == BPV1_LEGACY_VERSION &&
@@ -120,11 +200,16 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
     if (multiply_size((size_t)*block_count, BPV1_RECORD_BYTES, &bytes))
         return BPV1_ERR_RANGE;
     *block_bytes = bytes;
-    if (count > (uint64_t)(SIZE_MAX - 7U) / 3U) return BPV1_ERR_RANGE;
-    *mode_bytes = (size_t)(count * 3U + 7U) / 8U;
+    {
+        const unsigned mode_bits =
+            header->version >= BPV1_FOUR_MODE_VERSION ? 2U : 3U;
+        if (count > (uint64_t)(SIZE_MAX - 7U) / mode_bits)
+            return BPV1_ERR_RANGE;
+        *mode_bytes = (size_t)(count * mode_bits + 7U) / 8U;
+    }
     {
         size_t payload_bytes = *block_bytes;
-        if (header->version >= BPV1_VERSION &&
+        if (header->version >= BPV1_ADAPTIVE_RAW_VERSION &&
             multiply_size((size_t)*block_count,
                           BPV1_PACKED_RECORD_BYTES, &payload_bytes)) {
             return BPV1_ERR_RANGE;
@@ -332,6 +417,116 @@ static inline void copy_record(uint8_t *destination,
     destination[8] = source[8];
 }
 
+static uint16_t *pixel_reference_row(
+    const BPV1Decoder *decoder, uint32_t y
+) {
+    return decoder->pixel_reference_rows[y];
+}
+
+static inline void copy_rgb565_block_row(
+    uint16_t *destination, const uint16_t *source
+) {
+    destination[0] = source[0];
+    destination[1] = source[1];
+    destination[2] = source[2];
+    destination[3] = source[3];
+}
+
+static unsigned popcount16(uint16_t value) {
+    unsigned count = 0;
+    while (value) {
+        value &= (uint16_t)(value - 1U);
+        ++count;
+    }
+    return count;
+}
+
+static unsigned direct_color(const uint8_t *record, unsigned pixel) {
+    const uint8_t packed = record[1U + (pixel >> 1)];
+    return pixel & 1U ? packed & 15U : packed >> 4;
+}
+
+static unsigned record_palette_index(const uint8_t *record) {
+    return record[0] & 0x3fU;
+}
+
+static inline void store_rgb565_pair(uint16_t *destination,
+                                     uint16_t first,
+                                     uint16_t second) {
+    destination[0] = first;
+    destination[1] = second;
+}
+
+static inline uint16_t decode_rgb888_to_rgb565(const uint8_t *color) {
+    return (uint16_t)(((uint16_t)(color[0] & 0xf8U) << 8) |
+                      ((uint16_t)(color[1] & 0xfcU) << 3) |
+                      (color[2] >> 3));
+}
+
+static void rebuild_rgb565_palette(BPV1Decoder *decoder) {
+    const size_t color_count =
+        (size_t)decoder->header.palette_count *
+        BPV1_COLORS_PER_PALETTE;
+    size_t color;
+    if (!decoder->palette_rgb565) return;
+    for (color = 0; color < color_count; ++color) {
+        decoder->palette_rgb565[color] =
+            decode_rgb888_to_rgb565(
+                decoder->header.palette + color * 3U);
+    }
+}
+
+static void record_to_rgb565(
+    const BPV1Decoder *decoder,
+    const uint8_t record[BPV1_RECORD_BYTES],
+    uint16_t *destination,
+    size_t stride
+) {
+    const uint16_t *palette =
+        decoder->palette_rgb565 +
+        (size_t)record_palette_index(record) *
+        BPV1_COLORS_PER_PALETTE;
+    unsigned y;
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        for (y = 0; y < BPV1_BLOCK_SIZE; ++y) {
+            const uint8_t first =
+                record[1U + y * 2U];
+            const uint8_t second =
+                record[2U + y * 2U];
+            uint16_t *row = destination + (size_t)y * stride;
+            store_rgb565_pair(
+                row, palette[first >> 4],
+                palette[first & 15U]);
+            store_rgb565_pair(
+                row + 2U, palette[second >> 4],
+                palette[second & 15U]);
+        }
+    } else {
+        const uint16_t colors[4] = {
+            palette[record[1]], palette[record[2]],
+            palette[record[3]], palette[record[4]]
+        };
+        for (y = 0; y < BPV1_BLOCK_SIZE; ++y) {
+            const uint8_t pattern = record[PATTERN_OFFSET + y];
+            uint16_t *row = destination + (size_t)y * stride;
+            store_rgb565_pair(
+                row, colors[pattern >> 6],
+                colors[(pattern >> 4) & 3U]);
+            store_rgb565_pair(
+                row + 2U, colors[(pattern >> 2) & 3U],
+                colors[pattern & 3U]);
+        }
+    }
+}
+
+static uint16_t direct_used_mask(const uint8_t *record) {
+    uint16_t mask = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < 16U; ++pixel)
+        mask |= (uint16_t)(1U << direct_color(record, pixel));
+    return mask;
+}
+
 static unsigned pattern_color_count(const uint8_t *pattern) {
     unsigned count = 1;
     unsigned row;
@@ -414,18 +609,29 @@ typedef struct {
     unsigned available;
 } ModeReader;
 
-static inline unsigned read_mode(ModeReader *reader) {
-    if (reader->available < 3U) {
+static inline unsigned read_mode(ModeReader *reader, unsigned bits) {
+    if (reader->available < bits) {
         reader->buffer =
             (reader->buffer << 8) | *reader->cursor++;
         reader->available += 8U;
     }
-    reader->available -= 3U;
-    return (reader->buffer >> reader->available) & 7U;
+    reader->available -= bits;
+    return (reader->buffer >> reader->available) &
+           ((1U << bits) - 1U);
+}
+
+static int signed_nibble(unsigned value) {
+    return value & 8U ? (int)value - 16 : (int)value;
 }
 
 static int validate_record(const BPV1Header *header,
                            const uint8_t record[BPV1_RECORD_BYTES]) {
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        return (record[0] & 0x40U) ||
+                       (record[0] & 0x3fU) >= header->palette_count
+                   ? BPV1_ERR_DECODE
+                   : BPV1_OK;
+    }
     return record[0] >= header->palette_count ||
                    record[1] >= BPV1_COLORS_PER_PALETTE ||
                    record[2] >= BPV1_COLORS_PER_PALETTE ||
@@ -433,6 +639,85 @@ static int validate_record(const BPV1Header *header,
                    record[4] >= BPV1_COLORS_PER_PALETTE
                ? BPV1_ERR_DECODE
                : BPV1_OK;
+}
+
+static int decode_raw_direct(const BPV1Header *header,
+                             const uint8_t **cursor,
+                             const uint8_t *payload_end,
+                             uint8_t *destination) {
+    unsigned count;
+    if ((size_t)(payload_end - *cursor) < 9U ||
+        (*cursor)[0] >= header->palette_count) {
+        return BPV1_ERR_DECODE;
+    }
+    destination[0] =
+        (uint8_t)(BPV1_DIRECT_RECORD_FLAG | (*cursor)[0]);
+    memcpy(destination + 1, *cursor + 1, 8);
+    count = popcount16(direct_used_mask(destination));
+    if (count < 5U || count > 16U) return BPV1_ERR_DECODE;
+    *cursor += 9;
+    return BPV1_OK;
+}
+
+static int decode_v6_raw(const BPV1Header *header,
+                         const uint8_t **cursor,
+                         const uint8_t *payload_end,
+                         uint8_t *destination) {
+    const uint8_t *source = *cursor;
+    uint8_t tag;
+    unsigned subtype;
+    unsigned count;
+    unsigned mask;
+    if ((size_t)(payload_end - source) < 2U)
+        return BPV1_ERR_DECODE;
+    tag = source[0];
+    subtype = tag >> 6;
+    if ((tag & 63U) >= header->palette_count)
+        return BPV1_ERR_DECODE;
+
+    if (subtype == 3U) {
+        if ((size_t)(payload_end - source) < 9U)
+            return BPV1_ERR_DECODE;
+        destination[0] =
+            (uint8_t)(BPV1_DIRECT_RECORD_FLAG | (tag & 63U));
+        memcpy(destination + 1, source + 1, 8);
+        count = popcount16(direct_used_mask(destination));
+        if (count < 5U || count > 16U)
+            return BPV1_ERR_DECODE;
+        *cursor += 9;
+        return BPV1_OK;
+    }
+
+    destination[0] = tag & 63U;
+    count = subtype == 2U ? 4U : subtype + 1U;
+    unpack_local_colors(destination + 1, source + 1, count);
+    source += 1U + ((count + 1U) >> 1);
+    if (subtype == 0U) {
+        memset(destination + PATTERN_OFFSET, 0, BPV1_PATTERN_BYTES);
+    } else if (subtype == 1U) {
+        if ((size_t)(payload_end - source) < 2U)
+            return BPV1_ERR_DECODE;
+        expand_1bpp_pattern(destination + PATTERN_OFFSET, source);
+        source += 2;
+    } else {
+        if ((size_t)(payload_end - source) < BPV1_PATTERN_BYTES)
+            return BPV1_ERR_DECODE;
+        memcpy(destination + PATTERN_OFFSET, source,
+               BPV1_PATTERN_BYTES);
+        source += BPV1_PATTERN_BYTES;
+    }
+    count = pattern_color_count(destination + PATTERN_OFFSET);
+    mask = pattern_used_mask(destination + PATTERN_OFFSET);
+    if ((subtype == 0U && count != 1U) ||
+        (subtype == 1U && (count != 2U || mask != 3U)) ||
+        (subtype == 2U &&
+         ((count != 3U && count != 4U) ||
+          mask != ((1U << count) - 1U) ||
+          (count == 3U && destination[4] != 0U)))) {
+        return BPV1_ERR_DECODE;
+    }
+    *cursor = source;
+    return validate_record(header, destination);
 }
 
 static void reset_references(BPV1Decoder *decoder) {
@@ -497,18 +782,11 @@ int bpv1_header_read(FILE *file, BPV1Header *header) {
     return read_exact(file, header->palette, palette_bytes);
 }
 
-int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
-                         BPV1FrameInfo *info) {
-    uint8_t bytes[13];
+static int frame_info_decode(const uint8_t *bytes,
+                             const BPV1Header *header,
+                             BPV1FrameInfo *info) {
     uint32_t blocks_x, blocks_y, block_count;
     size_t block_bytes, mode_bytes, packet_capacity;
-    size_t count;
-    if (!file || !header || !info) return BPV1_ERR_ARGUMENT;
-    const size_t header_bytes =
-        header->version >= BPV1_AUDIO_VERSION ? sizeof bytes : 9U;
-    count = fread(bytes, 1, header_bytes, file);
-    if (!count && feof(file)) return BPV1_EOF;
-    if (count != header_bytes) return BPV1_ERR_IO;
     if (header_layout(header, &blocks_x, &blocks_y, &block_count,
                       &block_bytes, &mode_bytes, &packet_capacity)) {
         return BPV1_ERR_FORMAT;
@@ -538,6 +816,21 @@ int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
     return BPV1_OK;
 }
 
+int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
+                         BPV1FrameInfo *info) {
+    uint8_t bytes[13];
+    size_t count;
+    const size_t header_bytes =
+        header && header->version >= BPV1_AUDIO_VERSION
+            ? sizeof bytes
+            : 9U;
+    if (!file || !header || !info) return BPV1_ERR_ARGUMENT;
+    count = fread(bytes, 1, header_bytes, file);
+    if (!count && feof(file)) return BPV1_EOF;
+    if (count != header_bytes) return BPV1_ERR_IO;
+    return frame_info_decode(bytes, header, info);
+}
+
 BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     BPV1Decoder *decoder = NULL;
     uint32_t blocks_x, blocks_y, block_count;
@@ -549,8 +842,62 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     }
     decoder = (BPV1Decoder *)calloc(1, sizeof *decoder);
     if (!decoder) return NULL;
-    decoder->previous = (uint8_t *)malloc(block_bytes);
-    decoder->current = (uint8_t *)malloc(block_bytes);
+    if (header->version >= BPV1_PIXEL_MOTION_VERSION) {
+        size_t padded_rows;
+        size_t row_storage;
+        decoder->pixel_stride = blocks_x * BPV1_BLOCK_SIZE;
+        padded_rows = (size_t)blocks_y * BPV1_BLOCK_SIZE;
+        decoder->pixel_row_slots = 3U;
+        if (multiply_size((size_t)decoder->pixel_stride, padded_rows,
+                          &decoder->pixel_bytes) ||
+            multiply_size(decoder->pixel_bytes, sizeof(uint16_t),
+                          &decoder->pixel_bytes) ||
+            multiply_size((size_t)decoder->pixel_stride, BPV1_BLOCK_SIZE,
+                          &decoder->pixel_row_bytes) ||
+            multiply_size(decoder->pixel_row_bytes, sizeof(uint16_t),
+                          &decoder->pixel_row_bytes) ||
+            multiply_size(decoder->pixel_row_bytes,
+                          decoder->pixel_row_slots, &row_storage)) {
+            bpv1_decoder_destroy(decoder);
+            return NULL;
+        }
+        decoder->pixel_reference_row_count =
+            (uint32_t)padded_rows;
+        decoder->pixel_reference_rows = (uint16_t **)calloc(
+            padded_rows, sizeof *decoder->pixel_reference_rows);
+        if (decoder->pixel_reference_rows) {
+            size_t page_y;
+            for (page_y = 0; page_y < padded_rows;
+                 page_y += BPV1_PIXEL_PAGE_ROWS) {
+                const size_t page_rows =
+                    padded_rows - page_y < BPV1_PIXEL_PAGE_ROWS
+                        ? padded_rows - page_y
+                        : BPV1_PIXEL_PAGE_ROWS;
+                uint16_t *page = (uint16_t *)malloc(
+                    page_rows * decoder->pixel_stride *
+                    sizeof(uint16_t));
+                size_t row;
+                if (!page) break;
+                for (row = 0; row < page_rows; ++row) {
+                    decoder->pixel_reference_rows[page_y + row] =
+                        page + row * decoder->pixel_stride;
+                }
+            }
+        }
+        decoder->pixel_rows = (uint16_t *)malloc(row_storage);
+        decoder->palette_rgb565 = (uint16_t *)malloc(
+            (size_t)header->palette_count *
+            BPV1_COLORS_PER_PALETTE * sizeof(uint16_t));
+        decoder->mode_capacity = mode_bytes;
+        decoder->stream_capacity = BPV1_STREAM_REFILL_BYTES;
+        decoder->mode_map =
+            (uint8_t *)malloc(decoder->mode_capacity);
+        decoder->stream_data =
+            (uint8_t *)malloc(decoder->stream_capacity);
+    } else {
+        decoder->previous = (uint8_t *)malloc(block_bytes);
+        decoder->current = (uint8_t *)malloc(block_bytes);
+    }
     {
         const size_t audio_capacity = maximum_audio_bytes(header);
         if (audio_capacity > SIZE_MAX - packet_capacity) {
@@ -560,22 +907,37 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
         decoder->video_capacity = packet_capacity;
         decoder->packet_capacity = packet_capacity + audio_capacity;
     }
-    decoder->packet_data = (uint8_t *)malloc(decoder->packet_capacity);
+    if (header->version < BPV1_PIXEL_MOTION_VERSION) {
+        decoder->packet_data =
+            (uint8_t *)malloc(decoder->packet_capacity);
+    }
     if (dictionary_allocate(&decoder->blocks,
                             header->max_block_dictionary,
                             BPV1_RECORD_BYTES) != BPV1_OK ||
-        dictionary_allocate(&decoder->patterns,
-                            header->max_pattern_dictionary,
-                            BPV1_PATTERN_BYTES) != BPV1_OK) {
+        (header->version < BPV1_FOUR_MODE_VERSION &&
+         dictionary_allocate(&decoder->patterns,
+                             header->max_pattern_dictionary,
+                             BPV1_PATTERN_BYTES) != BPV1_OK)) {
         bpv1_decoder_destroy(decoder);
         return NULL;
     }
-    if (!decoder->previous || !decoder->current || !decoder->packet_data ||
-        !decoder->blocks.entries || !decoder->patterns.entries) {
+    if ((header->version >= BPV1_PIXEL_MOTION_VERSION
+             ? (!decoder->pixel_reference_rows ||
+                !decoder->pixel_reference_rows[
+                    decoder->pixel_reference_row_count - 1U] ||
+                !decoder->pixel_rows || !decoder->palette_rgb565)
+                 || !decoder->mode_map || !decoder->stream_data
+             : (!decoder->previous || !decoder->current)) ||
+        (header->version < BPV1_PIXEL_MOTION_VERSION &&
+         !decoder->packet_data) ||
+        !decoder->blocks.entries ||
+        (header->version < BPV1_FOUR_MODE_VERSION &&
+         !decoder->patterns.entries)) {
         bpv1_decoder_destroy(decoder);
         return NULL;
     }
     decoder->header = *header;
+    rebuild_rgb565_palette(decoder);
     decoder->block_bytes = block_bytes;
     decoder->frame.width = header->width;
     decoder->frame.height = header->height;
@@ -583,7 +945,21 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
     decoder->frame.blocks_y = (uint16_t)blocks_y;
     decoder->frame.block_count = block_count;
     decoder->frame.palette = decoder->header.palette;
-    decoder->memory_bytes = sizeof *decoder + block_bytes * 2U +
+    decoder->memory_bytes = sizeof *decoder +
+                            (header->version >=
+                                     BPV1_PIXEL_MOTION_VERSION
+                                 ? decoder->pixel_bytes +
+                                       (size_t)
+                                           decoder->pixel_reference_row_count *
+                                           sizeof(uint16_t *) +
+                                       decoder->pixel_row_bytes *
+                                           decoder->pixel_row_slots +
+                                       (size_t)header->palette_count *
+                                           BPV1_COLORS_PER_PALETTE *
+                                           sizeof(uint16_t) +
+                                       decoder->mode_capacity +
+                                       decoder->stream_capacity
+                                 : block_bytes * 2U) +
                             decoder->packet_capacity +
                             dictionary_memory_bytes(&decoder->blocks) +
                             dictionary_memory_bytes(&decoder->patterns);
@@ -595,6 +971,18 @@ void bpv1_decoder_destroy(BPV1Decoder *decoder) {
     if (!decoder) return;
     free(decoder->previous);
     free(decoder->current);
+    if (decoder->pixel_reference_rows) {
+        uint32_t y;
+        for (y = 0; y < decoder->pixel_reference_row_count;
+             y += BPV1_PIXEL_PAGE_ROWS) {
+            free(decoder->pixel_reference_rows[y]);
+        }
+    }
+    free(decoder->pixel_reference_rows);
+    free(decoder->pixel_rows);
+    free(decoder->palette_rgb565);
+    free(decoder->mode_map);
+    free(decoder->stream_data);
     free(decoder->packet_data);
     dictionary_destroy(&decoder->blocks);
     dictionary_destroy(&decoder->patterns);
@@ -607,6 +995,8 @@ void bpv1_decoder_reset(BPV1Decoder *decoder) {
     decoder->frame.frame_index = 0;
     decoder->frame.keyframe = 0;
     decoder->frame.blocks = NULL;
+    decoder->frame.rgb565 = NULL;
+    decoder->frame.rgb565_rows = NULL;
     decoder->frame.palette = decoder->header.palette;
     reset_references(decoder);
 }
@@ -619,11 +1009,36 @@ size_t bpv1_decoder_memory_bytes(const BPV1Decoder *decoder) {
     return decoder ? decoder->memory_bytes : 0;
 }
 
+void bpv1_decoder_set_profile_clock(
+    BPV1Decoder *decoder, BPV1ProfileClockMicros clock, void *opaque
+) {
+    if (!decoder) return;
+    decoder->profile_clock = clock;
+    decoder->profile_clock_opaque = opaque;
+}
+
+void bpv1_decoder_last_profile(
+    const BPV1Decoder *decoder, BPV1DecodeProfile *profile
+) {
+    if (!profile) return;
+    if (decoder) {
+        *profile = decoder->last_profile;
+    } else {
+        memset(profile, 0, sizeof *profile);
+    }
+}
+
 int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet) {
     int result;
     size_t total_size;
     if (!decoder || !file || !packet) return BPV1_ERR_ARGUMENT;
+    if (!decoder->packet_data) {
+        decoder->packet_data =
+            (uint8_t *)malloc(decoder->packet_capacity);
+        if (!decoder->packet_data) return BPV1_ERR_MEMORY;
+        decoder->memory_bytes += decoder->packet_capacity;
+    }
     memset(packet, 0, sizeof *packet);
     result = bpv1_frame_info_read(file, &decoder->header, &packet->info);
     if (result != BPV1_OK) return result;
@@ -641,6 +1056,426 @@ int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              ? decoder->packet_data + packet->info.frame_bytes
                              : NULL;
     packet->audio_size = packet->info.audio_bytes;
+    return BPV1_OK;
+}
+
+static int decode_pixel_motion_frame(
+    BPV1Decoder *decoder,
+    const BPV1Packet *packet,
+    const uint8_t *modes,
+    const uint8_t *cursor,
+    const uint8_t *payload_end,
+    const BPV1Frame **frame
+) {
+    ModeReader mode_reader;
+    uint32_t block_index;
+    uint32_t block_x = 0;
+    uint32_t block_y = 0;
+    mode_reader.cursor = modes;
+    mode_reader.buffer = 0;
+    mode_reader.available = 0;
+
+    for (block_index = 0; block_index < decoder->frame.block_count;
+         ++block_index) {
+        const unsigned mode = read_mode(&mode_reader, 2U);
+        const uint32_t row_slot =
+            block_y % decoder->pixel_row_slots;
+        uint16_t *destination =
+            decoder->pixel_rows +
+            (size_t)row_slot *
+                (decoder->pixel_row_bytes / sizeof(uint16_t)) +
+            (size_t)block_x * BPV1_BLOCK_SIZE;
+        if (mode == MODE_SKIP) {
+            unsigned row;
+            if (!decoder->has_previous) return BPV1_ERR_DECODE;
+            for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+                copy_rgb565_block_row(
+                    destination + (size_t)row *
+                                      decoder->pixel_stride,
+                    pixel_reference_row(
+                        decoder,
+                        block_y * BPV1_BLOCK_SIZE + row) +
+                        (size_t)block_x * BPV1_BLOCK_SIZE);
+            }
+        } else if (mode == MODE_MOTION) {
+            int motion_x;
+            int motion_y;
+            int source_x;
+            int source_y;
+            unsigned row;
+            if (!decoder->has_previous ||
+                cursor >= payload_end) {
+                return BPV1_ERR_DECODE;
+            }
+            motion_x = signed_nibble(cursor[0] >> 4);
+            motion_y = signed_nibble(cursor[0] & 15U);
+            if (motion_x == -8 || motion_y == -8)
+                return BPV1_ERR_DECODE;
+            ++cursor;
+            source_x =
+                (int)block_x * BPV1_BLOCK_SIZE + motion_x;
+            source_y =
+                (int)block_y * BPV1_BLOCK_SIZE + motion_y;
+            if (source_x < 0 || source_y < 0 ||
+                source_x + BPV1_BLOCK_SIZE >
+                    decoder->header.width ||
+                source_y + BPV1_BLOCK_SIZE >
+                    decoder->header.height) {
+                return BPV1_ERR_DECODE;
+            }
+            for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+                copy_rgb565_block_row(
+                    destination + (size_t)row *
+                                      decoder->pixel_stride,
+                    pixel_reference_row(
+                        decoder, (uint32_t)source_y + row) +
+                        (size_t)source_x);
+            }
+        } else if (mode == MODE_BLOCK_DICTIONARY) {
+            const uint8_t *record;
+            uint16_t dictionary_index;
+            if ((size_t)(payload_end - cursor) < 2U)
+                return BPV1_ERR_DECODE;
+            dictionary_index = read_u16(cursor);
+            cursor += 2;
+            record = dictionary_entry(
+                &decoder->blocks, dictionary_index);
+            if (!record) return BPV1_ERR_DECODE;
+            record_to_rgb565(
+                decoder, record, destination,
+                decoder->pixel_stride);
+        } else if (mode == MODE_PATTERN_DICTIONARY) {
+            uint8_t record[BPV1_RECORD_BYTES];
+            if (decode_v6_raw(
+                    &decoder->header, &cursor, payload_end,
+                    record) != BPV1_OK) {
+                return BPV1_ERR_DECODE;
+            }
+            record_to_rgb565(
+                decoder, record, destination,
+                decoder->pixel_stride);
+            dictionary_add_unique(&decoder->blocks, record);
+        } else {
+            return BPV1_ERR_DECODE;
+        }
+
+        if (++block_x == decoder->frame.blocks_x) {
+            const uint32_t completed_row = block_y;
+            block_x = 0;
+            ++block_y;
+            if (completed_row + 1U >=
+                decoder->pixel_row_slots) {
+                const uint32_t commit_row =
+                    completed_row + 1U -
+                    decoder->pixel_row_slots;
+                const uint32_t commit_slot =
+                    commit_row % decoder->pixel_row_slots;
+                {
+                    unsigned pixel_row;
+                    const uint16_t *source =
+                        decoder->pixel_rows +
+                        (size_t)commit_slot *
+                            (decoder->pixel_row_bytes /
+                             sizeof(uint16_t));
+                    for (pixel_row = 0;
+                         pixel_row < BPV1_BLOCK_SIZE; ++pixel_row) {
+                        memcpy(
+                            pixel_reference_row(
+                                decoder,
+                                commit_row * BPV1_BLOCK_SIZE +
+                                    pixel_row),
+                            source +
+                                (size_t)pixel_row *
+                                    decoder->pixel_stride,
+                            (size_t)decoder->pixel_stride *
+                                sizeof(uint16_t));
+                    }
+                }
+            }
+        }
+    }
+    if (cursor != payload_end) return BPV1_ERR_DECODE;
+    {
+        const uint32_t first_remaining =
+            decoder->frame.blocks_y >
+                    decoder->pixel_row_slots - 1U
+                ? decoder->frame.blocks_y -
+                      (decoder->pixel_row_slots - 1U)
+                : 0U;
+        uint32_t row;
+        for (row = first_remaining;
+             row < decoder->frame.blocks_y; ++row) {
+            const uint32_t slot =
+                row % decoder->pixel_row_slots;
+            {
+                unsigned pixel_row;
+                const uint16_t *source =
+                    decoder->pixel_rows +
+                    (size_t)slot *
+                        (decoder->pixel_row_bytes /
+                         sizeof(uint16_t));
+                for (pixel_row = 0;
+                     pixel_row < BPV1_BLOCK_SIZE; ++pixel_row) {
+                    memcpy(
+                        pixel_reference_row(
+                            decoder,
+                            row * BPV1_BLOCK_SIZE + pixel_row),
+                        source +
+                            (size_t)pixel_row *
+                                decoder->pixel_stride,
+                        (size_t)decoder->pixel_stride *
+                            sizeof(uint16_t));
+                }
+            }
+        }
+    }
+    decoder->has_previous = 1;
+    decoder->frame.frame_index = decoder->frame_index++;
+    decoder->frame.keyframe = packet->info.keyframe;
+    decoder->frame.blocks = NULL;
+    decoder->frame.rgb565 = NULL;
+    decoder->frame.rgb565_rows =
+        (const uint16_t *const *)decoder->pixel_reference_rows;
+    decoder->frame.palette = decoder->header.palette;
+    *frame = &decoder->frame;
+    return BPV1_OK;
+}
+
+typedef struct {
+    uint16_t *pixels;
+    uint16_t y;
+    uint16_t rows;
+} PendingPixelStrip;
+
+typedef struct {
+    BPV1Decoder *decoder;
+    BPV1InputRead read;
+    void *input_opaque;
+    size_t remaining;
+    size_t offset;
+    size_t available;
+} PixelStreamReader;
+
+static int pixel_stream_refill(PixelStreamReader *reader) {
+    const size_t refill =
+        reader->remaining < reader->decoder->stream_capacity
+            ? reader->remaining
+            : reader->decoder->stream_capacity;
+    if (!refill ||
+        profile_input_read_exact(
+            reader->decoder, reader->read, reader->input_opaque,
+            reader->decoder->stream_data, refill) != BPV1_OK) {
+        return BPV1_ERR_IO;
+    }
+    reader->remaining -= refill;
+    reader->offset = 0;
+    reader->available = refill;
+    return BPV1_OK;
+}
+
+static int pixel_stream_read(
+    PixelStreamReader *reader, uint8_t *destination, size_t size
+) {
+    while (size) {
+        size_t chunk;
+        if (!reader->available &&
+            pixel_stream_refill(reader) != BPV1_OK)
+            return BPV1_ERR_IO;
+        chunk = size < reader->available ? size : reader->available;
+        memcpy(
+            destination,
+            reader->decoder->stream_data + reader->offset,
+            chunk);
+        destination += chunk;
+        size -= chunk;
+        reader->offset += chunk;
+        reader->available -= chunk;
+    }
+    return BPV1_OK;
+}
+
+static int pixel_stream_read_u8(
+    PixelStreamReader *reader, uint8_t *destination
+) {
+    if (!reader->available &&
+        pixel_stream_refill(reader) != BPV1_OK)
+        return BPV1_ERR_IO;
+    *destination =
+        reader->decoder->stream_data[reader->offset++];
+    --reader->available;
+    return BPV1_OK;
+}
+
+static void commit_pixel_strip(
+    BPV1Decoder *decoder, const PendingPixelStrip *strip
+) {
+    const uint64_t start = profile_now_micros(decoder);
+    uint16_t row;
+    for (row = 0; row < strip->rows; ++row) {
+        memcpy(
+            pixel_reference_row(decoder, strip->y + row),
+            strip->pixels + (size_t)row * decoder->header.width,
+            (size_t)decoder->header.width * sizeof(uint16_t));
+    }
+    profile_add_elapsed(
+        &decoder->last_profile.reference_commit_us, start,
+        profile_now_micros(decoder));
+}
+
+static int decode_stream_pixel_block(
+    BPV1Decoder *decoder, unsigned mode, uint32_t block_x,
+    uint32_t block_y, PixelStreamReader *reader,
+    uint16_t *destination, size_t stride
+) {
+    if (mode == MODE_SKIP) {
+        unsigned row;
+        if (!decoder->has_previous) return BPV1_ERR_DECODE;
+        for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+            copy_rgb565_block_row(
+                destination + (size_t)row * stride,
+                pixel_reference_row(
+                    decoder,
+                    block_y * BPV1_BLOCK_SIZE + row) +
+                    (size_t)block_x * BPV1_BLOCK_SIZE);
+        }
+    } else if (mode == MODE_MOTION) {
+        uint8_t packed;
+        int read_result;
+        int motion_x;
+        int motion_y;
+        int source_x;
+        int source_y;
+        unsigned row;
+        if (!decoder->has_previous) return BPV1_ERR_DECODE;
+        read_result = pixel_stream_read_u8(reader, &packed);
+        if (read_result != BPV1_OK) return read_result;
+        motion_x = signed_nibble(packed >> 4);
+        motion_y = signed_nibble(packed & 15U);
+        if (motion_x == -8 || motion_y == -8)
+            return BPV1_ERR_DECODE;
+        source_x = (int)block_x * BPV1_BLOCK_SIZE + motion_x;
+        source_y = (int)block_y * BPV1_BLOCK_SIZE + motion_y;
+        if (source_x < 0 || source_y < 0 ||
+            source_x + BPV1_BLOCK_SIZE > decoder->header.width ||
+            source_y + BPV1_BLOCK_SIZE > decoder->header.height) {
+            return BPV1_ERR_DECODE;
+        }
+        for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+            copy_rgb565_block_row(
+                destination + (size_t)row * stride,
+                pixel_reference_row(
+                    decoder, (uint32_t)source_y + row) +
+                    (size_t)source_x);
+        }
+    } else if (mode == MODE_BLOCK_DICTIONARY) {
+        uint8_t packed[2];
+        const uint8_t *record;
+        const int read_result =
+            pixel_stream_read(reader, packed, sizeof packed);
+        if (read_result != BPV1_OK) return read_result;
+        record = dictionary_entry(
+            &decoder->blocks, read_u16(packed));
+        if (!record) return BPV1_ERR_DECODE;
+        record_to_rgb565(
+            decoder, record, destination, stride);
+    } else if (mode == MODE_PATTERN_DICTIONARY) {
+        uint8_t packed[BPV1_PACKED_RECORD_BYTES];
+        uint8_t record[BPV1_RECORD_BYTES];
+        const uint8_t *cursor = packed;
+        const uint8_t *end;
+        unsigned subtype;
+        size_t packed_size;
+        int read_result = pixel_stream_read_u8(reader, packed);
+        if (read_result != BPV1_OK) return read_result;
+        subtype = packed[0] >> 6;
+        packed_size = subtype == 0U ? 2U :
+                      subtype == 1U ? 4U :
+                      subtype == 2U ? 7U : 9U;
+        read_result = pixel_stream_read(
+            reader, packed + 1U, packed_size - 1U);
+        if (read_result != BPV1_OK) return read_result;
+        end = packed + packed_size;
+        if (decode_v6_raw(
+                &decoder->header, &cursor, end, record) != BPV1_OK ||
+            cursor != end) {
+            return BPV1_ERR_DECODE;
+        }
+        record_to_rgb565(
+            decoder, record, destination, stride);
+        dictionary_add_unique(&decoder->blocks, record);
+    } else {
+        return BPV1_ERR_DECODE;
+    }
+    return BPV1_OK;
+}
+
+static int decode_pixel_block(
+    BPV1Decoder *decoder, unsigned mode, uint32_t block_x,
+    uint32_t block_y, const uint8_t **cursor,
+    const uint8_t *payload_end, uint16_t *destination, size_t stride
+) {
+    if (mode == MODE_SKIP) {
+        unsigned row;
+        if (!decoder->has_previous) return BPV1_ERR_DECODE;
+        for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+            copy_rgb565_block_row(
+                destination + (size_t)row * stride,
+                pixel_reference_row(
+                    decoder,
+                    block_y * BPV1_BLOCK_SIZE + row) +
+                    (size_t)block_x * BPV1_BLOCK_SIZE);
+        }
+    } else if (mode == MODE_MOTION) {
+        int motion_x;
+        int motion_y;
+        int source_x;
+        int source_y;
+        unsigned row;
+        if (!decoder->has_previous || *cursor >= payload_end)
+            return BPV1_ERR_DECODE;
+        motion_x = signed_nibble((*cursor)[0] >> 4);
+        motion_y = signed_nibble((*cursor)[0] & 15U);
+        if (motion_x == -8 || motion_y == -8)
+            return BPV1_ERR_DECODE;
+        ++*cursor;
+        source_x = (int)block_x * BPV1_BLOCK_SIZE + motion_x;
+        source_y = (int)block_y * BPV1_BLOCK_SIZE + motion_y;
+        if (source_x < 0 || source_y < 0 ||
+            source_x + BPV1_BLOCK_SIZE > decoder->header.width ||
+            source_y + BPV1_BLOCK_SIZE > decoder->header.height) {
+            return BPV1_ERR_DECODE;
+        }
+        for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
+            copy_rgb565_block_row(
+                destination + (size_t)row * stride,
+                pixel_reference_row(
+                    decoder, (uint32_t)source_y + row) +
+                    (size_t)source_x);
+        }
+    } else if (mode == MODE_BLOCK_DICTIONARY) {
+        const uint8_t *record;
+        uint16_t dictionary_index;
+        if ((size_t)(payload_end - *cursor) < 2U)
+            return BPV1_ERR_DECODE;
+        dictionary_index = read_u16(*cursor);
+        *cursor += 2;
+        record = dictionary_entry(&decoder->blocks, dictionary_index);
+        if (!record) return BPV1_ERR_DECODE;
+        record_to_rgb565(
+            decoder, record, destination, stride);
+    } else if (mode == MODE_PATTERN_DICTIONARY) {
+        uint8_t record[BPV1_RECORD_BYTES];
+        if (decode_v6_raw(
+                &decoder->header, cursor, payload_end,
+                record) != BPV1_OK) {
+            return BPV1_ERR_DECODE;
+        }
+        record_to_rgb565(
+            decoder, record, destination, stride);
+        dictionary_add_unique(&decoder->blocks, record);
+    } else {
+        return BPV1_ERR_DECODE;
+    }
     return BPV1_OK;
 }
 
@@ -675,10 +1510,16 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
     }
     if (palette_bytes) {
         memcpy(decoder->header.palette, packet->data, palette_bytes);
+        rebuild_rgb565_palette(decoder);
     }
     modes = packet->data + palette_bytes;
     cursor = modes + packet->info.mode_bytes;
     payload_end = packet->data + packet->size;
+    if (decoder->header.version >=
+        BPV1_PIXEL_MOTION_VERSION) {
+        return decode_pixel_motion_frame(
+            decoder, packet, modes, cursor, payload_end, frame);
+    }
     previous_at_position = decoder->previous;
     destination = decoder->current;
     mode_reader.cursor = modes;
@@ -687,19 +1528,39 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
 
     for (block_index = 0; block_index < decoder->frame.block_count;
          ++block_index) {
-        const unsigned mode = read_mode(&mode_reader);
-        if (mode >= MODE_COUNT) return BPV1_ERR_DECODE;
+        const unsigned mode_bits =
+            decoder->header.version >= BPV1_FOUR_MODE_VERSION ? 2U : 3U;
+        const unsigned mode = read_mode(&mode_reader, mode_bits);
+        if (mode >= (decoder->header.version >= BPV1_FOUR_MODE_VERSION
+                        ? 4U
+                        : MODE_COUNT)) {
+            return BPV1_ERR_DECODE;
+        }
         if (mode == MODE_SKIP) {
             if (!decoder->has_previous) return BPV1_ERR_DECODE;
             copy_record(destination, previous_at_position);
         } else if (mode == MODE_MOTION) {
             int source_x, source_y;
+            int motion_x, motion_y;
+            const size_t motion_bytes =
+                decoder->header.version >= BPV1_FOUR_MODE_VERSION
+                    ? 1U
+                    : 2U;
             if (!decoder->has_previous ||
-                (size_t)(payload_end - cursor) < 2U)
+                (size_t)(payload_end - cursor) < motion_bytes)
                 return BPV1_ERR_DECODE;
-            source_x = block_x + (int)(int8_t)cursor[0];
-            source_y = block_y + (int)(int8_t)cursor[1];
-            cursor += 2;
+            if (motion_bytes == 1U) {
+                motion_x = signed_nibble(cursor[0] >> 4);
+                motion_y = signed_nibble(cursor[0] & 15U);
+                if (motion_x == -8 || motion_y == -8)
+                    return BPV1_ERR_DECODE;
+            } else {
+                motion_x = (int)(int8_t)cursor[0];
+                motion_y = (int)(int8_t)cursor[1];
+            }
+            cursor += motion_bytes;
+            source_x = block_x + motion_x;
+            source_y = block_y + motion_y;
             if (source_x < 0 || source_y < 0 ||
                 source_x >= decoder->frame.blocks_x ||
                 source_y >= decoder->frame.blocks_y) {
@@ -708,8 +1569,10 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             copy_record(
                 destination,
                 decoder->previous +
-                    ((size_t)source_y * decoder->frame.blocks_x +
-                     (size_t)source_x) * BPV1_RECORD_BYTES);
+                    ((size_t)source_y *
+                         decoder->frame.blocks_x +
+                     (size_t)source_x) *
+                        BPV1_RECORD_BYTES);
         } else if (mode == MODE_BLOCK_DICTIONARY) {
             uint8_t *source;
             uint16_t dictionary_index;
@@ -720,6 +1583,14 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             source = dictionary_entry(&decoder->blocks, dictionary_index);
             if (!source) return BPV1_ERR_DECODE;
             copy_record(destination, source);
+        } else if (decoder->header.version >=
+                       BPV1_FOUR_MODE_VERSION &&
+                   mode == MODE_PATTERN_DICTIONARY) {
+            if (decode_v6_raw(&decoder->header, &cursor, payload_end,
+                              destination) != BPV1_OK) {
+                return BPV1_ERR_DECODE;
+            }
+            dictionary_add_unique(&decoder->blocks, destination);
         } else if (mode == MODE_PATTERN_DICTIONARY) {
             uint8_t *pattern;
             uint16_t dictionary_index;
@@ -730,7 +1601,8 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             pattern = dictionary_entry(&decoder->patterns,
                                        dictionary_index);
             if (!pattern) return BPV1_ERR_DECODE;
-            if (decoder->header.version >= BPV1_VERSION) {
+            if (decoder->header.version >=
+                BPV1_ADAPTIVE_RAW_VERSION) {
                 const unsigned count = pattern_color_count(pattern);
                 if (decode_packed_prefix(&cursor, payload_end,
                                          destination, count) < 0) {
@@ -749,8 +1621,9 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             if (validate_record(&decoder->header, destination))
                 return BPV1_ERR_DECODE;
             dictionary_add_unique(&decoder->blocks, destination);
-        } else {
-            if (decoder->header.version >= BPV1_VERSION) {
+        } else if (mode == MODE_RAW) {
+            if (decoder->header.version >=
+                BPV1_ADAPTIVE_RAW_VERSION) {
                 const int count = decode_packed_prefix(
                     &cursor, payload_end, destination, 0);
                 if (count < 0) return BPV1_ERR_DECODE;
@@ -791,6 +1664,19 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             dictionary_add_unique(&decoder->patterns,
                                   destination + PATTERN_OFFSET);
             dictionary_add_unique(&decoder->blocks, destination);
+        } else if (mode == MODE_RAW_DIRECT) {
+            if (decoder->header.version <
+                    BPV1_ADAPTIVE_RAW_VERSION ||
+                decoder->header.version >=
+                    BPV1_FOUR_MODE_VERSION ||
+                decode_raw_direct(
+                    &decoder->header, &cursor, payload_end,
+                    destination) != BPV1_OK) {
+                return BPV1_ERR_DECODE;
+            }
+            dictionary_add_unique(&decoder->blocks, destination);
+        } else {
+            return BPV1_ERR_DECODE;
         }
         destination += BPV1_RECORD_BYTES;
         previous_at_position += BPV1_RECORD_BYTES;
@@ -809,9 +1695,433 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
     decoder->frame.frame_index = decoder->frame_index++;
     decoder->frame.keyframe = packet->info.keyframe;
     decoder->frame.blocks = decoder->previous;
+    decoder->frame.rgb565 = NULL;
+    decoder->frame.rgb565_rows = NULL;
     decoder->frame.palette = decoder->header.palette;
     *frame = &decoder->frame;
     return BPV1_OK;
+}
+
+int bpv1_decoder_decode_rgb565_strips(
+    BPV1Decoder *decoder, const BPV1Packet *packet,
+    uint16_t rows_per_strip, BPV1Rgb565StripAcquire acquire,
+    BPV1Rgb565StripSubmit submit, BPV1Rgb565StripFlush flush,
+    void *opaque, const BPV1Frame **frame
+) {
+    const uint8_t *modes;
+    const uint8_t *cursor;
+    const uint8_t *payload_end;
+    size_t palette_bytes;
+    ModeReader mode_reader;
+    PendingPixelStrip pending[2];
+    uint32_t block_y;
+    int submitted = 0;
+    int result = BPV1_OK;
+    if (!decoder || !packet || !frame || !packet->data ||
+        !acquire || !submit || !flush ||
+        decoder->header.version < BPV1_PIXEL_MOTION_VERSION ||
+        packet->size != packet->info.frame_bytes ||
+        decoder->frame_index >= decoder->header.frame_count ||
+        !rows_per_strip ||
+        rows_per_strip % BPV1_BLOCK_SIZE ||
+        rows_per_strip <= decoder->header.search_radius ||
+        decoder->header.width % BPV1_BLOCK_SIZE ||
+        decoder->header.height % BPV1_BLOCK_SIZE) {
+        return BPV1_ERR_ARGUMENT;
+    }
+    memset(&decoder->last_profile, 0, sizeof decoder->last_profile);
+    if (!decoder->frame_index && !packet->info.keyframe)
+        return BPV1_ERR_DECODE;
+    if (packet->info.keyframe) reset_references(decoder);
+    palette_bytes =
+        packet->info.keyframe ? BPV1_MAX_PALETTE_BYTES : 0U;
+    if (palette_bytes > packet->size ||
+        packet->info.mode_bytes > packet->size - palette_bytes) {
+        return BPV1_ERR_DECODE;
+    }
+    if (palette_bytes) {
+        memcpy(decoder->header.palette, packet->data, palette_bytes);
+        rebuild_rgb565_palette(decoder);
+    }
+    modes = packet->data + palette_bytes;
+    cursor = modes + packet->info.mode_bytes;
+    payload_end = packet->data + packet->size;
+    mode_reader.cursor = modes;
+    mode_reader.buffer = 0;
+    mode_reader.available = 0;
+    memset(pending, 0, sizeof pending);
+
+    for (block_y = 0; block_y < decoder->frame.blocks_y;) {
+        const uint16_t strip_y =
+            (uint16_t)(block_y * BPV1_BLOCK_SIZE);
+        const uint16_t strip_rows = (uint16_t)(
+            decoder->header.height - strip_y < rows_per_strip
+                ? decoder->header.height - strip_y
+                : rows_per_strip);
+        const uint32_t block_rows =
+            strip_rows / BPV1_BLOCK_SIZE;
+        uint16_t *pixels = acquire(opaque, strip_y, strip_rows);
+        int slot = -1;
+        int index;
+        uint32_t local_block_y;
+        if (!pixels) {
+            result = BPV1_ERR_IO;
+            break;
+        }
+        for (index = 0; index < 2; ++index) {
+            if (pending[index].pixels == pixels) {
+                if ((uint32_t)strip_y <
+                    (uint32_t)pending[index].y +
+                        pending[index].rows +
+                        decoder->header.search_radius) {
+                    result = BPV1_ERR_DECODE;
+                    break;
+                }
+                commit_pixel_strip(decoder, &pending[index]);
+                memset(&pending[index], 0, sizeof pending[index]);
+                slot = index;
+                break;
+            }
+            if (slot < 0 && !pending[index].pixels)
+                slot = index;
+        }
+        if (result != BPV1_OK) break;
+        if (slot < 0) {
+            result = BPV1_ERR_IO;
+            break;
+        }
+
+        for (local_block_y = 0;
+             local_block_y < block_rows; ++local_block_y) {
+            uint32_t block_x;
+            for (block_x = 0; block_x < decoder->frame.blocks_x;
+                 ++block_x) {
+                const unsigned mode = read_mode(&mode_reader, 2U);
+                uint16_t *destination =
+                    pixels +
+                    (size_t)local_block_y * BPV1_BLOCK_SIZE *
+                        decoder->header.width +
+                    (size_t)block_x * BPV1_BLOCK_SIZE;
+                result = decode_pixel_block(
+                    decoder, mode, block_x,
+                    block_y + local_block_y, &cursor, payload_end,
+                    destination, decoder->header.width);
+                if (result != BPV1_OK) break;
+            }
+            if (result != BPV1_OK) break;
+        }
+        if (result != BPV1_OK) break;
+        if (submit(opaque, pixels, strip_y, strip_rows)) {
+            result = BPV1_ERR_IO;
+            break;
+        }
+        submitted = 1;
+        pending[slot].pixels = pixels;
+        pending[slot].y = strip_y;
+        pending[slot].rows = strip_rows;
+        block_y += block_rows;
+    }
+    if (result == BPV1_OK && cursor != payload_end)
+        result = BPV1_ERR_DECODE;
+    if (submitted && flush(opaque)) result = BPV1_ERR_IO;
+    if (result != BPV1_OK) return result;
+    {
+        int index;
+        for (index = 0; index < 2; ++index) {
+            if (pending[index].pixels)
+                commit_pixel_strip(decoder, &pending[index]);
+        }
+    }
+    decoder->has_previous = 1;
+    decoder->frame.frame_index = decoder->frame_index++;
+    decoder->frame.keyframe = packet->info.keyframe;
+    decoder->frame.blocks = NULL;
+    decoder->frame.rgb565 = NULL;
+    decoder->frame.rgb565_rows =
+        (const uint16_t *const *)decoder->pixel_reference_rows;
+    decoder->frame.palette = decoder->header.palette;
+    *frame = &decoder->frame;
+    return BPV1_OK;
+}
+
+int bpv1_decoder_decode_next_rgb565_strips_from_input(
+    BPV1Decoder *decoder, BPV1InputRead read, void *input_opaque,
+    uint16_t rows_per_strip,
+    BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+    BPV1Rgb565StripFlush flush, void *output_opaque,
+    const BPV1Frame **frame
+) {
+    BPV1FrameInfo info = {0};
+    PixelStreamReader reader;
+    ModeReader mode_reader;
+    PendingPixelStrip pending[2];
+    size_t palette_bytes;
+    size_t payload_bytes;
+    uint32_t block_y;
+    int direct_output;
+    int submitted = 0;
+    int result;
+    if (!decoder || !read || !frame ||
+        decoder->header.version < BPV1_PIXEL_MOTION_VERSION ||
+        decoder->frame_index >= decoder->header.frame_count) {
+        return BPV1_ERR_ARGUMENT;
+    }
+    direct_output = acquire && submit && flush;
+    if ((acquire || submit || flush) && !direct_output)
+        return BPV1_ERR_ARGUMENT;
+    if (direct_output &&
+        (!rows_per_strip ||
+         rows_per_strip % BPV1_BLOCK_SIZE ||
+         rows_per_strip <= decoder->header.search_radius)) {
+        return BPV1_ERR_ARGUMENT;
+    }
+    memset(&decoder->last_profile, 0, sizeof decoder->last_profile);
+    {
+        uint8_t bytes[13];
+        const size_t header_bytes =
+            decoder->header.version >= BPV1_AUDIO_VERSION
+                ? sizeof bytes
+                : 9U;
+        result = profile_input_read_exact(
+            decoder, read, input_opaque, bytes, header_bytes);
+        if (result == BPV1_OK)
+            result = frame_info_decode(
+                bytes, &decoder->header, &info);
+    }
+    if (result != BPV1_OK) return result;
+    if (!decoder->frame_index && !info.keyframe)
+        return BPV1_ERR_DECODE;
+    if (info.keyframe) reset_references(decoder);
+    palette_bytes =
+        info.keyframe ? BPV1_MAX_PALETTE_BYTES : 0U;
+    if (palette_bytes > info.frame_bytes ||
+        info.mode_bytes > info.frame_bytes - palette_bytes ||
+        info.mode_bytes > decoder->mode_capacity) {
+        return BPV1_ERR_DECODE;
+    }
+    if (palette_bytes &&
+        profile_input_read_exact(
+            decoder, read, input_opaque, decoder->header.palette,
+            palette_bytes) != BPV1_OK) {
+        return BPV1_ERR_IO;
+    }
+    if (palette_bytes) rebuild_rgb565_palette(decoder);
+    if (profile_input_read_exact(
+            decoder, read, input_opaque, decoder->mode_map,
+            info.mode_bytes) != BPV1_OK) {
+        return BPV1_ERR_IO;
+    }
+    payload_bytes =
+        info.frame_bytes - palette_bytes - info.mode_bytes;
+    memset(&reader, 0, sizeof reader);
+    reader.decoder = decoder;
+    reader.read = read;
+    reader.input_opaque = input_opaque;
+    reader.remaining = payload_bytes;
+    mode_reader.cursor = decoder->mode_map;
+    mode_reader.buffer = 0;
+    mode_reader.available = 0;
+    memset(pending, 0, sizeof pending);
+
+    if (direct_output) {
+        for (block_y = 0; block_y < decoder->frame.blocks_y;) {
+            const uint16_t strip_y =
+                (uint16_t)(block_y * BPV1_BLOCK_SIZE);
+            const uint16_t strip_rows = (uint16_t)(
+                decoder->header.height - strip_y < rows_per_strip
+                    ? decoder->header.height - strip_y
+                    : rows_per_strip);
+            const uint32_t block_rows =
+                strip_rows / BPV1_BLOCK_SIZE;
+            uint16_t *pixels =
+                acquire(output_opaque, strip_y, strip_rows);
+            int slot = -1;
+            int index;
+            uint32_t local_block_y;
+            if (!pixels) {
+                result = BPV1_ERR_IO;
+                break;
+            }
+            for (index = 0; index < 2; ++index) {
+                if (pending[index].pixels == pixels) {
+                    if ((uint32_t)strip_y <
+                        (uint32_t)pending[index].y +
+                            pending[index].rows +
+                            decoder->header.search_radius) {
+                        result = BPV1_ERR_DECODE;
+                        break;
+                    }
+                    commit_pixel_strip(decoder, &pending[index]);
+                    memset(
+                        &pending[index], 0, sizeof pending[index]);
+                    slot = index;
+                    break;
+                }
+                if (slot < 0 && !pending[index].pixels)
+                    slot = index;
+            }
+            if (result != BPV1_OK) break;
+            if (slot < 0) {
+                result = BPV1_ERR_IO;
+                break;
+            }
+            for (local_block_y = 0;
+                 local_block_y < block_rows; ++local_block_y) {
+                uint32_t block_x;
+                for (block_x = 0;
+                     block_x < decoder->frame.blocks_x; ++block_x) {
+                    const unsigned mode =
+                        read_mode(&mode_reader, 2U);
+                    uint16_t *destination =
+                        pixels +
+                        (size_t)local_block_y * BPV1_BLOCK_SIZE *
+                            decoder->header.width +
+                        (size_t)block_x * BPV1_BLOCK_SIZE;
+                    result = decode_stream_pixel_block(
+                        decoder, mode, block_x,
+                        block_y + local_block_y, &reader,
+                        destination, decoder->header.width);
+                    if (result != BPV1_OK) break;
+                }
+                if (result != BPV1_OK) break;
+            }
+            if (result != BPV1_OK) break;
+            if (submit(
+                    output_opaque, pixels, strip_y, strip_rows)) {
+                result = BPV1_ERR_IO;
+                break;
+            }
+            submitted = 1;
+            pending[slot].pixels = pixels;
+            pending[slot].y = strip_y;
+            pending[slot].rows = strip_rows;
+            block_y += block_rows;
+        }
+        if (submitted && flush(output_opaque))
+            result = BPV1_ERR_IO;
+        if (result == BPV1_OK) {
+            int index;
+            for (index = 0; index < 2; ++index) {
+                if (pending[index].pixels)
+                    commit_pixel_strip(decoder, &pending[index]);
+            }
+        }
+    } else {
+        result = BPV1_OK;
+        for (block_y = 0; block_y < decoder->frame.blocks_y;
+             ++block_y) {
+            const uint32_t row_slot =
+                block_y % decoder->pixel_row_slots;
+            uint32_t block_x;
+            for (block_x = 0; block_x < decoder->frame.blocks_x;
+                 ++block_x) {
+                const unsigned mode =
+                    read_mode(&mode_reader, 2U);
+                uint16_t *destination =
+                    decoder->pixel_rows +
+                    (size_t)row_slot *
+                        (decoder->pixel_row_bytes /
+                         sizeof(uint16_t)) +
+                    (size_t)block_x * BPV1_BLOCK_SIZE;
+                result = decode_stream_pixel_block(
+                    decoder, mode, block_x, block_y, &reader,
+                    destination, decoder->pixel_stride);
+                if (result != BPV1_OK) break;
+            }
+            if (result != BPV1_OK) break;
+            if (block_y + 1U >= decoder->pixel_row_slots) {
+                const uint32_t commit_row =
+                    block_y + 1U - decoder->pixel_row_slots;
+                const uint32_t commit_slot =
+                    commit_row % decoder->pixel_row_slots;
+                {
+                    unsigned pixel_row;
+                    const uint16_t *source =
+                        decoder->pixel_rows +
+                        (size_t)commit_slot *
+                            (decoder->pixel_row_bytes /
+                             sizeof(uint16_t));
+                    for (pixel_row = 0;
+                         pixel_row < BPV1_BLOCK_SIZE; ++pixel_row) {
+                        memcpy(
+                            pixel_reference_row(
+                                decoder,
+                                commit_row * BPV1_BLOCK_SIZE +
+                                    pixel_row),
+                            source +
+                                (size_t)pixel_row *
+                                    decoder->pixel_stride,
+                            (size_t)decoder->pixel_stride *
+                                sizeof(uint16_t));
+                    }
+                }
+            }
+        }
+        if (result == BPV1_OK) {
+            const uint32_t first_remaining =
+                decoder->frame.blocks_y >
+                        decoder->pixel_row_slots - 1U
+                    ? decoder->frame.blocks_y -
+                          (decoder->pixel_row_slots - 1U)
+                    : 0U;
+            uint32_t row;
+            for (row = first_remaining;
+                 row < decoder->frame.blocks_y; ++row) {
+                const uint32_t slot =
+                    row % decoder->pixel_row_slots;
+                {
+                    unsigned pixel_row;
+                    const uint16_t *source =
+                        decoder->pixel_rows +
+                        (size_t)slot *
+                            (decoder->pixel_row_bytes /
+                             sizeof(uint16_t));
+                    for (pixel_row = 0;
+                         pixel_row < BPV1_BLOCK_SIZE; ++pixel_row) {
+                        memcpy(
+                            pixel_reference_row(
+                                decoder,
+                                row * BPV1_BLOCK_SIZE + pixel_row),
+                            source +
+                                (size_t)pixel_row *
+                                    decoder->pixel_stride,
+                            (size_t)decoder->pixel_stride *
+                                sizeof(uint16_t));
+                    }
+                }
+            }
+        }
+    }
+    if (result != BPV1_OK) return result;
+    if (reader.remaining || reader.available)
+        return BPV1_ERR_DECODE;
+    if (info.audio_bytes &&
+        profile_input_discard(
+            decoder, read, input_opaque,
+            info.audio_bytes) != BPV1_OK)
+        return BPV1_ERR_IO;
+    decoder->has_previous = 1;
+    decoder->frame.frame_index = decoder->frame_index++;
+    decoder->frame.keyframe = info.keyframe;
+    decoder->frame.blocks = NULL;
+    decoder->frame.rgb565 = NULL;
+    decoder->frame.rgb565_rows =
+        (const uint16_t *const *)decoder->pixel_reference_rows;
+    decoder->frame.palette = decoder->header.palette;
+    *frame = &decoder->frame;
+    return BPV1_OK;
+}
+
+int bpv1_decoder_decode_next_rgb565_strips(
+    BPV1Decoder *decoder, FILE *file, uint16_t rows_per_strip,
+    BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+    BPV1Rgb565StripFlush flush, void *opaque,
+    const BPV1Frame **frame
+) {
+    if (!file) return BPV1_ERR_ARGUMENT;
+    return bpv1_decoder_decode_next_rgb565_strips_from_input(
+        decoder, file_input_read, file, rows_per_strip,
+        acquire, submit, flush, opaque, frame);
 }
 
 size_t bpv1_packet_audio_size(const BPV1Packet *packet) {
@@ -824,7 +2134,9 @@ const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet) {
 
 static int frame_row_arguments(const BPV1Header *header,
                                const BPV1Frame *frame, uint16_t y) {
-    if (!header || !frame || !frame->blocks || !frame->palette ||
+    if (!header || !frame ||
+        (!frame->blocks && !frame->rgb565 && !frame->rgb565_rows) ||
+        !frame->palette ||
         frame->width != header->width || frame->height != header->height ||
         y >= frame->height) {
         return BPV1_ERR_ARGUMENT;
@@ -839,12 +2151,20 @@ static const uint8_t *pixel_rgb(const BPV1Frame *frame, uint16_t x,
     const uint8_t *record =
         frame->blocks + (size_t)block_index * BPV1_RECORD_BYTES;
     const unsigned pixel = ((y & 3U) << 2) | (x & 3U);
-    const unsigned local =
-        (record[PATTERN_OFFSET + (pixel >> 2)] >>
-         (6U - ((pixel & 3U) << 1))) & 3U;
+    unsigned palette_index;
+    unsigned color_index;
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        palette_index = record[0] & 0x3fU;
+        color_index = direct_color(record, pixel);
+    } else {
+        const unsigned local =
+            (record[PATTERN_OFFSET + (pixel >> 2)] >>
+             (6U - ((pixel & 3U) << 1))) & 3U;
+        palette_index = record[0];
+        color_index = record[1U + local];
+    }
     const unsigned color =
-        ((unsigned)record[0] * BPV1_COLORS_PER_PALETTE +
-         record[1U + local]) * 3U;
+        (palette_index * BPV1_COLORS_PER_PALETTE + color_index) * 3U;
     return frame->palette + color;
 }
 
@@ -855,6 +2175,26 @@ int bpv1_frame_render_rgb24_row(const BPV1Header *header,
     if (!rgb || frame_row_arguments(header, frame, y) ||
         rgb_bytes < (size_t)frame->width * 3U) {
         return BPV1_ERR_ARGUMENT;
+    }
+    if (frame->rgb565 || frame->rgb565_rows) {
+        const size_t stride =
+            (size_t)frame->blocks_x * BPV1_BLOCK_SIZE;
+        const uint16_t *source =
+            frame->rgb565_rows
+                ? frame->rgb565_rows[y]
+                : frame->rgb565 + (size_t)y * stride;
+        for (x = 0; x < frame->width; ++x) {
+            const unsigned red = (source[x] >> 11) & 31U;
+            const unsigned green = (source[x] >> 5) & 63U;
+            const unsigned blue = source[x] & 31U;
+            rgb[(size_t)x * 3U] =
+                (uint8_t)((red << 3) | (red >> 2));
+            rgb[(size_t)x * 3U + 1U] =
+                (uint8_t)((green << 2) | (green >> 4));
+            rgb[(size_t)x * 3U + 2U] =
+                (uint8_t)((blue << 3) | (blue >> 2));
+        }
+        return BPV1_OK;
     }
     for (x = 0; x < frame->width; ++x) {
         const uint8_t *color = pixel_rgb(frame, x, y);
@@ -919,6 +2259,21 @@ static int frame_render_rgb565_rows(
         return BPV1_ERR_ARGUMENT;
     }
 
+    if (frame->rgb565 || frame->rgb565_rows) {
+        const size_t source_stride =
+            (size_t)frame->blocks_x * BPV1_BLOCK_SIZE;
+        for (output_row = 0; output_row < rows; ++output_row)
+            memcpy(
+                rgb565 + (size_t)output_row * stride_pixels,
+                frame->rgb565_rows
+                    ? frame->rgb565_rows[y + output_row]
+                    : frame->rgb565 +
+                          ((size_t)y + output_row) *
+                              source_stride,
+                (size_t)frame->width * sizeof *rgb565);
+        return BPV1_OK;
+    }
+
     while (output_row < rows) {
         const uint16_t source_y = (uint16_t)(y + output_row);
         const unsigned first_local_y = source_y & 3U;
@@ -935,35 +2290,63 @@ static int frame_render_rgb565_rows(
 
         while (x < frame->width) {
             const size_t palette_offset =
-                (size_t)record[0] * BPV1_COLORS_PER_PALETTE;
-            uint16_t colors[4];
+                (size_t)(record[0] & 0x3fU) *
+                    BPV1_COLORS_PER_PALETTE;
             const uint16_t block_pixels =
                 (uint16_t)(frame->width - x < BPV1_BLOCK_SIZE
                                ? frame->width - x
                                : BPV1_BLOCK_SIZE);
             uint16_t row;
-            unsigned color_index;
 
-            for (color_index = 0; color_index < 4U; ++color_index) {
-                const size_t color_offset =
-                    palette_offset + record[1U + color_index];
-                colors[color_index] =
-                    palette_rgb565
-                        ? palette_rgb565[color_offset]
-                        : rgb888_to_rgb565(
-                              frame->palette + color_offset * 3U);
-            }
-            for (row = 0; row < group_rows; ++row) {
-                const uint8_t pattern =
-                    record[PATTERN_OFFSET + first_local_y + row];
-                uint16_t *destination =
-                    rgb565 + (size_t)(output_row + row) *
-                                 stride_pixels +
-                    x;
-                uint16_t pixel;
-                for (pixel = 0; pixel < block_pixels; ++pixel) {
-                    destination[pixel] =
-                        colors[(pattern >> (6U - pixel * 2U)) & 3U];
+            if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+                for (row = 0; row < group_rows; ++row) {
+                    uint16_t *destination =
+                        rgb565 + (size_t)(output_row + row) *
+                                     stride_pixels +
+                        x;
+                    uint16_t pixel;
+                    for (pixel = 0; pixel < block_pixels; ++pixel) {
+                        const unsigned direct_index =
+                            (first_local_y + row) * BPV1_BLOCK_SIZE +
+                            pixel;
+                        const size_t color_offset =
+                            palette_offset +
+                            direct_color(record, direct_index);
+                        destination[pixel] =
+                            palette_rgb565
+                                ? palette_rgb565[color_offset]
+                                : rgb888_to_rgb565(
+                                      frame->palette +
+                                      color_offset * 3U);
+                    }
+                }
+            } else {
+                uint16_t colors[4];
+                unsigned color_index;
+                for (color_index = 0; color_index < 4U;
+                     ++color_index) {
+                    const size_t color_offset =
+                        palette_offset + record[1U + color_index];
+                    colors[color_index] =
+                        palette_rgb565
+                            ? palette_rgb565[color_offset]
+                            : rgb888_to_rgb565(
+                                  frame->palette +
+                                  color_offset * 3U);
+                }
+                for (row = 0; row < group_rows; ++row) {
+                    const uint8_t pattern =
+                        record[PATTERN_OFFSET + first_local_y + row];
+                    uint16_t *destination =
+                        rgb565 + (size_t)(output_row + row) *
+                                     stride_pixels +
+                        x;
+                    uint16_t pixel;
+                    for (pixel = 0; pixel < block_pixels; ++pixel) {
+                        destination[pixel] =
+                            colors[(pattern >>
+                                    (6U - pixel * 2U)) & 3U];
+                    }
                 }
             }
             x = (uint16_t)(x + block_pixels);

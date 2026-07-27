@@ -11,24 +11,43 @@
 #include <threads.h>
 #include <time.h>
 
-#define BPV_VERSION 5
+#include "bpv1_cuda.h"
+
+#define BPV_BLOCK_MOTION_VERSION 6
+#define BPV_PIXEL_MOTION_VERSION 7
 #define BLOCK_SIZE 4
 #define PIXELS_PER_BLOCK 16
 #define PALETTE_COUNT 64
 #define COLORS_PER_PALETTE 16
 #define LOCAL_COLORS 4
+#define DIRECT_RECORD_FLAG 0x80
 #define RECORD_BYTES 9
 #define PATTERN_BYTES 4
-#define MAX_CANDIDATE_PALETTES 8
+#define MAX_CANDIDATE_PALETTES PALETTE_COUNT
+#define PALETTE_INDEX_CHANNEL_BITS 4
+#define PALETTE_INDEX_CHANNEL_BINS (1U << PALETTE_INDEX_CHANNEL_BITS)
+#define PALETTE_INDEX_BIN_COUNT \
+    (1U << (PALETTE_INDEX_CHANNEL_BITS * 3))
 
 enum {
     MODE_SKIP = 0,
     MODE_MOTION = 1,
     MODE_BLOCK_DICT = 2,
-    MODE_PATTERN_DICT = 3,
-    MODE_RAW = 4,
-    MODE_COUNT = 5
+    MODE_RAW = 3,
+    MODE_COUNT = 4
 };
+
+enum {
+    DEVICE_CPU = 0,
+    DEVICE_AUTO = 1,
+    DEVICE_CUDA = 2
+};
+
+#ifdef BPV1_WITH_CUDA
+#define DEFAULT_DEVICE_MODE DEVICE_CUDA
+#else
+#define DEFAULT_DEVICE_MODE DEVICE_CPU
+#endif
 
 typedef struct {
     uint8_t palette_index;
@@ -73,13 +92,18 @@ typedef struct {
 } Training;
 
 typedef struct {
+    uint32_t *distances;
+} PaletteIndex;
+
+typedef struct {
     int threads;
     int gop;
+    int minimum_gop;
+    double scene_threshold;
     double lambda;
     int candidate_palettes;
     int search_radius;
     int max_block_dictionary;
-    int max_pattern_dictionary;
     size_t maximum_sample_blocks;
     int sample_blocks_per_frame;
     int block_iterations;
@@ -93,6 +117,9 @@ typedef struct {
     int audio_rate;
     int active_palettes;
     const char *active_palette_path;
+    int device_mode;
+    int use_cuda;
+    int pixel_motion;
 } Options;
 
 typedef struct {
@@ -104,6 +131,11 @@ typedef struct {
 
 typedef struct {
     uint64_t mode_counts[MODE_COUNT];
+    uint64_t raw_1;
+    uint64_t raw_2;
+    uint64_t raw_4;
+    uint64_t direct_5_to_8;
+    uint64_t direct_9_to_16;
     uint64_t squared_error;
     uint64_t samples;
     uint64_t previous_decisions;
@@ -117,22 +149,29 @@ typedef struct {
 } BlockDictionary;
 
 typedef struct {
-    uint8_t (*items)[PATTERN_BYTES];
-    int count;
-    int capacity;
-} PatternDictionary;
-
-typedef struct {
     const Options *options;
     const Training *training;
     const Y4mInfo *info;
     uint8_t *frames;
     int frame_count;
     int first_frame;
+    size_t gop_index;
     Buffer output;
     EncodeStats stats;
     int result;
 } GopJob;
+
+typedef struct {
+    uint32_t first_frame;
+    double scene_score;
+    int scene_cut;
+} GopEntry;
+
+typedef struct {
+    GopEntry *entries;
+    size_t count;
+    size_t capacity;
+} GopPlan;
 
 _Static_assert(sizeof(Block) == RECORD_BYTES, "BPV1 Block must occupy 9 bytes");
 
@@ -142,17 +181,22 @@ static void usage(FILE *stream) {
         "  bpv1enc <input.y4m> <output.bpv1> [options]\n\n"
         "Options:\n"
         "  --threads N                    GOP workers 1..16 (default 8)\n"
-        "  --gop N                        keyframe/GOP interval (default 48)\n"
+        "  --gop N                        maximum GOP interval (default 48)\n"
+        "  --min-gop N                    minimum scene GOP (default 12)\n"
+        "  --scene-threshold N            cut score 0..1 (default 0.35)\n"
+        "  --no-scene-cuts                use only fixed GOP boundaries\n"
         "  --lambda N                     RD multiplier (default 64)\n"
-        "  --candidate-palettes N         nearby palettes 1..8 (default 3)\n"
-        "  --search-radius N              motion radius in blocks (default 2)\n"
+        "  --candidate-palettes N         indexed palettes 1..64 (default 8)\n"
+        "  --device cpu|auto|cuda         block search backend "
+            "(CUDA build defaults to cuda)\n"
+        "  --search-radius N              motion radius 0..7 (default 2)\n"
+        "  --pixel-motion                 emit experimental v7, radius in pixels\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
-        "  --samples-per-frame N          training blocks/frame (default 16)\n"
+        "  --samples-per-frame N          training blocks/frame (default 256)\n"
         "  --block-iterations N           block k-means passes (default 10)\n"
         "  --color-iterations N           color k-means passes (default 10)\n"
         "  --colors-per-cluster N         color samples/palette (default 8192)\n"
         "  --max-block-dictionary N       block dictionary entries (default 256)\n"
-        "  --max-pattern-dictionary N     pattern dictionary entries (default 256)\n"
         "  --max-frames N                 encode a leading test fragment\n"
         "  --audio-u8 FILE                mux unsigned 8-bit mono raw PCM\n"
         "  --audio-rate N                 PCM sample rate (default 16000)\n"
@@ -164,9 +208,14 @@ static void usage(FILE *stream) {
         "  --no-progress                  suppress progress\n"
         "  -h, --help                     show help\n\n"
         "The input must be a seekable 8-bit YUV 4:2:0 Y4M file. In the default\n"
-        "BPV1 v5 mode every independent GOP carries a 64x16 RGB palette bank\n"
-        "and uses adaptive 2/4/7-byte RAW records. --fixed-palettes repeats\n"
-        "one global bank in each GOP.\n");
+        "BPV1 v6 mode every independent GOP carries a 64x16 RGB palette bank\n"
+        "and uses a 2-bit mode map. Unified RAW records occupy 2 bytes for\n"
+        "one color, 4 bytes for two, 7 bytes for a four-color block, or\n"
+        "9 bytes for 5-16 direct colors. --fixed-palettes repeats one global\n"
+        "bank in each GOP. --pixel-motion emits BPV1 v7 and interprets the\n"
+        "packed motion-vector nibbles as pixel offsets. Motion copies the\n"
+        "previous reconstructed RGB565 pixels directly; v7 dimensions must\n"
+        "be multiples of four.\n");
 }
 
 static int buffer_reserve(Buffer *buffer, size_t extra) {
@@ -385,16 +434,14 @@ static void describe_pixels(
 
 static int load_active_palette(
     const Options *options,
-    int first_frame,
+    size_t gop_index,
     Training *training
 ) {
     FILE *file;
-    size_t gop_index;
     size_t offset;
     int palette;
-    if (!options->active_palette_path || !training || first_frame < 0)
+    if (!options->active_palette_path || !training)
         return -1;
-    gop_index = (size_t)first_frame / (size_t)options->gop;
     if (gop_index > SIZE_MAX / sizeof training->palette) return -1;
     offset = gop_index * sizeof training->palette;
     if (offset > LONG_MAX) return -1;
@@ -554,6 +601,111 @@ static uint32_t color_distance(const uint8_t *left, const uint8_t *right) {
     return (uint32_t)(red * red + green * green + blue * blue);
 }
 
+static void palette_index_free(PaletteIndex *index) {
+    if (!index) return;
+    free(index->distances);
+    index->distances = NULL;
+}
+
+static int palette_index_build(
+    const Training *training,
+    PaletteIndex *index
+) {
+    const size_t entry_count =
+        (size_t)PALETTE_INDEX_BIN_COUNT * PALETTE_COUNT;
+    unsigned red_bin, green_bin, blue_bin;
+    if (!training || !index ||
+        entry_count > SIZE_MAX / sizeof *index->distances) {
+        return -1;
+    }
+    index->distances = (uint32_t *)malloc(
+        entry_count * sizeof *index->distances);
+    if (!index->distances) return -1;
+    for (red_bin = 0; red_bin < PALETTE_INDEX_CHANNEL_BINS; ++red_bin) {
+        for (green_bin = 0;
+             green_bin < PALETTE_INDEX_CHANNEL_BINS;
+             ++green_bin) {
+            for (blue_bin = 0;
+                 blue_bin < PALETTE_INDEX_CHANNEL_BINS;
+                 ++blue_bin) {
+                const unsigned bin =
+                    (red_bin << (PALETTE_INDEX_CHANNEL_BITS * 2)) |
+                    (green_bin << PALETTE_INDEX_CHANNEL_BITS) |
+                    blue_bin;
+                const uint8_t center[3] = {
+                    (uint8_t)((red_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS))),
+                    (uint8_t)((green_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS))),
+                    (uint8_t)((blue_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS)))
+                };
+                int palette;
+                for (palette = 0; palette < PALETTE_COUNT; ++palette) {
+                    uint32_t nearest = UINT32_MAX;
+                    int color;
+                    for (color = 0; color < COLORS_PER_PALETTE; ++color) {
+                        uint32_t distance = color_distance(
+                            center, training->palette[palette][color]);
+                        if (distance < nearest) nearest = distance;
+                    }
+                    index->distances[
+                        (size_t)bin * PALETTE_COUNT + palette] = nearest;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static void palette_index_candidates(
+    const uint8_t pixels[PIXELS_PER_BLOCK][3],
+    const PaletteIndex *index,
+    int count,
+    int *indices
+) {
+    uint64_t best_scores[MAX_CANDIDATE_PALETTES];
+    int palette, slot;
+    for (slot = 0; slot < count; ++slot) {
+        best_scores[slot] = UINT64_MAX;
+        indices[slot] = 0;
+    }
+    for (palette = 0; palette < PALETTE_COUNT; ++palette) {
+        uint64_t score = 0;
+        int pixel;
+        for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+            const unsigned bin =
+                ((unsigned)(pixels[pixel][0] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS))
+                    << (PALETTE_INDEX_CHANNEL_BITS * 2)) |
+                ((unsigned)(pixels[pixel][1] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS))
+                    << PALETTE_INDEX_CHANNEL_BITS) |
+                (unsigned)(pixels[pixel][2] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS));
+            score += index->distances[
+                (size_t)bin * PALETTE_COUNT + palette];
+        }
+        for (slot = 0; slot < count; ++slot) {
+            if (score < best_scores[slot] ||
+                (score == best_scores[slot] &&
+                 palette < indices[slot])) {
+                int move;
+                for (move = count - 1; move > slot; --move) {
+                    best_scores[move] = best_scores[move - 1];
+                    indices[move] = indices[move - 1];
+                }
+                best_scores[slot] = score;
+                indices[slot] = palette;
+                break;
+            }
+        }
+    }
+}
+
 static int train_color_centers(
     const uint8_t *points,
     size_t point_count,
@@ -704,23 +856,86 @@ static int train_palettes(
     return 0;
 }
 
+static int gop_plan_add(
+    GopPlan *plan,
+    uint32_t first_frame,
+    int scene_cut,
+    double scene_score
+) {
+    GopEntry *resized;
+    size_t capacity;
+    if (!plan || (plan->count &&
+        first_frame <= plan->entries[plan->count - 1].first_frame)) {
+        return -1;
+    }
+    if (plan->count == plan->capacity) {
+        capacity = plan->capacity ? plan->capacity * 2U : 64U;
+        if (capacity < plan->capacity ||
+            capacity > SIZE_MAX / sizeof *plan->entries) {
+            return -1;
+        }
+        resized = (GopEntry *)realloc(
+            plan->entries, capacity * sizeof *plan->entries);
+        if (!resized) return -1;
+        plan->entries = resized;
+        plan->capacity = capacity;
+    }
+    plan->entries[plan->count].first_frame = first_frame;
+    plan->entries[plan->count].scene_cut = scene_cut;
+    plan->entries[plan->count].scene_score = scene_score;
+    plan->count++;
+    return 0;
+}
+
+static double scene_change_score(
+    const uint8_t *previous,
+    const uint8_t *current,
+    const Y4mInfo *info,
+    double *previous_mafd
+) {
+    uint64_t absolute_difference = 0;
+    size_t pixel;
+    double mafd;
+    double delta;
+    if (!previous || !current || !info || !info->luma_bytes ||
+        !previous_mafd) {
+        return 0.0;
+    }
+    for (pixel = 0; pixel < info->luma_bytes; ++pixel) {
+        int difference = (int)current[pixel] - previous[pixel];
+        absolute_difference +=
+            (uint64_t)(difference < 0 ? -difference : difference);
+    }
+    mafd = absolute_difference / (double)info->luma_bytes;
+    delta = fabs(mafd - *previous_mafd);
+    *previous_mafd = mafd;
+    return fmin(mafd, delta) / 100.0;
+}
+
 static int scan_and_train(
     FILE *input,
     const Options *options,
     Y4mInfo *info,
     Training *training,
-    uint32_t *frame_count
+    uint32_t *frame_count,
+    GopPlan *plan
 ) {
     SampleReservoir reservoir;
     uint8_t *frame = NULL;
+    uint8_t *previous_frame = NULL;
     uint8_t *labels = NULL;
     uint32_t frames = 0;
+    double previous_mafd = 0.0;
     int blocks_x, blocks_y, block_count;
     int result = 0;
     memset(&reservoir, 0, sizeof reservoir);
-    if (parse_y4m_header(input, info)) goto fail;
+    if (!plan || parse_y4m_header(input, info)) goto fail;
     frame = (uint8_t *)malloc(info->frame_bytes);
     if (!frame) goto fail;
+    if (options->scene_threshold > 0.0) {
+        previous_frame = (uint8_t *)malloc(info->frame_bytes);
+        if (!previous_frame) goto fail;
+    }
     blocks_x = (info->width + BLOCK_SIZE - 1) / BLOCK_SIZE;
     blocks_y = (info->height + BLOCK_SIZE - 1) / BLOCK_SIZE;
     block_count = blocks_x * blocks_y;
@@ -733,6 +948,25 @@ static int scan_and_train(
     }
     while ((!options->max_frames || frames < options->max_frames) &&
            (result = read_y4m_frame(input, info, frame)) > 0) {
+        if (!frames) {
+            if (gop_plan_add(plan, 0, 0, 0.0)) goto fail;
+        } else {
+            const uint32_t first =
+                plan->entries[plan->count - 1].first_frame;
+            const uint32_t length = frames - first;
+            double score = 0.0;
+            int scene_cut = 0;
+            if (previous_frame) {
+                score = scene_change_score(
+                    previous_frame, frame, info, &previous_mafd);
+                scene_cut =
+                    length >= (uint32_t)options->minimum_gop &&
+                    score >= options->scene_threshold;
+            }
+            if (scene_cut || length >= (uint32_t)options->gop) {
+                if (gop_plan_add(plan, frames, scene_cut, score)) goto fail;
+            }
+        }
         if (training) {
             int sample_count = options->sample_blocks_per_frame < block_count
                 ? options->sample_blocks_per_frame : block_count;
@@ -747,6 +981,8 @@ static int scan_and_train(
                 reservoir_add(&reservoir, pixels);
             }
         }
+        if (previous_frame)
+            memcpy(previous_frame, frame, info->frame_bytes);
         frames++;
         if (options->progress && !(frames % 1000))
             fprintf(stderr, "BPV1 %s scan: %u frames\n",
@@ -768,11 +1004,13 @@ static int scan_and_train(
     *frame_count = frames;
     free(labels);
     free(frame);
+    free(previous_frame);
     free(reservoir.blocks);
     return 0;
 fail:
     free(labels);
     free(frame);
+    free(previous_frame);
     free(reservoir.blocks);
     return -1;
 }
@@ -797,12 +1035,16 @@ static int train_gop_palette(
     memset(&reservoir, 0, sizeof reservoir);
     memset(training, 0, sizeof *training);
     if (!frames || frame_count <= 0 || block_count <= 0) return -1;
+    if (samples_per_frame > block_count) samples_per_frame = block_count;
     if ((size_t)frame_count * (size_t)samples_per_frame < PALETTE_COUNT) {
         samples_per_frame =
             (PALETTE_COUNT + frame_count - 1) / frame_count;
+        if (samples_per_frame > block_count) samples_per_frame = block_count;
     }
-    if ((size_t)frame_count > SIZE_MAX / (size_t)samples_per_frame)
+    if ((size_t)frame_count * (size_t)samples_per_frame < PALETTE_COUNT ||
+        (size_t)frame_count > SIZE_MAX / (size_t)samples_per_frame) {
         return -1;
+    }
     available = (size_t)frame_count * (size_t)samples_per_frame;
     reservoir.capacity = options->maximum_sample_blocks < available
         ? options->maximum_sample_blocks : available;
@@ -849,13 +1091,6 @@ static int block_equal(const Block *left, const Block *right) {
     return !memcmp(left, right, sizeof *left);
 }
 
-static int pattern_equal(
-    const uint8_t left[PATTERN_BYTES],
-    const uint8_t right[PATTERN_BYTES]
-) {
-    return !memcmp(left, right, PATTERN_BYTES);
-}
-
 static int block_dictionary_find(
     const BlockDictionary *dictionary,
     const Block *block
@@ -863,16 +1098,6 @@ static int block_dictionary_find(
     int index;
     for (index = dictionary->count - 1; index >= 0; --index)
         if (block_equal(&dictionary->items[index], block)) return index;
-    return -1;
-}
-
-static int pattern_dictionary_find(
-    const PatternDictionary *dictionary,
-    const uint8_t pattern[PATTERN_BYTES]
-) {
-    int index;
-    for (index = dictionary->count - 1; index >= 0; --index)
-        if (pattern_equal(dictionary->items[index], pattern)) return index;
     return -1;
 }
 
@@ -889,17 +1114,51 @@ static void block_dictionary_add(
     dictionary->items[dictionary->count++] = *block;
 }
 
-static void pattern_dictionary_add(
-    PatternDictionary *dictionary,
-    const uint8_t pattern[PATTERN_BYTES]
-) {
-    if (pattern_dictionary_find(dictionary, pattern) >= 0) return;
-    if (dictionary->count == dictionary->capacity) {
-        memmove(dictionary->items, dictionary->items + 1,
-            (size_t)(dictionary->capacity - 1) * sizeof *dictionary->items);
-        dictionary->count--;
+static int block_is_direct(const Block *block) {
+    return (block->palette_index & DIRECT_RECORD_FLAG) != 0;
+}
+
+static unsigned block_palette_index(const Block *block) {
+    return block->palette_index & 0x3fU;
+}
+
+static uint8_t *block_direct_bytes(Block *block) {
+    return block->local_colors;
+}
+
+static const uint8_t *block_direct_bytes_const(const Block *block) {
+    return block->local_colors;
+}
+
+static unsigned block_direct_color(const Block *block, unsigned pixel) {
+    const uint8_t value = block_direct_bytes_const(block)[pixel >> 1];
+    return pixel & 1U ? value & 15U : value >> 4;
+}
+
+static void block_direct_color_store(Block *block, unsigned pixel,
+                                     unsigned color) {
+    uint8_t *value = block_direct_bytes(block) + (pixel >> 1);
+    if (pixel & 1U)
+        *value = (uint8_t)((*value & 0xf0U) | color);
+    else
+        *value = (uint8_t)((*value & 0x0fU) | (color << 4));
+}
+
+static unsigned popcount16(uint16_t value) {
+    unsigned count = 0;
+    while (value) {
+        value &= (uint16_t)(value - 1U);
+        ++count;
     }
-    memcpy(dictionary->items[dictionary->count++], pattern, PATTERN_BYTES);
+    return count;
+}
+
+static uint16_t block_direct_used_mask(const Block *block) {
+    uint16_t mask = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel)
+        mask |= (uint16_t)(1U << block_direct_color(block, pixel));
+    return mask;
 }
 
 static uint64_t block_error(
@@ -909,12 +1168,18 @@ static uint64_t block_error(
 ) {
     uint64_t error = 0;
     int pixel;
+    const unsigned palette_index = block_palette_index(block);
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
-        int shift = 6 - ((pixel & 3) * 2);
-        int local = (block->pattern[pixel >> 2] >> shift) & 3;
+        unsigned color_index;
+        if (block_is_direct(block)) {
+            color_index = block_direct_color(block, (unsigned)pixel);
+        } else {
+            int shift = 6 - ((pixel & 3) * 2);
+            int local = (block->pattern[pixel >> 2] >> shift) & 3;
+            color_index = block->local_colors[local];
+        }
         const uint8_t *color =
-            training->palette[block->palette_index]
-                [block->local_colors[local]];
+            training->palette[palette_index][color_index];
         error += color_distance(pixels[pixel], color);
     }
     return error;
@@ -924,20 +1189,25 @@ static uint64_t quantize_block(
     const uint8_t pixels[PIXELS_PER_BLOCK][3],
     int palette_index,
     const Training *training,
+    int color_limit,
     Block *block
 ) {
     uint32_t distances[PIXELS_PER_BLOCK][COLORS_PER_PALETTE];
     uint32_t current[PIXELS_PER_BLOCK];
-    int selected[LOCAL_COLORS];
+    int selected[COLORS_PER_PALETTE];
     int pixel, color, slot;
     uint64_t total_error = 0;
+    if (color_limit != 4 && color_limit != 8 &&
+        color_limit != COLORS_PER_PALETTE) {
+        return UINT64_MAX;
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         current[pixel] = UINT32_MAX;
         for (color = 0; color < COLORS_PER_PALETTE; ++color)
             distances[pixel][color] = color_distance(
                 pixels[pixel], training->palette[palette_index][color]);
     }
-    for (slot = 0; slot < LOCAL_COLORS; ++slot) {
+    for (slot = 0; slot < color_limit; ++slot) {
         int best_color = 0;
         uint64_t best_error = UINT64_MAX;
         for (color = 0; color < COLORS_PER_PALETTE; ++color) {
@@ -962,9 +1232,9 @@ static uint64_t quantize_block(
             if (distances[pixel][best_color] < current[pixel])
                 current[pixel] = distances[pixel][best_color];
     }
-    for (slot = 0; slot < LOCAL_COLORS - 1; ++slot) {
+    for (slot = 0; slot < color_limit - 1; ++slot) {
         int other;
-        for (other = slot + 1; other < LOCAL_COLORS; ++other) {
+        for (other = slot + 1; other < color_limit; ++other) {
             if (selected[other] < selected[slot]) {
                 int temporary = selected[slot];
                 selected[slot] = selected[other];
@@ -973,21 +1243,30 @@ static uint64_t quantize_block(
         }
     }
     memset(block, 0, sizeof *block);
-    block->palette_index = (uint8_t)palette_index;
-    for (slot = 0; slot < LOCAL_COLORS; ++slot)
-        block->local_colors[slot] = (uint8_t)selected[slot];
+    block->palette_index = (uint8_t)(
+        palette_index | (color_limit > LOCAL_COLORS
+                             ? DIRECT_RECORD_FLAG : 0));
+    if (color_limit == LOCAL_COLORS) {
+        for (slot = 0; slot < LOCAL_COLORS; ++slot)
+            block->local_colors[slot] = (uint8_t)selected[slot];
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         int best_slot = 0;
         uint32_t best_distance = distances[pixel][selected[0]];
-        for (slot = 1; slot < LOCAL_COLORS; ++slot) {
+        for (slot = 1; slot < color_limit; ++slot) {
             uint32_t distance = distances[pixel][selected[slot]];
             if (distance < best_distance) {
                 best_distance = distance;
                 best_slot = slot;
             }
         }
-        block->pattern[pixel >> 2] |=
-            (uint8_t)(best_slot << (6 - ((pixel & 3) * 2)));
+        if (color_limit > LOCAL_COLORS) {
+            block_direct_color_store(
+                block, (unsigned)pixel, (unsigned)selected[best_slot]);
+        } else {
+            block->pattern[pixel >> 2] |=
+                (uint8_t)(best_slot << (6 - ((pixel & 3) * 2)));
+        }
         total_error += best_distance;
     }
     return total_error;
@@ -1001,6 +1280,34 @@ static unsigned canonicalize_block(Block *block) {
     unsigned count = 0;
     int pixel;
     int slot;
+    if (block_is_direct(block)) {
+        const uint16_t used_mask = block_direct_used_mask(block);
+        count = popcount16(used_mask);
+        if (count <= LOCAL_COLORS) {
+            Block compact;
+            uint8_t direct_to_local[COLORS_PER_PALETTE] = {0};
+            unsigned color;
+            memset(&compact, 0, sizeof compact);
+            compact.palette_index =
+                (uint8_t)block_palette_index(block);
+            count = 0;
+            for (color = 0; color < COLORS_PER_PALETTE; ++color) {
+                if (!(used_mask & (1U << color))) continue;
+                direct_to_local[color] = (uint8_t)count;
+                compact.local_colors[count++] = (uint8_t)color;
+            }
+            for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+                const unsigned local =
+                    direct_to_local[
+                        block_direct_color(block, (unsigned)pixel)];
+                compact.pattern[pixel >> 2] |=
+                    (uint8_t)(local <<
+                        (6 - ((pixel & 3) * 2)));
+            }
+            *block = compact;
+        }
+        return count;
+    }
     for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
         const int shift = 6 - ((pixel & 3) * 2);
         used[(block->pattern[pixel >> 2] >> shift) & 3U] = 1;
@@ -1023,6 +1330,8 @@ static unsigned canonicalize_block(Block *block) {
 }
 
 static unsigned block_color_count(const Block *block) {
+    if (block_is_direct(block))
+        return popcount16(block_direct_used_mask(block));
     unsigned count = 1;
     int row;
     for (row = 0; row < PATTERN_BYTES; ++row) {
@@ -1036,18 +1345,16 @@ static unsigned block_color_count(const Block *block) {
 }
 
 static int raw_payload_bits(const Block *block) {
+    if (block_is_direct(block)) return 72;
     const unsigned count = block_color_count(block);
     return count == 1 ? 16 : count == 2 ? 32 : 56;
 }
 
-static int pattern_dictionary_payload_bits(const Block *block) {
-    return block_color_count(block) <= 2 ? 32 : 40;
-}
-
 static int buffer_packed_prefix(Buffer *output, const Block *block,
                                 unsigned count) {
+    const unsigned subtype = count == 1U ? 0U : count == 2U ? 1U : 2U;
     const uint8_t tag = (uint8_t)(
-        ((count - 1U) << 6) | block->palette_index);
+        (subtype << 6) | block->palette_index);
     const uint8_t first = (uint8_t)(
         (block->local_colors[0] << 4) |
         (count > 1 ? block->local_colors[1] : 0));
@@ -1062,7 +1369,7 @@ static int buffer_packed_prefix(Buffer *output, const Block *block,
     return 0;
 }
 
-static int buffer_adaptive_raw(Buffer *output, const Block *block) {
+static int buffer_v6_raw(Buffer *output, const Block *block) {
     const unsigned count = block_color_count(block);
     if (buffer_packed_prefix(output, block, count)) return -1;
     if (count == 1) return 0;
@@ -1081,35 +1388,13 @@ static int buffer_adaptive_raw(Buffer *output, const Block *block) {
     return buffer_write(output, block->pattern, PATTERN_BYTES);
 }
 
-static void nearest_palettes(
-    const float descriptor[6],
-    const Training *training,
-    int count,
-    int *indices
-) {
-    float distances[MAX_CANDIDATE_PALETTES];
-    int center, slot;
-    for (slot = 0; slot < count; ++slot) {
-        distances[slot] = INFINITY;
-        indices[slot] = 0;
-    }
-    for (center = 0; center < PALETTE_COUNT; ++center) {
-        float distance = descriptor_distance(
-            descriptor, training->block_centers[center]);
-        for (slot = 0; slot < count; ++slot) {
-            if (distance < distances[slot] ||
-                (distance == distances[slot] && center < indices[slot])) {
-                int move;
-                for (move = count - 1; move > slot; --move) {
-                    distances[move] = distances[move - 1];
-                    indices[move] = indices[move - 1];
-                }
-                distances[slot] = distance;
-                indices[slot] = center;
-                break;
-            }
-        }
-    }
+static int buffer_raw_direct(Buffer *output, const Block *block) {
+    const unsigned count = block_color_count(block);
+    if (!block_is_direct(block) || count < 5U || count > 16U)
+        return -1;
+    return buffer_u8(output,
+                     (uint8_t)(0xc0U | block_palette_index(block))) ||
+           buffer_write(output, block_direct_bytes_const(block), 8);
 }
 
 static int better_candidate(
@@ -1163,14 +1448,161 @@ static int find_motion(
     return 0;
 }
 
+static unsigned block_pixel_color(const Block *block, unsigned pixel) {
+    if (block_is_direct(block))
+        return block_direct_color(block, pixel);
+    {
+        const int shift = 6 - ((pixel & 3U) * 2);
+        const unsigned local =
+            (block->pattern[pixel >> 2] >> shift) & 3U;
+        return block->local_colors[local];
+    }
+}
+
+static uint16_t encoder_rgb888_to_rgb565(const uint8_t *color) {
+    return (uint16_t)(((uint16_t)(color[0] & 0xf8U) << 8) |
+                      ((uint16_t)(color[1] & 0xfcU) << 3) |
+                      (color[2] >> 3));
+}
+
+static void block_to_rgb565(
+    const Block *block,
+    const Training *training,
+    uint16_t output[PIXELS_PER_BLOCK]
+) {
+    const unsigned palette = block_palette_index(block);
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const unsigned color = block_pixel_color(block, pixel);
+        output[pixel] = encoder_rgb888_to_rgb565(
+            training->palette[palette][color]);
+    }
+}
+
+static uint64_t rgb565_block_error(
+    const uint8_t pixels[PIXELS_PER_BLOCK][3],
+    const uint16_t reconstructed[PIXELS_PER_BLOCK]
+) {
+    uint64_t error = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const unsigned red = (reconstructed[pixel] >> 11) & 31U;
+        const unsigned green = (reconstructed[pixel] >> 5) & 63U;
+        const unsigned blue = reconstructed[pixel] & 31U;
+        const uint8_t rgb[3] = {
+            (uint8_t)((red << 3) | (red >> 2)),
+            (uint8_t)((green << 2) | (green >> 4)),
+            (uint8_t)((blue << 3) | (blue >> 2))
+        };
+        error += color_distance(pixels[pixel], rgb);
+    }
+    return error;
+}
+
+static void copy_pixel_region(
+    const uint16_t *previous,
+    int stride,
+    int source_x,
+    int source_y,
+    uint16_t output[PIXELS_PER_BLOCK]
+) {
+    int y;
+    for (y = 0; y < BLOCK_SIZE; ++y) {
+        memcpy(
+            output + y * BLOCK_SIZE,
+            previous + (size_t)(source_y + y) * stride + source_x,
+            BLOCK_SIZE * sizeof *output);
+    }
+}
+
+static void store_pixel_block(
+    uint16_t *current,
+    int stride,
+    int block_index,
+    int blocks_x,
+    const uint16_t indices[PIXELS_PER_BLOCK]
+) {
+    const int destination_x =
+        (block_index % blocks_x) * BLOCK_SIZE;
+    const int destination_y =
+        (block_index / blocks_x) * BLOCK_SIZE;
+    int y;
+    for (y = 0; y < BLOCK_SIZE; ++y) {
+        memcpy(
+            current + (size_t)(destination_y + y) * stride +
+                destination_x,
+            indices + y * BLOCK_SIZE,
+            BLOCK_SIZE * sizeof *indices);
+    }
+}
+
+static int find_pixel_motion(
+    const uint8_t pixels[PIXELS_PER_BLOCK][3],
+    const uint16_t *previous,
+    int block_index,
+    int blocks_x,
+    int stride,
+    int width,
+    int height,
+    int radius,
+    uint16_t motion_pixels[PIXELS_PER_BLOCK],
+    uint64_t *motion_error,
+    int *motion_x,
+    int *motion_y
+) {
+    const int destination_x =
+        (block_index % blocks_x) * BLOCK_SIZE;
+    const int destination_y =
+        (block_index / blocks_x) * BLOCK_SIZE;
+    int distance;
+    int dy;
+    int dx;
+    uint64_t best_error = UINT64_MAX;
+    int found = 0;
+    for (distance = 1; distance <= radius; ++distance) {
+        for (dy = -distance; dy <= distance; ++dy) {
+            for (dx = -distance; dx <= distance; ++dx) {
+                uint16_t candidate[PIXELS_PER_BLOCK];
+                const int ring =
+                    abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+                if (ring != distance) continue;
+                if (destination_x + dx < 0 ||
+                    destination_y + dy < 0 ||
+                    destination_x + dx + BLOCK_SIZE > width ||
+                    destination_y + dy + BLOCK_SIZE > height) {
+                    continue;
+                }
+                copy_pixel_region(
+                    previous, stride, destination_x + dx,
+                    destination_y + dy, candidate);
+                {
+                    const uint64_t error =
+                        rgb565_block_error(pixels, candidate);
+                    if (error < best_error) {
+                        best_error = error;
+                        memcpy(
+                            motion_pixels, candidate,
+                            sizeof candidate);
+                        *motion_error = error;
+                        *motion_x = dx;
+                        *motion_y = dy;
+                        found = 1;
+                    }
+                }
+            }
+        }
+    }
+    return found;
+}
+
 static void pack_modes(const uint8_t *modes, int count, uint8_t *output) {
     int index;
-    memset(output, 0, ((size_t)count * 3 + 7) / 8);
+    memset(output, 0, ((size_t)count * 2 + 7) / 8);
     for (index = 0; index < count; ++index) {
         int bit;
-        for (bit = 0; bit < 3; ++bit) {
-            int value = (modes[index] >> (2 - bit)) & 1;
-            int target = index * 3 + bit;
+        for (bit = 0; bit < 2; ++bit) {
+            int value = (modes[index] >> (1 - bit)) & 1;
+            int target = index * 2 + bit;
             output[target >> 3] |= (uint8_t)(value << (7 - (target & 7)));
         }
     }
@@ -1184,18 +1616,30 @@ static int encode_gop(GopJob *job) {
     int blocks_x = (info->width + BLOCK_SIZE - 1) / BLOCK_SIZE;
     int blocks_y = (info->height + BLOCK_SIZE - 1) / BLOCK_SIZE;
     int block_count = blocks_x * blocks_y;
-    size_t mode_bytes = ((size_t)block_count * 3 + 7) / 8;
+    size_t mode_bytes = ((size_t)block_count * 2 + 7) / 8;
     Block *previous = NULL;
     Block *current = NULL;
+    uint16_t *previous_pixels = NULL;
+    uint16_t *current_pixels = NULL;
+    const int pixel_stride = blocks_x * BLOCK_SIZE;
+    const int pixel_rows = blocks_y * BLOCK_SIZE;
     uint8_t *modes = NULL;
     uint8_t *packed_modes = NULL;
+    PaletteIndex palette_index = {0};
     BlockDictionary block_dictionary = {0}, shadow_blocks = {0};
-    PatternDictionary pattern_dictionary = {0}, shadow_patterns = {0};
+    Bpv1CudaContext *cuda_context = NULL;
+    uint8_t *cuda_candidate_blocks = NULL;
+    uint64_t *cuda_candidate_errors = NULL;
+#ifdef BPV1_WITH_CUDA
+    size_t cuda_result_count = 0;
+    size_t cuda_candidate_block_bytes = 0;
+    char cuda_error[256] = {0};
+#endif
     int frame_index;
     if (options->active_palettes) {
         if (options->active_palette_path
                 ? load_active_palette(
-                    options, job->first_frame, &active_training)
+                    options, job->gop_index, &active_training)
                 : train_gop_palette(job->frames, job->frame_count,
                     job->first_frame, info, options, &active_training)) {
             goto fail;
@@ -1203,138 +1647,320 @@ static int encode_gop(GopJob *job) {
         training = &active_training;
     }
     if (!training) goto fail;
+    if (palette_index_build(training, &palette_index)) goto fail;
     previous = (Block *)calloc((size_t)block_count, sizeof *previous);
     current = (Block *)calloc((size_t)block_count, sizeof *current);
+    if (options->pixel_motion) {
+        const size_t pixel_count =
+            (size_t)pixel_stride * pixel_rows;
+        previous_pixels =
+            (uint16_t *)calloc(pixel_count, sizeof *previous_pixels);
+        current_pixels =
+            (uint16_t *)calloc(pixel_count, sizeof *current_pixels);
+    }
     modes = (uint8_t *)malloc((size_t)block_count);
     packed_modes = (uint8_t *)malloc(mode_bytes);
     block_dictionary.capacity = options->max_block_dictionary;
     shadow_blocks.capacity = options->max_block_dictionary;
-    pattern_dictionary.capacity = options->max_pattern_dictionary;
-    shadow_patterns.capacity = options->max_pattern_dictionary;
     block_dictionary.items = (Block *)malloc(
         (size_t)block_dictionary.capacity * sizeof *block_dictionary.items);
     shadow_blocks.items = (Block *)malloc(
         (size_t)shadow_blocks.capacity * sizeof *shadow_blocks.items);
-    pattern_dictionary.items = (uint8_t (*)[PATTERN_BYTES])malloc(
-        (size_t)pattern_dictionary.capacity * PATTERN_BYTES);
-    shadow_patterns.items = (uint8_t (*)[PATTERN_BYTES])malloc(
-        (size_t)shadow_patterns.capacity * PATTERN_BYTES);
-    if (!previous || !current || !modes || !packed_modes ||
-        !block_dictionary.items || !shadow_blocks.items ||
-        !pattern_dictionary.items || !shadow_patterns.items) goto fail;
+    if (!previous || !current ||
+        (options->pixel_motion &&
+         (!previous_pixels || !current_pixels)) ||
+        !modes || !packed_modes ||
+        !block_dictionary.items || !shadow_blocks.items) goto fail;
+#ifdef BPV1_WITH_CUDA
+    if (options->use_cuda) {
+        cuda_result_count =
+            (size_t)block_count *
+            (size_t)options->candidate_palettes *
+            BPV1_CUDA_COLOR_CLASSES;
+        if (cuda_result_count >
+            SIZE_MAX / BPV1_CUDA_RECORD_BYTES) goto fail;
+        cuda_candidate_block_bytes =
+            cuda_result_count * BPV1_CUDA_RECORD_BYTES;
+        cuda_candidate_blocks =
+            (uint8_t *)malloc(cuda_candidate_block_bytes);
+        cuda_candidate_errors = (uint64_t *)malloc(
+            cuda_result_count * sizeof *cuda_candidate_errors);
+        cuda_context = bpv1_cuda_create(
+            info->width, info->height, info->chroma_width,
+            options->candidate_palettes, info->frame_bytes,
+            cuda_error, sizeof cuda_error);
+        if (!cuda_candidate_blocks || !cuda_candidate_errors ||
+            !cuda_context ||
+            bpv1_cuda_set_palette(
+                cuda_context, &training->palette[0][0][0],
+                sizeof training->palette, palette_index.distances,
+                (size_t)PALETTE_INDEX_BIN_COUNT * PALETTE_COUNT,
+                cuda_error, sizeof cuda_error)) {
+            fprintf(stderr, "bpv1enc: CUDA setup failed: %s\n",
+                cuda_error[0] ? cuda_error : "out of host memory");
+            goto fail;
+        }
+    }
+#endif
 
     for (frame_index = 0; frame_index < job->frame_count; ++frame_index) {
         const uint8_t *frame =
             job->frames + (size_t)frame_index * info->frame_bytes;
         Buffer payload = {0};
         int block_index;
+#ifdef BPV1_WITH_CUDA
+        if (options->use_cuda &&
+            bpv1_cuda_encode_frame(
+                cuda_context, frame, info->frame_bytes,
+                cuda_candidate_blocks, cuda_candidate_block_bytes,
+                cuda_candidate_errors, cuda_result_count,
+                cuda_error, sizeof cuda_error)) {
+            fprintf(stderr, "bpv1enc: CUDA frame failed: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+            goto frame_fail;
+        }
+#endif
         for (block_index = 0; block_index < block_count; ++block_index) {
             uint8_t pixels[PIXELS_PER_BLOCK][3];
-            float descriptor[6];
             int palette_indices[MAX_CANDIDATE_PALETTES];
             Block best_block, candidate;
+            uint16_t best_pixel_indices[PIXELS_PER_BLOCK] = {0};
             uint64_t best_error = UINT64_MAX;
             double best_score = HUGE_VAL;
             int best_bits = 0;
             int best_source_previous = 0;
+            int best_source_motion = 0;
+            int best_motion_x = 0;
+            int best_motion_y = 0;
             int palette_slot;
             extract_block(frame, info, block_index, pixels);
-            describe_pixels(pixels, descriptor);
             memset(&best_block, 0, sizeof best_block);
             if (frame_index > 0) {
-                best_block = previous[block_index];
-                best_error = block_error(
-                    pixels, &best_block, training);
+                if (options->pixel_motion) {
+                    const int source_x =
+                        (block_index % blocks_x) * BLOCK_SIZE;
+                    const int source_y =
+                        (block_index / blocks_x) * BLOCK_SIZE;
+                    copy_pixel_region(
+                        previous_pixels, pixel_stride,
+                        source_x, source_y,
+                        best_pixel_indices);
+                    best_error = rgb565_block_error(
+                        pixels, best_pixel_indices);
+                } else {
+                    best_block = previous[block_index];
+                    best_error = block_error(
+                        pixels, &best_block, training);
+                }
                 best_score = (double)best_error;
                 best_bits = 0;
                 best_source_previous = 1;
             }
-            nearest_palettes(descriptor, training,
-                options->candidate_palettes, palette_indices);
+            if (!options->use_cuda) {
+                palette_index_candidates(pixels, &palette_index,
+                    options->candidate_palettes, palette_indices);
+            }
             for (palette_slot = 0;
                  palette_slot < options->candidate_palettes;
                  ++palette_slot) {
-                uint64_t error = quantize_block(
-                    pixels, palette_indices[palette_slot],
-                    training, &candidate);
-                int bits;
-                double score;
-                canonicalize_block(&candidate);
-                bits = raw_payload_bits(&candidate);
-                if (frame_index > 0 &&
-                    block_equal(&candidate, &previous[block_index])) bits = 0;
-                else if (block_dictionary_find(&shadow_blocks, &candidate) >= 0)
-                    bits = 16;
-                else if (pattern_dictionary_find(
-                        &shadow_patterns, candidate.pattern) >= 0) {
-                    bits = pattern_dictionary_payload_bits(&candidate);
-                }
-                score = (double)error + options->lambda * bits;
-                if (best_score == HUGE_VAL ||
-                    better_candidate(score, bits, error, &candidate,
-                        best_score, best_bits, best_error, &best_block)) {
-                    best_block = candidate;
-                    best_error = error;
-                    best_score = score;
-                    best_bits = bits;
-                    best_source_previous = 0;
+                static const int color_limits[3] = {
+                    4, 8, COLORS_PER_PALETTE
+                };
+                int color_class;
+                for (color_class = 0; color_class < 3; ++color_class) {
+                    uint64_t error;
+                    int bits;
+                    double score;
+                    if (options->use_cuda) {
+#ifdef BPV1_WITH_CUDA
+                        const size_t result_index =
+                            ((size_t)block_index *
+                                 (size_t)options->candidate_palettes +
+                             (size_t)palette_slot) *
+                                BPV1_CUDA_COLOR_CLASSES +
+                            (size_t)color_class;
+                        memcpy(
+                            &candidate,
+                            cuda_candidate_blocks +
+                                result_index * BPV1_CUDA_RECORD_BYTES,
+                            sizeof candidate);
+                        error = cuda_candidate_errors[result_index];
+#else
+                        error = UINT64_MAX;
+#endif
+                    } else {
+                        error = quantize_block(
+                            pixels, palette_indices[palette_slot],
+                            training, color_limits[color_class],
+                            &candidate);
+                        canonicalize_block(&candidate);
+                    }
+                    if (options->pixel_motion) {
+                        uint16_t reconstructed[PIXELS_PER_BLOCK];
+                        block_to_rgb565(
+                            &candidate, training, reconstructed);
+                        error = rgb565_block_error(
+                            pixels, reconstructed);
+                    }
+                    bits = raw_payload_bits(&candidate);
+                    if (!options->pixel_motion &&
+                        frame_index > 0 &&
+                        block_equal(
+                            &candidate, &previous[block_index])) {
+                        bits = 0;
+                    } else if (block_dictionary_find(
+                                   &shadow_blocks, &candidate) >= 0) {
+                        bits = 16;
+                    }
+                    score = (double)error + options->lambda * bits;
+                    if (best_score == HUGE_VAL ||
+                        better_candidate(
+                            score, bits, error, &candidate,
+                            best_score, best_bits, best_error,
+                            &best_block)) {
+                        best_block = candidate;
+                        best_error = error;
+                        best_score = score;
+                        best_bits = bits;
+                        best_source_previous = 0;
+                        best_source_motion = 0;
+                    }
                 }
             }
-            current[block_index] = best_block;
+            if (options->pixel_motion && frame_index > 0 &&
+                options->search_radius > 0) {
+                uint16_t motion_candidate[PIXELS_PER_BLOCK];
+                uint64_t motion_error;
+                int motion_x;
+                int motion_y;
+                if (find_pixel_motion(
+                        pixels, previous_pixels, block_index,
+                        blocks_x, pixel_stride,
+                        info->width, info->height,
+                        options->search_radius,
+                        motion_candidate, &motion_error,
+                        &motion_x, &motion_y)) {
+                    const int motion_bits = 8;
+                    const double motion_score =
+                        (double)motion_error +
+                        options->lambda * motion_bits;
+                    if (motion_score < best_score ||
+                        (motion_score == best_score &&
+                         (motion_bits < best_bits ||
+                          (motion_bits == best_bits &&
+                           motion_error < best_error)))) {
+                        memcpy(
+                            best_pixel_indices, motion_candidate,
+                            sizeof best_pixel_indices);
+                        best_error = motion_error;
+                        best_score = motion_score;
+                        best_bits = motion_bits;
+                        best_source_previous = 0;
+                        best_source_motion = 1;
+                        best_motion_x = motion_x;
+                        best_motion_y = motion_y;
+                    }
+                }
+            }
+            if (options->pixel_motion) {
+                if (!best_source_previous &&
+                    !best_source_motion) {
+                    block_to_rgb565(
+                        &best_block, training,
+                        best_pixel_indices);
+                }
+                store_pixel_block(
+                    current_pixels, pixel_stride,
+                    block_index, blocks_x,
+                    best_pixel_indices);
+            } else {
+                current[block_index] = best_block;
+            }
             job->stats.squared_error += best_error;
             job->stats.samples += PIXELS_PER_BLOCK * 3;
             if (best_source_previous) job->stats.previous_decisions++;
             else job->stats.quantized_decisions++;
 
-            if (!(frame_index > 0 &&
-                  block_equal(&best_block, &previous[block_index])) &&
-                block_dictionary_find(&shadow_blocks, &best_block) < 0) {
-                if (pattern_dictionary_find(
-                        &shadow_patterns, best_block.pattern) >= 0) {
-                    block_dictionary_add(&shadow_blocks, &best_block);
-                } else {
-                    pattern_dictionary_add(
-                        &shadow_patterns, best_block.pattern);
-                    block_dictionary_add(&shadow_blocks, &best_block);
+            if (options->pixel_motion) {
+                if (!best_source_previous &&
+                    !best_source_motion &&
+                    block_dictionary_find(
+                        &shadow_blocks, &best_block) < 0) {
+                    block_dictionary_add(
+                        &shadow_blocks, &best_block);
                 }
+            } else if (!(frame_index > 0 &&
+                         block_equal(
+                             &best_block,
+                             &previous[block_index])) &&
+                       block_dictionary_find(
+                           &shadow_blocks, &best_block) < 0) {
+                block_dictionary_add(
+                    &shadow_blocks, &best_block);
             }
 
-            if (frame_index > 0 &&
-                block_equal(&best_block, &previous[block_index])) {
+            if (options->pixel_motion &&
+                best_source_previous) {
+                modes[block_index] = MODE_SKIP;
+            } else if (!options->pixel_motion &&
+                       frame_index > 0 &&
+                       block_equal(
+                           &best_block,
+                           &previous[block_index])) {
                 modes[block_index] = MODE_SKIP;
             } else {
-                int motion_x = 0, motion_y = 0;
+                int motion_x = best_motion_x;
+                int motion_y = best_motion_y;
                 int dictionary_index;
-                if (frame_index > 0 && options->search_radius > 0 &&
-                    find_motion(&best_block, previous, block_index,
-                        blocks_x, blocks_y, options->search_radius,
-                        &motion_x, &motion_y)) {
+                int motion_found = best_source_motion;
+                if (!options->pixel_motion &&
+                    frame_index > 0 &&
+                    options->search_radius > 0) {
+                    motion_found = find_motion(
+                            &best_block, previous, block_index,
+                            blocks_x, blocks_y,
+                            options->search_radius,
+                            &motion_x, &motion_y);
+                }
+                if (motion_found) {
                     modes[block_index] = MODE_MOTION;
-                    if (buffer_u8(&payload, (uint8_t)(int8_t)motion_x) ||
-                        buffer_u8(&payload, (uint8_t)(int8_t)motion_y))
+                    if (buffer_u8(
+                            &payload,
+                            (uint8_t)(((motion_x & 15) << 4) |
+                                      (motion_y & 15))))
                         goto frame_fail;
                 } else if ((dictionary_index = block_dictionary_find(
                                 &block_dictionary, &best_block)) >= 0) {
                     modes[block_index] = MODE_BLOCK_DICT;
                     if (buffer_u16(&payload, (uint16_t)dictionary_index))
                         goto frame_fail;
-                } else if ((dictionary_index = pattern_dictionary_find(
-                                &pattern_dictionary,
-                                best_block.pattern)) >= 0) {
-                    modes[block_index] = MODE_PATTERN_DICT;
-                    if (buffer_u16(&payload, (uint16_t)dictionary_index) ||
-                        buffer_packed_prefix(
-                            &payload, &best_block,
-                            block_color_count(&best_block)))
-                        goto frame_fail;
-                    block_dictionary_add(
-                        &block_dictionary, &best_block);
                 } else {
                     modes[block_index] = MODE_RAW;
-                    if (buffer_adaptive_raw(&payload, &best_block))
-                        goto frame_fail;
-                    pattern_dictionary_add(
-                        &pattern_dictionary, best_block.pattern);
+                    if (block_is_direct(&best_block)) {
+                        const unsigned direct_colors =
+                            block_color_count(&best_block);
+                        if (buffer_raw_direct(
+                                &payload, &best_block)) {
+                            goto frame_fail;
+                        }
+                        if (direct_colors <= 8U)
+                            job->stats.direct_5_to_8++;
+                        else
+                            job->stats.direct_9_to_16++;
+                    } else {
+                        const unsigned local_colors =
+                            block_color_count(&best_block);
+                        if (buffer_v6_raw(
+                                &payload, &best_block)) {
+                            goto frame_fail;
+                        }
+                        if (local_colors == 1U)
+                            job->stats.raw_1++;
+                        else if (local_colors == 2U)
+                            job->stats.raw_2++;
+                        else
+                            job->stats.raw_4++;
+                    }
                     block_dictionary_add(
                         &block_dictionary, &best_block);
                 }
@@ -1365,6 +1991,11 @@ static int encode_gop(GopJob *job) {
             previous = current;
             current = temporary;
         }
+        if (options->pixel_motion) {
+            uint16_t *temporary_pixels = previous_pixels;
+            previous_pixels = current_pixels;
+            current_pixels = temporary_pixels;
+        }
         continue;
 frame_fail:
         buffer_free(&payload);
@@ -1372,22 +2003,30 @@ frame_fail:
     }
     free(previous);
     free(current);
+    free(previous_pixels);
+    free(current_pixels);
     free(modes);
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
-    free(pattern_dictionary.items);
-    free(shadow_patterns.items);
+    free(cuda_candidate_blocks);
+    free(cuda_candidate_errors);
+    bpv1_cuda_destroy(cuda_context);
+    palette_index_free(&palette_index);
     return 0;
 fail:
     free(previous);
     free(current);
+    free(previous_pixels);
+    free(current_pixels);
     free(modes);
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
-    free(pattern_dictionary.items);
-    free(shadow_patterns.items);
+    free(cuda_candidate_blocks);
+    free(cuda_candidate_errors);
+    bpv1_cuda_destroy(cuda_context);
+    palette_index_free(&palette_index);
     buffer_free(&job->output);
     return -1;
 }
@@ -1420,6 +2059,12 @@ static int write_u32(FILE *file, uint32_t value) {
     return fwrite(bytes, 1, sizeof bytes, file) == sizeof bytes ? 0 : -1;
 }
 
+static int bpv_stream_version(const Options *options) {
+    return options && options->pixel_motion
+        ? BPV_PIXEL_MOTION_VERSION
+        : BPV_BLOCK_MOTION_VERSION;
+}
+
 static int write_bpv_header(
     FILE *output,
     const Y4mInfo *info,
@@ -1430,7 +2075,7 @@ static int write_bpv_header(
     const int has_audio = options->audio_path != NULL;
     if (!options->active_palettes && !training) return -1;
     if (fwrite("BPV1", 1, 4, output) != 4 ||
-        write_u8(output, BPV_VERSION) ||
+        write_u8(output, (uint8_t)bpv_stream_version(options)) ||
         write_u16(output, (uint16_t)info->width) ||
         write_u16(output, (uint16_t)info->height) ||
         write_u32(output, frame_count) ||
@@ -1438,7 +2083,7 @@ static int write_bpv_header(
         write_u16(output, (uint16_t)info->fps_denominator) ||
         write_u16(output, (uint16_t)options->gop) ||
         write_u16(output, (uint16_t)options->max_block_dictionary) ||
-        write_u16(output, (uint16_t)options->max_pattern_dictionary) ||
+        write_u16(output, 0) ||
         write_u8(output, (uint8_t)options->search_radius) ||
         write_u8(output, has_audio ? 1 : 0) ||
         write_u16(output,
@@ -1509,6 +2154,11 @@ static void stats_add(EncodeStats *target, const EncodeStats *source) {
     int mode;
     for (mode = 0; mode < MODE_COUNT; ++mode)
         target->mode_counts[mode] += source->mode_counts[mode];
+    target->raw_1 += source->raw_1;
+    target->raw_2 += source->raw_2;
+    target->raw_4 += source->raw_4;
+    target->direct_5_to_8 += source->direct_5_to_8;
+    target->direct_9_to_16 += source->direct_9_to_16;
     target->squared_error += source->squared_error;
     target->samples += source->samples;
     target->previous_decisions += source->previous_decisions;
@@ -1522,32 +2172,44 @@ static int encode_all_gops(
     const Options *options,
     const Training *training,
     uint32_t frame_count,
+    const GopPlan *plan,
     EncodeStats *stats,
     uint64_t *payload_bytes,
     AudioInput *audio
 ) {
     Y4mInfo info;
     uint32_t next_frame = 0;
-    if (fseek(input, 0, SEEK_SET) || parse_y4m_header(input, &info) ||
+    size_t next_gop = 0;
+    if (!plan || !plan->count ||
+        fseek(input, 0, SEEK_SET) || parse_y4m_header(input, &info) ||
         memcmp(&info, expected_info, sizeof info)) return -1;
-    while (next_frame < frame_count) {
+    while (next_gop < plan->count) {
         GopJob jobs[16];
         thrd_t workers[16];
         int worker_active[16] = {0};
         int job_count = 0;
         int job_index;
         memset(jobs, 0, sizeof jobs);
-        while (job_count < options->threads && next_frame < frame_count) {
-            int remaining = (int)(frame_count - next_frame);
-            int count = remaining < options->gop ? remaining : options->gop;
+        while (job_count < options->threads && next_gop < plan->count) {
+            const uint32_t first = plan->entries[next_gop].first_frame;
+            const uint32_t end = next_gop + 1U < plan->count
+                ? plan->entries[next_gop + 1U].first_frame
+                : frame_count;
+            int count;
             int frame;
             GopJob *job = &jobs[job_count];
+            if (first != next_frame || end <= first ||
+                end - first > (uint32_t)INT_MAX) {
+                goto batch_fail;
+            }
+            count = (int)(end - first);
             job_count++;
             job->options = options;
             job->training = training;
             job->info = expected_info;
             job->frame_count = count;
-            job->first_frame = (int)next_frame;
+            job->first_frame = (int)first;
+            job->gop_index = next_gop;
             job->frames = (uint8_t *)malloc(
                 (size_t)count * expected_info->frame_bytes);
             if (!job->frames) goto batch_fail;
@@ -1556,7 +2218,8 @@ static int encode_all_gops(
                     job->frames + (size_t)frame * expected_info->frame_bytes);
                 if (result != 1) goto batch_fail;
             }
-            next_frame += (uint32_t)count;
+            next_frame = end;
+            next_gop++;
         }
         for (job_index = 0; job_index < job_count; ++job_index) {
             if (thrd_create(&workers[job_index], gop_worker,
@@ -1711,25 +2374,33 @@ static int write_report(
     const Options *options,
     const EncodeStats *stats,
     uint32_t frame_count,
+    const GopPlan *plan,
     uint64_t file_bytes,
     double elapsed_seconds
 ) {
-    const int version = BPV_VERSION;
+    const int version = bpv_stream_version(options);
+    uint32_t scene_keyframes = 0;
     const uint32_t palette_updates =
-        (frame_count + (uint32_t)options->gop - 1U) /
-        (uint32_t)options->gop;
+        plan ? (uint32_t)plan->count : 0U;
+    size_t gop_index;
     double duration =
         frame_count * (double)info->fps_denominator / info->fps_numerator;
     double mse = stats->samples
         ? stats->squared_error / (double)stats->samples : 0.0;
     double psnr = mse > 0.0 ? 10.0 * log10(255.0 * 255.0 / mse) : 0.0;
+    if (!plan || !plan->count) return -1;
+    for (gop_index = 0; gop_index < plan->count; ++gop_index)
+        if (plan->entries[gop_index].scene_cut) scene_keyframes++;
     if (fprintf(stream,
         "{\n"
         "  \"codec\": \"BPV1\",\n"
         "  \"version\": %d,\n"
-        "  \"encoder\": \"native C11\",\n"
+        "  \"encoder\": \"%s\",\n"
+        "  \"computeBackend\": \"%s\",\n"
         "  \"input\": ",
-        version) < 0 ||
+        version,
+        options->use_cuda ? "native C11 + CUDA" : "native C11",
+        options->use_cuda ? "cuda" : "cpu") < 0 ||
         write_json_string(stream, input_path) ||
         fputs(",\n  \"output\": ", stream) == EOF ||
         write_json_string(stream, output_path) ||
@@ -1749,8 +2420,14 @@ static int write_report(
         "  \"audioChannels\": %d,\n"
         "  \"threads\": %d,\n"
         "  \"gop\": %d,\n"
+        "  \"minimumGop\": %d,\n"
+        "  \"sceneThreshold\": %.6f,\n"
+        "  \"sceneKeyframes\": %u,\n"
         "  \"lambda\": %.6f,\n"
         "  \"candidatePaletteCount\": %d,\n"
+        "  \"paletteSearch\": \"rgb-lut\",\n"
+        "  \"paletteIndexBitsPerChannel\": %d,\n"
+        "  \"motionUnits\": \"%s\",\n"
         "  \"searchRadius\": %d,\n"
         "  \"paletteMode\": \"%s\",\n"
         "  \"paletteUpdates\": %u,\n"
@@ -1761,8 +2438,14 @@ static int write_report(
         "    \"skip\": %" PRIu64 ",\n"
         "    \"motion\": %" PRIu64 ",\n"
         "    \"blockDictionary\": %" PRIu64 ",\n"
-        "    \"patternDictionary\": %" PRIu64 ",\n"
         "    \"raw\": %" PRIu64 "\n"
+        "  },\n"
+        "  \"rawSubtypeCounts\": {\n"
+        "    \"oneColor\": %" PRIu64 ",\n"
+        "    \"twoColor\": %" PRIu64 ",\n"
+        "    \"fourColor\": %" PRIu64 ",\n"
+        "    \"direct5To8\": %" PRIu64 ",\n"
+        "    \"direct9To16\": %" PRIu64 "\n"
         "  },\n"
         "  \"rgbMse\": %.9f,\n"
         "  \"rgbPsnrDb\": %.9f,\n"
@@ -1771,8 +2454,8 @@ static int write_report(
         "    \"quantized\": %" PRIu64 "\n"
         "  },\n"
         "  \"elapsedSeconds\": %.6f,\n"
-        "  \"encodeFps\": %.6f\n"
-        "}\n",
+        "  \"encodeFps\": %.6f,\n"
+        "  \"keyframes\": [",
         info->width, info->height, frame_count,
         info->fps_numerator, info->fps_denominator, duration, file_bytes,
         file_bytes * 8.0 / duration / 1000.0,
@@ -1781,8 +2464,11 @@ static int write_report(
         options->audio_path ? "pcm_u8" : "none",
         options->audio_path ? options->audio_rate : 0,
         options->audio_path ? 1 : 0,
-        options->threads, options->gop, options->lambda,
-        options->candidate_palettes, options->search_radius,
+        options->threads, options->gop, options->minimum_gop,
+        options->scene_threshold, scene_keyframes, options->lambda,
+        options->candidate_palettes, PALETTE_INDEX_CHANNEL_BITS,
+        options->pixel_motion ? "pixels" : "blocks",
+        options->search_radius,
         options->active_palette_path ? "active-override" :
             options->active_palettes ? "active-gop" : "fixed-global",
         palette_updates,
@@ -1791,17 +2477,34 @@ static int write_report(
         stats->mode_counts[MODE_SKIP],
         stats->mode_counts[MODE_MOTION],
         stats->mode_counts[MODE_BLOCK_DICT],
-        stats->mode_counts[MODE_PATTERN_DICT],
         stats->mode_counts[MODE_RAW],
+        stats->raw_1,
+        stats->raw_2,
+        stats->raw_4,
+        stats->direct_5_to_8,
+        stats->direct_9_to_16,
         mse, psnr, stats->previous_decisions, stats->quantized_decisions,
         elapsed_seconds, frame_count / elapsed_seconds) < 0) return -1;
-    return 0;
+    for (gop_index = 0; gop_index < plan->count; ++gop_index) {
+        const GopEntry *entry = &plan->entries[gop_index];
+        const char *reason = !gop_index ? "initial" :
+            entry->scene_cut ? "scene" : "maximumGop";
+        if (fprintf(stream,
+                "%s{\"frame\":%u,\"reason\":\"%s\","
+                "\"sceneScore\":%.6f}",
+                gop_index ? "," : "", entry->first_frame,
+                reason, entry->scene_score) < 0) {
+            return -1;
+        }
+    }
+    return fputs("]\n}\n", stream) == EOF ? -1 : 0;
 }
 
 int main(int argc, char **argv) {
     Options options = {
-        8, 48, 64.0, 3, 2, 256, 256, 32768, 16, 10, 10, 8192,
-        0, NULL, 0, 1, NULL, 16000, 1, NULL
+        8, 48, 12, 0.35, 64.0, 8, 2, 256, 32768, 256,
+        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL,
+        DEFAULT_DEVICE_MODE, 0, 0
     };
     const char *input_path = NULL;
     const char *output_path = NULL;
@@ -1813,6 +2516,7 @@ int main(int argc, char **argv) {
     Y4mInfo info;
     Training training;
     EncodeStats stats;
+    GopPlan gop_plan = {0};
     uint32_t frame_count = 0;
     uint64_t payload_bytes = 0;
     uint64_t file_bytes;
@@ -1835,6 +2539,16 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argument, "--gop") && value) {
             if (parse_int_option(value, 1, 65535, &options.gop)) goto bad_option;
             index++;
+        } else if (!strcmp(argument, "--min-gop") && value) {
+            if (parse_int_option(value, 1, 65535,
+                    &options.minimum_gop)) goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--scene-threshold") && value) {
+            if (parse_double_option(value, 0, 1,
+                    &options.scene_threshold)) goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--no-scene-cuts")) {
+            options.scene_threshold = 0.0;
         } else if (!strcmp(argument, "--lambda") && value) {
             if (parse_double_option(value, 0, 1e9, &options.lambda))
                 goto bad_option;
@@ -1843,10 +2557,22 @@ int main(int argc, char **argv) {
             if (parse_int_option(value, 1, MAX_CANDIDATE_PALETTES,
                     &options.candidate_palettes)) goto bad_option;
             index++;
-        } else if (!strcmp(argument, "--search-radius") && value) {
-            if (parse_int_option(value, 0, 127, &options.search_radius))
+        } else if (!strcmp(argument, "--device") && value) {
+            if (!strcmp(value, "cpu"))
+                options.device_mode = DEVICE_CPU;
+            else if (!strcmp(value, "auto"))
+                options.device_mode = DEVICE_AUTO;
+            else if (!strcmp(value, "cuda"))
+                options.device_mode = DEVICE_CUDA;
+            else
                 goto bad_option;
             index++;
+        } else if (!strcmp(argument, "--search-radius") && value) {
+            if (parse_int_option(value, 0, 7, &options.search_radius))
+                goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--pixel-motion")) {
+            options.pixel_motion = 1;
         } else if (!strcmp(argument, "--sample-blocks") && value) {
             if (parse_size_option(value, PALETTE_COUNT, 262144,
                     &options.maximum_sample_blocks)) goto bad_option;
@@ -1870,10 +2596,6 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argument, "--max-block-dictionary") && value) {
             if (parse_int_option(value, 1, 65535,
                     &options.max_block_dictionary)) goto bad_option;
-            index++;
-        } else if (!strcmp(argument, "--max-pattern-dictionary") && value) {
-            if (parse_int_option(value, 1, 65535,
-                    &options.max_pattern_dictionary)) goto bad_option;
             index++;
         } else if (!strcmp(argument, "--max-frames") && value) {
             int parsed;
@@ -1923,6 +2645,19 @@ int main(int argc, char **argv) {
             "bpv1enc: --active-palette-file requires active palettes\n");
         return 2;
     }
+    if (options.device_mode != DEVICE_CPU) {
+        char cuda_error[256] = {0};
+        if (bpv1_cuda_runtime_available(cuda_error, sizeof cuda_error)) {
+            options.use_cuda = 1;
+        } else if (options.device_mode == DEVICE_CUDA) {
+            fprintf(stderr, "bpv1enc: CUDA is unavailable: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+            return 2;
+        } else if (options.progress) {
+            fprintf(stderr, "BPV1 CUDA unavailable, using CPU: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+        }
+    }
     if (!options.force && file_exists(output_path)) {
         fprintf(stderr, "bpv1enc: output exists; use --force: %s\n",
             output_path);
@@ -1939,20 +2674,26 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     if (options.progress) {
-        fprintf(stderr, "BPV1 C encoder: %s pass...\n",
+        fprintf(stderr, "BPV1 C encoder (%s): %s pass...\n",
+            options.use_cuda ? "CUDA" : "CPU",
             options.active_palettes ? "frame-count" : "palette-training");
     }
     if (scan_and_train(input, &options, &info,
-            options.active_palettes ? NULL : &training, &frame_count)) {
+            options.active_palettes ? NULL : &training, &frame_count,
+            &gop_plan)) {
         fprintf(stderr, "bpv1enc: input scan failed\n");
+        goto cleanup;
+    }
+    if (options.pixel_motion &&
+        (info.width % BLOCK_SIZE || info.height % BLOCK_SIZE)) {
+        fprintf(stderr,
+            "bpv1enc: BPV1 v7 dimensions must be multiples of four\n");
         goto cleanup;
     }
     if (options.active_palette_path) {
         FILE *palette_file = fopen(options.active_palette_path, "rb");
-        uint64_t gop_count =
-            ((uint64_t)frame_count + (uint64_t)options.gop - 1) /
-            (uint64_t)options.gop;
-        uint64_t expected = gop_count * sizeof training.palette;
+        uint64_t expected =
+            (uint64_t)gop_plan.count * sizeof training.palette;
         long actual;
         if (!palette_file || fseek(palette_file, 0, SEEK_END) ||
             (actual = ftell(palette_file)) < 0 ||
@@ -1981,7 +2722,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     if (encode_all_gops(input, output, &info, &options, &training,
-            frame_count, &stats, &payload_bytes, &audio)) {
+            frame_count, &gop_plan, &stats, &payload_bytes, &audio)) {
         fprintf(stderr, "bpv1enc: GOP encoding failed\n");
         goto cleanup;
     }
@@ -2001,7 +2742,7 @@ int main(int argc, char **argv) {
     if (options.report_path) {
         report = fopen(options.report_path, "wb");
         if (!report || write_report(report, input_path, output_path,
-                &info, &options, &stats, frame_count, file_bytes,
+                &info, &options, &stats, frame_count, &gop_plan, file_bytes,
                 wall_seconds() - started)) {
             fprintf(stderr, "bpv1enc: cannot write report\n");
             goto cleanup;
@@ -2010,7 +2751,7 @@ int main(int argc, char **argv) {
         report = NULL;
     }
     write_report(stderr, input_path, output_path, &info, &options, &stats,
-        frame_count, file_bytes, wall_seconds() - started);
+        frame_count, &gop_plan, file_bytes, wall_seconds() - started);
     if (audio.file)
         fprintf(stderr, "BPV1 audio: PCM_U8 mono %u Hz, %.3f MiB\n",
                 audio.sample_rate, audio.bytes / 1048576.0);
@@ -2028,6 +2769,7 @@ cleanup:
     if (input) fclose(input);
     if (audio.file) fclose(audio.file);
     if (exit_code && partial_path) remove(partial_path);
+    free(gop_plan.entries);
     free(partial_path);
     return exit_code;
 }

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InputFile,
-    [string]$OutputFile = (Join-Path (Split-Path $PSScriptRoot -Parent) "out\video.hlv"),
+    [string]$OutputFile = (Join-Path (Split-Path $PSScriptRoot -Parent) "out\HLV\video.hlv"),
     [ValidateRange(1, 30)][int]$Fps = 15,
     [ValidateRange(1, 100)][int]$Quality = 45,
     [ValidateRange(1, 120)][int]$Duration = 10,

@@ -9,15 +9,19 @@
 extern "C" {
 #endif
 
-#define BPV1_VERSION 5
+#define BPV1_VERSION 7
+#define BPV1_PIXEL_MOTION_VERSION 7
+#define BPV1_FOUR_MODE_VERSION 6
+#define BPV1_ADAPTIVE_RAW_VERSION 5
 #define BPV1_ACTIVE_PALETTE_VERSION 4
 #define BPV1_AUDIO_VERSION 3
 #define BPV1_VIDEO_VERSION 2
 #define BPV1_LEGACY_VERSION 1
 #define BPV1_BLOCK_SIZE 4
 #define BPV1_RECORD_BYTES 9
-#define BPV1_PACKED_RECORD_BYTES 7
+#define BPV1_PACKED_RECORD_BYTES 9
 #define BPV1_PATTERN_BYTES 4
+#define BPV1_DIRECT_RECORD_FLAG 0x80
 #define BPV1_COLORS_PER_PALETTE 16
 #define BPV1_PALETTE_COUNT 64
 #define BPV1_MAX_PALETTE_COLORS \
@@ -81,22 +85,43 @@ typedef struct {
     uint32_t frame_index;
     uint8_t keyframe;
     const uint8_t *blocks;
+    /* BPV1 v7 display-native reconstructed pixels; v1-v6 use blocks. */
+    const uint16_t *rgb565;
+    /* Row pointers are used when the v7 reference is allocated in pages. */
+    const uint16_t *const *rgb565_rows;
     const uint8_t *palette;
 } BPV1Frame;
 
 typedef struct BPV1Decoder BPV1Decoder;
 
+typedef uint16_t *(*BPV1Rgb565StripAcquire)(
+    void *opaque, uint16_t y, uint16_t rows);
+typedef int (*BPV1Rgb565StripSubmit)(
+    void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows);
+typedef int (*BPV1Rgb565StripFlush)(void *opaque);
+typedef size_t (*BPV1InputRead)(
+    void *opaque, uint8_t *destination, size_t size);
+
+typedef uint64_t (*BPV1ProfileClockMicros)(void *opaque);
+
+typedef struct {
+    uint32_t input_us;
+    uint32_t reference_commit_us;
+    uint32_t input_calls;
+    uint32_t input_bytes;
+} BPV1DecodeProfile;
+
 const char *bpv1_strerror(int result);
 
 /*
  * Read and validate the fixed header. Versions 1 through 3 store one palette
- * bank in the header; v4/v5 carry a complete active bank in every keyframe.
+ * bank in the header; v4-v7 carry a complete active bank in every keyframe.
  */
 int bpv1_header_read(FILE *file, BPV1Header *header);
 
 /*
  * Read one frame header and leave the file positioned at its payload.  The
- * header occupies nine bytes in v1/v2 and thirteen bytes in v3/v4/v5. This is
+ * header occupies nine bytes in v1/v2 and thirteen bytes in v3-v7. This is
  * useful for seek-index construction.
  */
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
@@ -107,6 +132,14 @@ void bpv1_decoder_destroy(BPV1Decoder *decoder);
 void bpv1_decoder_reset(BPV1Decoder *decoder);
 size_t bpv1_decoder_packet_capacity(const BPV1Decoder *decoder);
 size_t bpv1_decoder_memory_bytes(const BPV1Decoder *decoder);
+/*
+ * Optional profiling clock used by the sequential v7 path. Without a clock,
+ * timing values are zero while input call/byte counters remain available.
+ */
+void bpv1_decoder_set_profile_clock(
+    BPV1Decoder *decoder, BPV1ProfileClockMicros clock, void *opaque);
+void bpv1_decoder_last_profile(
+    const BPV1Decoder *decoder, BPV1DecodeProfile *profile);
 
 /*
  * The packet payload belongs to the decoder and remains valid until the next
@@ -116,6 +149,41 @@ int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet);
 int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                         const BPV1Frame **frame);
+/*
+ * BPV1 v7 can reconstruct directly into two alternating RGB565 output
+ * strips. A returned strip remains owned by the caller until acquire returns
+ * that same pointer again. rows_per_strip must be a multiple of four and
+ * larger than the stream's pixel-motion search radius. After a strip's output
+ * transfer completes, the decoder copies it in-place into the progressively
+ * replaced previous-frame reference before reusing it.
+ */
+int bpv1_decoder_decode_rgb565_strips(
+    BPV1Decoder *decoder, const BPV1Packet *packet,
+    uint16_t rows_per_strip, BPV1Rgb565StripAcquire acquire,
+    BPV1Rgb565StripSubmit submit, BPV1Rgb565StripFlush flush,
+    void *opaque, const BPV1Frame **frame);
+/*
+ * Read and decode one BPV1 v7 frame sequentially through a fixed-size refill
+ * buffer. The compressed-input capacity is independent of frame size. Pass
+ * all three strip callbacks for direct output, or pass all three as NULL to
+ * update the reconstructed reference without presenting the frame.
+ */
+int bpv1_decoder_decode_next_rgb565_strips(
+    BPV1Decoder *decoder, FILE *file, uint16_t rows_per_strip,
+    BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+    BPV1Rgb565StripFlush flush, void *opaque,
+    const BPV1Frame **frame);
+/*
+ * Callback-input equivalent used by fixed-capacity ring/stream buffers.
+ * read must block or accumulate as needed and return the requested size;
+ * a short result is reported as BPV1_ERR_IO. Audio bytes are consumed and
+ * discarded through the same sequential callback.
+ */
+int bpv1_decoder_decode_next_rgb565_strips_from_input(
+    BPV1Decoder *decoder, BPV1InputRead read, void *input_opaque,
+    uint16_t rows_per_strip, BPV1Rgb565StripAcquire acquire,
+    BPV1Rgb565StripSubmit submit, BPV1Rgb565StripFlush flush,
+    void *output_opaque, const BPV1Frame **frame);
 
 size_t bpv1_packet_audio_size(const BPV1Packet *packet);
 const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet);
@@ -137,7 +205,7 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
                                   size_t stride_pixels, size_t pixels);
 /*
  * Convert the active palette bank once after opening v1-v3 streams and after
- * every v4/v5 keyframe. Cached render calls avoid repeated RGB888 conversion
+ * every v4-v7 keyframe. Cached render calls avoid repeated RGB888 conversion
  * for every block while preserving the allocation-free legacy API above.
  */
 int bpv1_palette_build_rgb565(const BPV1Header *header,

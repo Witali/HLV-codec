@@ -1,7 +1,10 @@
 "use strict";
 
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
-const VERSION = 5;
+const VERSION = 7;
+const PIXEL_MOTION_VERSION = 7;
+const FOUR_MODE_VERSION = 6;
+const ADAPTIVE_RAW_VERSION = 5;
 const AUDIO_VERSION = 3;
 const ACTIVE_PALETTE_VERSION = 4;
 const LEGACY_VERSION = 1;
@@ -12,6 +15,7 @@ const LEGACY_PALETTE_COUNT = 16;
 const COLORS_PER_PALETTE = 16;
 const BLOCK_SIZE = 4;
 const RECORD_BYTES = 9;
+const DIRECT_RECORD_FLAG = 0x80;
 const PATTERN_BYTES = 4;
 const PATTERN_OFFSET = 5;
 
@@ -20,7 +24,11 @@ const MODE_MOTION = 1;
 const MODE_BLOCK_DICT = 2;
 const MODE_PATTERN_DICT = 3;
 const MODE_RAW = 4;
-const MODE_NAMES = ["skip", "motion", "blockDictionary", "patternDictionary", "raw"];
+const MODE_RAW_DIRECT = 5;
+const MODE_NAMES = [
+  "skip", "motion", "blockDictionary", "patternDictionary", "raw",
+  "rawDirect",
+];
 
 function asUint8Array(value) {
   if (value instanceof Uint8Array) return value;
@@ -78,7 +86,11 @@ function parseHeader(input) {
   }
   if (keyframeInterval === 0 ||
       maxBlockDictionary === 0 ||
-      maxPatternDictionary === 0) {
+      (version >= PIXEL_MOTION_VERSION &&
+       (width % BLOCK_SIZE !== 0 || height % BLOCK_SIZE !== 0)) ||
+      (version >= FOUR_MODE_VERSION
+        ? maxPatternDictionary !== 0 || searchRadius > 7
+        : maxPatternDictionary === 0)) {
     throw new RangeError("Invalid zero BPV1 coding parameter");
   }
   const paletteBytes = paletteCount * COLORS_PER_PALETTE * 3;
@@ -117,13 +129,16 @@ function walkFrames(input, onFrame) {
   const blocksX = Math.ceil(header.width / BLOCK_SIZE);
   const blocksY = Math.ceil(header.height / BLOCK_SIZE);
   const blockCount = blocksX * blocksY;
-  const requiredModeBytes = Math.ceil(blockCount * 3 / 8);
+  const modeBits = header.version >= FOUR_MODE_VERSION ? 2 : 3;
+  const requiredModeBytes = Math.ceil(blockCount * modeBits / 8);
   let previous = null;
+  let previousPixels = null;
   let blockDictionary = [];
   let patternDictionary = [];
   let offset = header.frameDataOffset;
   const modeCounts = new Array(MODE_NAMES.length).fill(0);
   const rawColorCounts = [0, 0, 0, 0];
+  const rawDirectColorCounts = new Array(17).fill(0);
   const patternDictionaryColorCounts = [0, 0, 0, 0];
   let minimumFrameBytes = Infinity;
   let maximumFrameBytes = 0;
@@ -186,42 +201,88 @@ function walkFrames(input, onFrame) {
 
     if (keyframe) {
       previous = null;
+      previousPixels = null;
       blockDictionary = [];
       patternDictionary = [];
       keyframes += 1;
     }
     const blocks = new Uint8Array(blockCount * RECORD_BYTES);
+    const pixels = header.version >= PIXEL_MOTION_VERSION
+      ? new Uint16Array(header.width * header.height)
+      : null;
 
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
-      const mode = readBits(modes, blockIndex * 3, 3);
-      if (mode >= MODE_NAMES.length) {
+      const mode = readBits(modes, blockIndex * modeBits, modeBits);
+      const modeCount = header.version >= FOUR_MODE_VERSION
+        ? 4
+        : MODE_NAMES.length;
+      if (mode >= modeCount) {
         throw new RangeError(`Invalid BPV1 mode ${mode} at ${frameIndex}:${blockIndex}`);
       }
       modeCounts[mode] += 1;
       const destination = blockIndex * RECORD_BYTES;
 
       if (mode === MODE_SKIP) {
-        if (!previous) throw new RangeError(`SKIP without reference at ${frameIndex}:${blockIndex}`);
-        copyRecord(previous, destination, blocks, destination);
+        if (header.version >= PIXEL_MOTION_VERSION) {
+          if (!previousPixels ||
+              !copyPixelRegion(
+                previousPixels, pixels, header.width, header.height,
+                blockIndex, blocksX, 0, 0,
+              )) {
+            throw new RangeError(
+              `SKIP without reference at ${frameIndex}:${blockIndex}`,
+            );
+          }
+        } else {
+          if (!previous) throw new RangeError(`SKIP without reference at ${frameIndex}:${blockIndex}`);
+          copyRecord(previous, destination, blocks, destination);
+        }
       } else if (mode === MODE_MOTION) {
-        if (!previous) throw new RangeError(`MOTION without reference at ${frameIndex}:${blockIndex}`);
-        requireFrameBytes(offset, 2, frameEnd, frameIndex);
-        const dx = readI8(bytes, offset);
-        const dy = readI8(bytes, offset + 1);
-        offset += 2;
+        if (header.version >= PIXEL_MOTION_VERSION
+            ? !previousPixels
+            : !previous) {
+          throw new RangeError(
+            `MOTION without reference at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        const motionBytes = header.version >= FOUR_MODE_VERSION ? 1 : 2;
+        requireFrameBytes(offset, motionBytes, frameEnd, frameIndex);
+        const dx = motionBytes === 1
+          ? readSignedNibble(bytes[offset] >>> 4)
+          : readI8(bytes, offset);
+        const dy = motionBytes === 1
+          ? readSignedNibble(bytes[offset] & 15)
+          : readI8(bytes, offset + 1);
+        if (motionBytes === 1 && (dx === -8 || dy === -8)) {
+          throw new RangeError(
+            `Invalid packed motion vector at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        offset += motionBytes;
         const bx = blockIndex % blocksX;
         const by = Math.floor(blockIndex / blocksX);
-        const sourceX = bx + dx;
-        const sourceY = by + dy;
-        if (sourceX < 0 || sourceY < 0 || sourceX >= blocksX || sourceY >= blocksY) {
-          throw new RangeError(`Invalid motion vector at ${frameIndex}:${blockIndex}`);
+        if (header.version >= PIXEL_MOTION_VERSION) {
+          if (!copyPixelRegion(
+            previousPixels, pixels, header.width, header.height,
+            blockIndex, blocksX, dx, dy,
+          )) {
+            throw new RangeError(
+              `Invalid pixel motion vector at ${frameIndex}:${blockIndex}`,
+            );
+          }
+        } else {
+          const sourceX = bx + dx;
+          const sourceY = by + dy;
+          if (sourceX < 0 || sourceY < 0 || sourceX >= blocksX || sourceY >= blocksY) {
+            throw new RangeError(`Invalid motion vector at ${frameIndex}:${blockIndex}`);
+          }
+          copyRecord(
+            previous,
+            (sourceY * blocksX + sourceX) * RECORD_BYTES,
+            blocks,
+            destination,
+          );
         }
-        copyRecord(
-          previous,
-          (sourceY * blocksX + sourceX) * RECORD_BYTES,
-          blocks,
-          destination,
-        );
       } else if (mode === MODE_BLOCK_DICT) {
         requireFrameBytes(offset, 2, frameEnd, frameIndex);
         const index = readU16(bytes, offset);
@@ -230,6 +291,27 @@ function walkFrames(input, onFrame) {
           throw new RangeError(`Invalid block dictionary index at ${frameIndex}:${blockIndex}`);
         }
         blocks.set(blockDictionary[index], destination);
+      } else if (header.version >= FOUR_MODE_VERSION &&
+                 mode === MODE_PATTERN_DICT) {
+        const decoded = readV6Raw(
+          bytes,
+          offset,
+          frameEnd,
+          frameIndex,
+          header.paletteCount,
+        );
+        blocks.set(decoded.record, destination);
+        offset = decoded.offset;
+        if (decoded.direct) {
+          rawDirectColorCounts[decoded.count] += 1;
+        } else {
+          rawColorCounts[decoded.count - 1] += 1;
+        }
+        addUnique(
+          blockDictionary,
+          blocks.subarray(destination, destination + RECORD_BYTES),
+          header.maxBlockDictionary,
+        );
       } else if (mode === MODE_PATTERN_DICT) {
         requireFrameBytes(offset, 2, frameEnd, frameIndex);
         const patternIndex = readU16(bytes, offset);
@@ -237,7 +319,7 @@ function walkFrames(input, onFrame) {
         if (patternIndex >= patternDictionary.length) {
           throw new RangeError(`Invalid pattern dictionary index at ${frameIndex}:${blockIndex}`);
         }
-        if (header.version >= VERSION) {
+        if (header.version >= ADAPTIVE_RAW_VERSION) {
           const count = patternColorCount(patternDictionary[patternIndex]);
           const prefix = readPackedPrefix(
             bytes,
@@ -273,7 +355,7 @@ function walkFrames(input, onFrame) {
           header.maxBlockDictionary,
         );
       } else if (mode === MODE_RAW) {
-        if (header.version >= VERSION) {
+        if (header.version >= ADAPTIVE_RAW_VERSION) {
           const prefix = readPackedPrefix(
             bytes,
             offset,
@@ -340,6 +422,44 @@ function walkFrames(input, onFrame) {
           blocks.subarray(destination, destination + RECORD_BYTES),
           header.maxBlockDictionary,
         );
+      } else if (mode === MODE_RAW_DIRECT) {
+        if (header.version < ADAPTIVE_RAW_VERSION ||
+            header.version >= FOUR_MODE_VERSION) {
+          throw new RangeError(
+            `Direct RAW requires BPV1 v${ADAPTIVE_RAW_VERSION} ` +
+            `at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        requireFrameBytes(offset, 9, frameEnd, frameIndex);
+        const paletteIndex = bytes[offset++];
+        if (paletteIndex >= header.paletteCount) {
+          throw new RangeError(
+            `Invalid direct palette at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        blocks[destination] = DIRECT_RECORD_FLAG | paletteIndex;
+        blocks.set(bytes.subarray(offset, offset + 8), destination + 1);
+        offset += 8;
+        const used = directUsedMask(blocks, destination);
+        const count = popcount16(used);
+        if (count < 5 || count > 16) {
+          throw new RangeError(
+            `Non-canonical direct RAW at ${frameIndex}:${blockIndex}`,
+          );
+        }
+        rawDirectColorCounts[count] += 1;
+        addUnique(
+          blockDictionary,
+          blocks.subarray(destination, destination + RECORD_BYTES),
+          header.maxBlockDictionary,
+        );
+      }
+      if (header.version >= PIXEL_MOTION_VERSION &&
+          mode !== MODE_SKIP && mode !== MODE_MOTION) {
+        storeRecordPixels(
+          pixels, header.width, header.height, blockIndex, blocksX,
+          blocks, destination, activePalette,
+        );
       }
     }
     if (offset !== frameEnd) {
@@ -363,6 +483,7 @@ function walkFrames(input, onFrame) {
     if (typeof onFrame === "function") {
       onFrame({
         blocks,
+        pixels,
         frameIndex,
         keyframe,
         frameBytes: storedFrameBytes,
@@ -373,6 +494,7 @@ function walkFrames(input, onFrame) {
       }, header);
     }
     previous = blocks;
+    previousPixels = pixels;
   }
   if (offset !== bytes.length) {
     throw new RangeError(`Trailing BPV1 data: ${bytes.length - offset} bytes`);
@@ -398,8 +520,14 @@ function walkFrames(input, onFrame) {
     audioChannels: header.audioChannels,
     audioBytes: totalAudioBytes,
     blockCount,
-    modeCounts: Object.fromEntries(MODE_NAMES.map((name, index) => [name, modeCounts[index]])),
+    modeCounts: Object.fromEntries(
+      (header.version >= FOUR_MODE_VERSION
+        ? ["skip", "motion", "blockDictionary", "raw"]
+        : MODE_NAMES
+      ).map((name, index) => [name, modeCounts[index]]),
+    ),
     rawColorCounts,
+    rawDirectColorCounts,
     patternDictionaryColorCounts,
     minimumFrameBytes,
     maximumFrameBytes,
@@ -409,6 +537,24 @@ function walkFrames(input, onFrame) {
 }
 
 function renderFrameRgba(frame, header) {
+  if (frame.pixels instanceof Uint16Array &&
+      frame.pixels.length === header.width * header.height) {
+    const rgba = new Uint8ClampedArray(
+      header.width * header.height * 4,
+    );
+    for (let pixel = 0; pixel < frame.pixels.length; pixel += 1) {
+      const color = frame.pixels[pixel];
+      const red = (color >>> 11) & 31;
+      const green = (color >>> 5) & 63;
+      const blue = color & 31;
+      const output = pixel * 4;
+      rgba[output] = (red << 3) | (red >>> 2);
+      rgba[output + 1] = (green << 2) | (green >>> 4);
+      rgba[output + 2] = (blue << 3) | (blue >>> 2);
+      rgba[output + 3] = 255;
+    }
+    return rgba;
+  }
   const blocks = frame.blocks || frame;
   const expectedBlocks = Math.ceil(header.width / BLOCK_SIZE) *
     Math.ceil(header.height / BLOCK_SIZE);
@@ -422,10 +568,20 @@ function renderFrameRgba(frame, header) {
       const blockIndex = Math.floor(y / BLOCK_SIZE) * blocksX + Math.floor(x / BLOCK_SIZE);
       const record = blockIndex * RECORD_BYTES;
       const pixel = (y & 3) * BLOCK_SIZE + (x & 3);
-      const local = (blocks[record + PATTERN_OFFSET + (pixel >> 2)] >>
-        (6 - ((pixel & 3) << 1))) & 3;
-      const colorIndex = blocks[record] * COLORS_PER_PALETTE +
-        blocks[record + 1 + local];
+      let paletteIndex;
+      let paletteColor;
+      if (blocks[record] & DIRECT_RECORD_FLAG) {
+        paletteIndex = blocks[record] & 63;
+        paletteColor = directColor(blocks, record, pixel);
+      } else {
+        const local =
+          (blocks[record + PATTERN_OFFSET + (pixel >> 2)] >>
+           (6 - ((pixel & 3) << 1))) & 3;
+        paletteIndex = blocks[record];
+        paletteColor = blocks[record + 1 + local];
+      }
+      const colorIndex =
+        paletteIndex * COLORS_PER_PALETTE + paletteColor;
       const color = colorIndex * 3;
       const output = (y * header.width + x) * 4;
       const palette = frame.palette || header.palette;
@@ -489,6 +645,76 @@ function readPackedPrefix(
   return { count, offset, recordPrefix };
 }
 
+function readV6Raw(
+  bytes,
+  offset,
+  frameEnd,
+  frameIndex,
+  paletteCount,
+) {
+  requireFrameBytes(offset, 2, frameEnd, frameIndex);
+  const tag = bytes[offset++];
+  const subtype = tag >>> 6;
+  const paletteIndex = tag & 63;
+  if (paletteIndex >= paletteCount) {
+    throw new RangeError(
+      `Invalid RAW palette at ${frameIndex}`,
+    );
+  }
+  const record = new Uint8Array(RECORD_BYTES);
+  if (subtype === 3) {
+    requireFrameBytes(offset, 8, frameEnd, frameIndex);
+    record[0] = DIRECT_RECORD_FLAG | paletteIndex;
+    record.set(bytes.subarray(offset, offset + 8), 1);
+    offset += 8;
+    const count = popcount16(directUsedMask(record, 0));
+    if (count < 5 || count > 16) {
+      throw new RangeError(
+        `Non-canonical direct RAW in frame ${frameIndex}`,
+      );
+    }
+    return { record, offset, count, direct: true };
+  }
+
+  const capacity = subtype === 2 ? 4 : subtype + 1;
+  const localBytes = (capacity + 1) >> 1;
+  requireFrameBytes(offset, localBytes, frameEnd, frameIndex);
+  record[0] = paletteIndex;
+  record[1] = bytes[offset] >>> 4;
+  if (capacity > 1) record[2] = bytes[offset] & 15;
+  if (capacity > 2) {
+    record[3] = bytes[offset + 1] >>> 4;
+    record[4] = bytes[offset + 1] & 15;
+  }
+  offset += localBytes;
+  if (subtype === 1) {
+    requireFrameBytes(offset, 2, frameEnd, frameIndex);
+    record.set(expand1BitPattern(bytes, offset), PATTERN_OFFSET);
+    offset += 2;
+  } else if (subtype === 2) {
+    requireFrameBytes(offset, PATTERN_BYTES, frameEnd, frameIndex);
+    record.set(
+      bytes.subarray(offset, offset + PATTERN_BYTES),
+      PATTERN_OFFSET,
+    );
+    offset += PATTERN_BYTES;
+  }
+  const pattern = record.subarray(PATTERN_OFFSET);
+  const count = patternColorCount(pattern);
+  const mask = patternUsedMask(pattern);
+  if ((subtype === 0 && count !== 1) ||
+      (subtype === 1 && (count !== 2 || mask !== 3)) ||
+      (subtype === 2 &&
+       ((count !== 3 && count !== 4) ||
+        mask !== (1 << count) - 1 ||
+        (count === 3 && record[4] !== 0)))) {
+    throw new RangeError(
+      `Non-canonical BPV1 v6 RAW in frame ${frameIndex}`,
+    );
+  }
+  return { record, offset, count, direct: false };
+}
+
 function expand1BitPattern(bytes, offset) {
   const pattern = new Uint8Array(PATTERN_BYTES);
   for (let position = 0; position < 16; position += 1) {
@@ -501,6 +727,14 @@ function expand1BitPattern(bytes, offset) {
 }
 
 function validateRecord(bytes, offset, paletteCount, frameIndex, blockIndex) {
+  if (bytes[offset] & DIRECT_RECORD_FLAG) {
+    if ((bytes[offset] & 0x40) || (bytes[offset] & 63) >= paletteCount) {
+      throw new RangeError(
+        `Invalid direct palette index at ${frameIndex}:${blockIndex}`,
+      );
+    }
+    return;
+  }
   if (bytes[offset] >= paletteCount) {
     throw new RangeError(`Invalid palette index at ${frameIndex}:${blockIndex}`);
   }
@@ -509,6 +743,84 @@ function validateRecord(bytes, offset, paletteCount, frameIndex, blockIndex) {
       throw new RangeError(`Invalid local color at ${frameIndex}:${blockIndex}`);
     }
   }
+}
+
+function directColor(bytes, offset, pixel) {
+  const value = bytes[offset + 1 + (pixel >> 1)];
+  return pixel & 1 ? value & 15 : value >>> 4;
+}
+
+function recordPixelColor(bytes, offset, pixel) {
+  if (bytes[offset] & DIRECT_RECORD_FLAG) {
+    return directColor(bytes, offset, pixel);
+  }
+  const shift = 6 - ((pixel & 3) * 2);
+  const local =
+    (bytes[offset + PATTERN_OFFSET + (pixel >> 2)] >> shift) & 3;
+  return bytes[offset + 1 + local];
+}
+
+function copyPixelRegion(
+  source, destination, width, height,
+  blockIndex, blocksX, dx, dy,
+) {
+  const destinationX = (blockIndex % blocksX) * BLOCK_SIZE;
+  const destinationY =
+    Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+  const sourceX = destinationX + dx;
+  const sourceY = destinationY + dy;
+  if (!source || sourceX < 0 || sourceY < 0 ||
+      sourceX + BLOCK_SIZE > width ||
+      sourceY + BLOCK_SIZE > height) {
+    return false;
+  }
+  for (let y = 0; y < BLOCK_SIZE; y += 1) {
+    for (let x = 0; x < BLOCK_SIZE; x += 1) {
+      destination[(destinationY + y) * width + destinationX + x] =
+        source[(sourceY + y) * width + sourceX + x];
+    }
+  }
+  return true;
+}
+
+function storeRecordPixels(
+  destination, width, height, blockIndex, blocksX,
+  blocks, record, palette,
+) {
+  const destinationX = (blockIndex % blocksX) * BLOCK_SIZE;
+  const destinationY =
+    Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+  const paletteIndex = blocks[record] & 63;
+  for (let y = 0; y < BLOCK_SIZE; y += 1) {
+    for (let x = 0; x < BLOCK_SIZE; x += 1) {
+      const pixel = y * BLOCK_SIZE + x;
+      const paletteColor =
+        recordPixelColor(blocks, record, pixel);
+      const color =
+        (paletteIndex * COLORS_PER_PALETTE + paletteColor) * 3;
+      destination[(destinationY + y) * width + destinationX + x] =
+        ((palette[color] & 0xf8) << 8) |
+        ((palette[color + 1] & 0xfc) << 3) |
+        (palette[color + 2] >>> 3);
+    }
+  }
+}
+
+function directUsedMask(bytes, offset) {
+  let mask = 0;
+  for (let pixel = 0; pixel < 16; pixel += 1) {
+    mask |= 1 << directColor(bytes, offset, pixel);
+  }
+  return mask;
+}
+
+function popcount16(value) {
+  let count = 0;
+  while (value) {
+    value &= value - 1;
+    count += 1;
+  }
+  return count;
 }
 
 function addUnique(dictionary, value, limit) {
@@ -566,6 +878,10 @@ function readI8(bytes, offset) {
   return value >= 128 ? value - 256 : value;
 }
 
+function readSignedNibble(value) {
+  return value & 8 ? value - 16 : value;
+}
+
 function readU16(bytes, offset) {
   requireBytes(bytes, offset, 2, "u16");
   return bytes[offset] | (bytes[offset + 1] << 8);
@@ -595,10 +911,13 @@ module.exports = {
     LEGACY_VERSION,
     MODE_BLOCK_DICT,
     MODE_MOTION,
-    MODE_PATTERN_DICT,
-    MODE_RAW,
+    MODE_RAW: MODE_PATTERN_DICT,
+    LEGACY_MODE_PATTERN_DICT: MODE_PATTERN_DICT,
+    LEGACY_MODE_RAW: MODE_RAW,
+    LEGACY_MODE_RAW_DIRECT: MODE_RAW_DIRECT,
     MODE_SKIP,
     PALETTE_COUNT,
+    PIXEL_MOTION_VERSION,
     RECORD_BYTES,
     VERSION,
   },

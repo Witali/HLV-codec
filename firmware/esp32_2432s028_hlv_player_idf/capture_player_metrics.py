@@ -23,6 +23,11 @@ class FrameRecord:
     render_us: int
     work_us: int
     present_us: int
+    bpv_input_us: int
+    bpv_block_us: int
+    bpv_reference_us: int
+    bpv_input_calls: int
+    bpv_input_bytes: int
 
 
 @dataclass(frozen=True)
@@ -66,12 +71,14 @@ def print_metric(name: str, values: list[int]) -> None:
 
 def parse_frame(line: str) -> FrameRecord | None:
     fields = line.split(",")
-    if len(fields) != 7 or fields[0] != "F":
+    if len(fields) not in (7, 12) or fields[0] != "F":
         return None
     try:
         values = [int(value) for value in fields[1:]]
     except ValueError:
         return None
+    if len(values) == 6:
+        values.extend((0, 0, 0, 0, 0))
     return FrameRecord(*values)
 
 
@@ -220,6 +227,11 @@ def main() -> int:
                     "render_us",
                     "work_us",
                     "present_us",
+                    "bpv_input_us",
+                    "bpv_block_us",
+                    "bpv_reference_us",
+                    "bpv_input_calls",
+                    "bpv_input_bytes",
                 )
             )
             for record in frames:
@@ -231,6 +243,11 @@ def main() -> int:
                         record.render_us,
                         record.work_us,
                         record.present_us,
+                        record.bpv_input_us,
+                        record.bpv_block_us,
+                        record.bpv_reference_us,
+                        record.bpv_input_calls,
+                        record.bpv_input_bytes,
                     )
                 )
 
@@ -258,6 +275,22 @@ def main() -> int:
     print_metric("Decode", [record.decode_us for record in frames])
     print_metric("Render", [record.render_us for record in frames])
     print_metric("Work", [record.work_us for record in frames])
+    if any(record.bpv_input_calls for record in frames):
+        print_metric(
+            "BPV input", [record.bpv_input_us for record in frames]
+        )
+        print_metric(
+            "BPV blocks", [record.bpv_block_us for record in frames]
+        )
+        print_metric(
+            "BPV reference",
+            [record.bpv_reference_us for record in frames],
+        )
+        print(
+            "BPV input: "
+            f"avg_calls={statistics.fmean(record.bpv_input_calls for record in frames):.2f} "
+            f"avg_bytes={statistics.fmean(record.bpv_input_bytes for record in frames):.1f}"
+        )
     print(
         "work_over_frame_period="
         f"{sum(record.work_us > frame_period_us for record in frames)} "

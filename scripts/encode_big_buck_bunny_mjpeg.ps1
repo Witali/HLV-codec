@@ -24,7 +24,7 @@ $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
-        ("out\BigBuckBunny_1080p_mjpeg_q{0}_native-fps_320x180.avi" -f
+        ("out\MJPEG\BigBuckBunny_1080p_mjpeg_q{0}_native-fps_320x180.avi" -f
             $Quality)
 }
 if (-not $SelectionFile) {

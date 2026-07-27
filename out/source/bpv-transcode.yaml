@@ -1,0 +1,82 @@
+# BPV1 v6 transcoding profiles.
+# Paths are resolved relative to this YAML file.
+version: 1
+outputDirectory: ../BPV
+summaryFile: ../BPV/BPVv6_yaml_summary.json
+
+videos:
+  - name: BigBuckBunny
+    input: ../sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov
+    width: 320
+    height: 180
+    fps: 24
+    format: bpv1
+    codec: BPVv6
+    targetPsnrDb: 40
+    toleranceDb: 0.10
+    resizeMode: Stretch
+    audio: true
+    threads: 6
+    gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
+    candidatePalettes: 8
+    samplesPerFrame: 256
+    activePalettes: true
+
+  - name: BigBuckBunny
+    input: ../sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov
+    width: 320
+    height: 240
+    fps: 24
+    format: bpv1
+    codec: BPVv6
+    targetPsnrDb: 40
+    toleranceDb: 0.10
+    resizeMode: Crop
+    audio: true
+    threads: 6
+    gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
+    candidatePalettes: 8
+    samplesPerFrame: 256
+    activePalettes: true
+
+  - name: Danila
+    input: ../sources/VID_20260522_181611.mp4
+    width: 320
+    height: 180
+    fps: 30
+    format: bpv1
+    codec: BPVv6
+    targetPsnrDb: 40
+    toleranceDb: 0.10
+    resizeMode: Stretch
+    audio: true
+    threads: 6
+    gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
+    candidatePalettes: 8
+    samplesPerFrame: 256
+    activePalettes: true
+
+  - name: Danila
+    input: ../sources/VID_20260522_181611.mp4
+    width: 320
+    height: 240
+    fps: 30
+    format: bpv1
+    codec: BPVv6
+    targetPsnrDb: 40
+    toleranceDb: 0.10
+    resizeMode: Crop
+    audio: true
+    threads: 6
+    gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
+    candidatePalettes: 8
+    samplesPerFrame: 256
+    activePalettes: true

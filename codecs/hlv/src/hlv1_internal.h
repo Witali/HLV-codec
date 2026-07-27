@@ -36,10 +36,22 @@ static inline void hlv1_wr32(uint8_t *p, uint32_t v) {
 }
 
 uint32_t hlv1_crc32(const uint8_t *data, size_t size);
+void hlv1_quantize_v14_reference_tile(uint8_t *base, int stride,
+                                      int origin_x, int origin_y,
+                                      unsigned shift);
+void hlv1_frame_quantize_v14_reference_mb(HLV1Frame *frame,
+                                          int macroblock_x,
+                                          int macroblock_y);
+int8_t hlv1_correct_v14_reference_tile(
+    uint8_t *quantized, int quantized_stride,
+    const uint8_t *source, int source_stride,
+    int origin_x, int origin_y);
+void hlv1_apply_v14_reference_correction_tile(
+    uint8_t *base, int stride, int origin_x, int origin_y, int8_t q4);
 
-/* A zero version appeared in early in-memory callers and is normalized to v1. */
+/* A zero-initialized in-memory header selects the only supported syntax. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
-    return h && h->version ? h->version : HLV1_STREAM_VERSION_1;
+    return h && h->version ? h->version : HLV1_VERSION;
 }
 
 /* MSB-first writer compatible with HLV-1 v0.1. */

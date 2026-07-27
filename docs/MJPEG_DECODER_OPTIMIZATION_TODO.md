@@ -222,21 +222,21 @@ parallelize entropy decoding within one JPEG frame.
       reject the physical-board slowdown and remove the candidate.
 - [x] Reject a wider primary VLC lookup for the current stream: no measured DC
       symbols and only 2.737% of AC symbols exceed eight Huffman bits.
-- [ ] A/B a fixed 16x16 YUV420-to-RGB565LE kernel for the 320-pixel output
+- [x] A/B a fixed 16x16 YUV420-to-RGB565LE kernel for the 320-pixel output
       stride. Unroll only the eight four-pixel groups, retain the exact
       fixed-point products and clipping-table semantics, and keep the original
       library function as the fallback for every other geometry.
-- [ ] Independently A/B two packed 256-entry U/V contribution tables after the
+- [x] Independently A/B two packed 256-entry U/V contribution tables after the
       fixed-geometry colour result is known. Charge the 2 KiB internal-DRAM
       cost separately and do not combine both changes in the first build.
-- [ ] Prototype a complete paired Huffman table-builder/decoder replacement
+- [x] Prototype a complete paired Huffman table-builder/decoder replacement
       with packed 16-bit `{nbits,symbol}` primary entries and marker-safe
       multi-byte refill at every refill site. Do not repeat the rejected
       entry-only refill wrapper.
-- [ ] Measure a fixed aligned, restart-free YUV420 MCU call path only after the
+- [x] Measure a fixed aligned, restart-free YUV420 MCU call path only after the
       isolated colour kernel. Preserve the original 0x5ea-byte process
       function for restart-coded, rotated, scaled and edge MCUs.
-- [ ] Instrument the first excluded coefficient pair for reduced-IDCT
+- [x] Instrument the first excluded coefficient pair for reduced-IDCT
       fallbacks, reorder the checks by measured rejection frequency, and keep
       the order only if both QEMU and COM8 improve.
 - [ ] Test a larger TJpgDec input buffer with a source-built decoder.
@@ -287,10 +287,37 @@ two `MULL` instructions with `MUL16S`; it did not modify the managed component.
 The raw-object variant preserved relocations, decoded all 60 QEMU frames and
 retained hash `436f6b344bed074e`. QEMU instruction counts were identical, as
 expected. Five physical-board reset trials then matched the `MULL` control
-exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame.
-The substitution was removed. Chroma contribution tables would exchange the
-same two products for DRAM loads while costing at least 2 KiB, so they are not
-retained either.
+exactly at 9,133,439 total and 7,666,750 decoder-only cycles per frame, so that
+substitution was removed.
+
+The retained fixed RGB565LE kernel specializes only complete 16x16 YUV420 MCUs
+written to a 320-pixel stride and calls the original library function for every
+other geometry. It unrolls the eight chroma groups but preserves the original
+fixed-point constants, common green rounding and `lips` clipping semantics.
+All 60 QEMU frames retained hash `436f6b344bed074e`; decoder-only cycles fell
+from 1,407,084 to 1,335,338 (5.10%) and total cycles from 1,739,380 to
+1,667,638 (4.12%). Five deterministic COM8 resets retained the same hash and
+improved decoder-only cycles from 7,607,262 to 7,221,856 (5.07%) and total
+cycles from 9,073,825 to 8,688,463 (4.25%).
+
+The follow-up table experiment packs each exact pre-shift green product and
+the already-shifted red or blue contribution into one 32-bit entry. Two
+256-entry Flash-resident tables therefore cost 2 KiB of image space without
+consuming heap or static DRAM, and preserve the original single rounding step
+for green. Relative to the retained fixed kernel, QEMU decoder-only cycles
+fell from 1,335,338 to 1,297,128 (2.86%) and total cycles from 1,667,638 to
+1,629,483 (2.29%). Five COM8 resets improved decoder-only cycles from
+7,221,856 to 7,043,932 (2.46%) and total cycles from 8,688,463 to 8,510,492
+(2.05%). The hash and reported heap values were unchanged, so the tables are
+retained by default.
+
+A subsequent production Player run collected 3,000 consecutive 320x240/30
+packet records after both retained colour changes. Conditional decode latency
+was 33.729 ms average, 34.001 ms P50, 37.269 ms P95 and 38.311 ms P99. The
+Player displayed 2,001 frames (20.010 fps effective) with no sequence gaps or
+audio errors. The summary, comparison with the preceding production baseline,
+and raw CSV are preserved in
+[`MJPEG_PLAYER_320X240_POST_RGB565_BENCHMARK.md`](MJPEG_PLAYER_320X240_POST_RGB565_BENCHMARK.md).
 
 The retained coefficient-clear wrapper recognizes only aligned
 `memset(buffer, 0, 128)` calls and emits 32 unrolled `S32I` stores. Every
@@ -350,6 +377,54 @@ direct calls therefore requires maintaining a complete reconstructed private
 decoder structure and kernel, not a small independently reversible assembly
 replacement. No production fork is retained without source or a measurable
 isolated patch point.
+
+The follow-up direct-call audit inspected the exact
+`.text.jpeg_dec_proc_yuv420_0_block` relocations and instructions. The common
+MCU path performs three Huffman, six IDCT and one colour call using adjacent
+`L32R`/`CALLX8` pairs; the restart and edge variants are interleaved in the
+same 0x61e-byte section. At 300 MCUs per 320x240 frame, removing every common
+path `L32R` has an upper bound of about 3,000 instructions, only 0.23% of the
+current 1.30-million-cycle QEMU decoder. The object format has no relocation
+or function boundary at which those pairs can be replaced independently:
+introducing `CALL8` relocations requires rebuilding the complete private
+kernel. This fails the isolated-patch and maintenance-cost gate, so no binary
+patch is retained or flashed.
+
+The paired Huffman prototype reached the same source-availability gate. The
+available object exposes one 0x520-byte decoder containing all DC/AC refill,
+marker, stuffing, slow-code and restart paths, while the table builder uses
+private `jpeg_decoder_t` fields and allocator-owned arrays. A packed primary
+table therefore cannot be consumed without replacing both complete functions
+and freezing the reconstructed private structure ABI. The earlier measured
+stream profile also shows that the existing 8-bit primary lookup already
+handles all DC and 97.263% of AC symbols. Because there is no independently
+linkable refill or lookup seam and the expected remaining ceiling is small,
+the unsafe pseudo-C reconstruction was rejected before firmware generation;
+there is no valid candidate image to run in QEMU or on COM8.
+
+For reduced-IDCT rejection order, a candidate sorted the 24 excluded pairs by
+the first JPEG zigzag position in each pair. It retained all 60 frames and hash
+`436f6b344bed074e`, but improved QEMU decoder-only cycles by only 119
+(0.009%) and total cycles by 138 (0.008%). Five deterministic COM8 resets
+improved decoder-only cycles from 7,043,932 to 7,042,838 (0.016%) and total
+cycles from 8,510,492 to 8,509,341 (0.014%). This is below the threshold for
+another hand-maintained ordering, so the original order was restored.
+
+The Xtensa DSP IDCT experiment replaced the complete reduced horizontal row
+pass, clipping and four packed stores with a hand-written IRAM assembly
+kernel. Its two-column specialization explicitly used `MUL16S` for the three
+fixed-point IDCT products. The complete 60-frame RGB565 hash remained
+`436f6b344bed074e`, and heap readings were unchanged. However, QEMU regressed
+from 1,629,483 to 1,630,376 total cycles per frame (0.055%) and from 1,297,128
+to 1,298,029 decoder-only cycles (0.069%). Five deterministic COM8 runs made
+the regression clearer: total cycles increased from 8,510,492 to 8,532,849
+(0.263%), decoder-only cycles from 7,043,932 to 7,065,911 (0.312%), and
+`jpeg_dec_process` from 7,001,393 to 7,023,398 (0.314%). Disassembly of the
+retained `-O3` C++ helper showed that GCC already emits `MUL16S` for the
+coefficient/dequantization and narrow row products. The hand-written path
+therefore added pointer saves and register-packing overhead without replacing
+full-width multiplication. The assembly kernel and its build switch were
+removed.
 
 The 60-frame follow-up scan covers 108,000 coefficient blocks. DC-only blocks
 account for 17.92%, 22.92% have non-zero coefficients only in DCT column zero,

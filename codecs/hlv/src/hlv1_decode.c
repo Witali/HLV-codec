@@ -344,16 +344,36 @@ static int decode_literal(HLV1Decoder *d, HLV1BitReader *br, int x, int y) {
     for (int yy = 0; r >= 0 && yy < 16; ++yy)
         r = read_literal_row(br,
                              cur->y + (y + yy) * cur->stride_y + x,
-                             16, 6);
+                             16, 7);
     int cx = x / 2, cy = y / 2;
     for (int yy = 0; r >= 0 && yy < 8; ++yy)
         r = read_literal_row(br,
                              cur->u + (cy + yy) * cur->stride_u + cx,
-                             8, 5);
+                             8, 6);
     for (int yy = 0; r >= 0 && yy < 8; ++yy)
         r = read_literal_row(br,
                              cur->v + (cy + yy) * cur->stride_v + cx,
-                             8, 5);
+                             8, 6);
+    int8_t correction[6] = {0};
+    for (int i = 0; r >= 0 && i < 6; ++i) {
+        correction[i] = (int8_t)hlv1_br_get(br, 8);
+        if (br->error) r = br->error;
+    }
+    if (r >= 0) {
+        int index = 0;
+        for (int tile_y = 0; tile_y < 16; tile_y += 8)
+            for (int tile_x = 0; tile_x < 16; tile_x += 8)
+                hlv1_apply_v14_reference_correction_tile(
+                    cur->y + (y + tile_y) * cur->stride_y + x + tile_x,
+                    cur->stride_y, x + tile_x, y + tile_y,
+                    correction[index++]);
+        hlv1_apply_v14_reference_correction_tile(
+            cur->u + cy * cur->stride_u + cx, cur->stride_u,
+            cx, cy, correction[4]);
+        hlv1_apply_v14_reference_correction_tile(
+            cur->v + cy * cur->stride_v + cx, cur->stride_v,
+            cx, cy, correction[5]);
+    }
     if (r >= 0) d->stats.literal_samples += 384;
     return r;
 }
@@ -440,6 +460,47 @@ static int add_dc_only(uint8_t *dst, int stride, int level, int qstep) {
 }
 
 static int get_level_v9(HLV1BitReader *br, int32_t *level) {
+#if !defined(HLV1_LEVEL_LOOKAHEAD) || HLV1_LEVEL_LOOKAHEAD
+    /*
+     * Decode the common magnitudes 1..17 from one cached lookahead.  The
+     * v9 code is:
+     *   0s, 10rrs, 110rrs, 1110rrs, 11110rrs
+     * where s is the sign and rr is the two-bit remainder.  Keeping this
+     * path local avoids three to eight reader calls for the small levels
+     * that dominate natural video while preserving the escape syntax below.
+     */
+    if (br && br->bits >= 8U && br->bits_left >= 8U) {
+        uint32_t prefix = (uint32_t)(br->cache >> 56);
+        unsigned bits = 0, magnitude = 0, negative = 0;
+        if (!(prefix & 0x80U)) {
+            bits = 2;
+            magnitude = 1;
+            negative = (prefix >> 6) & 1U;
+        } else if (!(prefix & 0x40U)) {
+            bits = 5;
+            magnitude = 2U + ((prefix >> 4) & 3U);
+            negative = (prefix >> 3) & 1U;
+        } else if (!(prefix & 0x20U)) {
+            bits = 6;
+            magnitude = 6U + ((prefix >> 3) & 3U);
+            negative = (prefix >> 2) & 1U;
+        } else if (!(prefix & 0x10U)) {
+            bits = 7;
+            magnitude = 10U + ((prefix >> 2) & 3U);
+            negative = (prefix >> 1) & 1U;
+        } else if (!(prefix & 0x08U)) {
+            bits = 8;
+            magnitude = 14U + ((prefix >> 1) & 3U);
+            negative = prefix & 1U;
+        }
+        if (bits) {
+            (void)hlv1_br_get(br, bits);
+            if (br->error) return br->error;
+            *level = negative ? -(int32_t)magnitude : (int32_t)magnitude;
+            return HLV1_OK;
+        }
+    }
+#endif
     uint32_t first = hlv1_br_get(br, 1);
     if (br->error) return br->error;
     unsigned magnitude;
@@ -564,6 +625,11 @@ static int get_residual_mask(HLV1BitReader *br, unsigned version,
                              int block_count, uint32_t *mask,
                              int *coeff_mode) {
     *coeff_mode = 0;
+    if (version >= HLV1_STREAM_VERSION_14) {
+        *coeff_mode = (int)hlv1_br_get(br, 1);
+        *mask = hlv1_br_get(br, (unsigned)block_count);
+        return br->error ? br->error : HLV1_OK;
+    }
     int first = (int)hlv1_br_get(br, 1);
     if (br->error) return br->error;
     int pivot = block_count - 1;
@@ -800,8 +866,10 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
 
 /* --- Public decoder lifecycle ----------------------------------------- */
 HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
+    unsigned version = hlv1_stream_version(header);
     if (!header || !header->width || !header->height ||
-        hlv1_stream_version(header) > HLV1_VERSION) return NULL;
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     trace_decoder_heap("after state");
@@ -816,17 +884,15 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
         return NULL;
     }
     trace_decoder_heap("after current frame");
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        d->mv_cols = d->current.padded_width / 16;
-        size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
-        d->mv_top_x = (int16_t *)malloc(bytes);
-        d->mv_top_y = (int16_t *)malloc(bytes);
-        d->mv_cur_x = (int16_t *)malloc(bytes);
-        d->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
-            hlv1_decoder_destroy(d);
-            return NULL;
-        }
+    d->mv_cols = d->current.padded_width / 16;
+    size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
+    d->mv_top_x = (int16_t *)malloc(bytes);
+    d->mv_top_y = (int16_t *)malloc(bytes);
+    d->mv_cur_x = (int16_t *)malloc(bytes);
+    d->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
+        hlv1_decoder_destroy(d);
+        return NULL;
     }
     trace_decoder_heap("after motion state");
     return d;
@@ -847,7 +913,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  const HLV1Frame **frame,
                                  int segmented) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
-    unsigned version = hlv1_stream_version(&d->header);
+    const unsigned version = HLV1_VERSION;
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
         (version < HLV1_STREAM_VERSION_4 && p->q_shift != 0) ||
         p->bit_length > p->payload_size * 8ULL)
@@ -956,7 +1022,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
                 int partition = 0;
-                if (version >= 14) {
+                if (version >= 15) {
                     int first = (int)hlv1_br_get(&br, 1);
                     if (br.error) return br.error;
                     if (first) {
@@ -1078,6 +1144,8 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 return HLV1_ERR_BITSTREAM;
             }
             if (r < 0) return r;
+            if (mode != HLV1_MODE_LITERAL)
+                hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;

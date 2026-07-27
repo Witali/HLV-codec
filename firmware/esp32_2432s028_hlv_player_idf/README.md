@@ -3,21 +3,23 @@
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
-MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v4
-with PCM_U8 audio and active per-GOP palettes, and the constrained MPEG-1
-Video/MP2 profile up to 320x240. It also supports baseline H.263 at `176x144`
-and intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
+MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v6
+with PCM_U8 audio, active per-GOP palettes and unified RAW blocks, and the
+constrained MPEG-1 Video/MP2 profile up to 320x240. It also
+supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
+intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
 The strict C99 migration plan, preserved C++ baseline and physical all-codec
 A/B acceptance matrix are documented in
 [`../../../docs/ESP32_C99_MIGRATION.md`](../../../docs/ESP32_C99_MIGRATION.md).
 
-AVI is the preferred H.263 container for this firmware. Its interleaved video
-and PCM chunks are streamed without retaining an AVI index in RAM. 3GP remains
-supported for AMR-NB and compatibility, but its sample-size and chunk-offset
-tables consume memory proportional to the number of samples, reducing the
-margin available for long or high-bitrate CIF playback.
+New project H.263 assets use only baseline H.263 in AVI at standard QCIF
+`176x144` or CIF `352x288`, always at the full source frame rate. Custom-size
+H.263+ and 3GP/AMR-NB remain decoder-only compatibility paths. AVI's
+interleaved video and PCM chunks are streamed without retaining an index in
+RAM; the legacy 3GP reader's sample-size and chunk-offset tables consume memory
+proportional to the number of samples.
 
 The only application components are:
 
@@ -53,6 +55,34 @@ references use packed Y6/U5/V5 samples with signed Q4 block-average
 corrections. DivX 4 and DivX 5 use MPEG-4 Part 2 ASP and are not handled by
 this decoder.
 
+## Compressed input buffering
+
+Compressed input should use a fixed-size refill, ring, or stream buffer whose
+capacity does not depend on the largest encoded packet. A decoder may retain a
+complete packet only when its API requires contiguous or random-access input;
+such an exception must have a strict size limit and must not copy the payload
+between tasks. A streaming-path test must include a valid packet larger than
+the refill buffer and compare the decoded-frame checksum with contiguous
+decoding.
+
+The current decoder audit is:
+
+| Path | Compressed input | Status |
+| --- | --- | --- |
+| HLV v14 video | One reusable 7,680-byte refill buffer used by `hlv1_decoder_decode_file()` | Compliant; packets may exceed the buffer |
+| H.263 video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer |
+| MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
+| Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
+| Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
+| BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
+| BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
+| DivX 3 video | One complete AVI video packet, capped at 96 KiB by the player | Technical debt: make the bit reader refill-aware and let the AVI reader expose a bounded packet span; the optimized VLC prefix path currently accesses contiguous bytes directly |
+| MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
+
+AVI container traversal itself is sequential and retains no chunk index.
+Legacy 3GP retains compact sample-size and chunk-offset metadata, but H.263
+sample payloads are still decoded through the 4 KiB refill buffer.
+
 ## Build and flash
 
 All generated dependencies are placed below this directory in `.tools`:
@@ -87,7 +117,7 @@ BPV1 uses the same upload path:
 
 ```powershell
 .\upload-video.ps1 -Port COM8 `
-    -File ..\..\out\BigBuckBunny_1080p_bpv1_v2_lambda64_native-fps_320x180.bpv1 `
+    -File ..\..\out\BPV\BigBuckBunny_1080p_bpv1_v6_four-mode_lambda64_normalized_native-fps_320x180.bpv1 `
     -Name bunny.bpv1
 Set-Content play.txt "bunny.bpv1" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
@@ -96,8 +126,9 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The control handshake uses 460800 baud and block data uses
-2000000 baud by default. The verified fallback values are 1500000, 921600 and
-460800 baud.
+2000000 baud by default. The optional 3000000-baud mode is CRC-verified but
+does not improve end-to-end throughput on this board. The verified fallback
+values are 1500000, 921600 and 460800 baud.
 
 List the files currently stored in `/sdcard/HLV` without stopping playback:
 
@@ -109,6 +140,20 @@ List the files currently stored in `/sdcard/HLV` without stopping playback:
 The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
 returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
 `HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
+
+The autonomous SD write benchmark uses:
+
+```text
+HLVSDBENCH 1 <zero|random> <size-MiB>
+```
+
+The size is limited to 1--64 MiB. The player stops playback, pre-fills one
+32 KiB block with zeros or deterministic pseudorandom bytes, writes it
+directly to a temporary file, and includes `fflush`, `fsync` and `fclose` in
+the elapsed time. The temporary file is deleted before the result is returned.
+On the installed card, 16 MiB tests delivered 1897 KiB/s for zeros and
+1905 KiB/s for pseudorandom data. Both temporary files were confirmed absent
+through `HLVLIST 1`.
 
 The destination defaults to the source filename. `/sdcard/HLV/play.txt`
 contains the one video filename that the player opens:
@@ -126,33 +171,59 @@ characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
 The player finishes the current decode operation, stops video and audio, and
-closes both SD file cursors before acknowledging an upload. The screen shows a
-progress bar during the transfer. Each 60 KiB block has its own CRC32 and is
-acknowledged before the PC sends the next block, so hardware flow control is
-not required. CRC calculation uses the ESP32 ROM table implementation. The
+closes both SD file cursors before acknowledging an upload. During the transfer
+the screen shows a large completion percentage above the progress bar and the
+transferred/total size beside it using three significant digits, with the
+destination filename below the bar.
+Each 32 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
+sliding window, so the PC can send both receive buffers without waiting for an
+individual ACK. An ACK is cumulative and returns buffer credit only after the
+CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
+the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
+250 ms; the client retries after a two-second ACK timeout and aborts after ten
+seconds without cumulative progress. Hardware flow control is therefore not
+required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer exists only during an upload, while the decoder and audio buffers are
-released. After each transfer the player reads `/HLV/play.txt` again and opens
-its selection.
+buffer was replaced by two 32 KiB buffers that exist only during an upload,
+while the decoder and audio buffers are released. CPU0 receives and validates
+the next UART block while a CPU1 writer task stores the preceding block on SD.
+An ACK means that a block passed its RAM CRC and completed its SD write;
+`HLVDONE` is emitted only after both buffers are written, `fsync` completes and
+the full-file CRC matches. After each transfer the player reads
+`/HLV/play.txt` again and opens its selection.
 
-Protocol version 1 starts with this ASCII line at the console baud:
+Upload protocol version 2 starts with this ASCII line at the console baud:
 
 ```text
-HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
+HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 1 61440 <data-baud>`, receives acknowledged
-`HLVB` binary blocks, and finishes with
-`HLVDONE 1 <size> <crc32> <name>`.
+The device replies `HLVREADY 2 32768 <data-baud> 2`, receives windowed `HLVB`
+binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
+`HLVDONE 2 <size> <crc32> <name>`.
 
 The connected CH340C board completed three CRC-verified transfers at every
 supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
 baud delivered 70.4, 91.3 and 101.5 KiB/s. Enlarging the block to 16 KiB raised
 the 2 Mbaud result to 106.6 KiB/s. The retained 60 KiB block and ROM CRC32
-delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. An experimental
-2.5 Mbaud transfer timed out, so 2 Mbaud is the maximum verified setting for
-this board and driver.
+delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
+16 KiB UART receive and SD writes delivered 44.5, 79.6, 108.5 and 121.0 KiB/s
+at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
+transfers. The same full transfer passed at 3000000 baud but delivered only
+121.3 KiB/s, showing that the upload pipeline, rather than the UART line, is
+the current limit. Protocol v2 sliding-window transfers of the same file with
+two 32 KiB blocks delivered 122.4 KiB/s at 2000000 baud and 122.3 KiB/s at
+3000000 baud, with matching full-file CRC32. The larger window removes the
+mandatory per-block wait but raises throughput only marginally. The autonomous
+SD benchmark reaches about 1.85 MiB/s, so raw card bandwidth is not the
+bottleneck; the remaining limit is in the combined UART/SD pipeline. An
+experimental 2500000-baud transfer never entered normal data reception and
+timed out.
+Therefore 2000000 baud remains the default; 3000000 baud is retained only as
+an optional verified mode. The Windows CH340 driver rejected attempts to
+configure both 4000000 and 5000000 baud with device error 31, before either
+transfer could send its first data block.
 
 The repository-level wrappers run the same commands:
 
@@ -392,19 +463,22 @@ display DMA timing.
   and releases the second allocation before creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV uses nine
-  reusable 7680-byte packet blocks (67.5 KiB); MJPEG uses the maximum indexed
+  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV streams
+  each packet through one reusable 7,680-byte refill buffer; MJPEG uses the maximum indexed
   JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
   two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
   TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
-- Video: two packed Y6/U5/V5 4:2:0 frames, one signed Q4 local correction per
-  8x8 plane block and a macroblock-row work area; 141,120 bytes at 320x180
+- HLV video: two packed Y7/U6/V6 4:2:0 frames, one signed Q4 local correction per
+  8x8 plane block and a macroblock-row work area; 164,160 bytes at 320x180
   instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
-  tables preserve each block's discarded average to 1/16 sample. Stream v13
-  literal blocks are copied directly into this packed storage with zero
-  correction. BPV instead retains two 32,400-byte block-record frames plus its
-  bounded dictionaries; the complete BPV decoder allocation is about 105 KiB
-  at 320x180 and has no full RGB frame.
+  tables preserve each block's discarded average to 1/16 sample. Stable HLV
+  v14 makes this compact reconstruction normative, so packed and expanded
+  decoders predict from identical samples. Literal blocks carry four separate
+  Y corrections plus one U and one V correction. BPV instead retains two
+  32,400-byte block-record frames plus its
+  bounded dictionaries; the complete BPV decoder allocation is about 106 KiB
+  at 320x180 with the conservative 9-byte-per-block `RAW_DIRECT` packet bound
+  and has no full RGB frame.
 - DivX 3: two packed Y6/U5/V5 reference frames, Q4 correction maps and rolling
   DC/AC/MV predictor rows use 174,000 bytes at 320x240, versus 237,600 bytes
   for the exact 8-bit decoder after the same predictor-row optimization.
@@ -455,7 +529,7 @@ large-resolution source to 4:3 and applying one anti-aliased Lanczos downscale
 to 320x240. They add the black 16/24-pixel CIF border without a SAR or DAR
 override. `kScaleVideoToDisplay` continues to control stretching for the
 other video codecs; CIF deliberately ignores it.
-`kUseCompactY6U5V5` selects the compact decoder and is `true` in the current
+`kUseCompactHlvReference` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without

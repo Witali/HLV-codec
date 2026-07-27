@@ -40,6 +40,7 @@ function runEncoder(
   audio = null,
   activePalettes = true,
   activePaletteFile = null,
+  extraArguments = [],
 ) {
   const arguments_ = [
     input,
@@ -63,6 +64,7 @@ function runEncoder(
   if (audio) {
     arguments_.push("--audio-u8", audio, "--audio-rate", "16000");
   }
+  arguments_.push(...extraArguments);
   const result = childProcess.spawnSync(executable, arguments_, {
     cwd: packageRoot,
     encoding: "utf8",
@@ -87,6 +89,12 @@ try {
   const output4 = path.join(temporary, "output-4.bpv1");
   const report1 = path.join(temporary, "report-1.json");
   const report4 = path.join(temporary, "report-4.json");
+  const outputCpu = path.join(temporary, "output-cpu.bpv1");
+  const reportCpu = path.join(temporary, "report-cpu.json");
+  const outputPixel = path.join(temporary, "output-pixel.bpv1");
+  const reportPixel = path.join(temporary, "report-pixel.json");
+  const outputPixelCpu = path.join(temporary, "output-pixel-cpu.bpv1");
+  const reportPixelCpu = path.join(temporary, "report-pixel-cpu.json");
   const audio = path.join(temporary, "audio.u8");
   const outputAudio = path.join(temporary, "output-audio.bpv1");
   const reportAudio = path.join(temporary, "report-audio.json");
@@ -97,6 +105,9 @@ try {
   const outputOverride4 = path.join(temporary, "output-override-4.bpv1");
   const reportOverride1 = path.join(temporary, "report-override-1.json");
   const reportOverride4 = path.join(temporary, "report-override-4.json");
+  const sceneInput = path.join(temporary, "scene-input.y4m");
+  const sceneOutput = path.join(temporary, "scene-output.bpv1");
+  const sceneReport = path.join(temporary, "scene-report.json");
   const width = 64;
   const height = 64;
   const parts = [y4m.y4mHeader(width, height, 24, 1)];
@@ -108,6 +119,20 @@ try {
     ));
   }
   fs.writeFileSync(input, Buffer.concat(parts));
+  const sceneParts = [y4m.y4mHeader(width, height, 24, 1)];
+  for (let frame = 0; frame < 8; frame += 1) {
+    const value = frame < 4 ? 0 : 255;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const offset = pixel * 4;
+      rgba[offset] = value;
+      rgba[offset + 1] = value;
+      rgba[offset + 2] = value;
+      rgba[offset + 3] = 255;
+    }
+    sceneParts.push(y4m.y4mFrame(rgba, width, height));
+  }
+  fs.writeFileSync(sceneInput, Buffer.concat(sceneParts));
   fs.writeFileSync(audio, Buffer.from(
     Array.from({ length: 4000 }, (_, index) => index & 255),
   ));
@@ -116,9 +141,77 @@ try {
   runEncoder(input, output4, report4, 4);
   runEncoder(input, outputAudio, reportAudio, 4, audio);
   runEncoder(input, outputFixed, reportFixed, 1, null, false);
+  runEncoder(
+    input,
+    outputPixel,
+    reportPixel,
+    1,
+    null,
+    true,
+    null,
+    ["--pixel-motion"],
+  );
+  runEncoder(
+    sceneInput,
+    sceneOutput,
+    sceneReport,
+    1,
+    null,
+    true,
+    null,
+    [
+      "--gop", "12",
+      "--min-gop", "2",
+      "--scene-threshold", "0.35",
+      "--candidate-palettes", "64",
+    ],
+  );
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
+  const pixelBytes = fs.readFileSync(outputPixel);
+  assert.equal(bpv.walkFrames(pixelBytes).version, 7);
+  assert.equal(
+    JSON.parse(fs.readFileSync(reportPixel, "utf8")).motionUnits,
+    "pixels",
+  );
+  const primaryReport = JSON.parse(fs.readFileSync(report1, "utf8"));
+  if (primaryReport.computeBackend === "cuda") {
+    runEncoder(
+      input,
+      outputCpu,
+      reportCpu,
+      1,
+      null,
+      true,
+      null,
+      ["--device", "cpu"],
+    );
+    assert.deepEqual(
+      fs.readFileSync(outputCpu),
+      bytes1,
+      "CUDA block search must match the CPU BPV1 bitstream",
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(reportCpu, "utf8")).computeBackend,
+      "cpu",
+    );
+    runEncoder(
+      input,
+      outputPixelCpu,
+      reportPixelCpu,
+      1,
+      null,
+      true,
+      null,
+      ["--pixel-motion", "--device", "cpu"],
+    );
+    assert.deepEqual(
+      fs.readFileSync(outputPixelCpu),
+      pixelBytes,
+      "CUDA and CPU pixel-motion encoding must match",
+    );
+  }
   const activeBanks = [];
   bpv.walkFrames(bytes1, (frame) => {
     if (frame.keyframe) activeBanks.push(Buffer.from(frame.palette));
@@ -156,7 +249,7 @@ try {
   );
 
   const info = bpv.walkFrames(bytes4);
-  assert.equal(info.version, 5);
+  assert.equal(info.version, 6);
   assert.equal(info.width, width);
   assert.equal(info.height, height);
   assert.equal(info.frameCount, 6);
@@ -176,7 +269,7 @@ try {
     fs.readFileSync(outputAudio),
     (frame) => audioFrames.push(frame.audio),
   );
-  assert.equal(audioInfo.version, 5);
+  assert.equal(audioInfo.version, 6);
   assert.equal(audioInfo.audioCodec, 1);
   assert.equal(audioInfo.audioSampleRate, 16000);
   assert.equal(audioInfo.audioChannels, 1);
@@ -187,20 +280,63 @@ try {
   );
 
   const fixedInfo = bpv.walkFrames(fs.readFileSync(outputFixed));
-  assert.equal(fixedInfo.version, 5);
+  assert.equal(fixedInfo.version, 6);
   assert.equal(fixedInfo.paletteUpdates, 2);
 
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
-  assert.equal(report.encoder, "native C11");
+  assert.ok(["cpu", "cuda"].includes(report.computeBackend));
+  assert.equal(
+    report.encoder,
+    report.computeBackend === "cuda"
+      ? "native C11 + CUDA"
+      : "native C11",
+  );
   assert.equal(report.threads, 4);
   assert.equal(report.frames, 6);
   assert.equal(report.paletteMode, "active-gop");
   assert.equal(report.paletteUpdates, 2);
+  assert.equal(report.candidatePaletteCount, 8);
+  assert.equal(report.paletteSearch, "rgb-lut");
+  assert.equal(report.paletteIndexBitsPerChannel, 4);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
+  assert.equal(report.version, 6);
+  assert.ok(Number.isInteger(report.modeCounts.raw));
+  assert.equal(
+    report.modeCounts.raw,
+    report.rawSubtypeCounts.oneColor +
+      report.rawSubtypeCounts.twoColor +
+      report.rawSubtypeCounts.fourColor +
+      report.rawSubtypeCounts.direct5To8 +
+      report.rawSubtypeCounts.direct9To16,
+  );
   const overrideReport =
     JSON.parse(fs.readFileSync(reportOverride4, "utf8"));
   assert.equal(overrideReport.paletteMode, "active-override");
+
+  const sceneKeyframes = [];
+  const sceneInfo = bpv.walkFrames(
+    fs.readFileSync(sceneOutput),
+    (frame) => {
+      if (frame.keyframe) sceneKeyframes.push(frame.frameIndex);
+    },
+  );
+  assert.deepEqual(
+    sceneKeyframes,
+    [0, 4],
+    "a hard cut must start a new GOP at the changed frame",
+  );
+  assert.equal(sceneInfo.keyframes, 2);
+  const parsedSceneReport =
+    JSON.parse(fs.readFileSync(sceneReport, "utf8"));
+  assert.equal(parsedSceneReport.sceneKeyframes, 1);
+  assert.equal(parsedSceneReport.paletteUpdates, 2);
+  assert.equal(parsedSceneReport.candidatePaletteCount, 64);
+  assert.deepEqual(
+    parsedSceneReport.keyframes.map((keyframe) => keyframe.frame),
+    [0, 4],
+  );
+  assert.equal(parsedSceneReport.keyframes[1].reason, "scene");
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }

@@ -262,7 +262,7 @@ def finalize(source: Path, codec: str, target: float, candidate: Candidate,
         py, pu, pv, pa = psnr(ref, decoded, duration)
         sy, su, sv, sa = ssim(ref, decoded, duration)
         decoded.unlink(missing_ok=True)
-        label = "BPV1-v2"
+        label = "BPV1-v6"
     else:
         t0 = time.perf_counter()
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(candidate.path), "-f", "null", "-"])
@@ -392,7 +392,7 @@ def main() -> None:
                 for codec in codecs:
                     label = (
                         f"HLV-v{args.hlv_syntax}" if codec == "hlv"
-                        else "BPV1-v2" if codec == "bpv"
+                        else "BPV1-v6" if codec == "bpv"
                         else codec
                     )
                     if (source.name, frames, target, label) in done:

@@ -21,8 +21,9 @@ typedef enum {
    pixel-for-pixel. */
 #define PLAYER_SCALE_VIDEO_TO_DISPLAY 0
 
-/* Store predictive YUV420 frames as compact Y6/U5/V5 planes. */
-#define PLAYER_USE_COMPACT_Y6_U5_V5 1
+/* Store HLV v14 references as compact Y7/U6/V6 planes with per-plane Q4
+   local-average corrections. */
+#define PLAYER_USE_COMPACT_HLV_REFERENCE 1
 
 /* Decode frame N on CPU1 while CPU0 renders frame N-1. */
 #define PLAYER_USE_DUAL_CORE_PIPELINE 1

@@ -1,7 +1,7 @@
 # Native Windows HLV/BPV/MPEG-1/H.263 player
 
 `hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
-v1 through v5, the constrained MPEG-1/MP2 profile, and the
+v1 through v6, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
 intra-only baseline `352x288` CIF, and intra-only H.263+ profiles at
 `256x144`, `256x192`, `320x180`, and `320x240`. CIF playback retains the
@@ -14,19 +14,18 @@ mono PCM16 into the same unsigned PCM8 output. HLV/MPEG YUV and decoded BPV
 palette blocks are prepared as NV12 plus BGRA; AVI PCM S16LE is converted
 directly to the same PCM8 output. The GPU performs colour conversion and
 scaling. If D3D11 initialisation or presentation fails, the
-player automatically switches to double-buffered GDI. BPV1 v4/v5 supports
+player automatically switches to double-buffered GDI. BPV1 v4-v6 supports
 active per-GOP palettes and PCM_U8 audio; video-only files use the
-high-resolution frame timer without opening audio. BPV1 v5 additionally uses adaptive
-2/4/7-byte RAW records and packed local palette indices.
+high-resolution frame timer without opening audio. BPV1 v6 uses four 2-bit
+block modes, one-byte motion vectors and unified 2/4/7/9-byte RAW records.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
-The repository encoder treats CIF as anamorphic during preparation as well as
-playback. It crops or pads the source to 4:3 at the original large resolution,
-then performs one Lanczos downscale to the central `320x240` active area. It
-pads that area to the coded `352x288` grid with 16 black columns on each side
-and 24 black rows above and below. It does not write a SAR or DAR override.
-Unlike the ESP32, the Windows Player retains and displays this complete
-bordered frame.
+New project H.263 assets are restricted to baseline H.263 in AVI at standard
+QCIF `176x144` or CIF `352x288`, preserving the full source frame rate. The
+encoder prepares a complete 4:3 QCIF/CIF frame with one Lanczos downscale.
+Legacy 3GP and custom-size H.263+ support above is playback compatibility only.
+The Windows Player displays the complete CIF frame, while the ESP32 crops its
+central `320x240` area for the panel.
 
 ## Setup and build
 

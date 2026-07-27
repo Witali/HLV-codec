@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#define TEST_BPV1_V5_VERSION 5
+#define TEST_BPV1_V6_VERSION 6
+
 static int write_u8(FILE *file, uint8_t value) {
     return fputc(value, file) == EOF ? -1 : 0;
 }
@@ -224,7 +227,7 @@ static int test_active_palettes(void) {
     green_palette[1] = 255;
     if (!file ||
         fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, TEST_BPV1_V5_VERSION) ||
         write_u16(file, 4) || write_u16(file, 4) ||
         write_u32(file, 2) ||
         write_u16(file, 24) || write_u16(file, 1) ||
@@ -236,10 +239,10 @@ static int test_active_palettes(void) {
         write_active_frame(file, green_palette, raw) ||
         fseek(file, 0, SEEK_SET) ||
         bpv1_header_read(file, &header) != BPV1_OK ||
-        header.version != BPV1_VERSION ||
+        header.version != TEST_BPV1_V5_VERSION ||
         !(decoder = bpv1_decoder_create(&header)) ||
         bpv1_decoder_packet_capacity(decoder) !=
-            BPV1_MAX_PALETTE_BYTES + 8U) {
+            BPV1_MAX_PALETTE_BYTES + 10U) {
         fprintf(stderr, "BPV1 v5 active-palette setup failed\n");
         goto cleanup;
     }
@@ -298,7 +301,7 @@ static int test_adaptive_raw_records(void) {
     int result = 1;
     if (!file ||
         fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, TEST_BPV1_V5_VERSION) ||
         write_u16(file, 16) || write_u16(file, 4) ||
         write_u32(file, 1) ||
         write_u16(file, 24) || write_u16(file, 1) ||
@@ -318,7 +321,7 @@ static int test_adaptive_raw_records(void) {
         bpv1_header_read(file, &header) != BPV1_OK ||
         !(decoder = bpv1_decoder_create(&header)) ||
         bpv1_decoder_packet_capacity(decoder) !=
-            BPV1_MAX_PALETTE_BYTES + 2U + 4U * 7U ||
+            BPV1_MAX_PALETTE_BYTES + 2U + 4U * 9U ||
         bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
         bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
         !frame ||
@@ -334,11 +337,543 @@ cleanup:
     return result;
 }
 
+static int test_direct_raw_records(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    uint8_t rgb24[8U * 3U];
+    uint16_t rgb565[8];
+    uint16_t cached_rgb565[8];
+    uint16_t palette_rgb565[BPV1_MAX_PALETTE_COLORS];
+    const uint8_t expected_rgb24[8U * 3U] = {
+         0, 0,  0, 16, 0,  0, 32, 0,  0, 48, 0,  0,
+         0, 0,  0,  0, 0, 16,  0, 0, 32,  0, 0, 48
+    };
+    const uint16_t expected_rgb565[8] = {
+        0x0000, 0x1000, 0x2000, 0x3000,
+        0x0000, 0x0002, 0x0004, 0x0006
+    };
+    const uint8_t mode_map = 0xb4;
+    const uint8_t payload[18] = {
+        1, 0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40,
+        2, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef
+    };
+    const uint8_t expected[2][BPV1_RECORD_BYTES] = {
+        {BPV1_DIRECT_RECORD_FLAG | 1,
+         0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40},
+        {BPV1_DIRECT_RECORD_FLAG | 2,
+         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    int result = 1;
+    unsigned color;
+    for (color = 0; color < 16U; ++color) {
+        palette[((1U * 16U + color) * 3U)] =
+            (uint8_t)(color << 4);
+        palette[((2U * 16U + color) * 3U) + 2U] =
+            (uint8_t)(color << 4);
+    }
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, TEST_BPV1_V5_VERSION) ||
+        write_u16(file, 8) || write_u16(file, 4) ||
+        write_u32(file, 1) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 1) ||
+        write_u16(file, 8) || write_u16(file, 8) ||
+        write_u8(file, 0) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES +
+                         1U + sizeof payload) ||
+        write_u32(file, 1) ||
+        write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, mode_map) ||
+        fwrite(payload, 1, sizeof payload, file) != sizeof payload ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_packet_capacity(decoder) !=
+            BPV1_MAX_PALETTE_BYTES + 1U + 2U * 9U ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+        bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+        !frame ||
+        memcmp(frame->blocks, expected, sizeof expected) ||
+        bpv1_frame_render_rgb24_row(
+            &header, frame, 0, rgb24, sizeof rgb24) != BPV1_OK ||
+        memcmp(rgb24, expected_rgb24, sizeof expected_rgb24) ||
+        bpv1_frame_render_rgb565_row(
+            &header, frame, 0, rgb565, 8) != BPV1_OK ||
+        memcmp(rgb565, expected_rgb565, sizeof expected_rgb565) ||
+        bpv1_palette_build_rgb565(
+            &header, frame, palette_rgb565,
+            BPV1_MAX_PALETTE_COLORS) != BPV1_OK ||
+        bpv1_frame_render_rgb565_row_cached(
+            &header, frame, 0, palette_rgb565,
+            BPV1_MAX_PALETTE_COLORS, cached_rgb565, 8) != BPV1_OK ||
+        memcmp(cached_rgb565, expected_rgb565,
+               sizeof expected_rgb565)) {
+        fprintf(stderr, "BPV1 v5 direct RAW test failed\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_invalid_direct_raw(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t payload[9] = {
+        0, 0x01, 0x23, 0x01, 0x23, 0x01, 0x23, 0x01, 0x23
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    int status = BPV1_OK;
+    int result = 1;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, TEST_BPV1_V5_VERSION) ||
+        write_u16(file, 4) || write_u16(file, 4) ||
+        write_u32(file, 1) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 1) ||
+        write_u16(file, 8) || write_u16(file, 8) ||
+        write_u8(file, 0) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES +
+                         1U + sizeof payload) ||
+        write_u32(file, 1) ||
+        write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, 5U << 5) ||
+        fwrite(payload, 1, sizeof payload, file) != sizeof payload ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK) {
+        fprintf(stderr, "BPV1 invalid direct RAW setup failed\n");
+        goto cleanup;
+    }
+    status = bpv1_decoder_decode(decoder, &packet, &frame);
+    if (status != BPV1_ERR_DECODE) {
+        fprintf(stderr, "BPV1 invalid direct RAW was accepted\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_v6_four_modes(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t first_modes = 0xff;
+    const uint8_t first_payload[22] = {
+        0x00, 0x50,
+        0x41, 0x23, 0xaa, 0x55,
+        0x82, 0x45, 0x67, 0x1b, 0x1b, 0x1b, 0x1b,
+        0xc3, 0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40
+    };
+    const uint8_t second_modes = 0x1b;
+    const uint8_t second_payload[5] = {
+        0xf0,
+        0x00, 0x00,
+        0x04, 0x90
+    };
+    const uint8_t first_expected[4][BPV1_RECORD_BYTES] = {
+        {0, 5, 0, 0, 0, 0, 0, 0, 0},
+        {1, 2, 3, 0, 0, 0x44, 0x44, 0x11, 0x11},
+        {2, 4, 5, 6, 7, 0x1b, 0x1b, 0x1b, 0x1b},
+        {BPV1_DIRECT_RECORD_FLAG | 3,
+         0x01, 0x23, 0x40, 0x12, 0x34, 0x01, 0x23, 0x40}
+    };
+    const uint8_t second_expected[4][BPV1_RECORD_BYTES] = {
+        {0, 5, 0, 0, 0, 0, 0, 0, 0},
+        {0, 5, 0, 0, 0, 0, 0, 0, 0},
+        {0, 5, 0, 0, 0, 0, 0, 0, 0},
+        {4, 9, 0, 0, 0, 0, 0, 0, 0}
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    int frame_index;
+    int result = 1;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, TEST_BPV1_V6_VERSION) ||
+        write_u16(file, 16) || write_u16(file, 4) ||
+        write_u32(file, 2) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 2) ||
+        write_u16(file, 8) || write_u16(file, 0) ||
+        write_u8(file, 7) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES + 1U +
+                         sizeof first_payload) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, first_modes) ||
+        fwrite(first_payload, 1, sizeof first_payload, file) !=
+            sizeof first_payload ||
+        write_u8(file, 0) ||
+        write_u32(file, 1U + sizeof second_payload) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        write_u8(file, second_modes) ||
+        fwrite(second_payload, 1, sizeof second_payload, file) !=
+            sizeof second_payload ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        header.version != TEST_BPV1_V6_VERSION ||
+        header.max_pattern_dictionary != 0 ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_packet_capacity(decoder) !=
+            BPV1_MAX_PALETTE_BYTES + 1U + 4U * 9U) {
+        fprintf(stderr, "BPV1 v6 four-mode setup failed\n");
+        goto cleanup;
+    }
+    for (frame_index = 0; frame_index < 2; ++frame_index) {
+        BPV1Packet packet;
+        const BPV1Frame *frame = NULL;
+        const uint8_t *expected =
+            frame_index ? &second_expected[0][0] : &first_expected[0][0];
+        if (bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+            packet.info.mode_bytes != 1U ||
+            bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+            !frame ||
+            memcmp(frame->blocks, expected,
+                   4U * BPV1_RECORD_BYTES)) {
+            fprintf(stderr, "BPV1 v6 frame %d failed\n", frame_index);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+typedef struct {
+    uint16_t buffers[2][8U * 8U];
+    uint16_t output[8U * 24U];
+    uint16_t width;
+    uint16_t height;
+    uint16_t maximum_rows;
+    unsigned next_buffer;
+    unsigned submissions;
+    unsigned flushes;
+} TestPixelStrips;
+
+static uint16_t *acquire_test_pixel_strip(
+    void *opaque, uint16_t y, uint16_t rows
+) {
+    TestPixelStrips *strips = (TestPixelStrips *)opaque;
+    (void)y;
+    if (!strips || !rows || rows > strips->maximum_rows) return NULL;
+    return strips->buffers[strips->next_buffer++ & 1U];
+}
+
+static int submit_test_pixel_strip(
+    void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows
+) {
+    TestPixelStrips *strips = (TestPixelStrips *)opaque;
+    if (!strips || !pixels || y + rows > strips->height) return 1;
+    memcpy(
+        strips->output + (size_t)y * strips->width, pixels,
+        (size_t)rows * strips->width * sizeof(uint16_t));
+    ++strips->submissions;
+    return 0;
+}
+
+static int flush_test_pixel_strips(void *opaque) {
+    TestPixelStrips *strips = (TestPixelStrips *)opaque;
+    if (!strips) return 1;
+    ++strips->flushes;
+    return 0;
+}
+
+static uint16_t test_frame_pixel(
+    const BPV1Frame *frame, size_t pixel
+) {
+    if (frame->rgb565_rows) {
+        const size_t y = pixel / frame->width;
+        const size_t x = pixel % frame->width;
+        return frame->rgb565_rows[y][x];
+    }
+    return frame->rgb565[pixel];
+}
+
+static int test_frame_pixels_equal(
+    const BPV1Frame *frame, const uint16_t *expected, size_t pixels
+) {
+    size_t pixel;
+    if (!frame || (!frame->rgb565 && !frame->rgb565_rows))
+        return 0;
+    for (pixel = 0; pixel < pixels; ++pixel) {
+        if (test_frame_pixel(frame, pixel) != expected[pixel])
+            return 0;
+    }
+    return 1;
+}
+
+static int test_v7_pixel_motion_direct_copy(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t first_modes = 0xf0;
+    const uint8_t first_payload[4] = {0x00, 0x00, 0x01, 0x00};
+    const uint8_t second_modes = 0x10;
+    const uint8_t motion = 0xf0;
+    const uint16_t expected[4][8] = {
+        {0, 0, 0, 0, 0, 0x2800, 0x2800, 0x2800},
+        {0, 0, 0, 0, 0, 0x2800, 0x2800, 0x2800},
+        {0, 0, 0, 0, 0, 0x2800, 0x2800, 0x2800},
+        {0, 0, 0, 0, 0, 0x2800, 0x2800, 0x2800}
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    unsigned color;
+    int result = 1;
+    for (color = 0; color < BPV1_COLORS_PER_PALETTE; ++color) {
+        palette[color * 3U] =
+            (uint8_t)(color == 0U ? 0U :
+                      color == 1U ? 10U : 200U);
+    }
+    palette[BPV1_COLORS_PER_PALETTE * 3U] = 40;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_PIXEL_MOTION_VERSION) ||
+        write_u16(file, 8) || write_u16(file, 4) ||
+        write_u32(file, 2) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 2) ||
+        write_u16(file, 8) || write_u16(file, 0) ||
+        write_u8(file, 2) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES + 1U +
+                         sizeof first_payload) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, first_modes) ||
+        fwrite(first_payload, 1, sizeof first_payload, file) !=
+            sizeof first_payload ||
+        write_u8(file, 0) ||
+        write_u32(file, 2) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        write_u8(file, second_modes) ||
+        write_u8(file, motion) ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        header.version != BPV1_PIXEL_MOTION_VERSION ||
+        !(decoder = bpv1_decoder_create(&header))) {
+        fprintf(stderr, "BPV1 v7 direct pixel-motion copy failed\n");
+        goto cleanup;
+    }
+    {
+        int read_result =
+            bpv1_decoder_read_packet(decoder, file, &packet);
+        int decode_result =
+            read_result == BPV1_OK
+                ? bpv1_decoder_decode(
+                      decoder, &packet, &frame)
+                : read_result;
+        if (decode_result != BPV1_OK) {
+            fprintf(stderr, "BPV1 v7 first frame: %d\n",
+                    decode_result);
+            goto cleanup;
+        }
+        read_result =
+            bpv1_decoder_read_packet(decoder, file, &packet);
+        decode_result =
+            read_result == BPV1_OK
+                ? bpv1_decoder_decode(
+                      decoder, &packet, &frame)
+                : read_result;
+        if (decode_result != BPV1_OK || !frame ||
+            frame->blocks ||
+            (!frame->rgb565 && !frame->rgb565_rows)) {
+            fprintf(stderr, "BPV1 v7 second frame: %d\n",
+                    decode_result);
+            goto cleanup;
+        }
+    }
+    if (!test_frame_pixels_equal(
+            frame, &expected[0][0], 32U)) {
+        unsigned pixel;
+        fprintf(stderr, "BPV1 v7 direct pixels:");
+        for (pixel = 0; pixel < 32U; ++pixel)
+            fprintf(stderr, " %04x",
+                    test_frame_pixel(frame, pixel));
+        fputc('\n', stderr);
+        goto cleanup;
+    }
+    {
+        TestPixelStrips strips;
+        BPV1Header second_header;
+        memset(&strips, 0, sizeof strips);
+        strips.width = 8;
+        strips.height = 4;
+        strips.maximum_rows = 4;
+        bpv1_decoder_reset(decoder);
+        if (fseek(file, 0, SEEK_SET) ||
+            bpv1_header_read(file, &second_header) != BPV1_OK ||
+            bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+            bpv1_decoder_decode_rgb565_strips(
+                decoder, &packet, 4, acquire_test_pixel_strip,
+                submit_test_pixel_strip, flush_test_pixel_strips,
+                &strips, &frame) != BPV1_OK ||
+            bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+            bpv1_decoder_decode_rgb565_strips(
+                decoder, &packet, 4, acquire_test_pixel_strip,
+                submit_test_pixel_strip, flush_test_pixel_strips,
+                &strips, &frame) != BPV1_OK ||
+            strips.submissions != 2U || strips.flushes != 2U ||
+            memcmp(strips.output, expected, sizeof expected) ||
+            !test_frame_pixels_equal(
+                frame, &expected[0][0], 32U)) {
+            fprintf(stderr, "BPV1 v7 RGB565 strip output failed\n");
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_v7_double_eight_row_strips(void) {
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet first;
+    BPV1Packet second;
+    const BPV1Frame *frame = NULL;
+    uint8_t first_data[
+        BPV1_MAX_PALETTE_BYTES + 3U + 12U * 2U];
+    const uint8_t second_data[3] = {0, 0, 0};
+    uint16_t expected[8U * 24U];
+    TestPixelStrips strips;
+    unsigned block;
+    unsigned y;
+    int result = 1;
+    memset(&header, 0, sizeof header);
+    memset(&first, 0, sizeof first);
+    memset(&second, 0, sizeof second);
+    memset(&strips, 0, sizeof strips);
+    memset(first_data, 0, sizeof first_data);
+    header.version = BPV1_PIXEL_MOTION_VERSION;
+    header.width = 8;
+    header.height = 24;
+    header.frame_count = 2;
+    header.fps_num = 24;
+    header.fps_den = 1;
+    header.keyframe_interval = 2;
+    header.max_block_dictionary = 8;
+    header.max_pattern_dictionary = 0;
+    header.search_radius = 7;
+    header.palette_count = BPV1_PALETTE_COUNT;
+    first_data[BPV1_COLORS_PER_PALETTE * 3U] = 40;
+    memset(first_data + BPV1_MAX_PALETTE_BYTES, 0xff, 3);
+    for (block = 0; block < 12U; ++block) {
+        uint8_t *raw =
+            first_data + BPV1_MAX_PALETTE_BYTES + 3U +
+            block * 2U;
+        raw[0] = (uint8_t)(block & 1U);
+        raw[1] = 0;
+    }
+    for (y = 0; y < 24U; ++y) {
+        unsigned x;
+        for (x = 0; x < 8U; ++x)
+            expected[y * 8U + x] = x < 4U ? 0U : 0x2800U;
+    }
+    first.info.keyframe = 1;
+    first.info.frame_bytes = sizeof first_data;
+    first.info.mode_bytes = 3;
+    first.data = first_data;
+    first.size = sizeof first_data;
+    second.info.keyframe = 0;
+    second.info.frame_bytes = sizeof second_data;
+    second.info.mode_bytes = sizeof second_data;
+    second.data = second_data;
+    second.size = sizeof second_data;
+    strips.width = header.width;
+    strips.height = header.height;
+    strips.maximum_rows = 8;
+    decoder = bpv1_decoder_create(&header);
+    if (!decoder ||
+        bpv1_decoder_decode_rgb565_strips(
+            decoder, &first, 8, acquire_test_pixel_strip,
+            submit_test_pixel_strip, flush_test_pixel_strips,
+            &strips, &frame) != BPV1_OK ||
+        memcmp(strips.output, expected, sizeof expected) ||
+        bpv1_decoder_decode_rgb565_strips(
+            decoder, &second, 8, acquire_test_pixel_strip,
+            submit_test_pixel_strip, flush_test_pixel_strips,
+            &strips, &frame) != BPV1_OK ||
+        strips.next_buffer != 6U || strips.submissions != 6U ||
+        strips.flushes != 2U ||
+        memcmp(strips.output, expected, sizeof expected) ||
+        !test_frame_pixels_equal(
+            frame, expected, 8U * 24U)) {
+        fprintf(stderr, "BPV1 v7 double 8-row strips failed\n");
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    return result;
+}
+
+typedef struct {
+    FILE *file;
+    size_t refill_size;
+    size_t refill_count;
+} TestChunkedInput;
+
+static size_t test_chunked_input_read(
+    void *opaque, uint8_t *destination, size_t size
+) {
+    TestChunkedInput *input = (TestChunkedInput *)opaque;
+    size_t total = 0;
+    while (total < size) {
+        const size_t remaining = size - total;
+        const size_t chunk =
+            remaining < input->refill_size
+                ? remaining
+                : input->refill_size;
+        const size_t count =
+            fread(destination + total, 1, chunk, input->file);
+        input->refill_count++;
+        total += count;
+        if (count != chunk) break;
+    }
+    return total;
+}
+
 static int validate_file(const char *path) {
     FILE *file = fopen(path, "rb");
     BPV1Header header;
     BPV1Decoder *decoder = NULL;
     uint64_t hash = UINT64_C(1469598103934665603);
+    uint32_t maximum_frame_bytes = 0;
     uint32_t frame_index;
     int result = 1;
     if (!file) {
@@ -355,6 +890,10 @@ static int validate_file(const char *path) {
         const BPV1Frame *frame = NULL;
         size_t index;
         int status = bpv1_decoder_read_packet(decoder, file, &packet);
+        if (status == BPV1_OK &&
+            packet.info.frame_bytes > maximum_frame_bytes) {
+            maximum_frame_bytes = packet.info.frame_bytes;
+        }
         if (status == BPV1_OK)
             status = bpv1_decoder_decode(decoder, &packet, &frame);
         if (status != BPV1_OK || !frame) {
@@ -362,11 +901,21 @@ static int validate_file(const char *path) {
                     bpv1_strerror(status));
             goto cleanup;
         }
-        for (index = 0;
-             index < (size_t)frame->block_count * BPV1_RECORD_BYTES;
-             ++index) {
-            hash ^= frame->blocks[index];
-            hash *= UINT64_C(1099511628211);
+        if (frame->rgb565 || frame->rgb565_rows) {
+            for (index = 0;
+                 index < (size_t)frame->width * frame->height;
+                 ++index) {
+                hash ^= test_frame_pixel(frame, index);
+                hash *= UINT64_C(1099511628211);
+            }
+        } else {
+            for (index = 0;
+                 index < (size_t)frame->block_count *
+                             BPV1_RECORD_BYTES;
+                 ++index) {
+                hash ^= frame->blocks[index];
+                hash *= UINT64_C(1099511628211);
+            }
         }
     }
     {
@@ -378,8 +927,118 @@ static int validate_file(const char *path) {
             goto cleanup;
         }
     }
-    printf("BPV1 C validation: %ux%u, %u frames, hash %016llx\n",
+    if (header.version >= BPV1_PIXEL_MOTION_VERSION) {
+        BPV1Header stream_header;
+        BPV1Decoder *stream_decoder = NULL;
+        uint64_t stream_hash = UINT64_C(1469598103934665603);
+        if (fseek(file, 0, SEEK_SET) ||
+            bpv1_header_read(file, &stream_header) != BPV1_OK ||
+            !(stream_decoder =
+                  bpv1_decoder_create(&stream_header))) {
+            fprintf(stderr, "Cannot initialize streaming BPV1 decoder\n");
+            bpv1_decoder_destroy(stream_decoder);
+            goto cleanup;
+        }
+        for (frame_index = 0;
+             frame_index < stream_header.frame_count; ++frame_index) {
+            const BPV1Frame *stream_frame = NULL;
+            size_t pixel;
+            const int status =
+                bpv1_decoder_decode_next_rgb565_strips(
+                    stream_decoder, file, 8, NULL, NULL, NULL, NULL,
+                    &stream_frame);
+            if (status != BPV1_OK || !stream_frame ||
+                (!stream_frame->rgb565 &&
+                 !stream_frame->rgb565_rows)) {
+                fprintf(stderr, "Streaming frame %u failed: %s\n",
+                        frame_index, bpv1_strerror(status));
+                bpv1_decoder_destroy(stream_decoder);
+                goto cleanup;
+            }
+            for (pixel = 0;
+                 pixel < (size_t)stream_frame->width *
+                             stream_frame->height;
+                 ++pixel) {
+                stream_hash ^=
+                    test_frame_pixel(stream_frame, pixel);
+                stream_hash *= UINT64_C(1099511628211);
+            }
+        }
+        bpv1_decoder_destroy(stream_decoder);
+        if (stream_hash != hash) {
+            fprintf(stderr,
+                    "Contiguous/streaming checksum mismatch: "
+                    "%016llx != %016llx\n",
+                    (unsigned long long)hash,
+                    (unsigned long long)stream_hash);
+            goto cleanup;
+        }
+        {
+            BPV1Header callback_header;
+            BPV1Decoder *callback_decoder = NULL;
+            TestChunkedInput input = {file, 257U, 0U};
+            uint64_t callback_hash =
+                UINT64_C(1469598103934665603);
+            if (fseek(file, 0, SEEK_SET) ||
+                bpv1_header_read(file, &callback_header) != BPV1_OK ||
+                !(callback_decoder =
+                      bpv1_decoder_create(&callback_header))) {
+                fprintf(
+                    stderr,
+                    "Cannot initialize callback BPV1 decoder\n");
+                bpv1_decoder_destroy(callback_decoder);
+                goto cleanup;
+            }
+            for (frame_index = 0;
+                 frame_index < callback_header.frame_count;
+                 ++frame_index) {
+                const BPV1Frame *callback_frame = NULL;
+                size_t pixel;
+                const int status =
+                    bpv1_decoder_decode_next_rgb565_strips_from_input(
+                        callback_decoder,
+                        test_chunked_input_read, &input,
+                        8, NULL, NULL, NULL, NULL,
+                        &callback_frame);
+                if (status != BPV1_OK || !callback_frame ||
+                    (!callback_frame->rgb565 &&
+                     !callback_frame->rgb565_rows)) {
+                    fprintf(
+                        stderr,
+                        "Callback frame %u failed: %s\n",
+                        frame_index, bpv1_strerror(status));
+                    bpv1_decoder_destroy(callback_decoder);
+                    goto cleanup;
+                }
+                for (pixel = 0;
+                     pixel < (size_t)callback_frame->width *
+                                 callback_frame->height;
+                     ++pixel) {
+                    callback_hash ^=
+                        test_frame_pixel(callback_frame, pixel);
+                    callback_hash *= UINT64_C(1099511628211);
+                }
+            }
+            bpv1_decoder_destroy(callback_decoder);
+            if (callback_hash != hash) {
+                fprintf(
+                    stderr,
+                    "Contiguous/callback checksum mismatch: "
+                    "%016llx != %016llx\n",
+                    (unsigned long long)hash,
+                    (unsigned long long)callback_hash);
+                goto cleanup;
+            }
+            printf(
+                "BPV1 callback validation: %zu-byte refill, "
+                "%zu refills\n",
+                input.refill_size, input.refill_count);
+        }
+    }
+    printf("BPV1 C validation: %ux%u, %u frames, "
+           "max frame %u bytes, hash %016llx\n",
            header.width, header.height, header.frame_count,
+           maximum_frame_bytes,
            (unsigned long long)hash);
     result = 0;
 
@@ -475,6 +1134,11 @@ int main(int argc, char **argv) {
     if (test_audio_packet()) goto cleanup;
     if (test_active_palettes()) goto cleanup;
     if (test_adaptive_raw_records()) goto cleanup;
+    if (test_direct_raw_records()) goto cleanup;
+    if (test_invalid_direct_raw()) goto cleanup;
+    if (test_v6_four_modes() ||
+        test_v7_pixel_motion_direct_copy() ||
+        test_v7_double_eight_row_strips()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

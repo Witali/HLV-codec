@@ -20,20 +20,29 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
+    [ValidateSet("Cpu", "Auto", "Cuda")]
+    [string]$Device = "Cuda",
+
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,
+
+    [ValidateRange(1, 65535)]
+    [int]$MinGop = 12,
+
+    [ValidateRange(0.0, 1.0)]
+    [double]$SceneThreshold = 0.35,
 
     [ValidateRange(0, 1000000000)]
     [double]$Lambda = 64,
 
-    [ValidateRange(1, 8)]
-    [int]$CandidatePalettes = 3,
+    [ValidateRange(1, 64)]
+    [int]$CandidatePalettes = 8,
 
     [ValidateRange(64, 262144)]
     [int]$SampleBlocks = 32768,
 
     [ValidateRange(1, 4096)]
-    [int]$SamplesPerFrame = 16,
+    [int]$SamplesPerFrame = 256,
 
     [ValidateRange(1, 32)]
     [int]$BlockIterations = 10,
@@ -46,6 +55,8 @@ param(
 
     [bool]$ActivePalettes = $true,
 
+    [switch]$PixelMotion,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -55,7 +66,17 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
-$encoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cpuEncoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cudaEncoder = Join-Path $repo "build\msvc\bpv1enc_cuda.exe"
+$encoder = if ($Device -eq "Cpu") {
+    $cpuEncoder
+}
+elseif (Test-Path -LiteralPath $cudaEncoder) {
+    $cudaEncoder
+}
+else {
+    $cpuEncoder
+}
 
 $InputFile = [IO.Path]::GetFullPath($InputFile)
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
@@ -73,7 +94,12 @@ if (-not (Test-Path -LiteralPath $InputFile)) {
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
 }
-if (-not (Test-Path -LiteralPath $encoder)) {
+if ($Device -eq "Cuda" -and
+    -not (Test-Path -LiteralPath $cudaEncoder)) {
+    & (Join-Path $PSScriptRoot "build_bpv_cuda.ps1")
+    $encoder = $cudaEncoder
+}
+elseif (-not (Test-Path -LiteralPath $encoder)) {
     & (Join-Path $PSScriptRoot "build_bpv_msvc.ps1")
 }
 if (-not (Test-Path -LiteralPath $ffmpeg) -or
@@ -194,12 +220,15 @@ try {
         $temporaryVideo,
         $OutputFile,
         "--threads", $Threads,
+        "--device", $Device.ToLowerInvariant(),
         "--gop", $Gop,
+        "--min-gop", $MinGop,
+        "--scene-threshold",
+            $SceneThreshold.ToString("0.######", $culture),
         "--lambda", $Lambda,
         "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,
         "--max-block-dictionary", 256,
-        "--max-pattern-dictionary", 256,
         "--sample-blocks", $SampleBlocks,
         "--samples-per-frame", $SamplesPerFrame,
         "--block-iterations", $BlockIterations,
@@ -216,7 +245,10 @@ try {
     else {
         $encoderArguments += "--fixed-palettes"
     }
-    $bpvVersion = if ($ActivePalettes) { 4 } else { 3 }
+    if ($PixelMotion) {
+        $encoderArguments += "--pixel-motion"
+    }
+    $bpvVersion = if ($PixelMotion) { 7 } else { 6 }
     $paletteMode = if ($ActivePalettes) {
         "active GOP palettes"
     }
@@ -225,10 +257,11 @@ try {
     }
     Write-Host (
         "Encoding BPV1 v${bpvVersion}: ${Width}x${Height}, native FPS, " +
-        "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $Gop, " +
+        "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $MinGop..$Gop, " +
+        "scene threshold $SceneThreshold, " +
         "$paletteMode, " +
         "$CandidatePalettes candidate palettes, $SampleBlocks training " +
-        "blocks, $Threads worker threads..."
+        "blocks, $Threads worker threads, $Device device..."
     )
     & $encoder @encoderArguments
     if ($LASTEXITCODE -ne 0) {

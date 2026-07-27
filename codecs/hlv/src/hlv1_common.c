@@ -103,6 +103,100 @@ static uint32_t packet_crc32(const HLV1Packet *p) {
     return crc ^ 0xFFFFFFFFU;
 }
 
+/* v14 reference reconstruction -----------------------------------------
+ *
+ * Every decoder predicts from the same compact reconstruction used by the
+ * ESP32: Y7/U6/V6 samples plus a signed Q4 average correction for each 8x8
+ * plane block. Desktop builds keep the corrected samples expanded to eight
+ * bits, while the ESP32 stores the equivalent packed representation.
+ */
+static int v14_reference_correction(int q4, int x, int y) {
+    static const uint8_t threshold[16] = {
+         0,  8,  2, 10,
+        12,  4, 14,  6,
+         3, 11,  1,  9,
+        15,  7, 13,  5
+    };
+    int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+    int fraction = q4 - whole * 16;
+    unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
+    return whole + (threshold[phase] < fraction);
+}
+
+void hlv1_apply_v14_reference_correction_tile(
+    uint8_t *base, int stride, int origin_x, int origin_y, int8_t q4) {
+    for (int y = 0; y < 8; ++y) {
+        uint8_t *row = base + y * stride;
+        for (int x = 0; x < 8; ++x) {
+            int value = row[x] + v14_reference_correction(
+                                      q4, origin_x + x, origin_y + y);
+            row[x] = (uint8_t)HLV1_CLAMP(value, 0, 255);
+        }
+    }
+}
+
+int8_t hlv1_correct_v14_reference_tile(
+    uint8_t *quantized, int quantized_stride,
+    const uint8_t *source, int source_stride,
+    int origin_x, int origin_y) {
+    int error_sum = 0;
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x)
+            error_sum += source[y * source_stride + x] -
+                         quantized[y * quantized_stride + x];
+    int q4 = error_sum >= 0
+                 ? (error_sum + 2) / 4
+                 : -((-error_sum + 2) / 4);
+    q4 = HLV1_CLAMP(q4, -128, 127);
+    hlv1_apply_v14_reference_correction_tile(
+        quantized, quantized_stride, origin_x, origin_y, (int8_t)q4);
+    return (int8_t)q4;
+}
+
+void hlv1_quantize_v14_reference_tile(uint8_t *base, int stride,
+                                      int origin_x, int origin_y,
+                                      unsigned shift) {
+    unsigned maximum = (1U << (8U - shift)) - 1U;
+    int error_sum = 0;
+    for (int y = 0; y < 8; ++y) {
+        uint8_t *row = base + y * stride;
+        for (int x = 0; x < 8; ++x) {
+            int original = row[x];
+            unsigned code =
+                ((unsigned)original + (1U << (shift - 1U))) >> shift;
+            if (code > maximum) code = maximum;
+            int quantized = (int)(code << shift);
+            row[x] = (uint8_t)quantized;
+            error_sum += original - quantized;
+        }
+    }
+    int q4 = error_sum >= 0
+                 ? (error_sum + 2) / 4
+                 : -((-error_sum + 2) / 4);
+    hlv1_apply_v14_reference_correction_tile(
+        base, stride, origin_x, origin_y, (int8_t)q4);
+}
+
+void hlv1_frame_quantize_v14_reference_mb(HLV1Frame *frame,
+                                          int macroblock_x,
+                                          int macroblock_y) {
+    for (int y = 0; y < 16; y += 8)
+        for (int x = 0; x < 16; x += 8)
+            hlv1_quantize_v14_reference_tile(
+                frame->y + (macroblock_y + y) * frame->stride_y +
+                    macroblock_x + x,
+                frame->stride_y, macroblock_x + x, macroblock_y + y, 1);
+
+    int chroma_x = macroblock_x >> 1;
+    int chroma_y = macroblock_y >> 1;
+    hlv1_quantize_v14_reference_tile(
+        frame->u + chroma_y * frame->stride_u + chroma_x,
+        frame->stride_u, chroma_x, chroma_y, 2);
+    hlv1_quantize_v14_reference_tile(
+        frame->v + chroma_y * frame->stride_v + chroma_x,
+        frame->stride_v, chroma_x, chroma_y, 2);
+}
+
 /* --- Fixed-size container headers -------------------------------------- */
 int hlv1_header_write(FILE *file, const HLV1Header *h) {
     if (!file || !h || !h->width || !h->height || !h->fps_num || !h->fps_den)
@@ -110,7 +204,7 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     uint8_t b[HLV1_HEADER_SIZE] = {0};
     memcpy(b, HLV1_MAGIC, 4);
     unsigned version = hlv1_stream_version(h);
-    if (version < HLV1_STREAM_VERSION_1 || version > HLV1_VERSION)
+    if (version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
         return HLV1_ERR_ARGUMENT;
     if (h->flags & (uint8_t)~HLV1_FLAG_AUDIO)
         return HLV1_ERR_ARGUMENT;
@@ -147,7 +241,7 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
     if (got == 0 && feof(file)) return HLV1_EOF;
     if (got != sizeof b) return HLV1_ERR_IO;
     if (memcmp(b, HLV1_MAGIC, 4) ||
-        b[4] < HLV1_STREAM_VERSION_1 || b[4] > HLV1_VERSION ||
+        b[4] < HLV1_MIN_VERSION || b[4] > HLV1_MAX_VERSION ||
         b[22] != 16 || b[27] != 0)
         return HLV1_ERR_FORMAT;
     memset(h, 0, sizeof *h);

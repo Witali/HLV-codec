@@ -35,44 +35,35 @@ accepts pictures up to 320x240, contains only I/P pictures, and stores two
 packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
 play in the native Windows application with ordinary 8-bit YUV frames.
 
-The standard [`H.263 profile`](codecs/h263/) uses baseline H.263 at
-`176x144` QCIF and intra-only `352x288` CIF, or intra-only H.263+ at
-`256x144`, `256x192`, `320x180`, or `320x240` in either 3GP or AVI. The CIF
-profile stores a square-pixel `352x288` frame with a central `320x240` active
-area. The ESP32 performs no CIF scaling: it copies that active area to the
-panel pixel-for-pixel. The Windows Player shows the complete bordered frame.
-3GP uses optional
-[`AMR-NB audio`](codecs/amrnb/) at 8 kHz mono; AVI uses PCM S16LE mono at
-8 kHz. The encoder defaults to the hardware-verified `320x240`, 15 fps,
-1536 kbit/s intra-only profile with a 1024-kbit VBV buffer and fills the canvas
-by cropping equal margins from the source. `-FitMode Contain` retains the
-complete source with black padding instead. For CIF, both fit modes crop or pad
-the large source to 4:3 before a single anti-aliased Lanczos downscale to the
-active `320x240` area. The script pads that area to `352x288` with 16 black
-pixels on each side and 24 above and below. No SAR or DAR override is written.
-Both players use the same
-bounded-table 3GP/AVI demultiplexer and pinned PacketVideo video decoder.
+The current [`H.263 encoding profile`](codecs/h263/) uses only baseline H.263
+in AVI at the standard `176x144` QCIF or `352x288` CIF picture size. The
+encoder preserves the full source frame rate and refuses sources above the
+supported 30 fps limit instead of silently halving their rate. It crops or
+pads to 4:3 at source resolution, performs one anti-aliased Lanczos downscale
+to the complete QCIF/CIF frame, and can add PCM S16LE mono audio at 8 kHz.
+CIF remains intra-only for the bounded ESP32 memory profile. The ESP32 displays
+the central `320x240` portion of CIF without scaling; the Windows Player shows
+the complete `352x288` frame.
 
-**AVI is the preferred container for H.263 playback on the ESP32**, especially
-for CIF, long clips, and high-bitrate files. Its video and PCM audio chunks are
-read sequentially without retaining a per-frame AVI index in RAM. The 3GP
-reader must cache sample-size and chunk-offset tables at open time, leaving
-less internal memory for the compressed packet and decoded frame. Use 3GP
-primarily when AMR-NB audio or compatibility with a 3GP workflow is required.
+The decoders retain compatibility with older H.263+ custom-size and 3GP/AMR-NB
+files, but those legacy combinations are no longer encoding targets.
 
-[`BPV1 v2`](codecs/bpv/) is also available as a BPAL-derived experimental
-reference codec. It uses 4x4 blocks, 64 shared 16-color palettes, exact motion
-and block/pattern dictionaries. The package includes a bounded-memory,
+[`BPV1 v6`](codecs/bpv/) is also available as a BPAL-derived experimental
+codec. It uses 4x4 blocks, 64 shared 16-color palettes, a two-bit map of four
+block modes, one-byte exact block motion, a full-block dictionary and unified
+2/4/7/9-byte RAW records. The package includes a bounded-memory,
 eight-thread C11 encoder, automatic palette training, encoder-side
 rate-distortion selection, streaming validation, Y4M adapters and the supplied
 60-second reference measurements. The same portable C decoder is linked into
-the native Windows and ESP32 players. BPV1 carries video only; those players
-therefore use their frame timer and do not open an audio device for `.bpv1`.
+the native Windows and ESP32 players. BPV1 v6 can carry PCM_U8 mono audio;
+video-only files use the players' frame timer.
 
-## HLV-1 v0.3 development build
+## HLV v14 stable format
 
-The decoder accepts stream syntax v1 through v13. New encodes use **stream
-v13** by default.  The stable syntax now includes:
+HLV v14 is the current stable, standalone format. Encoders and players emit
+and accept **stream v14**; v1-v13 decoding is not part of the stable v14
+implementation. This keeps the decoder hot path free of legacy syntax
+branches. The stable syntax includes:
 
 - short `SKIP` and zero-residual paths;
 - 16×16 and optional four-way 8×8 motion prediction;
@@ -81,7 +72,12 @@ v13** by default.  The stable syntax now includes:
 - compact residual masks and coefficient VLC;
 - directional intra prediction;
 - strict 2/4/8-colour palette blocks;
-- byte-aligned Y6/U5/V5 literal macroblocks for bounded decode time;
+- byte-aligned Y7/U6/V6 literal macroblocks for bounded decode time;
+- normative Y7/U6/V6 reference reconstruction with separate signed Q4
+  local-average corrections for every 8×8 Y, U and V block, including
+  LITERAL blocks, shared bit-for-bit by the encoder, Windows and ESP32
+  decoders;
+- bounded packet streaming on ESP32 through one reusable 7,680-byte buffer;
 - complexity-aware RDO that trades a configurable amount of bitrate for
   lower decoder work;
 - the original simple 4×4 integer WHT reconstruction.
@@ -116,7 +112,7 @@ make test
 make sanitize
 ```
 
-`make test` covers v1-v13 round-trip, forced `FILL`/`SKIP`/split/palette/literal
+`make test` covers v14 round-trip, forced `FILL`/`SKIP`/split/palette/literal
 paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.
@@ -129,7 +125,7 @@ Build and test the desktop tools with MSVC:
 .\scripts\test_divx3.ps1
 ```
 
-Encode the approved 1080p Big Buck Bunny source to BPV1 v2 at 320x180 and its
+Encode the approved 1080p Big Buck Bunny source to BPV1 v6 at 320x180 and its
 native 24 fps. The script uses eight C GOP workers by default:
 
 ```powershell
@@ -208,19 +204,24 @@ instructions. The measured MJPEG decoder backlog and hardware acceptance
 criteria are tracked in
 [`docs/MJPEG_DECODER_OPTIMIZATION_TODO.md`](docs/MJPEG_DECODER_OPTIMIZATION_TODO.md).
 
-Create the initial Big Buck Bunny 3GP from the required 1080p MOV source:
+Create a standard CIF H.263 AVI from the required 1080p MOV source:
 
 ```powershell
-.\scripts\encode_big_buck_bunny_h263_3gp.ps1
+.\scripts\encode_big_buck_bunny_h263_avi.ps1
 ```
 
-Create an H.263 AVI with PCM S16LE audio from any source:
+Create a baseline CIF H.263 AVI with PCM S16LE audio from any source:
 
 ```powershell
-.\scripts\encode_h263_avi.ps1 -InputFile .\input.mp4
+.\scripts\encode_h263_avi.ps1 `
+    -InputFile .\input.mp4 -Profile 352x288
 ```
 
-The v13 literal/palette syntax and the decoder-cycle term used by RDO are
+The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`
+together with explicit bitrate and buffer values only for a deliberate
+CBR/VBV encode.
+
+The v14 literal/palette syntax and the decoder-cycle term used by RDO are
 described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).
 
 ## FFmpeg pipe encoding
@@ -234,7 +235,7 @@ ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
 | ./codecs/hlv/hlvenc - output.hlv --preset balanced --quality 55
 ```
 
-The checked-in Big Buck Bunny v13 profile uses only the project-approved
+The checked-in Big Buck Bunny v14 profile uses only the project-approved
 1080p MOV source, its native frame rate and four GOP workers. The previous
 audio-filter chain is replaced by one smooth, peak-detected level curve
 (`-20 dB` threshold, `1.6:1` ratio and a wide soft knee). Quiet levels are
@@ -243,7 +244,7 @@ built-in makeup so the actual source peak lands at -0.1 dBFS without a
 separate volume filter or limiter.
 
 ```powershell
-.\scripts\encode_big_buck_bunny_v13.ps1
+.\scripts\encode_big_buck_bunny_v14.ps1
 ```
 
 Use `-Fps 1..30`, `-Threads`, or `-OutputFile` to override those three output
@@ -267,8 +268,7 @@ On x86 hosts, exact SSE2 SAD and RDO paths are selected at runtime;
 check the one/four/default/SIMD-fallback equivalence. Benchmark details are in
 [`docs/ENCODER_SIMD.md`](docs/ENCODER_SIMD.md).
 
-Use older `--syntax N` values only for legacy comparisons. The default is
-`--syntax 13`.
+Stable HLV accepts `--syntax 14`; it is also the default.
 
 ## Constant and adaptive quality
 
@@ -371,7 +371,7 @@ python3 scripts/benchmark.py \
   --prefix local_5min --keep-files --resume
 ```
 
-`bpv` runs the BPV1 v2 Y4M adapters and records results as `BPV1-v2`.
+`bpv` runs the BPV1 v6 Y4M adapters and records results as `BPV1-v6`.
 Palette training keeps the normalized RGBA sequence in host memory, so begin
 with a short duration before scheduling long BPV runs. The matched-bitrate
 tool also accepts `--codecs bpv`; it searches lambda from

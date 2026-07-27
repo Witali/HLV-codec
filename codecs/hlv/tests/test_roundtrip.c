@@ -1,7 +1,7 @@
 /*
- * Bit-exact encoder/decoder regression tests for every stable syntax revision.
- * Synthetic frames isolate mode syntax, fractional motion, palette coding,
- * extended quantization, encoder cloning, and adaptive keyframe decisions.
+ * Bit-exact encoder/decoder regression tests for standalone syntax v14.
+ * Synthetic frames isolate mode syntax, motion, palette coding, extended
+ * quantization, encoder cloning, and adaptive keyframe decisions.
  */
 #include "hlv1.h"
 
@@ -107,7 +107,7 @@ static int test_version(int version) {
         if (roundtrip_one(e, d, &input, version, i)) return 1;
     }
     s = hlv1_encoder_stats(e);
-    if (version == HLV1_STREAM_VERSION_13 &&
+    if (version == HLV1_STREAM_VERSION_14 &&
         (!s->encoder_work.motion_sad_evaluations ||
          !(s->encoder_work.sad_integer_samples +
            s->encoder_work.sad_hv_samples +
@@ -127,7 +127,7 @@ static int test_version(int version) {
          !s->encoder_work.bitwriter_put_calls ||
          !s->encoder_work.bitwriter_append_calls ||
          !s->encoder_work.bitwriter_buffer_grows)) {
-        fprintf(stderr, "encoder work counters not exercised in v13\n");
+        fprintf(stderr, "encoder work counters not exercised in v14\n");
         return 1;
     }
 
@@ -301,7 +301,7 @@ static int test_extended_quant_v4(void) {
 }
 
 static int test_quality_qstep_range(void) {
-    HLV1Header h = {16,16,15,1,0,1,55,0,0,HLV1_STREAM_VERSION_3};
+    HLV1Header h = {16,16,15,1,0,1,55,0,0,HLV1_VERSION};
     HLV1Encoder *e = hlv1_encoder_create(&h, 1000.0);
     if (!e) return 1;
     if (hlv1_encoder_set_quantization(e, 1, 255) < 0 ||
@@ -377,18 +377,18 @@ static void make_palette8_frame(HLV1Frame *frame) {
         }
 }
 
-static int test_palette8_v13(void) {
-    HLV1Header h = {32,32,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_13};
+static int test_palette8_v14(void) {
+    HLV1Header h = {32,32,25,1,0,100,55,4,0,HLV1_VERSION};
     HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
     HLV1Decoder *decoder = hlv1_decoder_create(&h);
     HLV1Frame input;
     if (!encoder || !decoder || hlv1_frame_alloc(&input,32,32) < 0) return 2;
     if (hlv1_encoder_set_quantization(encoder, 1, 1) < 0) return 2;
     make_palette8_frame(&input);
-    if (roundtrip_one(encoder, decoder, &input, 13, 0)) return 1;
+    if (roundtrip_one(encoder, decoder, &input, HLV1_VERSION, 0)) return 1;
     const HLV1Stats *stats = hlv1_encoder_stats(encoder);
     if (!stats || !stats->palette_8) {
-        fprintf(stderr, "8-color PALETTE not exercised in v13\n");
+        fprintf(stderr, "8-color PALETTE not exercised in v14\n");
         return 1;
     }
     hlv1_frame_free(&input);
@@ -397,8 +397,8 @@ static int test_palette8_v13(void) {
     return 0;
 }
 
-static int test_literal_v13(void) {
-    HLV1Header h = {32,32,25,1,0,100,75,4,0,HLV1_STREAM_VERSION_13};
+static int test_literal_v14(void) {
+    HLV1Header h = {32,32,25,1,0,100,75,4,0,HLV1_VERSION};
     HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
     HLV1Decoder *decoder = hlv1_decoder_create(&h);
     HLV1Frame input;
@@ -407,10 +407,10 @@ static int test_literal_v13(void) {
         hlv1_encoder_set_decode_cycle_weight(encoder, 4.0) < 0)
         return 2;
     make_texture_frame(&input);
-    if (roundtrip_one(encoder, decoder, &input, 13, 0)) return 1;
+    if (roundtrip_one(encoder, decoder, &input, HLV1_VERSION, 0)) return 1;
     const HLV1Stats *stats = hlv1_encoder_stats(encoder);
     if (!stats || !stats->literal || !stats->estimated_decode_cycles) {
-        fprintf(stderr, "LITERAL not exercised in v13\n");
+        fprintf(stderr, "LITERAL not exercised in v14\n");
         return 1;
     }
     hlv1_frame_free(&input);
@@ -420,8 +420,8 @@ static int test_literal_v13(void) {
 }
 
 
-static int test_adaptive_gop_v12(void) {
-    HLV1Header h = {64,48,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_12};
+static int test_adaptive_gop_v14(void) {
+    HLV1Header h = {64,48,25,1,0,100,55,4,0,HLV1_VERSION};
     HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
     HLV1Decoder *decoder = hlv1_decoder_create(&h);
     HLV1Frame input;
@@ -469,7 +469,7 @@ static int test_adaptive_gop_v12(void) {
 }
 
 static int test_encoder_clone(void) {
-    HLV1Header h = {64,32,25,1,0,30,55,4,0,HLV1_STREAM_VERSION_12};
+    HLV1Header h = {64,32,25,1,0,30,55,4,0,HLV1_VERSION};
     HLV1Encoder *original = hlv1_encoder_create(&h, 1000.0);
     HLV1Frame first, second;
     if (!original || hlv1_frame_alloc(&first,64,32) < 0 ||
@@ -547,24 +547,10 @@ int main(void) {
         fprintf(stderr, "quality/qstep range test failed\n");
         return 1;
     }
-    if (test_version(HLV1_STREAM_VERSION_1) ||
-        test_version(HLV1_STREAM_VERSION_2) ||
-        test_version(HLV1_STREAM_VERSION_3) ||
-        test_version(HLV1_STREAM_VERSION_4) ||
-        test_version(HLV1_STREAM_VERSION_5) ||
-        test_version(HLV1_STREAM_VERSION_6) ||
-        test_version(HLV1_STREAM_VERSION_7) ||
-        test_version(HLV1_STREAM_VERSION_8) ||
-        test_version(HLV1_STREAM_VERSION_9) ||
-        test_version(HLV1_STREAM_VERSION_10) ||
-        test_version(HLV1_STREAM_VERSION_11) ||
-        test_version(HLV1_STREAM_VERSION_12) ||
-        test_version(HLV1_STREAM_VERSION_13) ||
-        test_split_v3() || test_extended_quant_v4() || test_odd_motion_v5() ||
-        test_half_motion_v6() || test_palette_v12() ||
-        test_palette8_v13() || test_literal_v13() ||
-        test_adaptive_gop_v12() || test_encoder_clone() ||
+    if (test_version(HLV1_STREAM_VERSION_14) ||
+        test_palette8_v14() || test_literal_v14() ||
+        test_adaptive_gop_v14() || test_encoder_clone() ||
         test_segmented_decode()) return 1;
-    puts("HLV-1 C round-trip v1-v13 including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
+    puts("HLV v14 standalone round-trip including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
     return 0;
 }

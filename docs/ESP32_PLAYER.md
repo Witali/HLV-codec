@@ -12,9 +12,10 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
-- decodes HLV-1 stream versions 1 through 13, standard AVI/MJPEG, DivX 3
+- decodes stable standalone HLV-1 v14, standard AVI/MJPEG, DivX 3
   (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
-  v1 through v5 including adaptive RAW records and active per-GOP palettes,
+  v1 through v7 including adaptive RAW records, active per-GOP palettes and
+  experimental v7 pixel motion,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
   mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
@@ -27,13 +28,15 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
   bounded strips (16 rows normally, 8 rows for compact H.263 playback),
   without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
-  stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263 and 16 KiB otherwise); HLV then
-  fills nine reusable 7680-byte packet blocks (67.5 KiB total), while MJPEG
-  and BPV use bounded maximum-frame packet buffers;
+  stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263/BPV v7 and 16 KiB otherwise); HLV then
+  streams each packet through one reusable 7,680-byte refill buffer, while MJPEG
+  and BPV v1-v6 use bounded maximum-frame packet buffers; BPV v7 instead uses
+  a fixed 16 KiB CPU1 producer ring, a 4 KiB decoder refill buffer and its
+  mode map;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
   DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
   two 320x8 strips. Other codecs use two 320x16 allocations;
-- decodes HLV, BPV or MPEG-1 frame N on CPU1 while CPU0 converts and queues
+- decodes HLV, BPV v1-v6 or MPEG-1 frame N on CPU1 while CPU0 converts and queues
   frame N-1 for the display, without copying compressed packets or frame
   payloads;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
@@ -43,27 +46,26 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 - prints decode/render timing, audio underruns and free heap to the 460800-baud
   serial console.
 
-The test build enables packed Y6/U5/V5 4:2:0 frame storage. At 320x180 the two
-packed frames and the decoder's macroblock-row work area consume 138,240 bytes,
+The test build enables packed Y7/U6/V6 4:2:0 frame storage. At 320x180 the two
+packed frames, Q4 maps and decoder macroblock-row work area consume 164,160 bytes,
 instead of 184,320 bytes for two padded 8-bit frames. The 320x180 profile pads
 internally to 320x192, preserves the official movie resolution and leaves 30
 black rows above and below the picture.
 
-The compile-time flag `kUseCompactY6U5V5` in
+The compile-time flag `kUseCompactHlvReference` in
 `firmware/esp32_2432s028_hlv_player_idf/main/player_settings.hpp` is currently
-`true`. Ordinary v1-v12 predictors remain 8-bit in the bitstream. A v13
-`LITERAL` macroblock is stored directly as packed Y6/U5/V5, while other modes
-are rounded to that precision when committed to the compact reference. This
-saves 46,080 bytes at 320x180, but the compact treatment of non-literal modes
-is intentionally not bit-exact: banding and gradual P-frame prediction drift
-are possible. Set the flag to `false` for the original 8-bit reference path.
+`true`. Stable v14 makes Y7/U6/V6 plus a separate signed Q4 local-average
+coefficient for every 8x8 Y, U and V block normative. A `LITERAL` macroblock
+carries four Y coefficients plus one U and one V coefficient. The packed and
+expanded decoders reconstruct identical samples, preventing coherent
+prediction drift. Set the flag to `false` for the expanded validation path.
 The compact path expands consecutive reference spans and display rows in
 batches; literal blocks bypass the temporary 8-bit macroblock completely.
 The application and decoder components are compiled with `-O3`.
 
 The current build sets `kEnableAudio = true` in the same settings file. Its
 4 KiB FreeRTOS audio stream is statically allocated, while DAC descriptors and
-the audio task are created only after the large decoder frames and packet pool.
+the audio task are created only after the large decoder frames and stream buffer.
 Periodic logs report queued audio bytes and underruns so starvation can be
 distinguished from a DAC failure or reset.
 
@@ -117,8 +119,8 @@ latency spikes, so the retained default remains 40 MHz.
 ## Dual-core playback mode
 
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
-build. The main task remains pinned to PRO CPU (CPU0) and owns SD reads, RGB565
-conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
+build. The main task remains pinned to PRO CPU (CPU0) and normally owns SD
+reads, RGB565 conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
 performs ordered HLV, BPV or MPEG-1 decoding. Two one-entry FreeRTOS queues
 pass a packet descriptor to CPU1 and return a frame descriptor to CPU0; pixel
 data remains in the decoder's two existing predictive frame buffers.
@@ -136,34 +138,29 @@ way and finishes rendering the preceding frame before a v4 keyframe replaces
 the active palette. Set the flag to `false` to retain the sequential
 comparison mode.
 
-## Segmented ESP32 decoder
+BPV v7 uses CPU1 differently: a dedicated 4 KiB-stack producer is the only
+task that reads its video cursor. It sends 4 KiB chunks into a fixed 16 KiB
+FreeRTOS stream buffer while CPU0 decodes and submits RGB565 strips. The ring
+is recreated on every open and destroyed before the file is closed.
+
+## Streaming ESP32 decoder
 
 The firmware uses the separate `HlvEsp32Decoder` front end. It creates the
-portable predictive decoder first and then allocates a nine-block packet
-pool from internal SRAM. Every block preferentially uses DMA-capable memory;
-if decoder fragmentation exhausts that heap, only the remaining blocks fall
-back to ordinary 8-bit internal SRAM. Its 69,120-byte capacity covers a fully
-literal 320x180 Y6/U5/V5 key frame plus one 16 kHz mono audio interval without
-requiring one equally large contiguous heap region.
-
-Packet data is read sequentially into the blocks and CRC-32 is updated during
-the read. The bit reader advances to the next block without joining or copying
-the payload. PCM at the packet tail is likewise sent to the FreeRTOS audio
-stream one contiguous span at a time. The blocks are retained for the complete
-playback session, so the frame loop performs no packet `malloc` or `free`.
-The startup log reports the actual DMA-capable block count; the ESP-IDF SD
-driver supplies its DMA-safe fallback for any ordinary internal block.
+portable predictive decoder first and then allocates one reusable 7,680-byte
+refill buffer. The CPU1 decoder requests sequential spans directly from the
+video file, updates CRC-32 as they arrive and drains the packet tail before
+returning at the next frame header. Packet size is therefore not bounded by
+heap, and the frame loop performs no packet `malloc` or `free`. The separate
+audio cursor reads PCM tails independently.
 
 The stdio layer uses a fixed 16 KiB aligned read-ahead buffer. This costs 16
 KiB of the RAM saved by compact frame storage, but combines small packet/header
 reads into longer SDSPI transactions. On the reference card it reduced average
 packet-read time from roughly 50--55 ms to 5--6 ms.
 
-The pool capacity is 69,120 bytes. A packet larger than that is rejected with
-an out-of-memory error instead of fragmenting the ESP32 heap. The ninth block
-uses 7,680 additional bytes compared with the v12 player and leaves roughly
-28 KiB free in the current 320x180 compact memory-budget estimate; confirm the
-actual minimum heap from the serial log on physical hardware.
+The stream buffer replaces the former 69,120-byte packet pool. Together with
+the 164,160-byte Y7/U6/V6+Q4 frame working set it reduces HLV's two dominant
+allocations to 171,840 bytes, leaving packet size independent of RAM.
 
 The recommended audio profile is `PCM_U8`, mono, 16 kHz. It adds 160 KB to a
 ten-second file. The DAC DMA clock uses APLL rather than frame timing, while
@@ -242,14 +239,47 @@ its aspect ratio and native frame rate preserved:
 ```
 
 For BPV1, the corresponding script uses the same approved 1080p source,
-preserves native 24 fps and writes BPV1 v5 with adaptive RAW records and
-active per-GOP palettes:
+preserves native 24 fps and writes BPV1 v6 with four 2-bit block modes,
+one-byte motion, unified RAW records and active per-GOP palettes. BPV scripts
+use the CUDA encoder by default; pass `-Device Auto` or `-Device Cpu` to an
+underlying general-purpose BPV wrapper only when CPU fallback is required:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
-    -InputFile .\out\BigBuckBunny_1080p_bpv1_v5_adaptive_lambda64_normalized_native-fps_320x180.bpv1
+    -InputFile .\out\BPV\BigBuckBunny_1080p_bpv1_v6_four-mode_lambda64_normalized_native-fps_320x180.bpv1
 ```
+
+The stable wrapper output remains v6. Pass `-PixelMotion` to
+`transcode_bpv6.ps1` for experimental v7. Its one-byte vector is measured in
+pixels. The decoder keeps one previous display-native RGB565 frame and copies
+motion pixels directly, regardless of palette boundaries. The compressed
+current frame is consumed through a fixed 4 KiB refill buffer and expands into
+two alternating eight-row SPI/DMA buffers. The 1200-byte 320x240 mode map is
+retained, but compressed-input capacity is independent of packet size. Once a
+buffer has been displayed and its rows are outside the ±7 motion window, it is
+copied in-place over the corresponding rows of the previous reference and
+reused. The RGB565 reference itself is allocated in independent eight-row
+pages so ESP32 never needs a contiguous 153.6 KiB heap block. No current RGB
+framebuffer or decoder-side color search is needed. The RGB888 active palette
+is converted once per keyframe into a 2 KiB RGB565 lookup table. RAW and block
+dictionary reconstruction then reads ready-to-display `uint16_t` values
+instead of converting every output pixel. The v7 hot path resolves four local
+colors once per block and expands packed selectors a complete four-pixel row
+at a time.
+
+The v7 timing record appends compressed-input, block reconstruction and
+reference-commit durations plus input call/byte counts to the ordinary `F`
+record. `capture-player-metrics.ps1` accepts both the legacy six-value record
+and this extended record, writes the additional columns to CSV and prints each
+BPV category separately.
+
+On the physical board, two identical 300-frame 320x240 30 fps runs with the
+CPU1 input ring averaged 98.0 and 98.3 us in the decoder's input callback,
+about 10,916 us complete decode and 19,396 and 19,384 us total work. Neither
+run had a frame gap, display skip or work interval beyond the 33,333-us frame
+period. The immediately preceding prefetch-free run averaged 6,709 us input,
+16,888 us decode and 25,614 us total work.
 
 For an ESP32-safe MPEG Program Stream:
 
@@ -265,63 +295,44 @@ with no B pictures, plus normalized MP2 mono at 32 kHz. Add
 [`MPEG1_PROFILE.md`](MPEG1_PROFILE.md) for the memory limit, validation and
 dual-core scheduling details.
 
-### Recommended H.263 container
+### H.263 encoding rule
 
-Prefer **AVI** for H.263 files intended for this ESP32 player. AVI video and
-PCM chunks are consumed sequentially through bounded buffers, and the reader
-does not retain the AVI index in RAM. This leaves more internal memory
-available for the maximum compressed packet, the CIF output frame, and decoder
-tables.
+Encode new H.263 assets only as **baseline H.263 in AVI**, using one of the two
+standard picture sizes:
 
-The 3GP reader is supported, but it caches its sample-size and chunk-offset
-tables at open time. The extra memory grows with clip length and can prevent a
-long or high-bitrate CIF file from opening even when the same H.263 video
-works in AVI. Choose 3GP when AMR-NB audio or an existing 3GP workflow is more
-important than the ESP32 memory margin.
+- QCIF: `176x144`;
+- CIF: `352x288`.
 
-For the supported 3GP/H.263 alternative with default AMR-NB audio:
+The encoder always preserves the full source frame rate. It has no half-rate
+preset and refuses a source above the supported 30 fps limit rather than
+silently dropping frames. `-FitMode Crop` fills the 4:3 frame by cropping equal
+margins; `-FitMode Contain` retains the complete picture with black padding.
+Both modes fit at the original source resolution and then perform one Lanczos
+downscale to the complete QCIF or CIF frame. CIF is intra-only for the bounded
+ESP32 decoder memory profile. The saved production default is constant-quality
+Q6; pass `-VideoQuality 0` only when an explicit CBR/VBV profile is required.
 
-```powershell
-.\scripts\encode_h263_3gp.ps1 `
-    -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.3gp
-```
-
-The default is the hardware-verified intra-only H.263+ `320x240`, 15 fps,
-1536 kbit/s profile with a 1024-kbit VBV buffer. It uses compatible RD and
-trellis encoder decisions, fills the canvas, and crops equal margins from the
-source with `-FitMode Crop`. Use `-FitMode Contain` to retain the complete
-source with black padding. `-Profile` also accepts baseline H.263 `176x144`
-and intra-only `352x288` CIF, H.263+ `256x144` and `320x180` for 16:9, or
-`256x192` and `320x240` for 4:3. For CIF, the script crops or pads the source
-to 4:3 at its original large resolution and performs one anti-aliased Lanczos
-downscale to the active `320x240` area, with accurate rounding and full chroma
-interpolation. It pads that area to `352x288` with 16 black columns on each
-side and 24 black rows above and below. No SAR or DAR override is written. The
-ESP32 discards that border and copies the active centre without scaling. All
-profiles except predictive QCIF
-are encoded intra-only (effective GOP 1), allowing the ESP32 to decode them
-with one padded YUV420 frame whose Y, U, and V planes are allocated
-separately. This avoids a single 115,200-byte allocation at 320x240.
-When the source has audio, the encoder adds AMR-NB mono at 8 kHz and
-12.2 kbit/s. Use `-NoAudio` for a silent file. Variable-rate timing, other
-audio codecs, and other dimensions are outside these profiles.
-
-For an AVI with H.263 video and PCM S16LE mono at 8 kHz:
+Create a CIF AVI with PCM S16LE mono audio at 8 kHz:
 
 ```powershell
 .\scripts\encode_h263_avi.ps1 `
     -InputFile .\out\sources\VID_20260522_181611.mp4 `
-    -OutputFile .\out\video.avi
+    -OutputFile .\out\video_cif.avi `
+    -Profile 352x288
 ```
 
 The AVI reader skips muxer timing chunks, streams video and audio through
 separate file cursors, and converts PCM16 to PCM_U8 for the DAC without
 retaining the AVI index in RAM.
 
-The complete source encoded with this default was exercised for 900 frames on
-the physical ESP32. The run measured 14.999 fps, 62.20 ms average and
-67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
+The decoder still accepts older 3GP/AMR-NB and custom-size H.263+ assets for
+backward compatibility. Those combinations are not valid targets for new
+encodes. The 3GP reader caches sample-size and chunk-offset tables, so its
+memory use also grows with clip length.
+
+The retired custom `320x240` 15 fps profile was exercised for 900 frames on
+the physical ESP32. This historical run measured 14.999 fps, 62.20 ms average
+and 67.43 ms p95 work per frame against a 66.67 ms budget. It had zero decode
 gaps, audio rebuffers, underrun samples, or silence chunks and omitted one
 display transfer.
 
@@ -336,11 +347,12 @@ punctuation.
 
 The BPV decoder stores two compact 9-byte records per 4x4 block plus bounded
 block/pattern dictionaries and a maximum-size packet buffer. At 320x180 the
-complete allocation is about 102 KiB for BPV v5 at 320x180 because the
-maximum packet uses 7 rather than 9 bytes per RAW block. It renders source
-rows directly into the two existing display DMA strips, so no 115,200-byte
-RGB565 frame is allocated. With PCM_U8 audio it uses the DAC clock; video-only
-streams use the rational ESP timer clock.
+complete core allocation is about 106 KiB. The conservative packet bound uses
+9 bytes per block because `RAW_DIRECT` supports 5–16 colors; adaptive
+one-to-four-color RAW records still use only 2/4/7 bytes in real streams. It
+renders source rows directly into the two existing display DMA strips, so no
+115,200-byte RGB565 frame is allocated. With PCM_U8 audio it uses the DAC
+clock; video-only streams use the rational ESP timer clock.
 
 The MJPEG decoder likewise does not retain a complete RGB565 frame.
 `esp_new_jpeg` emits one aligned RGB565 block at a time straight into one of
@@ -417,12 +429,26 @@ written into the card's `/HLV` directory without removing the card:
 ```
 
 The command handshake remains at 460800 baud; the verified data-transfer
-default is 2 Mbaud. The player stops video and audio, allocates one temporary
-60 KiB receive block, shows a progress bar, and verifies per-block and
-whole-file CRC32 before replacing the target. On this CH340C board an 8 MiB
-transfer sustained 111.3 KiB/s. A 2.5 Mbaud experiment timed out, so 2 Mbaud is
-the maximum retained rate; 1.5 Mbaud, 921600 and 460800 are available as
-fallbacks.
+default is 2 Mbaud. The player stops video and audio, allocates two temporary
+32 KiB receive blocks, shows a progress bar, and verifies per-block and
+whole-file CRC32 before replacing the target. Upload protocol v2 uses both
+blocks as a sliding window. The PC retains unacknowledged packets for
+Go-Back-N retransmission, while an ACK returns a credit after the corresponding
+SD write completes. `HLVWAIT` keeps the connection alive during an SD stall;
+the PC retries after two seconds and aborts after ten seconds without
+cumulative progress. On this CH340C board, CRC-verified 5.19 MB windowed
+transfers with two 32 KiB blocks sustained 122.4 KiB/s at 2 Mbaud and
+122.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
+remains the default because the combined upload pipeline prevents a meaningful
+gain. An autonomous 16 MiB SD write benchmark using 32 KiB blocks, including
+final flush, sync and close, sustained 1897 KiB/s for zeros and 1905 KiB/s for
+prefilled deterministic pseudorandom data. Therefore raw SD-card bandwidth is
+not the upload bottleneck. `HLVSDBENCH 1 <zero|random> <size-MiB>` exposes this
+diagnostic for 1--64 MiB tests and deletes its temporary file before replying.
+A 2.5 Mbaud experiment did not enter normal data reception and timed out. The
+Windows CH340 driver rejected both 4 and 5 Mbaud with device error 31 before
+the first data block. The 1.5 Mbaud, 921600 and 460800 rates remain available
+as fallbacks.
 
 The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in

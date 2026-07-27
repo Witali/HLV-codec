@@ -41,6 +41,11 @@ function main() {
       `Active palette updates: ${summary.paletteUpdates}`,
       `Frame bytes: min ${summary.minimumFrameBytes}, mean ${summary.meanFrameBytes.toFixed(2)}, max ${summary.maximumFrameBytes}`,
       `Modes: ${Object.entries(summary.modeCounts).map(([name, count]) => `${name}=${count}`).join(", ")}`,
+      `Direct colors: ${summary.rawDirectColorCounts
+        .map((count, colors) => ({ colors, count }))
+        .filter(({ count }) => count)
+        .map(({ colors, count }) => `${colors}=${count}`)
+        .join(", ") || "none"}`,
     ].join("\n") + "\n",
   );
 }

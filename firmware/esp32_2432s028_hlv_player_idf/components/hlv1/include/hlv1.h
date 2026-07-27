@@ -19,9 +19,9 @@
 extern "C" {
 #endif
 
-/* Bitstream syntax revisions accepted by the decoder.  HLV1_VERSION is the
- * newest stable syntax emitted by default; later experimental constants may
- * exist without being selected as the normative output version. */
+/* HLV v14 is a standalone format. Historical syntax constants remain named
+ * only while legacy branches are removed from the implementation; readers
+ * and writers accept v14 exclusively. */
 #define HLV1_STREAM_VERSION_1 1
 #define HLV1_STREAM_VERSION_2 2
 #define HLV1_STREAM_VERSION_3 3
@@ -35,7 +35,10 @@ extern "C" {
 #define HLV1_STREAM_VERSION_11 11
 #define HLV1_STREAM_VERSION_12 12
 #define HLV1_STREAM_VERSION_13 13
-#define HLV1_VERSION HLV1_STREAM_VERSION_13
+#define HLV1_STREAM_VERSION_14 14
+#define HLV1_MIN_VERSION HLV1_STREAM_VERSION_14
+#define HLV1_VERSION HLV1_STREAM_VERSION_14
+#define HLV1_MAX_VERSION HLV1_STREAM_VERSION_14
 
 /* Effective quantizer steps are represented as an 8-bit mantissa and a small
  * left shift.  2040 is therefore the largest stable v4+ step. */
@@ -98,7 +101,7 @@ typedef struct HLV1Header {
     uint8_t quality;         /**< Informational friendly quality setting. */
     uint8_t search_radius;   /**< Informational encoder search radius. */
     uint8_t flags;           /**< HLV1_FLAG_* sequence features. */
-    uint8_t version;         /**< Zero aliases syntax v1 for source compatibility. */
+    uint8_t version;         /**< Zero selects the current v14 syntax. */
     uint16_t audio_sample_rate; /**< Audio samples per second; zero without audio. */
     uint8_t audio_codec;     /**< HLV1_AUDIO_* value. */
     uint8_t audio_channels;  /**< Interleaved channels; PCM_U8 currently requires 1. */
@@ -153,7 +156,9 @@ typedef struct HLV1Frame {
  * the discarded local average when samples expand back to 8 bits. */
 #define HLV1_FRAME_STORAGE_CONTIGUOUS 0
 #define HLV1_FRAME_STORAGE_PLANAR 1
-#define HLV1_FRAME_STORAGE_Y6_U5_V5 2
+#define HLV1_FRAME_STORAGE_Y7_U6_V6 2
+#define HLV1_V14_LUMA_BITS 7
+#define HLV1_V14_CHROMA_BITS 6
 
 static inline uint8_t hlv1_frame_packed_sample(const uint8_t *row,
                                                 int x, unsigned bits) {
@@ -192,8 +197,9 @@ static inline void hlv1_frame_unpack_corrected_samples(
 static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->y + y * frame->stride_y;
-    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
-    int value = hlv1_frame_packed_sample(row, x, 6) +
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y7_U6_V6) return row[x];
+    int value = hlv1_frame_packed_sample(
+                    row, x, HLV1_V14_LUMA_BITS) +
                 hlv1_frame_compact_correction(
                     frame->correction_y, frame->correction_stride_y, x, y);
     return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
@@ -202,8 +208,9 @@ static inline uint8_t hlv1_frame_y_sample(const HLV1Frame *frame,
 static inline uint8_t hlv1_frame_u_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->u + y * frame->stride_u;
-    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
-    int value = hlv1_frame_packed_sample(row, x, 5) +
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y7_U6_V6) return row[x];
+    int value = hlv1_frame_packed_sample(
+                    row, x, HLV1_V14_CHROMA_BITS) +
                 hlv1_frame_compact_correction(
                     frame->correction_u, frame->correction_stride_u, x, y);
     return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
@@ -212,8 +219,9 @@ static inline uint8_t hlv1_frame_u_sample(const HLV1Frame *frame,
 static inline uint8_t hlv1_frame_v_sample(const HLV1Frame *frame,
                                            int x, int y) {
     const uint8_t *row = frame->v + y * frame->stride_v;
-    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y6_U5_V5) return row[x];
-    int value = hlv1_frame_packed_sample(row, x, 5) +
+    if (frame->storage_mode != HLV1_FRAME_STORAGE_Y7_U6_V6) return row[x];
+    int value = hlv1_frame_packed_sample(
+                    row, x, HLV1_V14_CHROMA_BITS) +
                 hlv1_frame_compact_correction(
                     frame->correction_v, frame->correction_stride_v, x, y);
     return (uint8_t)(value < 0 ? 0 : (value > 255 ? 255 : value));
@@ -374,11 +382,11 @@ const HLV1Stats *hlv1_encoder_stats(const HLV1Encoder *encoder);
 HLV1Decoder *hlv1_decoder_create(const HLV1Header *header);
 
 /**
- * Create the ESP-oriented decoder with packed Y6/U5/V5 4:2:0 reference
- * frames. Reconstruction is intentionally quantized to that precision after
- * every macroblock, trading a small amount of quality for lower RAM usage.
+ * Create the ESP-oriented decoder with packed Y7/U6/V6 4:2:0 reference
+ * frames and signed Q4 average-error coefficients for every 8x8 plane tile.
+ * Expanded and packed decoding reconstruct identical YUV samples.
  */
-HLV1Decoder *hlv1_decoder_create_y6_u5_v5(const HLV1Header *header);
+HLV1Decoder *hlv1_decoder_create_y7_u6_v6(const HLV1Header *header);
 void hlv1_decoder_destroy(HLV1Decoder *decoder);
 
 /** Decode one packet.  P-frames require a successfully decoded reference. */
@@ -391,6 +399,13 @@ int hlv1_decoder_decode(HLV1Decoder *decoder,
 int hlv1_decoder_decode_blocks(HLV1Decoder *decoder,
                                const HLV1Packet *packet,
                                const HLV1Frame **frame);
+/* Read, CRC-check and decode the next packet through one reusable buffer.
+ * The decoder consumes video bits while the refill path advances over the
+ * complete payload, so packet size is not limited by available heap. */
+int hlv1_decoder_decode_file(HLV1Decoder *decoder, FILE *file,
+                             uint8_t *buffer, size_t buffer_size,
+                             HLV1Packet *packet_info,
+                             const HLV1Frame **frame);
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *decoder);
 
 /** Map the user-facing 1..100 scale to stable v1/v2 quantizer mantissas. */

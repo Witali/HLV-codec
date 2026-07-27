@@ -66,9 +66,30 @@ uint32_t hlv1_crc32(const uint8_t *data, size_t size) {
 }
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    while (size >= 4U) {
+        crc = crc_table[(crc ^ data[0]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[1]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[2]) & 0xFFU] ^ (crc >> 8);
+        crc = crc_table[(crc ^ data[3]) & 0xFFU] ^ (crc >> 8);
+        data += 4;
+        size -= 4;
+    }
     for (size_t i = 0; i < size; ++i)
         crc = crc_table[(crc ^ data[i]) & 0xFFU] ^ (crc >> 8);
     return crc;
+}
+
+uint32_t hlv1_crc32_begin(void) {
+    crc_init();
+    return 0xFFFFFFFFU;
+}
+
+uint32_t hlv1_crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    return crc32_update(crc, data, size);
+}
+
+uint32_t hlv1_crc32_end(uint32_t crc) {
+    return crc ^ 0xFFFFFFFFU;
 }
 
 size_t hlv1_packet_payload_span(const HLV1Packet *p, size_t offset,
@@ -119,6 +140,92 @@ static uint32_t packet_crc32(const HLV1Packet *p) {
     return crc ^ 0xFFFFFFFFU;
 }
 
+static int v14_reference_correction(int q4, int x, int y) {
+    static const uint8_t threshold[16] = {
+         0,  8,  2, 10,
+        12,  4, 14,  6,
+         3, 11,  1,  9,
+        15,  7, 13,  5
+    };
+    int whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
+    int fraction = q4 - whole * 16;
+    unsigned phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
+    return whole + (threshold[phase] < fraction);
+}
+
+void hlv1_apply_v14_reference_correction_tile(
+    uint8_t *base, int stride, int origin_x, int origin_y, int8_t q4) {
+    for (int y = 0; y < 8; ++y) {
+        uint8_t *row = base + y * stride;
+        for (int x = 0; x < 8; ++x) {
+            int value = row[x] + v14_reference_correction(
+                                      q4, origin_x + x, origin_y + y);
+            row[x] = (uint8_t)HLV1_CLAMP(value, 0, 255);
+        }
+    }
+}
+
+int8_t hlv1_correct_v14_reference_tile(
+    uint8_t *quantized, int quantized_stride,
+    const uint8_t *source, int source_stride,
+    int origin_x, int origin_y) {
+    int error_sum = 0;
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x)
+            error_sum += source[y * source_stride + x] -
+                         quantized[y * quantized_stride + x];
+    int q4 = error_sum >= 0
+                 ? (error_sum + 2) / 4
+                 : -((-error_sum + 2) / 4);
+    q4 = HLV1_CLAMP(q4, -128, 127);
+    hlv1_apply_v14_reference_correction_tile(
+        quantized, quantized_stride, origin_x, origin_y, (int8_t)q4);
+    return (int8_t)q4;
+}
+
+static void quantize_v14_reference_tile(uint8_t *base, int stride,
+                                        int origin_x, int origin_y,
+                                        unsigned shift) {
+    unsigned maximum = (1U << (8U - shift)) - 1U;
+    int error_sum = 0;
+    for (int y = 0; y < 8; ++y) {
+        uint8_t *row = base + y * stride;
+        for (int x = 0; x < 8; ++x) {
+            int original = row[x];
+            unsigned code =
+                ((unsigned)original + (1U << (shift - 1U))) >> shift;
+            if (code > maximum) code = maximum;
+            int quantized = (int)(code << shift);
+            row[x] = (uint8_t)quantized;
+            error_sum += original - quantized;
+        }
+    }
+    int q4 = error_sum >= 0
+                 ? (error_sum + 2) / 4
+                 : -((-error_sum + 2) / 4);
+    hlv1_apply_v14_reference_correction_tile(
+        base, stride, origin_x, origin_y, (int8_t)q4);
+}
+
+void hlv1_frame_quantize_v14_reference_mb(HLV1Frame *frame,
+                                          int macroblock_x,
+                                          int macroblock_y) {
+    for (int y = 0; y < 16; y += 8)
+        for (int x = 0; x < 16; x += 8)
+            quantize_v14_reference_tile(
+                frame->y + (macroblock_y + y) * frame->stride_y +
+                    macroblock_x + x,
+                frame->stride_y, macroblock_x + x, macroblock_y + y, 1);
+    int chroma_x = macroblock_x >> 1;
+    int chroma_y = macroblock_y >> 1;
+    quantize_v14_reference_tile(
+        frame->u + chroma_y * frame->stride_u + chroma_x,
+        frame->stride_u, chroma_x, chroma_y, 2);
+    quantize_v14_reference_tile(
+        frame->v + chroma_y * frame->stride_v + chroma_x,
+        frame->stride_v, chroma_x, chroma_y, 2);
+}
+
 /* --- Fixed-size container headers -------------------------------------- */
 int hlv1_header_write(FILE *file, const HLV1Header *h) {
     if (!file || !h || !h->width || !h->height || !h->fps_num || !h->fps_den)
@@ -126,7 +233,7 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     uint8_t b[HLV1_HEADER_SIZE] = {0};
     memcpy(b, HLV1_MAGIC, 4);
     unsigned version = hlv1_stream_version(h);
-    if (version < HLV1_STREAM_VERSION_1 || version > HLV1_VERSION)
+    if (version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
         return HLV1_ERR_ARGUMENT;
     if (h->flags & (uint8_t)~HLV1_FLAG_AUDIO)
         return HLV1_ERR_ARGUMENT;
@@ -163,7 +270,7 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
     if (got == 0 && feof(file)) return HLV1_EOF;
     if (got != sizeof b) return HLV1_ERR_IO;
     if (memcmp(b, HLV1_MAGIC, 4) ||
-        b[4] < HLV1_STREAM_VERSION_1 || b[4] > HLV1_VERSION ||
+        b[4] < HLV1_MIN_VERSION || b[4] > HLV1_MAX_VERSION ||
         b[22] != 16 || b[27] != 0)
         return HLV1_ERR_FORMAT;
     memset(h, 0, sizeof *h);
@@ -216,12 +323,9 @@ int hlv1_packet_write(FILE *file, const HLV1Packet *p) {
     return HLV1_OK;
 }
 
-static int packet_header_read(FILE *file, HLV1Packet *p,
-                              uint32_t *expected_crc) {
-    uint8_t b[HLV1_FRAME_HEADER_SIZE];
-    size_t got = fread(b, 1, sizeof b, file);
-    if (got == 0 && feof(file)) return HLV1_EOF;
-    if (got != sizeof b) return HLV1_ERR_IO;
+int hlv1_packet_header_parse(const uint8_t b[HLV1_FRAME_HEADER_SIZE],
+                             HLV1Packet *p, uint32_t *expected_crc) {
+    if (!b || !p || !expected_crc) return HLV1_ERR_ARGUMENT;
     if (memcmp(b, HLV1_FRAME_MAGIC, 4)) return HLV1_ERR_FORMAT;
     p->frame_type = b[4];
     p->q_y = b[5];
@@ -235,6 +339,15 @@ static int packet_header_read(FILE *file, HLV1Packet *p,
         p->payload_size > (1U << 30))
         return HLV1_ERR_FORMAT;
     return HLV1_OK;
+}
+
+static int packet_header_read(FILE *file, HLV1Packet *p,
+                              uint32_t *expected_crc) {
+    uint8_t b[HLV1_FRAME_HEADER_SIZE];
+    size_t got = fread(b, 1, sizeof b, file);
+    if (got == 0 && feof(file)) return HLV1_EOF;
+    if (got != sizeof b) return HLV1_ERR_IO;
+    return hlv1_packet_header_parse(b, p, expected_crc);
 }
 
 int hlv1_packet_read(FILE *file, HLV1Packet *p) {
@@ -522,19 +635,42 @@ int hlv1_bw_finish(HLV1BitWriter *bw) {
 #define HLV1_BR_CACHE_BITS 64U
 #endif
 
+static int HLV1_BITREADER_ATTR br_load_span(HLV1BitReader *br) {
+    if (br->ptr != br->end) return 1;
+    if (br->refill) {
+        const uint8_t *data = NULL;
+        int error = HLV1_OK;
+        size_t span = br->refill(br->refill_context, &data, &error);
+        if (!span) {
+            if (error < HLV1_OK) br->error = error;
+            return 0;
+        }
+        if (!data) {
+            br->error = HLV1_ERR_BITSTREAM;
+            return 0;
+        }
+        br->ptr = data;
+        br->end = data + span;
+        return 1;
+    }
+    if (!br->packet || br->next_offset >= br->byte_limit) return 0;
+    const uint8_t *data;
+    size_t span = hlv1_packet_payload_span(
+        br->packet, br->next_offset, &data);
+    span = HLV1_MIN(span, br->byte_limit - br->next_offset);
+    if (!span) {
+        br->error = HLV1_ERR_BITSTREAM;
+        return 0;
+    }
+    br->ptr = data;
+    br->end = data + span;
+    br->next_offset += span;
+    return 1;
+}
+
 static void HLV1_BITREADER_ATTR br_refill(HLV1BitReader *br) {
     while (br->bits <= HLV1_BR_CACHE_BITS - 8U) {
-        if (br->ptr == br->end) {
-            if (!br->packet || br->next_offset >= br->byte_limit) break;
-            const uint8_t *data;
-            size_t span = hlv1_packet_payload_span(
-                br->packet, br->next_offset, &data);
-            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
-            if (!span) { br->error = HLV1_ERR_BITSTREAM; break; }
-            br->ptr = data;
-            br->end = data + span;
-            br->next_offset += span;
-        }
+        if (!br_load_span(br)) break;
         br->cache |=
             (uint64_t)(*br->ptr++) << (HLV1_BR_CACHE_BITS - 8U - br->bits);
         br->bits += 8;
@@ -554,6 +690,15 @@ void hlv1_br_init_packet(HLV1BitReader *br, const HLV1Packet *p) {
     br->packet = p;
     br->byte_limit = hlv1_packet_video_payload_size(p);
     br->bits_left = p ? p->bit_length : 0;
+    br_refill(br);
+}
+
+void hlv1_br_init_stream(HLV1BitReader *br, uint32_t valid_bits,
+                         HLV1BitReaderRefill refill, void *context) {
+    memset(br, 0, sizeof *br);
+    br->refill = refill;
+    br->refill_context = context;
+    br->bits_left = valid_bits;
     br_refill(br);
 }
 
@@ -697,22 +842,9 @@ int hlv1_br_read_bytes(HLV1BitReader *br, uint8_t *destination,
         --bytes;
     }
     while (bytes) {
-        if (br->ptr == br->end) {
-            if (!br->packet || br->next_offset >= br->byte_limit) {
-                br->error = HLV1_ERR_BITSTREAM;
-                return br->error;
-            }
-            const uint8_t *data;
-            size_t span = hlv1_packet_payload_span(
-                br->packet, br->next_offset, &data);
-            span = HLV1_MIN(span, br->byte_limit - br->next_offset);
-            if (!span) {
-                br->error = HLV1_ERR_BITSTREAM;
-                return br->error;
-            }
-            br->ptr = data;
-            br->end = data + span;
-            br->next_offset += span;
+        if (!br_load_span(br)) {
+            if (!br->error) br->error = HLV1_ERR_BITSTREAM;
+            return br->error;
         }
         size_t available = (size_t)(br->end - br->ptr);
         size_t count = HLV1_MIN(bytes, available);

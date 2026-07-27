@@ -1,7 +1,7 @@
 /* Host-side performance and correctness harness for the ESP32 compact
  * decoder. It deliberately uses the segmented packet API and the same
- * 9 x 7680-byte view as the firmware, without copying packet data while the
- * timed decoder loop is running. */
+ * 16 x 7680-byte validation view alongside the firmware's refill API,
+ * without copying packet data while the timed decoder loop is running. */
 #include "hlv1.h"
 
 #include <inttypes.h>
@@ -15,7 +15,7 @@
 #endif
 
 enum {
-    PACKET_BLOCK_COUNT = 9,
+    PACKET_BLOCK_COUNT = 16,
     PACKET_BLOCK_BYTES = 7680
 };
 
@@ -45,7 +45,7 @@ static uint64_t hash_bytes(uint64_t hash, const uint8_t *data, size_t size) {
 }
 
 static uint64_t hash_frame(uint64_t hash, const HLV1Frame *frame) {
-    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
+    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y7_U6_V6) {
         for (int y = 0; y < frame->padded_height; ++y)
             for (int x = 0; x < frame->padded_width; ++x) {
                 uint8_t sample = hlv1_frame_y_sample(frame, x, y);
@@ -109,9 +109,11 @@ static int segmented_view(const HLV1Packet *source, HLV1Packet *view,
 }
 
 static int decode_pass(const HLV1Header *header, const PacketList *list,
-                       int compute_hash, uint64_t *hash,
+                       int compact, int compute_hash, uint64_t *hash,
                        uint64_t *guard, HLV1Stats *stats) {
-    HLV1Decoder *decoder = hlv1_decoder_create_y6_u5_v5(header);
+    HLV1Decoder *decoder = compact
+                               ? hlv1_decoder_create_y7_u6_v6(header)
+                               : hlv1_decoder_create(header);
     if (!decoder) return HLV1_ERR_MEMORY;
     uint64_t local_hash = UINT64_C(14695981039346656037);
     const HLV1Frame *frame = NULL;
@@ -132,11 +134,100 @@ static int decode_pass(const HLV1Header *header, const PacketList *list,
     return result;
 }
 
+static int decode_file_pass(const char *path, uint64_t *hash) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return HLV1_ERR_IO;
+    HLV1Header header;
+    int result = hlv1_header_read(file, &header);
+    HLV1Decoder *decoder = result >= 0
+                               ? hlv1_decoder_create_y7_u6_v6(&header)
+                               : NULL;
+    if (result >= 0 && !decoder) result = HLV1_ERR_MEMORY;
+    uint8_t buffer[257];
+    uint64_t local_hash = UINT64_C(14695981039346656037);
+    while (result >= 0) {
+        const HLV1Frame *frame = NULL;
+        result = hlv1_decoder_decode_file(
+            decoder, file, buffer, sizeof buffer, NULL, &frame);
+        if (result == HLV1_EOF) {
+            result = HLV1_OK;
+            break;
+        }
+        if (result >= 0) local_hash = hash_frame(local_hash, frame);
+    }
+    if (hash) *hash = local_hash;
+    hlv1_decoder_destroy(decoder);
+    fclose(file);
+    return result;
+}
+
+static int verify_compact_expanded(const HLV1Header *header,
+                                   const PacketList *list) {
+    HLV1Decoder *compact = hlv1_decoder_create_y7_u6_v6(header);
+    HLV1Decoder *expanded = hlv1_decoder_create(header);
+    if (!compact || !expanded) {
+        hlv1_decoder_destroy(compact);
+        hlv1_decoder_destroy(expanded);
+        return HLV1_ERR_MEMORY;
+    }
+    int result = HLV1_OK;
+    for (size_t i = 0; i < list->count; ++i) {
+        HLV1Packet view;
+        uint8_t *blocks[PACKET_BLOCK_COUNT] = {0};
+        result = segmented_view(&list->packets[i], &view, blocks);
+        const HLV1Frame *packed_frame = NULL;
+        const HLV1Frame *expanded_frame = NULL;
+        if (result >= 0)
+            result = hlv1_decoder_decode_blocks(
+                compact, &view, &packed_frame);
+        if (result >= 0)
+            result = hlv1_decoder_decode(
+                expanded, &list->packets[i], &expanded_frame);
+        if (result < 0) break;
+        for (int y = 0; y < expanded_frame->padded_height; ++y)
+            for (int x = 0; x < expanded_frame->padded_width; ++x)
+                if (hlv1_frame_y_sample(packed_frame, x, y) !=
+                    expanded_frame->y[y * expanded_frame->stride_y + x]) {
+                    fprintf(stderr,
+                            "First mismatch: frame %zu Y(%d,%d): %u != %u\n",
+                            i, x, y,
+                            hlv1_frame_y_sample(packed_frame, x, y),
+                            expanded_frame->y[
+                                y * expanded_frame->stride_y + x]);
+                    result = HLV1_ERR_BITSTREAM;
+                    goto done;
+                }
+        for (int y = 0; y < expanded_frame->padded_height / 2; ++y)
+            for (int x = 0; x < expanded_frame->padded_width / 2; ++x) {
+                uint8_t packed_u = hlv1_frame_u_sample(packed_frame, x, y);
+                uint8_t expanded_u =
+                    expanded_frame->u[y * expanded_frame->stride_u + x];
+                uint8_t packed_v = hlv1_frame_v_sample(packed_frame, x, y);
+                uint8_t expanded_v =
+                    expanded_frame->v[y * expanded_frame->stride_v + x];
+                if (packed_u != expanded_u || packed_v != expanded_v) {
+                    fprintf(stderr,
+                            "First mismatch: frame %zu UV(%d,%d): "
+                            "%u/%u != %u/%u\n",
+                            i, x, y, packed_u, packed_v,
+                            expanded_u, expanded_v);
+                    result = HLV1_ERR_BITSTREAM;
+                    goto done;
+                }
+            }
+    }
+done:
+    hlv1_decoder_destroy(compact);
+    hlv1_decoder_destroy(expanded);
+    return result;
+}
+
 static size_t compact_frame_working_bytes(const HLV1Header *header) {
     size_t width = ((size_t)header->width + 15U) & ~(size_t)15U;
     size_t height = ((size_t)header->height + 15U) & ~(size_t)15U;
-    size_t packed_frame = width * 6U / 8U * height +
-                          2U * (width / 2U * 5U / 8U) * (height / 2U);
+    size_t packed_frame = width * HLV1_V14_LUMA_BITS / 8U * height +
+                          2U * (width / 2U * HLV1_V14_CHROMA_BITS / 8U) *
+                              (height / 2U);
     size_t corrections =
         width / 8U * (height / 8U) +
         2U * (width / 16U) * (height / 16U);
@@ -190,24 +281,52 @@ int main(int argc, char **argv) {
     }
     fclose(file);
     if (!list.count || maximum_packet > PACKET_BLOCK_COUNT * PACKET_BLOCK_BYTES) {
-        fprintf(stderr, "Input does not fit the ESP32 packet pool\n");
+        fprintf(stderr, "Input does not fit the segmented validation view\n");
         packet_list_free(&list);
         return 1;
     }
 
     uint64_t frame_hash = 0;
+    uint64_t expanded_hash = 0;
+    uint64_t streamed_hash = 0;
     uint64_t guard = 0;
     HLV1Stats stats = {0};
-    result = decode_pass(&header, &list, 1, &frame_hash, &guard, &stats);
+    result = decode_pass(&header, &list, 1, 1, &frame_hash, &guard, &stats);
     if (result < 0) {
         fprintf(stderr, "Verification decode: %s\n", hlv1_strerror(result));
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_pass(
+        &header, &list, 0, 1, &expanded_hash, &guard, NULL);
+    if (result < 0) {
+        fprintf(stderr, "Expanded verification decode: %s\n",
+                hlv1_strerror(result));
+        packet_list_free(&list);
+        return 1;
+    }
+    if (frame_hash != expanded_hash) {
+        verify_compact_expanded(&header, &list);
+        fprintf(stderr,
+                "Compact/expanded reconstruction mismatch: %016" PRIx64
+                " != %016" PRIx64 "\n",
+                frame_hash, expanded_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_file_pass(argv[1], &streamed_hash);
+    if (result < 0 || streamed_hash != frame_hash) {
+        fprintf(stderr,
+                "Streamed reconstruction mismatch: %s, %016" PRIx64
+                " != %016" PRIx64 "\n",
+                hlv1_strerror(result), streamed_hash, frame_hash);
         packet_list_free(&list);
         return 1;
     }
 
     double start = now_seconds();
     for (int loop = 0; loop < loops; ++loop) {
-        result = decode_pass(&header, &list, 0, NULL, &guard, NULL);
+        result = decode_pass(&header, &list, 1, 0, NULL, &guard, NULL);
         if (result < 0) break;
     }
     double elapsed = now_seconds() - start;
@@ -224,6 +343,8 @@ int main(int argc, char **argv) {
     printf("Frame storage + working rows: %zu bytes\n",
            compact_frame_working_bytes(&header));
     printf("Reconstruction hash: %016" PRIx64 "\n", frame_hash);
+    printf("Compact/expanded reconstruction: bit exact\n");
+    printf("257-byte refill reconstruction: bit exact\n");
     printf("Timed decode: %.3f s, %.1f fps, %.2f us/frame (%d loop%s)\n",
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
     if (stats.frames) {

@@ -50,7 +50,7 @@ struct HLV1Decoder {
     HLV1Frame previous;
     HLV1Frame current;
     HLV1Frame compact_current;
-    int compact_y6_u5_v5;
+    int compact_y7_u6_v6;
     int have_previous;
     HLV1_STATS_FIELD
     int mv_cols;
@@ -73,10 +73,12 @@ static int compact_frame_alloc(HLV1Frame *f, int width, int height) {
     f->height = height;
     f->padded_width = (width + 15) & ~15;
     f->padded_height = (height + 15) & ~15;
-    f->stride_y = f->padded_width * 6 / 8;
-    f->stride_u = (f->padded_width / 2) * 5 / 8;
+    f->stride_y =
+        f->padded_width * HLV1_V14_LUMA_BITS / 8;
+    f->stride_u =
+        (f->padded_width / 2) * HLV1_V14_CHROMA_BITS / 8;
     f->stride_v = f->stride_u;
-    f->storage_mode = HLV1_FRAME_STORAGE_Y6_U5_V5;
+    f->storage_mode = HLV1_FRAME_STORAGE_Y7_U6_V6;
     size_t y_size = (size_t)f->stride_y * f->padded_height;
     size_t c_size = (size_t)f->stride_u * (f->padded_height / 2);
     f->correction_stride_y = f->padded_width / 8;
@@ -128,7 +130,7 @@ static uint8_t *current_plane_ptr(HLV1Decoder *d, int plane,
         stride = f->stride_v;
         rows = 8;
     }
-    unsigned row = d->compact_y6_u5_v5
+    unsigned row = d->compact_y7_u6_v6
                        ? (unsigned)y & (unsigned)(rows - 1)
                        : (unsigned)y;
     return base + row * (unsigned)stride + x;
@@ -149,16 +151,16 @@ static int8_t compact_error_q4(int sum) {
 static void compact_store_luma16(uint8_t *dst, uint8_t *src,
                                  int error_sum[2]) {
     compact_yuv420_pack_aligned_samples(
-        dst, src, 8, COMPACT_YUV420_LUMA_BITS, &error_sum[0], src);
+        dst, src, 8, HLV1_V14_LUMA_BITS, &error_sum[0], src);
     compact_yuv420_pack_aligned_samples(
-        dst + 6, src + 8, 8, COMPACT_YUV420_LUMA_BITS,
+        dst + HLV1_V14_LUMA_BITS, src + 8, 8, HLV1_V14_LUMA_BITS,
         &error_sum[1], src + 8);
 }
 
 static void compact_store_chroma8(uint8_t *dst, uint8_t *src,
                                   int *error_sum) {
     compact_yuv420_pack_aligned_samples(
-        dst, src, 8, COMPACT_YUV420_CHROMA_BITS, error_sum, src);
+        dst, src, 8, HLV1_V14_CHROMA_BITS, error_sum, src);
 }
 
 static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
@@ -167,7 +169,7 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     int error_sum[6] = {0, 0, 0, 0, 0, 0};
     uint8_t *luma_src = unpacked->y + mb_x;
     uint8_t *luma_dst = packed->y + mb_y * packed->stride_y +
-                        mb_x * 6 / 8;
+                        mb_x * HLV1_V14_LUMA_BITS / 8;
     for (int y = 0; y < 16; ++y) {
         compact_store_luma16(
             luma_dst, luma_src, &error_sum[(y >> 3) << 1]);
@@ -177,7 +179,7 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
 
     int chroma_x = mb_x >> 1;
     int chroma_y = mb_y >> 1;
-    int chroma_byte = chroma_x * 5 / 8;
+    int chroma_byte = chroma_x * HLV1_V14_CHROMA_BITS / 8;
     uint8_t *u_src = unpacked->u + chroma_x;
     uint8_t *v_src = unpacked->v + chroma_x;
     uint8_t *u_dst = packed->u + chroma_y * packed->stride_u + chroma_byte;
@@ -210,18 +212,18 @@ static void compact_store_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
 static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     const HLV1Frame *src = &d->previous;
     HLV1Frame *dst = &d->compact_current;
-    int y_byte = mb_x * 6 / 8;
+    int y_byte = mb_x * HLV1_V14_LUMA_BITS / 8;
     const uint8_t *y_src = src->y + mb_y * src->stride_y + y_byte;
     uint8_t *y_dst = dst->y + mb_y * dst->stride_y + y_byte;
     for (int y = 0; y < 16; ++y) {
-        memcpy(y_dst, y_src, 12);
+        memcpy(y_dst, y_src, 16 * HLV1_V14_LUMA_BITS / 8);
         y_src += src->stride_y;
         y_dst += dst->stride_y;
     }
 
     int chroma_x = mb_x >> 1;
     int chroma_y = mb_y >> 1;
-    int chroma_byte = chroma_x * 5 / 8;
+    int chroma_byte = chroma_x * HLV1_V14_CHROMA_BITS / 8;
     const uint8_t *u_src =
         src->u + chroma_y * src->stride_u + chroma_byte;
     const uint8_t *v_src =
@@ -229,8 +231,8 @@ static void compact_copy_macroblock(HLV1Decoder *d, int mb_x, int mb_y) {
     uint8_t *u_dst = dst->u + chroma_y * dst->stride_u + chroma_byte;
     uint8_t *v_dst = dst->v + chroma_y * dst->stride_v + chroma_byte;
     for (int y = 0; y < 8; ++y) {
-        memcpy(u_dst, u_src, 5);
-        memcpy(v_dst, v_src, 5);
+        memcpy(u_dst, u_src, 8 * HLV1_V14_CHROMA_BITS / 8);
+        memcpy(v_dst, v_src, 8 * HLV1_V14_CHROMA_BITS / 8);
         u_src += src->stride_u;
         v_src += src->stride_v;
         u_dst += dst->stride_u;
@@ -256,25 +258,26 @@ static void compact_fill_macroblock(HLV1Decoder *d, int mb_x, int mb_y,
                                     const uint8_t means[3]) {
     HLV1Frame *packed = &d->compact_current;
     uint8_t values[3] = {means[0], means[1], means[2]};
-    uint8_t y_code = compact_quantize_code(&values[0], 2, 63);
-    uint8_t u_code = compact_quantize_code(&values[1], 3, 31);
-    uint8_t v_code = compact_quantize_code(&values[2], 3, 31);
-    uint8_t y_pattern[3] = {
-        (uint8_t)(y_code | (y_code << 6)),
-        (uint8_t)((y_code >> 2) | (y_code << 4)),
-        (uint8_t)((y_code >> 4) | (y_code << 2))
-    };
+    uint8_t y_code = compact_quantize_code(&values[0], 1, 127);
+    uint8_t u_code = compact_quantize_code(&values[1], 2, 63);
+    uint8_t v_code = compact_quantize_code(&values[2], 2, 63);
+    uint8_t y_pattern[14] = {0};
+    unsigned y_bit = 0;
+    for (int sample = 0; sample < 16; ++sample)
+        for (unsigned b = 0; b < HLV1_V14_LUMA_BITS; ++b, ++y_bit)
+            y_pattern[y_bit >> 3] |=
+                (uint8_t)(((y_code >> b) & 1U) << (y_bit & 7U));
     uint8_t *y_dst =
-        packed->y + mb_y * packed->stride_y + mb_x * 6 / 8;
+        packed->y + mb_y * packed->stride_y +
+        mb_x * HLV1_V14_LUMA_BITS / 8;
     for (int y = 0; y < 16; ++y) {
-        for (int group = 0; group < 4; ++group)
-            memcpy(y_dst + group * 3, y_pattern, sizeof y_pattern);
+        memcpy(y_dst, y_pattern, sizeof y_pattern);
         y_dst += packed->stride_y;
     }
 
     int chroma_x = mb_x >> 1;
     int chroma_y = mb_y >> 1;
-    int chroma_byte = chroma_x * 5 / 8;
+    int chroma_byte = chroma_x * HLV1_V14_CHROMA_BITS / 8;
     uint8_t codes[2] = {u_code, v_code};
     uint8_t *dst[2] = {
         packed->u + chroma_y * packed->stride_u + chroma_byte,
@@ -282,13 +285,12 @@ static void compact_fill_macroblock(HLV1Decoder *d, int mb_x, int mb_y,
     };
     for (int plane = 0; plane < 2; ++plane) {
         uint8_t code = codes[plane];
-        uint8_t pattern[5] = {
-            (uint8_t)(code | (code << 5)),
-            (uint8_t)((code >> 3) | (code << 2) | (code << 7)),
-            (uint8_t)((code >> 1) | (code << 4)),
-            (uint8_t)((code >> 4) | (code << 1) | (code << 6)),
-            (uint8_t)((code >> 2) | (code << 3))
-        };
+        uint8_t pattern[8 * HLV1_V14_CHROMA_BITS / 8] = {0};
+        unsigned bit = 0;
+        for (int sample = 0; sample < 8; ++sample)
+            for (unsigned b = 0; b < HLV1_V14_CHROMA_BITS; ++b, ++bit)
+                pattern[bit >> 3] |=
+                    (uint8_t)(((code >> b) & 1U) << (bit & 7U));
         uint8_t *row = dst[plane];
         for (int y = 0; y < 8; ++y) {
             memcpy(row, pattern, sizeof pattern);
@@ -377,7 +379,7 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
     int by = floor_div(origin_y_num, denominator);
     int fx = origin_x_num - bx * denominator;
     int fy = origin_y_num - by * denominator;
-    if (src_frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
+    if (src_frame->storage_mode == HLV1_FRAME_STORAGE_Y7_U6_V6) {
         if (!fx && !fy)
             HLV1_PRED_STAT_ADD(stats, copied_samples, (uint64_t)w * h);
         else if (!fx || !fy)
@@ -396,19 +398,19 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
             correction_base = src_frame->correction_y;
             packed_stride = src_frame->stride_y;
             correction_stride = src_frame->correction_stride_y;
-            packed_bits = 6;
+            packed_bits = HLV1_V14_LUMA_BITS;
         } else if (src_plane == HLV1_PLANE_U) {
             packed_base = src_frame->u;
             correction_base = src_frame->correction_u;
             packed_stride = src_frame->stride_u;
             correction_stride = src_frame->correction_stride_u;
-            packed_bits = 5;
+            packed_bits = HLV1_V14_CHROMA_BITS;
         } else {
             packed_base = src_frame->v;
             correction_base = src_frame->correction_v;
             packed_stride = src_frame->stride_v;
             correction_stride = src_frame->correction_stride_v;
-            packed_bits = 5;
+            packed_bits = HLV1_V14_CHROMA_BITS;
         }
         if (!fx && !fy) {
             for (int yy = 0; yy < h; ++yy) {
@@ -739,7 +741,7 @@ static int read_literal_bytes(HLV1BitReader *br, uint8_t *destination,
 
 static int read_literal_unpacked_row(HLV1BitReader *br, uint8_t *destination,
                                      int samples, unsigned sample_bits) {
-    uint8_t packed[12];
+    uint8_t packed[14];
     size_t bytes = ((size_t)samples * sample_bits + 7U) / 8U;
     int r = read_literal_bytes(br, packed, bytes);
     if (r < 0) return r;
@@ -749,57 +751,86 @@ static int read_literal_unpacked_row(HLV1BitReader *br, uint8_t *destination,
 }
 
 static int decode_literal(HLV1Decoder *d, HLV1BitReader *br,
-                          int x, int y, int *compact_output_ready) {
+                          int x, int y, int *reference_output_ready) {
     if (hlv1_br_get(br, 4) != 0 || br->error)
         return br->error ? br->error : HLV1_ERR_BITSTREAM;
     int r = HLV1_OK;
-    if (d->compact_y6_u5_v5) {
+    if (d->compact_y7_u6_v6) {
         HLV1Frame *packed = &d->compact_current;
-        int y_byte = x * 6 / 8;
+        int y_byte = x * HLV1_V14_LUMA_BITS / 8;
         uint8_t *y_dst = packed->y + y * packed->stride_y + y_byte;
         for (int yy = 0; r >= 0 && yy < 16; ++yy) {
-            r = read_literal_bytes(br, y_dst, 12);
+            r = read_literal_bytes(
+                br, y_dst, 16 * HLV1_V14_LUMA_BITS / 8);
             y_dst += packed->stride_y;
         }
         int cx = x / 2, cy = y / 2;
-        int c_byte = cx * 5 / 8;
+        int c_byte = cx * HLV1_V14_CHROMA_BITS / 8;
         uint8_t *u_dst = packed->u + cy * packed->stride_u + c_byte;
         uint8_t *v_dst = packed->v + cy * packed->stride_v + c_byte;
         for (int yy = 0; r >= 0 && yy < 8; ++yy) {
-            r = read_literal_bytes(br, u_dst, 5);
+            r = read_literal_bytes(
+                br, u_dst, 8 * HLV1_V14_CHROMA_BITS / 8);
             u_dst += packed->stride_u;
         }
         for (int yy = 0; r >= 0 && yy < 8; ++yy) {
-            r = read_literal_bytes(br, v_dst, 5);
+            r = read_literal_bytes(
+                br, v_dst, 8 * HLV1_V14_CHROMA_BITS / 8);
             v_dst += packed->stride_v;
-        }
-        if (r >= 0) {
-            int y_tile_x = x / 8;
-            int y_tile_y = y / 8;
-            for (int row = 0; row < 2; ++row)
-                memset(
-                    packed->correction_y +
-                        (y_tile_y + row) * packed->correction_stride_y +
-                        y_tile_x,
-                    0, 2);
-            int correction_index =
-                (y / 16) * packed->correction_stride_u + x / 16;
-            packed->correction_u[correction_index] = 0;
-            packed->correction_v[correction_index] = 0;
-            *compact_output_ready = 1;
         }
     } else {
         HLV1Frame *cur = &d->current;
         for (int yy = 0; r >= 0 && yy < 16; ++yy)
             r = read_literal_unpacked_row(
-                br, cur->y + (y + yy) * cur->stride_y + x, 16, 6);
+                br, cur->y + (y + yy) * cur->stride_y + x,
+                16, HLV1_V14_LUMA_BITS);
         int cx = x / 2, cy = y / 2;
         for (int yy = 0; r >= 0 && yy < 8; ++yy)
             r = read_literal_unpacked_row(
-                br, cur->u + (cy + yy) * cur->stride_u + cx, 8, 5);
+                br, cur->u + (cy + yy) * cur->stride_u + cx,
+                8, HLV1_V14_CHROMA_BITS);
         for (int yy = 0; r >= 0 && yy < 8; ++yy)
             r = read_literal_unpacked_row(
-                br, cur->v + (cy + yy) * cur->stride_v + cx, 8, 5);
+                br, cur->v + (cy + yy) * cur->stride_v + cx,
+                8, HLV1_V14_CHROMA_BITS);
+    }
+    int8_t correction[6] = {0};
+    for (int i = 0; r >= 0 && i < 6; ++i) {
+        correction[i] = (int8_t)hlv1_br_get(br, 8);
+        if (br->error) r = br->error;
+    }
+    if (r >= 0 && d->compact_y7_u6_v6) {
+        HLV1Frame *packed = &d->compact_current;
+        int y_tile_x = x / 8;
+        int y_tile_y = y / 8;
+        int index = 0;
+        for (int row = 0; row < 2; ++row)
+            for (int column = 0; column < 2; ++column)
+                packed->correction_y[
+                    (y_tile_y + row) * packed->correction_stride_y +
+                    y_tile_x + column] = correction[index++];
+        int correction_index =
+            (y / 16) * packed->correction_stride_u + x / 16;
+        packed->correction_u[correction_index] = correction[4];
+        packed->correction_v[correction_index] = correction[5];
+        *reference_output_ready = 1;
+    } else if (r >= 0) {
+        HLV1Frame *cur = &d->current;
+        int index = 0;
+        for (int tile_y = 0; tile_y < 16; tile_y += 8)
+            for (int tile_x = 0; tile_x < 16; tile_x += 8)
+                hlv1_apply_v14_reference_correction_tile(
+                    cur->y + (y + tile_y) * cur->stride_y + x + tile_x,
+                    cur->stride_y, x + tile_x, y + tile_y,
+                    correction[index++]);
+        int cx = x / 2, cy = y / 2;
+        hlv1_apply_v14_reference_correction_tile(
+            cur->u + cy * cur->stride_u + cx, cur->stride_u,
+            cx, cy, correction[4]);
+        hlv1_apply_v14_reference_correction_tile(
+            cur->v + cy * cur->stride_v + cx, cur->stride_v,
+            cx, cy, correction[5]);
+        *reference_output_ready = 1;
     }
     if (r >= 0) HLV1_STAT_ADD(d, literal_samples, 384);
     return r;
@@ -821,7 +852,7 @@ static uint8_t intra_dc_plane(HLV1Decoder *d, int plane, int stride,
                               int px, int py, int size) {
     uint32_t sum = 0;
     unsigned count = 0;
-    if (d->compact_y6_u5_v5) {
+    if (d->compact_y7_u6_v6) {
         const HLV1Frame *packed = &d->compact_current;
         if (py > 0) {
             for (int i = 0; i < size; ++i) {
@@ -868,7 +899,7 @@ static void predict_intra_plane(HLV1Decoder *d, int plane, int stride,
                    intra_dc_plane(d, plane, stride, px, py, size));
         return;
     }
-    if (d->compact_y6_u5_v5) {
+    if (d->compact_y7_u6_v6) {
         const HLV1Frame *packed = &d->compact_current;
         if (mode == HLV1_INTRA_HORIZONTAL) {
             for (int y = 0; y < size; ++y) {
@@ -1184,6 +1215,11 @@ static int get_residual_mask(HLV1BitReader *br, unsigned version,
                              int block_count, uint32_t *mask,
                              int *coeff_mode) {
     *coeff_mode = 0;
+    if (version >= HLV1_STREAM_VERSION_14) {
+        *coeff_mode = (int)hlv1_br_get(br, 1);
+        *mask = hlv1_br_get(br, (unsigned)block_count);
+        return br->error ? br->error : HLV1_OK;
+    }
     int first = (int)hlv1_br_get(br, 1);
     if (br->error) return br->error;
     int pivot = block_count - 1;
@@ -1438,15 +1474,17 @@ static int decode_optional_mb_residual(HLV1Decoder *d, HLV1BitReader *br,
 
 /* --- Public decoder lifecycle ----------------------------------------- */
 static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
-                                        int compact_y6_u5_v5) {
+                                        int compact_y7_u6_v6) {
+    unsigned version = hlv1_stream_version(header);
     if (!header || !header->width || !header->height ||
-        hlv1_stream_version(header) > HLV1_VERSION) return NULL;
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Decoder *d = (HLV1Decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     trace_decoder_heap("after state");
     d->header = *header;
-    d->compact_y6_u5_v5 = compact_y6_u5_v5;
-    if (compact_y6_u5_v5) {
+    d->compact_y7_u6_v6 = compact_y7_u6_v6;
+    if (compact_y7_u6_v6) {
         if (compact_frame_alloc(&d->previous, header->width,
                                 header->height) < 0 ||
             compact_frame_alloc(&d->compact_current, header->width,
@@ -1481,17 +1519,15 @@ static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
         }
     }
     trace_decoder_heap("after frame storage");
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        d->mv_cols = d->current.padded_width / 16;
-        size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
-        d->mv_top_x = (int16_t *)malloc(bytes);
-        d->mv_top_y = (int16_t *)malloc(bytes);
-        d->mv_cur_x = (int16_t *)malloc(bytes);
-        d->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
-            hlv1_decoder_destroy(d);
-            return NULL;
-        }
+    d->mv_cols = d->current.padded_width / 16;
+    size_t bytes = (size_t)d->mv_cols * sizeof(int16_t);
+    d->mv_top_x = (int16_t *)malloc(bytes);
+    d->mv_top_y = (int16_t *)malloc(bytes);
+    d->mv_cur_x = (int16_t *)malloc(bytes);
+    d->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!d->mv_top_x || !d->mv_top_y || !d->mv_cur_x || !d->mv_cur_y) {
+        hlv1_decoder_destroy(d);
+        return NULL;
     }
     trace_decoder_heap("after motion state");
     return d;
@@ -1501,14 +1537,14 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header) {
     return decoder_create_mode(header, 0);
 }
 
-HLV1Decoder *hlv1_decoder_create_y6_u5_v5(const HLV1Header *header) {
+HLV1Decoder *hlv1_decoder_create_y7_u6_v6(const HLV1Header *header) {
     return decoder_create_mode(header, 1);
 }
 
 void hlv1_decoder_destroy(HLV1Decoder *d) {
     if (!d) return;
     hlv1_frame_free(&d->previous);
-    if (d->compact_y6_u5_v5) {
+    if (d->compact_y7_u6_v6) {
         hlv1_frame_free(&d->compact_current);
         free(d->current.y);
         free(d->current.u);
@@ -1525,9 +1561,11 @@ void hlv1_decoder_destroy(HLV1Decoder *d) {
  * is committed as the new reference only after all syntax has validated. */
 static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  const HLV1Frame **frame,
-                                 int segmented) {
+                                 int segmented,
+                                 HLV1BitReaderRefill refill,
+                                 void *refill_context) {
     if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
-    unsigned version = hlv1_stream_version(&d->header);
+    const unsigned version = HLV1_VERSION;
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
         (version < HLV1_STREAM_VERSION_4 && p->q_shift != 0) ||
         p->bit_length > p->payload_size * 8ULL)
@@ -1537,7 +1575,9 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
     int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
 
     HLV1BitReader br;
-    if (segmented)
+    if (refill)
+        hlv1_br_init_stream(&br, p->bit_length, refill, refill_context);
+    else if (segmented)
         hlv1_br_init_packet(&br, p);
     else
         hlv1_br_init(&br, p->payload, p->payload_size, p->bit_length);
@@ -1594,7 +1634,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
             case HLV1_MODE_SKIP:
                 if (p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
-                if (d->compact_y6_u5_v5) {
+                if (d->compact_y7_u6_v6) {
                     compact_copy_macroblock(d, x, y);
                     compact_output_ready = 1;
                     HLV1_STAT_ADD(d, copied_samples, 384);
@@ -1643,7 +1683,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
                 int partition = 0;
-                if (version >= 14) {
+                if (version >= 15) {
                     int first = (int)hlv1_br_get(&br, 1);
                     if (br.error) return br.error;
                     if (first) {
@@ -1715,7 +1755,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                     (uint8_t)hlv1_br_get(&br, 8)
                 };
                 if (br.error) return br.error;
-                if (d->compact_y6_u5_v5 &&
+                if (d->compact_y7_u6_v6 &&
                     version >= HLV1_STREAM_VERSION_2) {
                     uint32_t has_residual = hlv1_br_get(&br, 1);
                     if (br.error) return br.error;
@@ -1782,8 +1822,10 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 return HLV1_ERR_BITSTREAM;
             }
             if (r < 0) return r;
-            if (d->compact_y6_u5_v5 && !compact_output_ready)
+            if (d->compact_y7_u6_v6 && !compact_output_ready)
                 compact_store_macroblock(d, x, y);
+            else if (!d->compact_y7_u6_v6 && !compact_output_ready)
+                hlv1_frame_quantize_v14_reference_mb(&d->current, x, y);
             if (p->frame_type == HLV1_FRAME_P &&
                 version >= HLV1_STREAM_VERSION_11) {
                 d->mv_cur_x[mv_column] = (int16_t)context_mvx;
@@ -1800,7 +1842,7 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
     }
     if (br.error) return br.error;
 
-    if (d->compact_y6_u5_v5) {
+    if (d->compact_y7_u6_v6) {
         HLV1Frame tmp = d->previous;
         d->previous = d->compact_current;
         d->compact_current = tmp;
@@ -1823,7 +1865,7 @@ int hlv1_decoder_decode(HLV1Decoder *d, const HLV1Packet *p,
     if (!d || !p || !frame || p->payload_blocks ||
         (!p->payload && p->payload_size))
         return HLV1_ERR_ARGUMENT;
-    return decoder_decode_packet(d, p, frame, 0);
+    return decoder_decode_packet(d, p, frame, 0, NULL, NULL);
 }
 
 int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
@@ -1833,7 +1875,73 @@ int hlv1_decoder_decode_blocks(HLV1Decoder *d, const HLV1Packet *p,
         (p->payload_size &&
          !hlv1_packet_payload_span(p, 0, &first_payload)))
         return HLV1_ERR_ARGUMENT;
-    return decoder_decode_packet(d, p, frame, 1);
+    return decoder_decode_packet(d, p, frame, 1, NULL, NULL);
+}
+
+typedef struct HLV1FileDecodeStream {
+    FILE *file;
+    uint8_t *buffer;
+    size_t buffer_size;
+    size_t remaining;
+    uint32_t crc;
+} HLV1FileDecodeStream;
+
+static size_t file_decode_refill(void *opaque, const uint8_t **data,
+                                 int *error) {
+    HLV1FileDecodeStream *stream = (HLV1FileDecodeStream *)opaque;
+    if (!stream || !data || !error || !stream->file || !stream->buffer ||
+        !stream->buffer_size) {
+        if (error) *error = HLV1_ERR_ARGUMENT;
+        return 0;
+    }
+    if (!stream->remaining) return 0;
+    size_t bytes = HLV1_MIN(stream->remaining, stream->buffer_size);
+    if (fread(stream->buffer, 1, bytes, stream->file) != bytes) {
+        *error = HLV1_ERR_IO;
+        return 0;
+    }
+    stream->crc = hlv1_crc32_update(
+        stream->crc, stream->buffer, bytes);
+    stream->remaining -= bytes;
+    *data = stream->buffer;
+    return bytes;
+}
+
+int hlv1_decoder_decode_file(HLV1Decoder *d, FILE *file,
+                             uint8_t *buffer, size_t buffer_size,
+                             HLV1Packet *packet_info,
+                             const HLV1Frame **frame) {
+    if (!d || !file || !buffer || !buffer_size || !frame)
+        return HLV1_ERR_ARGUMENT;
+    uint8_t header_bytes[HLV1_FRAME_HEADER_SIZE];
+    size_t header_size = fread(
+        header_bytes, 1, sizeof header_bytes, file);
+    if (!header_size && feof(file)) return HLV1_EOF;
+    if (header_size != sizeof header_bytes) return HLV1_ERR_IO;
+
+    HLV1Packet packet = {0};
+    uint32_t expected_crc = 0;
+    int result = hlv1_packet_header_parse(
+        header_bytes, &packet, &expected_crc);
+    if (result < 0) return result;
+    if (packet_info) *packet_info = packet;
+
+    HLV1FileDecodeStream stream = {
+        file, buffer, buffer_size, packet.payload_size, hlv1_crc32_begin()
+    };
+    result = decoder_decode_packet(
+        d, &packet, frame, 0, file_decode_refill, &stream);
+    while (stream.remaining) {
+        const uint8_t *unused = NULL;
+        int refill_error = HLV1_OK;
+        if (!file_decode_refill(&stream, &unused, &refill_error)) {
+            if (result >= 0) result = refill_error;
+            break;
+        }
+    }
+    if (result >= 0 && hlv1_crc32_end(stream.crc) != expected_crc)
+        result = HLV1_ERR_CRC;
+    return result;
 }
 
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *d) {

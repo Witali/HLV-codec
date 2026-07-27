@@ -50,6 +50,13 @@ enum {
     kDivx3MaximumPacketBytes = 96 * 1024,
     kDivx3MaximumMacroblocks = 300,
     kH263VideoReadAheadBytes = 4 * 1024,
+    kBpvVideoReadAheadBytes = 4 * 1024,
+    /* Capacity is deliberately unrelated to the maximum encoded frame. */
+    kBpvInputRingBytes = 16 * 1024,
+    kBpvInputChunkBytes = 4 * 1024,
+    kBpvInputReaderStackBytes = 4096,
+    kBpvInputStopTimeoutMs = 500,
+    kBpvInputPrerollTimeoutMs = 1000,
     kAudioStreamBytes = 4096,
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -66,12 +73,16 @@ enum {
     kDecodeWorkerStackBytes = 4096,
     kUploadBarX = 16,
     kUploadBarWidth = kScreenWidth - 2 * kUploadBarX,
-    kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER / 2,
+    kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER,
     kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2,
     kUploadBarBorder = 2,
     kUploadBarBorderColor = 0xffff,
     kUploadBarEmptyColor = 0x2104,
     kUploadBarFillColor = 0x07e0,
+    kUploadPercentScale = 2,
+    kUploadPercentFallbackScale = 1,
+    kUploadFilenameScale = 1,
+    kUploadFilenameY = kUploadBarY + kUploadBarHeight + 12,
 };
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -215,7 +226,7 @@ typedef enum VideoOpenResult {
 
 typedef struct DecodeRequest {
     VideoCodec codec;
-    const HLV1Packet *hlv_packet;
+    FILE *hlv_file;
     const BPV1Packet *bpv_packet;
     const uint8_t *divx3_packet;
     size_t divx3_packet_size;
@@ -249,6 +260,7 @@ Divx3AviInfo divx3_info = {0};
 uint8_t *divx3_packet = NULL;
 bpv_esp32_decoder_t bpv_decoder = {0};
 BPV1Header bpv_header = {0};
+uint8_t bpv_file_version = 0;
 plm_t *mpeg_video = NULL;
 plm_t *mpeg_audio = NULL;
 H2633gpDecoder *h263_decoder = NULL;
@@ -341,6 +353,12 @@ QueueHandle_t decode_request_queue = NULL;
 QueueHandle_t decode_result_queue = NULL;
 TaskHandle_t decode_task_handle = NULL;
 bool decode_in_flight = false;
+StreamBufferHandle_t bpv_input_stream = NULL;
+TaskHandle_t bpv_input_reader_task_handle = NULL;
+uint8_t *bpv_input_chunk = NULL;
+volatile bool bpv_input_stop_requested = false;
+volatile bool bpv_input_reader_done = true;
+volatile int bpv_input_reader_result = BPV1_OK;
 HLV1Frame pending_frame = {0};
 bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame = {0};
@@ -367,8 +385,15 @@ uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
+int upload_progress_percent = -1;
+int upload_progress_scale = kUploadPercentScale;
 
 int64_t microsNow() { return esp_timer_get_time(); }
+
+uint64_t bpvProfileNowMicros(void *opaque) {
+    (void)opaque;
+    return (uint64_t)microsNow();
+}
 
 int64_t millisNow() { return microsNow() / 1000; }
 
@@ -443,8 +468,8 @@ void decodeTask(void *opaque) {
                     ? HLV1_ERR_IO
                     : HLV1_OK;
         } else if (request.codec == VIDEO_CODEC_kHlv) {
-            result.result = hlv_esp32_decoder_decode(
-                &decoder, request.hlv_packet, &result.hlv_frame);
+            result.result = hlv_esp32_decoder_decode_next(
+                &decoder, request.hlv_file, &result.hlv_frame, NULL);
         } else if (request.codec == VIDEO_CODEC_kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
@@ -511,11 +536,11 @@ bool startDecodeWorker() {
     return true;
 }
 
-bool submitDecode(const HLV1Packet *packet) {
-    if (!decode_task_handle || decode_in_flight || !packet) return false;
+bool submitDecode(FILE *file) {
+    if (!decode_task_handle || decode_in_flight || !file) return false;
     DecodeRequest request = {0};
     request.codec = VIDEO_CODEC_kHlv;
-    request.hlv_packet = packet;
+    request.hlv_file = file;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -598,6 +623,122 @@ void stopDecodeWorker() {
     decode_in_flight = false;
 }
 
+void bpvInputReaderTask(void *opaque) {
+    int result = BPV1_OK;
+    (void)opaque;
+    while (!bpv_input_stop_requested) {
+        const size_t count = fread(
+            bpv_input_chunk, 1, kBpvInputChunkBytes, video_file);
+        size_t sent = 0;
+        while (sent < count && !bpv_input_stop_requested) {
+            sent += xStreamBufferSend(
+                bpv_input_stream, bpv_input_chunk + sent,
+                count - sent, pdMS_TO_TICKS(20));
+        }
+        if (bpv_input_stop_requested) break;
+        if (count != kBpvInputChunkBytes) {
+            result = ferror(video_file) ? BPV1_ERR_IO : BPV1_EOF;
+            break;
+        }
+    }
+    bpv_input_reader_result = result;
+    bpv_input_reader_done = true;
+    bpv_input_reader_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void stopBpvInputPrefetch() {
+    if (!bpv_input_stream && !bpv_input_chunk &&
+        !bpv_input_reader_task_handle) {
+        return;
+    }
+    bpv_input_stop_requested = true;
+    const int64_t deadline =
+        millisNow() + kBpvInputStopTimeoutMs;
+    while (!bpv_input_reader_done && millisNow() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!bpv_input_reader_done && bpv_input_reader_task_handle) {
+        ESP_LOGW(kTag, "BPV input reader stop timed out; deleting task");
+        vTaskDelete(bpv_input_reader_task_handle);
+        bpv_input_reader_task_handle = NULL;
+        bpv_input_reader_done = true;
+    }
+    if (bpv_input_stream) {
+        vStreamBufferDelete(bpv_input_stream);
+        bpv_input_stream = NULL;
+    }
+    heap_caps_free(bpv_input_chunk);
+    bpv_input_chunk = NULL;
+    bpv_input_reader_result = BPV1_OK;
+}
+
+bool startBpvInputPrefetch() {
+    size_t preroll_bytes;
+    int64_t deadline;
+    size_t prefetched;
+
+    if (!video_file || bpv_input_stream ||
+        bpv_input_reader_task_handle) {
+        return false;
+    }
+    bpv_input_stream = xStreamBufferCreate(kBpvInputRingBytes, 1);
+    bpv_input_chunk = (uint8_t *)heap_caps_malloc(
+        kBpvInputChunkBytes, MALLOC_CAP_8BIT);
+    if (!bpv_input_stream || !bpv_input_chunk) {
+        stopBpvInputPrefetch();
+        return false;
+    }
+    bpv_input_stop_requested = false;
+    bpv_input_reader_done = false;
+    bpv_input_reader_result = BPV1_OK;
+    if (xTaskCreatePinnedToCore(
+            bpvInputReaderTask, "bpv-input-read",
+            kBpvInputReaderStackBytes, NULL, 2,
+            &bpv_input_reader_task_handle, 1) != pdPASS) {
+        bpv_input_reader_done = true;
+        stopBpvInputPrefetch();
+        return false;
+    }
+    preroll_bytes = kBpvInputRingBytes / 2;
+    deadline = millisNow() + kBpvInputPrerollTimeoutMs;
+    while (xStreamBufferBytesAvailable(bpv_input_stream) <
+               preroll_bytes &&
+           !bpv_input_reader_done && millisNow() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    prefetched = xStreamBufferBytesAvailable(bpv_input_stream);
+    if (!prefetched &&
+        (bpv_input_reader_done || millisNow() >= deadline)) {
+        stopBpvInputPrefetch();
+        return false;
+    }
+    ESP_LOGI(
+        kTag,
+        "BPV input: fixed %u-byte ring, %u-byte refill, "
+        "%u bytes prefetched, CPU1 reader",
+        (unsigned)kBpvInputRingBytes,
+        (unsigned)kBpvInputChunkBytes,
+        (unsigned)prefetched);
+    return true;
+}
+
+size_t readBpvPrefetchedInput(
+    void *opaque, uint8_t *destination, size_t size) {
+    size_t received = 0;
+    (void)opaque;
+    while (received < size && bpv_input_stream) {
+        received += xStreamBufferReceive(
+            bpv_input_stream, destination + received,
+            size - received, pdMS_TO_TICKS(20));
+        if (received < size && bpv_input_reader_done &&
+            !xStreamBufferBytesAvailable(bpv_input_stream)) {
+            break;
+        }
+    }
+    return received;
+}
+
 int clamp8(int value) {
     return value < 0 ? 0 : value > 255 ? 255 : value;
 }
@@ -653,17 +794,17 @@ void convertNativeRow(const HLV1Frame *frame, int source_y,
     const uint8_t *y_row = frame->y + source_y * frame->stride_y;
     const uint8_t *u_row = frame->u + chroma_y * frame->stride_u;
     const uint8_t *v_row = frame->v + chroma_y * frame->stride_v;
-    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y6_U5_V5) {
+    if (frame->storage_mode == HLV1_FRAME_STORAGE_Y7_U6_V6) {
         hlv1_frame_unpack_corrected_samples(
-            y_row, 0, source_y, 6,
+            y_row, 0, source_y, HLV1_V14_LUMA_BITS,
             frame->correction_y, frame->correction_stride_y,
             native_y_row, frame->width);
         hlv1_frame_unpack_corrected_samples(
-            u_row, 0, chroma_y, 5,
+            u_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
             frame->correction_u, frame->correction_stride_u,
             native_u_row, (frame->width + 1) / 2);
         hlv1_frame_unpack_corrected_samples(
-            v_row, 0, chroma_y, 5,
+            v_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
             frame->correction_v, frame->correction_stride_v,
             native_v_row, (frame->width + 1) / 2);
         y_row = native_y_row;
@@ -713,26 +854,33 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
     }
 }
 
-void drawStatusTitle(const char *title) {
-    if (!title || !*title) return;
-    const size_t length = MIN(strlen(title), 52);
-    const int available_rows = cyd_display_rows_per_transfer(&display);
-    const int scale =
-        length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
+bool drawStatusText(const char *text, int y, int scale) {
+    size_t maximum_length;
+    size_t length;
     const int glyph_advance = 6 * scale;
-    const int width =
-        (int)(length) * glyph_advance - scale;
-    const int height = 7 * scale;
-    uint16_t *pixels = cyd_display_acquire_buffer(&display);
-    if (!pixels || width <= 0 || width > kScreenWidth ||
-        height > available_rows) {
-        return;
-    }
-    fillU16(pixels, width * height, 0x0000);
+    int width;
+    int height;
+    uint16_t *pixels;
+    int text_x;
 
+    if (!text || !*text || scale < 1) return false;
+    maximum_length =
+        (size_t)((kScreenWidth + scale) / (6 * scale));
+    length = MIN(strlen(text), maximum_length);
+    width = (int)(length) * glyph_advance - scale;
+    height = 7 * scale;
+    pixels = cyd_display_acquire_buffer(&display);
+    if (!pixels || width <= 0 || width > kScreenWidth ||
+        height > cyd_display_rows_per_transfer(&display) ||
+        y < 0 || y + height > kScreenHeight) {
+        return false;
+    }
+    fillU16(pixels, kScreenWidth * height, 0x0000);
+
+    text_x = (kScreenWidth - width) / 2;
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
-            (unsigned char)(title[index]);
+            (unsigned char)(text[index]);
         if (character < 0x20 || character > 0x7e) character = '?';
         const uint8_t *columns = kStatusFont[character - 0x20];
         const int glyph_x = (int)(index) * glyph_advance;
@@ -741,18 +889,86 @@ void drawStatusTitle(const char *title) {
                 if (!(columns[source_x] & (1U << source_y))) continue;
                 for (int dy = 0; dy < scale; ++dy) {
                     for (int dx = 0; dx < scale; ++dx) {
-                        pixels[(source_y * scale + dy) * width +
-                               glyph_x + source_x * scale + dx] =
+                        pixels[(source_y * scale + dy) * kScreenWidth +
+                               text_x + glyph_x +
+                               source_x * scale + dx] =
                             0xffff;
                     }
                 }
             }
         }
     }
-    const int x = (kScreenWidth - width) / 2;
-    const int y = (kScreenHeight - height) / 2;
-    if (cyd_display_draw_bitmap(
-            &display, x, y, width, height, pixels) == ESP_OK) {
+    return cyd_display_draw_bitmap(
+               &display, 0, y, kScreenWidth, height, pixels) == ESP_OK;
+}
+
+static void format_upload_value(
+    char *output, size_t output_bytes,
+    uint32_t bytes, uint32_t divisor) {
+    const uint64_t hundredths =
+        ((uint64_t)bytes * 100U + divisor / 2U) / divisor;
+    if (hundredths >= 10000U) {
+        const unsigned rounded = (unsigned)(
+            ((uint64_t)bytes + divisor / 2U) / divisor);
+        snprintf(output, output_bytes, "%u", rounded);
+    } else if (hundredths >= 1000U) {
+        const uint64_t tenths =
+            ((uint64_t)bytes * 10U + divisor / 2U) / divisor;
+        if (tenths >= 1000U) {
+            const unsigned rounded = (unsigned)(
+                ((uint64_t)bytes + divisor / 2U) / divisor);
+            snprintf(output, output_bytes, "%u", rounded);
+        } else {
+            snprintf(output, output_bytes, "%u.%u",
+                     (unsigned)(tenths / 10U),
+                     (unsigned)(tenths % 10U));
+        }
+    } else {
+        snprintf(output, output_bytes, "%u.%02u",
+                 (unsigned)(hundredths / 100U),
+                 (unsigned)(hundredths % 100U));
+    }
+}
+
+void formatUploadProgress(
+    char *text, size_t text_bytes, unsigned percent,
+    uint32_t received, uint32_t total) {
+    uint32_t divisor;
+    const char *unit;
+    char completed_value[24] = {0};
+    char total_value[24] = {0};
+
+    if (total < 999500U) {
+        divisor = 1000U;
+        unit = "KB";
+    } else if (total < 999500000U) {
+        divisor = 1000U * 1000U;
+        unit = "MB";
+    } else {
+        divisor = 1000U * 1000U * 1000U;
+        unit = "GB";
+    }
+    format_upload_value(
+        completed_value, sizeof completed_value, received, divisor);
+    format_upload_value(
+        total_value, sizeof total_value, total, divisor);
+    snprintf(text, text_bytes, "%u%% %s/%s%s", percent,
+             completed_value, total_value, unit);
+}
+
+void drawStatusTitle(const char *title) {
+    size_t length;
+    int available_rows;
+    int scale;
+    int height;
+    if (!title || !*title) return;
+    length = MIN(strlen(title), 52);
+    available_rows = cyd_display_rows_per_transfer(&display);
+    scale =
+        length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
+    height = 7 * scale;
+    if (drawStatusText(
+            title, (kScreenHeight - height) / 2, scale)) {
         cyd_display_flush(&display);
     }
 }
@@ -774,8 +990,24 @@ void showStatus(const char *title, const char *detail) {
     }
 }
 
-void beginUploadProgress() {
+void beginUploadProgress(const char *filename, uint32_t total) {
+    char progress_text[48] = {0};
+    if (cyd_display_set_double_buffered(&display, true) == ESP_OK) {
+        upload_progress_scale = kUploadPercentScale;
+    } else {
+        upload_progress_scale = kUploadPercentFallbackScale;
+        ESP_LOGW(
+            kTag,
+            "Could not allocate the second LCD DMA buffer for "
+            "large upload progress text");
+    }
     cyd_display_clear(&display, 0x0000);
+    formatUploadProgress(
+        progress_text, sizeof progress_text, 0U, 0U, total);
+    drawStatusText(
+        progress_text,
+        kUploadBarY - 7 * upload_progress_scale - 12,
+        upload_progress_scale);
     uint16_t *pixels = cyd_display_acquire_buffer(&display);
     if (!pixels) return;
     for (int y = 0; y < kUploadBarHeight; ++y) {
@@ -794,28 +1026,54 @@ void beginUploadProgress() {
             kUploadBarHeight, pixels) != ESP_OK) {
         ESP_LOGE(kTag, "Could not draw UART upload progress bar");
     }
+    drawStatusText(
+        filename, kUploadFilenameY, kUploadFilenameScale);
+    cyd_display_flush(&display);
     upload_progress_pixels = 0;
+    upload_progress_percent = 0;
 }
 
 void updateUploadProgress(uint32_t received, uint32_t total, void *opaque) {
     (void)opaque;
     if (!total) return;
     const int inner_width = kUploadBarWidth - 2 * kUploadBarBorder;
-    const int filled = (int)(
-        ((uint64_t)(received) * inner_width) / total);
-    if (filled <= upload_progress_pixels) return;
+    const uint64_t proportional =
+        ((uint64_t)(received) * inner_width) / total;
+    const int filled = (int)MIN(
+        (uint64_t)inner_width, proportional);
+    if (filled > upload_progress_pixels) {
+        const int changed = filled - upload_progress_pixels;
+        const int x = kUploadBarX + kUploadBarBorder +
+                      upload_progress_pixels;
+        uint16_t *pixels = cyd_display_acquire_buffer(&display);
+        if (pixels) {
+            const int inner_height =
+                kUploadBarHeight - 2 * kUploadBarBorder;
+            fillU16(
+                pixels, changed * inner_height,
+                kUploadBarFillColor);
+            if (cyd_display_draw_bitmap(
+                    &display, x,
+                    kUploadBarY + kUploadBarBorder,
+                    changed, inner_height, pixels) == ESP_OK) {
+                upload_progress_pixels = filled;
+            }
+        }
+    }
 
-    const int changed = filled - upload_progress_pixels;
-    const int x = kUploadBarX + kUploadBarBorder +
-                  upload_progress_pixels;
-    uint16_t *pixels = cyd_display_acquire_buffer(&display);
-    if (!pixels) return;
-    const int inner_height = kUploadBarHeight - 2 * kUploadBarBorder;
-    fillU16(pixels, changed * inner_height, kUploadBarFillColor);
-    if (cyd_display_draw_bitmap(
-            &display, x, kUploadBarY + kUploadBarBorder,
-            changed, inner_height, pixels) == ESP_OK) {
-        upload_progress_pixels = filled;
+    const unsigned percent = (unsigned)MIN(
+        (uint64_t)100U,
+        ((uint64_t)(received) * 100U) / total);
+    if ((int)percent != upload_progress_percent) {
+        char text[48] = {0};
+        formatUploadProgress(
+            text, sizeof text, percent, received, total);
+        if (drawStatusText(
+                text,
+                kUploadBarY - 7 * upload_progress_scale - 12,
+                upload_progress_scale)) {
+            upload_progress_percent = (int)percent;
+        }
     }
 }
 
@@ -833,7 +1091,7 @@ bool mountSdCard() {
         bus.data5_io_num = GPIO_NUM_NC;
         bus.data6_io_num = GPIO_NUM_NC;
         bus.data7_io_num = GPIO_NUM_NC;
-        bus.max_transfer_sz = HLV_ESP32_PACKET_BLOCK_BYTES;
+        bus.max_transfer_sz = HLV_ESP32_STREAM_BUFFER_BYTES;
         const esp_err_t bus_result =
             spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
         if (bus_result != ESP_OK) {
@@ -1478,6 +1736,7 @@ void startAudio() {
 void closeVideo() {
     endH263RowPipeline();
     stopDecodeWorker();
+    stopBpvInputPrefetch();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
     pending_divx3_frame = (Divx3Frame){0};
@@ -1625,6 +1884,7 @@ SelectionReadResult readSelectedVideoPath() {
 }
 
 VideoOpenResult openVideoCandidate(const char *path) {
+    bpv_file_version = 0;
     errno = 0;
     video_file = fopen(path, "rb");
     if (!video_file) {
@@ -1647,6 +1907,7 @@ VideoOpenResult openVideoCandidate(const char *path) {
     } else if (signature_size >= 4 &&
                !memcmp(signature, "BPV1", 4)) {
         video_codec = VIDEO_CODEC_kBpv;
+        if (signature_size >= 5) bpv_file_version = signature[4];
     } else if (signature_size == sizeof signature &&
                !memcmp(signature, "RIFF", 4) &&
                !memcmp(signature + 8, "AVI ", 4)) {
@@ -1763,7 +2024,9 @@ bool openVideo() {
     }
     const bool use_double_display_buffer =
         video_codec != VIDEO_CODEC_kH263 &&
-        video_codec != VIDEO_CODEC_kDivx3;
+        video_codec != VIDEO_CODEC_kDivx3 &&
+        !(video_codec == VIDEO_CODEC_kBpv &&
+          bpv_file_version >= BPV1_PIXEL_MOTION_VERSION);
     if (cyd_display_set_double_buffered(
             &display, use_double_display_buffer) != ESP_OK) {
         showStatus("Not enough RAM", "display buffer allocation failed");
@@ -1777,7 +2040,11 @@ bool openVideo() {
                    ? kDivx3VideoReadAheadBytes
                    : (video_codec == VIDEO_CODEC_kH263
                           ? kH263VideoReadAheadBytes
-                          : kVideoReadAheadBytes));
+                          : (video_codec == VIDEO_CODEC_kBpv &&
+                                     bpv_file_version >=
+                                         BPV1_PIXEL_MOTION_VERSION
+                                 ? kBpvVideoReadAheadBytes
+                                 : kVideoReadAheadBytes)));
     video_read_ahead = (uint8_t *)(
         heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
     if (!video_read_ahead) {
@@ -2063,6 +2330,16 @@ bool openVideo() {
             bpv_esp32_decoder_begin(&bpv_decoder, video_file, &bpv_header);
         if (result != BPV1_OK) {
             showStatus("Invalid video.bpv1", bpv1_strerror(result));
+            reportHeap("BPV1 decoder allocation failed");
+            closeVideo();
+            return false;
+        }
+        bpv_esp32_decoder_set_profile_clock(
+            &bpv_decoder, bpvProfileNowMicros, NULL);
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
+            cyd_display_rows_per_transfer(&display) != 8) {
+            showStatus("Display buffer error",
+                       "cannot select two 8-row SPI buffers");
             closeVideo();
             return false;
         }
@@ -2092,7 +2369,15 @@ bool openVideo() {
                      bpv_esp32_decoder_memory_bytes(&bpv_decoder)),
                  (unsigned)(
                      bpv_esp32_decoder_packet_capacity(&bpv_decoder)));
-        if (!startDecodeWorker()) {
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
+            !startBpvInputPrefetch()) {
+            showStatus("BPV input init failed",
+                       "cannot create CPU1 stream buffer");
+            closeVideo();
+            return false;
+        }
+        if (bpv_header.version < BPV1_PIXEL_MOTION_VERSION &&
+            !startDecodeWorker()) {
             showStatus("Dual-core init failed",
                        "cannot create CPU1 decoder task");
             closeVideo();
@@ -2113,21 +2398,20 @@ bool openVideo() {
                  (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
         const int decoder_result = hlv_esp32_decoder_begin(
-            &decoder, &sequence_header, PLAYER_USE_COMPACT_Y6_U5_V5);
+            &decoder, &sequence_header,
+            PLAYER_USE_COMPACT_HLV_REFERENCE);
         if (decoder_result != HLV1_OK) {
             showStatus("Not enough RAM", "use at most the 320x180 profile");
             reportHeap("decoder or packet-pool allocation failed");
             closeVideo();
             return false;
         }
-        ESP_LOGI(kTag, "Packet pool: %u x %u = %u bytes, %u DMA-capable",
-                 (unsigned)(HLV_ESP32_PACKET_BLOCK_COUNT),
-                 (unsigned)(HLV_ESP32_PACKET_BLOCK_BYTES),
+        ESP_LOGI(kTag, "Packet stream buffer: %u bytes, DMA-capable=%u",
                  (unsigned)(
-                     hlv_esp32_decoder_packet_capacity(&decoder)),
+                     hlv_esp32_decoder_stream_buffer_bytes(&decoder)),
                  (unsigned)(
-                     hlv_esp32_decoder_dma_block_count(&decoder)));
-        // Allocate the large predictive planes and packet blocks before the
+                     hlv_esp32_decoder_dma_buffer(&decoder)));
+        // Allocate the large predictive planes and stream buffer before the
         // worker stack, preserving the largest contiguous heap regions.
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
@@ -2150,7 +2434,8 @@ bool openVideo() {
         closeVideo();
         return false;
     }
-    // Allocate the predictive frames, packet pool and decoder task before the
+    // Allocate predictive frames, bounded packet/stream storage and the
+    // decoder task before the
     // smaller DAC descriptors and audio task stack. This keeps the large
     // internal-RAM allocations immune to audio heap fragmentation.
     if (!prepareAudio(sequence_header)) {
@@ -2217,11 +2502,14 @@ bool openVideo() {
                      : "native-centred");
     } else if (video_codec == VIDEO_CODEC_kBpv) {
         ESP_LOGI(kTag,
-                 "Playing BPV1 v%u in %s mode, frame storage=4x4 records",
+                 "Playing BPV1 v%u in %s mode, frame storage=%s",
                  bpv_header.version,
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
-                     : "native-centred");
+                     : "native-centred",
+                 bpv_header.version >= BPV1_PIXEL_MOTION_VERSION
+                     ? "previous RGB565 frame + two 8-row SPI buffers"
+                     : "two 4x4-record frames");
     } else {
         ESP_LOGI(kTag, "Playing HLV v%u in %s mode, frame storage=%s",
                  sequence_header.version,
@@ -2229,7 +2517,7 @@ bool openVideo() {
                      ? "scale-to-320x240"
                      : "native-centred",
                  hlv_esp32_decoder_compact_yuv(&decoder)
-                     ? "packed Y6/U5/V5 + Q4 corrections"
+                     ? "packed Y7/U6/V6 + per-plane Q4 corrections"
                      : "8-bit YUV 4:2:0");
     }
     reportHeap("decoder ready");
@@ -2241,7 +2529,9 @@ bool openVideo() {
             sequence_header.audio_sample_rate,
             (unsigned)(sequence_header.frame_count));
         esp_rom_printf(
-            "#frame,sd_us,decode_us,render_us,work_us,present_us\n");
+            "#frame,sd_us,decode_us,render_us,work_us,present_us"
+            "[,bpv_input_us,bpv_block_us,bpv_reference_us,"
+            "bpv_input_calls,bpv_input_bytes]\n");
     }
     return true;
 }
@@ -2776,6 +3066,14 @@ typedef struct PresentationState {
     bool render;
 } PresentationState;
 
+typedef struct BpvDecodeBreakdown {
+    uint32_t input_us;
+    uint32_t block_us;
+    uint32_t reference_us;
+    uint32_t input_calls;
+    uint32_t input_bytes;
+} BpvDecodeBreakdown;
+
 PresentationState beginPresentation() {
     PresentationState state = {microsNow(), true};
     if (audio_enabled) {
@@ -2847,8 +3145,10 @@ PresentationState beginPresentation() {
     return state;
 }
 
-void finishPresentation(PresentationState state, uint32_t read_us,
-                        uint32_t decode_us, uint32_t render_us) {
+void finishPresentationDetailed(
+    PresentationState state, uint32_t read_us,
+    uint32_t decode_us, uint32_t render_us,
+    const BpvDecodeBreakdown *bpv_breakdown) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
 
@@ -2869,8 +3169,20 @@ void finishPresentation(PresentationState state, uint32_t read_us,
         // Capture every value before printing. UART overhead is therefore not
         // charged to this record, although it can consume slack before the
         // following frame.
-        esp_rom_printf("F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
-                       decode_us, render_us, work_us, present_us);
+        if (bpv_breakdown) {
+            esp_rom_printf(
+                "F,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                decoded_frames, read_us, decode_us, render_us,
+                work_us, present_us, bpv_breakdown->input_us,
+                bpv_breakdown->block_us,
+                bpv_breakdown->reference_us,
+                bpv_breakdown->input_calls,
+                bpv_breakdown->input_bytes);
+        } else {
+            esp_rom_printf(
+                "F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
+                decode_us, render_us, work_us, present_us);
+        }
         if (audio_enabled && decoded_frames % 30U == 0U) {
             esp_rom_printf(
                 "A,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
@@ -2889,6 +3201,12 @@ void finishPresentation(PresentationState state, uint32_t read_us,
                 (unsigned)(mpeg_audio_convert_us));
         }
     }
+}
+
+void finishPresentation(PresentationState state, uint32_t read_us,
+                        uint32_t decode_us, uint32_t render_us) {
+    finishPresentationDetailed(
+        state, read_us, decode_us, render_us, NULL);
 }
 
 bool presentDecodedFrame(const void *frame, RenderFunction render_function,
@@ -2933,12 +3251,6 @@ bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
     return true;
 }
 
-uint32_t readPacket(HLV1Packet *packet, int *result) {
-    const int64_t read_start = microsNow();
-    *result = hlv_esp32_decoder_read_packet(&decoder, video_file, packet);
-    return (uint32_t)(microsNow() - read_start);
-}
-
 void finishVideoLoop() {
     if (audio_enabled) {
         // A held DMA ring never drains by itself. Release it so the remaining
@@ -2971,34 +3283,26 @@ void finishVideoLoop() {
 }
 
 void playOneFrameSequential() {
-    HLV1Packet packet = {0};
-    int packet_result = HLV1_OK;
-    const uint32_t read_us = readPacket(&packet, &packet_result);
-    if (packet_result == HLV1_EOF) {
+    const HLV1Frame *frame = NULL;
+    const int64_t decode_start = microsNow();
+    const int decode_result = hlv_esp32_decoder_decode_next(
+        &decoder, video_file, &frame, NULL);
+    const uint32_t decode_us =
+        (uint32_t)(microsNow() - decode_start);
+    if (decode_result == HLV1_EOF) {
         finishVideoLoop();
         return;
     }
-    if (packet_result != HLV1_OK) {
-        if (packet_result == HLV1_ERR_IO) {
+    if (decode_result != HLV1_OK) {
+        if (decode_result == HLV1_ERR_IO) {
             failSdCardRead("cannot read HLV video");
             return;
         }
-        failPlayback("Packet read error", packet_result);
-        return;
-    }
-    const HLV1Frame *frame = NULL;
-    const int64_t decode_start = microsNow();
-    const int decode_result =
-        hlv_esp32_decoder_decode(&decoder, &packet, &frame);
-    const uint32_t decode_us =
-        (uint32_t)(microsNow() - decode_start);
-    hlv1_packet_free(&packet);
-    if (decode_result != HLV1_OK) {
         failPlayback("Decode error", decode_result);
         return;
     }
 
-    if (!presentFrame(frame, read_us, decode_us)) {
+    if (!presentFrame(frame, 0, decode_us)) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
     }
 }
@@ -3433,7 +3737,149 @@ void playOneDivx3FramePipelined() {
     pending_divx3_frame_valid = true;
 }
 
+typedef struct BpvDirectRenderContext {
+    int x_offset;
+    int y_offset;
+    uint32_t render_us;
+    bool display_failed;
+} BpvDirectRenderContext;
+
+uint16_t *acquireBpvDmaStrip(
+    void *opaque, uint16_t y, uint16_t rows) {
+    BpvDirectRenderContext *context =
+        (BpvDirectRenderContext *)(opaque);
+    int64_t render_start;
+    uint16_t *pixels;
+    (void)y;
+    (void)rows;
+    if (!context) return NULL;
+    render_start = microsNow();
+    pixels = cyd_display_acquire_buffer(&display);
+    context->render_us +=
+        (uint32_t)(microsNow() - render_start);
+    if (!pixels) context->display_failed = true;
+    return pixels;
+}
+
+int submitBpvDmaStrip(
+    void *opaque, const uint16_t *pixels,
+    uint16_t y, uint16_t rows) {
+    BpvDirectRenderContext *context =
+        (BpvDirectRenderContext *)(opaque);
+    int64_t render_start;
+    esp_err_t result;
+    if (!context || !pixels) return 1;
+    render_start = microsNow();
+    result = cyd_display_draw_bitmap(
+        &display, context->x_offset, context->y_offset + y,
+        bpv_header.width, rows, pixels);
+    context->render_us +=
+        (uint32_t)(microsNow() - render_start);
+    if (result != ESP_OK) context->display_failed = true;
+    return result == ESP_OK ? 0 : 1;
+}
+
+int flushBpvDmaStrips(void *opaque) {
+    BpvDirectRenderContext *context =
+        (BpvDirectRenderContext *)(opaque);
+    int64_t render_start;
+    esp_err_t result;
+    if (!context) return 1;
+    render_start = microsNow();
+    result = cyd_display_flush(&display);
+    context->render_us +=
+        (uint32_t)(microsNow() - render_start);
+    if (result != ESP_OK) context->display_failed = true;
+    return result == ESP_OK ? 0 : 1;
+}
+
 void playOneBpvFrameSequential() {
+    if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION) {
+        PresentationState presentation;
+        const BPV1Frame *frame = NULL;
+        uint32_t decode_us = 0;
+        uint32_t render_us = 0;
+        int decode_result;
+        BPV1DecodeProfile profile;
+        uint64_t non_block_us;
+        BpvDecodeBreakdown breakdown;
+
+        if (decoded_frames >= bpv_header.frame_count) {
+            finishVideoLoop();
+            return;
+        }
+        presentation = beginPresentation();
+        if (presentation.render &&
+            !PLAYER_SCALE_VIDEO_TO_DISPLAY) {
+            BpvDirectRenderContext render_context = {
+                (kScreenWidth - bpv_header.width) / 2,
+                (kScreenHeight - bpv_header.height) / 2,
+                0, false
+            };
+            const int64_t combined_start = microsNow();
+            uint32_t combined_us;
+            decode_result =
+                bpv_esp32_decoder_decode_next_direct_from_input(
+                    &bpv_decoder, readBpvPrefetchedInput, NULL,
+                    cyd_display_rows_per_transfer(&display),
+                    acquireBpvDmaStrip, submitBpvDmaStrip,
+                    flushBpvDmaStrips, &render_context, &frame);
+            combined_us =
+                (uint32_t)(microsNow() - combined_start);
+            render_us = render_context.render_us;
+            decode_us = combined_us > render_us
+                            ? combined_us - render_us
+                            : 0;
+            if (render_context.display_failed &&
+                decode_result != BPV1_OK) {
+                failPlayback("Display DMA error", BPV1_ERR_IO);
+                return;
+            }
+        } else {
+            const int64_t decode_start = microsNow();
+            decode_result =
+                bpv_esp32_decoder_decode_next_direct_from_input(
+                    &bpv_decoder, readBpvPrefetchedInput, NULL,
+                    cyd_display_rows_per_transfer(&display),
+                    NULL, NULL, NULL, NULL, &frame);
+            decode_us =
+                (uint32_t)(microsNow() - decode_start);
+            if (decode_result == BPV1_OK &&
+                presentation.render) {
+                const int64_t render_start = microsNow();
+                if (!renderBpvFrame(frame)) {
+                    failPlayback("Display DMA error", BPV1_ERR_IO);
+                    return;
+                }
+                render_us =
+                    (uint32_t)(microsNow() - render_start);
+            }
+        }
+        if (decode_result == BPV1_ERR_IO) {
+            failSdCardRead("cannot stream BPV1 video");
+            return;
+        }
+        if (decode_result != BPV1_OK) {
+            failPlayback("BPV1 decode error", decode_result);
+            return;
+        }
+        profile = bpv_esp32_decoder_last_profile(&bpv_decoder);
+        non_block_us =
+            (uint64_t)profile.input_us +
+            profile.reference_commit_us;
+        breakdown.input_us = profile.input_us;
+        breakdown.block_us =
+            decode_us > non_block_us
+                ? (uint32_t)(decode_us - non_block_us)
+                : 0U;
+        breakdown.reference_us = profile.reference_commit_us;
+        breakdown.input_calls = profile.input_calls;
+        breakdown.input_bytes = profile.input_bytes;
+        finishPresentationDetailed(
+            presentation, 0, decode_us, render_us, &breakdown);
+        return;
+    }
+
     BPV1Packet packet = {0};
     const int64_t read_start = microsNow();
     const int packet_result = bpv_esp32_decoder_read_packet(
@@ -3453,19 +3899,29 @@ void playOneBpvFrameSequential() {
         return;
     }
 
+    const PresentationState presentation = beginPresentation();
     const BPV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result =
         bpv_esp32_decoder_decode(&bpv_decoder, &packet, &frame);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
+    uint32_t render_us = 0;
+    if (decode_result == BPV1_OK && presentation.render) {
+        const int64_t render_start = microsNow();
+        if (!renderBpvFrame(frame)) {
+            failPlayback("Display DMA error", BPV1_ERR_IO);
+            return;
+        }
+        render_us =
+            (uint32_t)(microsNow() - render_start);
+    }
     if (decode_result != BPV1_OK) {
         failPlayback("BPV1 decode error", decode_result);
         return;
     }
-    if (!presentBpvFrame(frame, read_us, decode_us)) {
-        failPlayback("Display DMA error", BPV1_ERR_IO);
-    }
+    finishPresentation(
+        presentation, read_us, decode_us, render_us);
 }
 
 void playOneBpvFramePipelined() {
@@ -3573,32 +4029,7 @@ void playOneBpvFramePipelined() {
 }
 
 void playOneFramePipelined() {
-    HLV1Packet packet = {0};
-    int packet_result = HLV1_OK;
-    const uint32_t read_us = readPacket(&packet, &packet_result);
-    if (packet_result == HLV1_EOF) {
-        if (pending_frame_valid) {
-            const bool rendered = presentFrame(
-                &pending_frame, pending_read_us, pending_decode_us);
-            pending_frame_valid = false;
-            if (!rendered) {
-                failPlayback("Display DMA error", HLV1_ERR_IO);
-                return;
-            }
-        }
-        finishVideoLoop();
-        return;
-    }
-    if (packet_result != HLV1_OK) {
-        if (packet_result == HLV1_ERR_IO) {
-            failSdCardRead("cannot read HLV video");
-            return;
-        }
-        failPlayback("Packet read error", packet_result);
-        return;
-    }
-    if (!submitDecode(&packet)) {
-        hlv1_packet_free(&packet);
+    if (!submitDecode(video_file)) {
         failPlayback("Decode pipeline error", HLV1_ERR_IO);
         return;
     }
@@ -3612,7 +4043,6 @@ void playOneFramePipelined() {
 
     DecodeResult result = {0};
     const bool received = waitDecode(&result);
-    hlv1_packet_free(&packet);
     if (!received) {
         failPlayback("Decode pipeline error", HLV1_ERR_IO);
         return;
@@ -3621,13 +4051,24 @@ void playOneFramePipelined() {
         failPlayback("Display DMA error", HLV1_ERR_IO);
         return;
     }
-    if (result.codec != VIDEO_CODEC_kHlv ||
-        result.result != HLV1_OK || !result.hlv_frame) {
+    if (result.codec != VIDEO_CODEC_kHlv) {
+        failPlayback("Decode error", result.result);
+        return;
+    }
+    if (result.result == HLV1_EOF) {
+        finishVideoLoop();
+        return;
+    }
+    if (result.result == HLV1_ERR_IO) {
+        failSdCardRead("cannot read HLV video");
+        return;
+    }
+    if (result.result != HLV1_OK || !result.hlv_frame) {
         failPlayback("Decode error", result.result);
         return;
     }
     pending_frame = *result.hlv_frame;
-    pending_read_us = read_us;
+    pending_read_us = 0;
     pending_decode_us = result.decode_us;
     pending_frame_valid = true;
 }
@@ -3666,7 +4107,8 @@ void app_main(void) {
                 continue;
             }
             closeVideo();
-            beginUploadProgress();
+            beginUploadProgress(
+                upload_request.filename, upload_request.size);
             char stored_path[128] = {0};
             const bool stored = uart_file_upload_receive(
                 &uart_upload, &upload_request, PLAYER_VIDEO_DIRECTORY,
@@ -3703,6 +4145,29 @@ void app_main(void) {
             }
             continue;
         }
+        {
+            uart_sd_benchmark_request_t sd_benchmark_request = {0};
+            if (uart_file_upload_take_sd_benchmark_request(
+                    &uart_upload, &sd_benchmark_request)) {
+                if (!sd_mounted && !mountSdCard()) {
+                    uart_file_upload_reject(&uart_upload, "NO_SD");
+                    last_retry_ms = millisNow();
+                } else {
+                    bool completed;
+                    closeVideo();
+                    completed = uart_file_upload_benchmark_sd(
+                        &uart_upload, PLAYER_VIDEO_DIRECTORY,
+                        &sd_benchmark_request);
+                    showStatus(
+                        completed ? "SD benchmark complete"
+                                  : "SD benchmark failed",
+                        completed ? "temporary file removed"
+                                  : "see UART error");
+                    if (!openVideo()) last_retry_ms = millisNow();
+                }
+                continue;
+            }
+        }
         if (video_file && video_codec == VIDEO_CODEC_kMpeg1 &&
             mpeg_video) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
@@ -3738,7 +4203,8 @@ void app_main(void) {
         }
         if (video_file && video_codec == VIDEO_CODEC_kBpv &&
             bpv_esp32_decoder_ready(&bpv_decoder)) {
-            if (PLAYER_USE_DUAL_CORE_PIPELINE) {
+            if (PLAYER_USE_DUAL_CORE_PIPELINE &&
+                bpv_header.version < BPV1_PIXEL_MOTION_VERSION) {
                 playOneBpvFramePipelined();
             } else {
                 playOneBpvFrameSequential();

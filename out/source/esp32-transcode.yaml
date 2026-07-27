@@ -1,0 +1,157 @@
+# Default production profiles for formats accepted by the ESP32 player.
+# Quality values are measured against the prepared YUV420P reference.
+version: 1
+targetPlayer: esp32_2432s028_hlv_player_idf
+outputDirectory: ..
+
+sourcePreparation:
+  blurSigma: 1.0
+  blurSteps: 2
+  scaleFilter: area+accurate_rnd+full_chroma_int
+  pixelFormat: yuv420p
+  variants:
+    - width: 320
+      height: 180
+      resizeMode: Stretch
+    - width: 320
+      height: 240
+      resizeMode: Crop
+
+formats:
+  HLVv14:
+    outputDirectory: ../HLV
+    extension: hlv
+    container: HLV
+    syntax: 14
+    preset: slow
+    fps: source
+    gop: 45
+    qualityMode: adaptivePsnr
+    psnrMinDb: 35.0
+    psnrMaxDb: 42.0
+    cqTrials: 5
+    # Adaptive feedback is sequential; hlvenc enforces one encoder thread.
+    threads: 1
+    audioCodec: pcm_u8
+    audioSampleRate: 16000
+    audioChannels: 1
+
+  BPVv6:
+    outputDirectory: ../BPV
+    extension: bpv1
+    container: BPV
+    version: 6
+    fps: source
+    gop: 48
+    minGop: 12
+    sceneThreshold: 0.35
+    qualityMode: targetPsnr
+    targetPsnrDb: 40.0
+    toleranceDb: 0.10
+    lambdaMin: 0
+    lambdaMax: 4096
+    candidatePalettes: 8
+    samplesPerFrame: 256
+    activePalettes: true
+    threads: 6
+    audioCodec: pcm_u8
+    audioSampleRate: 16000
+    audioChannels: 1
+
+  MJPEG:
+    outputDirectory: ../MJPEG
+    extension: avi
+    container: AVI
+    videoCodec: mjpeg
+    fps: source
+    pixelFormat: yuvj420p
+    qualityMode: targetPsnr
+    targetPsnrDb: 40.0
+    toleranceDb: 0.50
+    qMin: 2
+    qMax: 31
+    threads: 6
+    audioCodec: pcm_u8
+    audioSampleRate: 16000
+    audioChannels: 1
+
+  MPEG1:
+    outputDirectory: ../MPEG1
+    extension: mpg
+    container: MPEG-PS
+    videoCodec: mpeg1video
+    fps: source
+    gop: 30
+    bFrames: 0
+    packetSize: 2048
+    qualityMode: targetPsnr
+    targetPsnrDb: 40.0
+    toleranceDb: 0.50
+    qMin: 1
+    qMax: 31
+    threads: 6
+    audioCodec: mp2
+    audioBitrateKbps: 64
+    audioSampleRate: 32000
+    audioChannels: 1
+
+  DivX3:
+    outputDirectory: ../DivX3
+    extension: avi
+    container: AVI
+    videoCodec: msmpeg4v3
+    codecTag: DIV3
+    fps: sourceHalf
+    gop: oneSecond
+    bFrames: 0
+    maximumPacketBytes: 98304
+    qualityMode: targetPsnr
+    targetPsnrDb: 40.0
+    toleranceDb: 0.50
+    qMin: 2
+    qMax: 31
+    threads: 6
+    audioCodec: pcm_u8
+    audioSampleRate: 16000
+    audioChannels: 1
+
+  H263:
+    outputDirectory: ../H263
+    extension: avi
+    container: AVI
+    videoCodec: h263
+    codecTag: H263
+    fps: source
+    rateControl: constantQuality
+    videoQuality: 6
+    bFrames: 0
+    pixelFormat: yuv420p
+    threads: 6
+    audioCodec: pcm_s16le
+    audioSampleRate: 8000
+    audioChannels: 1
+    profiles:
+      QCIF:
+        width: 176
+        height: 144
+        displayMode: center
+        displayOffsetX: 72
+        displayOffsetY: 48
+        gop: 30
+      CIF:
+        width: 352
+        height: 288
+        displayMode: centerCrop
+        displayWidth: 320
+        displayHeight: 240
+        codedPaddingX: 16
+        codedPaddingY: 24
+        gop: 1
+
+videos:
+  - name: BigBuckBunny
+    input: ../sources/big_buck_bunny_1080p_h264/big_buck_bunny_1080p_h264.mov
+    fps: 24
+  - name: Danila
+    input: ../sources/VID_20260522_181611.mp4
+    fps: 30

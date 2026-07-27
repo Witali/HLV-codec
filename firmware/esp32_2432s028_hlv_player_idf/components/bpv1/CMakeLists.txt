@@ -16,10 +16,10 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Werror=return-type
 )
 
-# The repository encoder emits PATTERN_DICT only for a novel full block and
-# RAW only for a novel pattern and full block. On the constrained player this
-# lets FIFO dictionaries append directly, avoiding two hash lookups for the
-# overwhelmingly common RAW mode while retaining the strict portable default.
+# The repository v6/v7 encoder emits RAW only for a novel full block. On the
+# constrained player this lets the FIFO block dictionary append directly,
+# avoiding two hash lookups for the common RAW mode while retaining the strict
+# portable default and legacy stream support.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     BPV1_FAST_CANONICAL_DICTIONARIES=1
 )

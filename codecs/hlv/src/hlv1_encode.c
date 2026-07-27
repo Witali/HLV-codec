@@ -55,6 +55,7 @@ typedef struct Candidate {
     int partition;
     int mvx;
     int mvy;
+    int reference_quantized;
     HLV1BitWriter bits;
     MB rec;
 } Candidate;
@@ -587,8 +588,25 @@ static uint64_t estimate_candidate_decode_cycles(const Candidate *candidate) {
     return 100U + input_cycles + predictor_cycles + residual_cycles;
 }
 
+static void quantize_v14_reference_mb(MB *macroblock, int x, int y) {
+    for (int tile_y = 0; tile_y < 16; tile_y += 8)
+        for (int tile_x = 0; tile_x < 16; tile_x += 8)
+            hlv1_quantize_v14_reference_tile(
+                macroblock->y + tile_y * 16 + tile_x, 16,
+                x + tile_x, y + tile_y, 1);
+    hlv1_quantize_v14_reference_tile(
+        macroblock->u, 8, x >> 1, y >> 1, 2);
+    hlv1_quantize_v14_reference_tile(
+        macroblock->v, 8, x >> 1, y >> 1, 2);
+}
+
 static double score_candidate(HLV1Encoder *encoder, const MB *source,
-                              Candidate *candidate, double lambda_bits) {
+                              Candidate *candidate, double lambda_bits,
+                              int x, int y) {
+    if (!candidate->reference_quantized) {
+        quantize_v14_reference_mb(&candidate->rec, x, y);
+        candidate->reference_quantized = 1;
+    }
     candidate->estimated_decode_cycles =
         estimate_candidate_decode_cycles(candidate);
     return (double)weighted_sse(source, &candidate->rec,
@@ -927,6 +945,25 @@ static int put_residual_group_v9(HLV1BitWriter *dst, uint32_t mask,
     return r;
 }
 
+/*
+ * Experimental v14 residual groups have one directly readable coefficient
+ * mode bit followed by the complete block mask.  The encoder still chooses
+ * the shorter coefficient representation, but the decoder no longer walks
+ * the raw/sparse mask decision tree for every residual macroblock.
+ */
+static int put_residual_group_v14(HLV1BitWriter *dst, uint32_t mask,
+                                  int block_count,
+                                  const HLV1BitWriter *legacy_coeff,
+                                  const HLV1BitWriter *v9_coeff) {
+    int use_v9 = v9_coeff->bit_count < legacy_coeff->bit_count;
+    int r = hlv1_bw_put(dst, (uint32_t)use_v9, 1);
+    if (r >= 0)
+        r = hlv1_bw_put(dst, mask, (unsigned)block_count);
+    if (r >= 0)
+        r = hlv1_bw_append(dst, use_v9 ? v9_coeff : legacy_coeff);
+    return r;
+}
+
 static int encode_residual_masked(HLV1BitWriter *bw,
                                   const MB *src, const MB *pred, MB *rec,
                                   int qy, int quv, double ac_deadzone,
@@ -988,7 +1025,7 @@ static int encode_residual_sb8_masked(HLV1BitWriter *bw,
     return r;
 }
 
-static int encode_residual_v9(HLV1BitWriter *bw,
+static int encode_residual_v9(HLV1BitWriter *bw, unsigned version,
                               const MB *src, const MB *pred, MB *rec,
                               int qy, int quv, double ac_deadzone,
                               int *nonzero_blocks) {
@@ -1014,14 +1051,16 @@ static int encode_residual_v9(HLV1BitWriter *bw,
     if (r >= 0) r = hlv1_bw_finish(&legacy);
     if (r >= 0) r = hlv1_bw_finish(&vlc);
     if (r >= 0 && nz)
-        r = put_residual_group_v9(bw, mask, 24, nz, &legacy, &vlc);
+        r = version >= HLV1_STREAM_VERSION_14
+                ? put_residual_group_v14(bw, mask, 24, &legacy, &vlc)
+                : put_residual_group_v9(bw, mask, 24, nz, &legacy, &vlc);
     if (nonzero_blocks) *nonzero_blocks = nz;
     hlv1_bw_free(&legacy);
     hlv1_bw_free(&vlc);
     return r;
 }
 
-static int encode_residual_sb8_v9(HLV1BitWriter *bw,
+static int encode_residual_sb8_v9(HLV1BitWriter *bw, unsigned version,
                                   const SB8 *src, const SB8 *pred, SB8 *rec,
                                   int qy, int quv, double ac_deadzone,
                                   int *nonzero_blocks) {
@@ -1047,7 +1086,9 @@ static int encode_residual_sb8_v9(HLV1BitWriter *bw,
     if (r >= 0) r = hlv1_bw_finish(&legacy);
     if (r >= 0) r = hlv1_bw_finish(&vlc);
     if (r >= 0 && nz)
-        r = put_residual_group_v9(bw, mask, 6, nz, &legacy, &vlc);
+        r = version >= HLV1_STREAM_VERSION_14
+                ? put_residual_group_v14(bw, mask, 6, &legacy, &vlc)
+                : put_residual_group_v9(bw, mask, 6, nz, &legacy, &vlc);
     if (nonzero_blocks) *nonzero_blocks = nz;
     hlv1_bw_free(&legacy);
     hlv1_bw_free(&vlc);
@@ -1088,13 +1129,13 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
                         int qy, int quv, double ac_deadzone,
                         int *had_residual);
 
-/* v13 literal rows use the same little-endian Y6/U5/V5 packing as the ESP32
+/* v14 literal rows use the same little-endian Y7/U6/V6 packing as the ESP32
  * compact reference frame.  Reconstruct the quantized samples here so future
  * P-frames see exactly the values produced by every decoder. */
 static int put_literal_row(HLV1BitWriter *bw, const uint8_t *source,
                            uint8_t *reconstructed, int samples,
                            unsigned sample_bits) {
-    uint8_t packed[12] = {0};
+    uint8_t packed[14] = {0};
     unsigned output_shift = 8U - sample_bits;
     unsigned maximum = (1U << sample_bits) - 1U;
     unsigned bit = 0;
@@ -1118,22 +1159,42 @@ static int put_literal_row(HLV1BitWriter *bw, const uint8_t *source,
 
 static int encode_literal_candidate(const MB *source, unsigned version,
                                     int frame_type, int use_global,
+                                    int macroblock_x, int macroblock_y,
                                     Candidate *out) {
     out->mode = HLV1_MODE_LITERAL;
     int r = put_mode(&out->bits, version, frame_type,
                      HLV1_MODE_LITERAL, use_global);
-    /* All v13 macroblocks begin on a byte boundary.  The fixed four-bit mode
+    /* All v14 macroblocks begin on a byte boundary.  The fixed four-bit mode
        therefore needs exactly four zero bits before the byte-copy payload. */
     if (r >= 0) r = hlv1_bw_put(&out->bits, 0, 4);
     for (int y = 0; r >= 0 && y < 16; ++y)
         r = put_literal_row(&out->bits, source->y + y * 16,
-                            out->rec.y + y * 16, 16, 6);
+                            out->rec.y + y * 16, 16, 7);
     for (int y = 0; r >= 0 && y < 8; ++y)
         r = put_literal_row(&out->bits, source->u + y * 8,
-                            out->rec.u + y * 8, 8, 5);
+                            out->rec.u + y * 8, 8, 6);
     for (int y = 0; r >= 0 && y < 8; ++y)
         r = put_literal_row(&out->bits, source->v + y * 8,
-                            out->rec.v + y * 8, 8, 5);
+                            out->rec.v + y * 8, 8, 6);
+    int8_t correction[6] = {0};
+    if (r >= 0) {
+        int index = 0;
+        for (int tile_y = 0; tile_y < 16; tile_y += 8)
+            for (int tile_x = 0; tile_x < 16; tile_x += 8)
+                correction[index++] = hlv1_correct_v14_reference_tile(
+                    out->rec.y + tile_y * 16 + tile_x, 16,
+                    source->y + tile_y * 16 + tile_x, 16,
+                    macroblock_x + tile_x, macroblock_y + tile_y);
+        correction[4] = hlv1_correct_v14_reference_tile(
+            out->rec.u, 8, source->u, 8,
+            macroblock_x >> 1, macroblock_y >> 1);
+        correction[5] = hlv1_correct_v14_reference_tile(
+            out->rec.v, 8, source->v, 8,
+            macroblock_x >> 1, macroblock_y >> 1);
+        for (int i = 0; r >= 0 && i < 6; ++i)
+            r = hlv1_bw_put(&out->bits, (uint8_t)correction[i], 8);
+        out->reference_quantized = 1;
+    }
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     return r;
 }
@@ -1597,7 +1658,7 @@ static int put_residual(HLV1BitWriter *dst, unsigned version,
     if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
-                ? encode_residual_v9(&residual, src, pred, rec,
+                ? encode_residual_v9(&residual, version, src, pred, rec,
                                      qy, quv, ac_deadzone, &nonzero)
                 : version >= HLV1_STREAM_VERSION_8 && qy >= 64
                 ? encode_residual_masked(&residual, src, pred, rec,
@@ -1622,7 +1683,7 @@ static int put_residual_sb8(HLV1BitWriter *dst, unsigned version,
     if (dst->encoder_work) ++dst->encoder_work->residual_candidates;
     int nonzero = 0;
     int r = version >= HLV1_STREAM_VERSION_9 && qy >= 64
-                ? encode_residual_sb8_v9(&residual, src, pred, rec,
+                ? encode_residual_sb8_v9(&residual, version, src, pred, rec,
                                          qy, quv, ac_deadzone, &nonzero)
                 : version >= HLV1_STREAM_VERSION_8 && qy >= 64
                 ? encode_residual_sb8_masked(&residual, src, pred, rec,
@@ -2083,7 +2144,10 @@ static int candidate_init(Candidate *c, int mode, HLV1EncoderWork *work) {
 static void candidate_free(Candidate *c) { hlv1_bw_free(&c->bits); }
 
 HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
-    if (!header || !header->width || !header->height || !header->gop) return NULL;
+    unsigned version = hlv1_stream_version(header);
+    if (!header || !header->width || !header->height || !header->gop ||
+        version < HLV1_MIN_VERSION || version > HLV1_MAX_VERSION)
+        return NULL;
     HLV1Encoder *e = (HLV1Encoder *)calloc(1, sizeof *e);
     if (!e) return NULL;
     e->header = *header;
@@ -2101,16 +2165,14 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
         hlv1_frame_alloc(&e->current, header->width, header->height) < 0) {
         hlv1_encoder_destroy(e); return NULL;
     }
-    if (hlv1_stream_version(header) >= HLV1_STREAM_VERSION_11) {
-        e->mv_cols = e->current.padded_width / 16;
-        size_t bytes = (size_t)e->mv_cols * sizeof(int16_t);
-        e->mv_top_x = (int16_t *)malloc(bytes);
-        e->mv_top_y = (int16_t *)malloc(bytes);
-        e->mv_cur_x = (int16_t *)malloc(bytes);
-        e->mv_cur_y = (int16_t *)malloc(bytes);
-        if (!e->mv_top_x || !e->mv_top_y || !e->mv_cur_x || !e->mv_cur_y) {
-            hlv1_encoder_destroy(e); return NULL;
-        }
+    e->mv_cols = e->current.padded_width / 16;
+    size_t bytes = (size_t)e->mv_cols * sizeof(int16_t);
+    e->mv_top_x = (int16_t *)malloc(bytes);
+    e->mv_top_y = (int16_t *)malloc(bytes);
+    e->mv_cur_x = (int16_t *)malloc(bytes);
+    e->mv_cur_y = (int16_t *)malloc(bytes);
+    if (!e->mv_top_x || !e->mv_top_y || !e->mv_cur_x || !e->mv_cur_y) {
+        hlv1_encoder_destroy(e); return NULL;
     }
     return e;
 }
@@ -2309,7 +2371,7 @@ static int encode_inter_mb_candidate(HLV1Encoder *e,
                          e->q_y, e->q_uv, e->ac_deadzone, NULL);
     if (r >= 0) r = hlv1_bw_finish(&out->bits);
     if (r < 0) return r;
-    out->score = score_candidate(e, src, out, lambda_bits);
+    out->score = score_candidate(e, src, out, lambda_bits, x, y);
     return HLV1_OK;
 }
 
@@ -2324,7 +2386,7 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     int legacy_even = version < HLV1_STREAM_VERSION_5;
     int r = put_mode(&out->bits, version, HLV1_FRAME_P,
                      HLV1_MODE_SPLIT_INTER, use_global);
-    if (r >= 0 && version >= 14)
+    if (r >= 0 && version >= 15)
         r = hlv1_bw_put(&out->bits, 0, 1); /* four 8x8 blocks */
     if (r < 0) return r;
     out->partition = 0;
@@ -2498,7 +2560,7 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
             candidate_free(&trial);
             return r;
         }
-        trial.score = score_candidate(e, src_mb, &trial, lambda_bits);
+        trial.score = score_candidate(e, src_mb, &trial, lambda_bits, x, y);
         if (trial.score < out->score) {
             candidate_free(out);
             *out = trial;
@@ -2529,7 +2591,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             key = 1;
     }
     int frame_type = key ? HLV1_FRAME_KEY : HLV1_FRAME_P;
-    unsigned version = hlv1_stream_version(&e->header);
+    const unsigned version = HLV1_VERSION;
     HLV1BitWriter frame_bits;
     encoder_bw_init(&frame_bits, &e->stats.encoder_work);
     double lambda_bits = e->lambda_scale *
@@ -2663,8 +2725,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                    use_global, lambda_bits, cg)) < 0)
                     goto fail_mb;
                 Candidate *cl = &c[count++];
-                if ((r = encode_literal_candidate(&src, version, frame_type,
-                                                  use_global, cl)) < 0)
+                if ((r = encode_literal_candidate(
+                         &src, version, frame_type, use_global, x, y, cl)) < 0)
                     goto fail_mb;
             }
 
@@ -2743,7 +2805,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                           use_global,
                                                           ct)) < 0)
                         goto fail_mb;
-                    if (version >= 14) {
+                    if (version >= 15) {
                         Candidate *ch = &c[count++];
                         if ((r = encode_rect_inter_candidate(
                                 e, input, &src, x, y, version, lambda_bits,
@@ -2762,7 +2824,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             for (int i = 0; i < count; ++i) {
                 if (c[i].bits.bit_count)
                     c[i].score = score_candidate(e, &src, &c[i],
-                                                 lambda_bits);
+                                                 lambda_bits, x, y);
                 if (c[i].score < best->score) best = &c[i];
             }
             if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0) goto fail_mb;

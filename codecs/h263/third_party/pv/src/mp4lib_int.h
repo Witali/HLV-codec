@@ -33,6 +33,10 @@ typedef struct tagBitstream
 {
     /* function that reteive data from outside the library.   04/11/2000 */
     /*    In frame-based decoding mode, this shall be NULL.   08/29/2000 */
+    int (*readBitstreamData)(uint8 *buf, int nbytes_required,
+                             void *appData);
+    void *applicationData;
+    int32 refill_buffer_size;
     uint32 curr_word;
     uint32 next_word;
     uint8 *bitstreamBuffer; /* pointer to buffer memory */

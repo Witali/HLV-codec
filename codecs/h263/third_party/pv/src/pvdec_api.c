@@ -82,8 +82,18 @@ OSCL_EXPORT_REF Bool PVInitVideoDecoder(VideoDecControls *decCtrl, uint8 *volbuf
     int idx;
     BitstreamDecVideo *stream;
 
-
+    int (*readBitstreamData)(uint8 *, int, void *) =
+        decCtrl->readBitstreamData;
+    applicationData appData = decCtrl->appData;
+    void (*outputRowGuard)(void *, uint16) =
+        decCtrl->outputRowGuard;
+    void *outputRowGuardOpaque =
+        decCtrl->outputRowGuardOpaque;
     oscl_memset(decCtrl, 0, sizeof(VideoDecControls)); /* fix a size bug.   03/28/2001 */
+    decCtrl->readBitstreamData = readBitstreamData;
+    decCtrl->appData = appData;
+    decCtrl->outputRowGuard = outputRowGuard;
+    decCtrl->outputRowGuardOpaque = outputRowGuardOpaque;
     decCtrl->nLayers = nLayers;
     for (idx = 0; idx < nLayers; idx++)
     {
@@ -220,6 +230,10 @@ OSCL_EXPORT_REF Bool PVInitVideoDecoder(VideoDecControls *decCtrl, uint8 *volbuf
                         status = PV_FALSE;
                         break;
                     }
+                    stream->readBitstreamData =
+                        decCtrl->readBitstreamData;
+                    stream->applicationData =
+                        decCtrl->appData.object;
                     video->memoryUsage += buffer_size;
                     video->vol[idx]->bitstream = stream;
                     video->vol[idx]->volID = idx;
