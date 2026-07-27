@@ -1,2 +1,3 @@
 codecs/amrnb/third_party/pv/** -whitespace
 firmware/esp32_2432s028_hlv_player_id_c/qemu/patches/*.patch text eol=lf -whitespace
+firmware/esp32_2432s028_hlv_player_id_c/qemu/modified_sources/** text eol=lf -whitespace
