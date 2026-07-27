@@ -9,16 +9,23 @@
 #include <unistd.h>
 
 #include "driver/uart.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_intr_alloc.h"
 #include "esp_rom_crc.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "hal/uart_ll.h"
+#include "soc/interrupts.h"
+#include "soc/uart_struct.h"
 
 namespace {
 
 constexpr uart_port_t kUploadUart = UART_NUM_0;
+constexpr int kUploadTxPin = 1;
+constexpr int kUploadRxPin = 3;
 constexpr int kUartRxBufferBytes = 2048;
 constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
@@ -33,6 +40,233 @@ constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
 constexpr size_t kSdBenchmarkBlockBytes = 32 * 1024;
 constexpr uint32_t kMaximumSdBenchmarkMiB = 64;
 constexpr char kSdBenchmarkFilename[] = ".hlv-sd-benchmark.tmp";
+constexpr size_t kDirectRxRingBytes = 32 * 1024;
+constexpr uint16_t kDirectRxFifoThreshold = 112;
+constexpr uint16_t kDirectRxTimeoutThreshold = 10;
+constexpr uint32_t kDirectRxInterruptMask =
+    UART_INTR_RXFIFO_FULL | UART_INTR_RXFIFO_TOUT |
+    UART_INTR_RXFIFO_OVF | UART_INTR_FRAM_ERR |
+    UART_INTR_PARITY_ERR;
+constexpr uint32_t kDirectRxErrorMask =
+    UART_INTR_RXFIFO_OVF | UART_INTR_FRAM_ERR |
+    UART_INTR_PARITY_ERR;
+constexpr uint32_t kDirectRxSoftwareOverflow = 1U << 31;
+
+uart_config_t uartConfig(uint32_t baud) {
+    uart_config_t config{};
+    config.baud_rate = static_cast<int>(baud);
+    config.data_bits = UART_DATA_8_BITS;
+    config.parity = UART_PARITY_DISABLE;
+    config.stop_bits = UART_STOP_BITS_1;
+    config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    config.source_clk = UART_SCLK_DEFAULT;
+    return config;
+}
+
+esp_err_t installStandardUart(uint32_t baud) {
+    const uart_config_t config = uartConfig(baud);
+    esp_err_t result = uart_param_config(kUploadUart, &config);
+    if (result != ESP_OK) return result;
+    result = uart_set_pin(
+        kUploadUart, kUploadTxPin, kUploadRxPin,
+        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (result != ESP_OK) return result;
+    if (!uart_is_driver_installed(kUploadUart)) {
+        result = uart_driver_install(
+            kUploadUart, kUartRxBufferBytes, 0, 0, nullptr, 0);
+        if (result != ESP_OK) return result;
+    }
+    uart_flush_input(kUploadUart);
+    return ESP_OK;
+}
+
+FORCE_INLINE_ATTR void readDirectRxFifo(
+    uint8_t *destination, uint32_t count) {
+    for (uint32_t index = 0; index < count; ++index) {
+        destination[index] = UART0.fifo.rw_byte;
+        // main is compiled with -O3. ESP32 needs one cycle between
+        // consecutive APB FIFO reads at this optimization level.
+        asm volatile("nop");
+    }
+}
+
+class DirectUartRxRing {
+public:
+    bool prepare() {
+        if (data_) return false;
+        data_ = static_cast<uint8_t *>(heap_caps_malloc(
+            kDirectRxRingBytes,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        return data_ != nullptr;
+    }
+
+    esp_err_t start(uint32_t baud) {
+        if (!data_ || active_) return ESP_ERR_INVALID_STATE;
+        if (uart_is_driver_installed(kUploadUart)) {
+            const esp_err_t result =
+                uart_driver_delete(kUploadUart);
+            if (result != ESP_OK) return result;
+        }
+
+        const uart_config_t config = uartConfig(baud);
+        esp_err_t result = uart_param_config(kUploadUart, &config);
+        if (result != ESP_OK) return result;
+        result = uart_set_pin(
+            kUploadUart, kUploadTxPin, kUploadRxPin,
+            UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        if (result != ESP_OK) return result;
+
+        read_position_ = 0;
+        write_position_ = 0;
+        error_flags_ = 0;
+        uart_ll_disable_intr_mask(&UART0, UART_LL_INTR_MASK);
+        uart_ll_clr_intsts_mask(&UART0, UART_LL_INTR_MASK);
+        uart_ll_rxfifo_rst(&UART0);
+        uart_ll_set_rxfifo_full_thr(
+            &UART0, kDirectRxFifoThreshold);
+        uart_ll_set_rx_tout(
+            &UART0, kDirectRxTimeoutThreshold);
+
+        result = esp_intr_alloc_intrstatus(
+            ETS_UART0_INTR_SOURCE,
+            ESP_INTR_FLAG_IRAM | ESP_INTR_FLAG_LEVEL2,
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
+                uart_ll_get_intr_status_reg(&UART0))),
+            kDirectRxInterruptMask, interruptHandler, this,
+            &interrupt_);
+        if (result != ESP_OK) return result;
+        active_ = true;
+        uart_ll_ena_intr_mask(&UART0, kDirectRxInterruptMask);
+        return ESP_OK;
+    }
+
+    void stop() {
+        if (active_) {
+            uart_ll_disable_intr_mask(
+                &UART0, kDirectRxInterruptMask);
+            uart_ll_clr_intsts_mask(
+                &UART0, kDirectRxInterruptMask);
+            if (interrupt_) esp_intr_free(interrupt_);
+            interrupt_ = nullptr;
+            active_ = false;
+        }
+        if (data_) heap_caps_free(data_);
+        data_ = nullptr;
+    }
+
+    bool active() const {
+        return active_;
+    }
+
+    bool failed() const {
+        return error_flags_ != 0;
+    }
+
+    size_t read(uint8_t *destination, size_t maximum_bytes) {
+        const uint32_t read_position = read_position_;
+        const uint32_t write_position = write_position_;
+        asm volatile("memw" ::: "memory");
+        const uint32_t available =
+            write_position - read_position;
+        if (!available || !maximum_bytes) return 0;
+
+        size_t count = maximum_bytes;
+        if (count > available) count = available;
+        const size_t offset =
+            read_position & (kDirectRxRingBytes - 1);
+        size_t first = kDirectRxRingBytes - offset;
+        if (first > count) first = count;
+        std::memcpy(destination, data_ + offset, first);
+        if (first < count) {
+            std::memcpy(
+                destination + first, data_, count - first);
+        }
+        asm volatile("memw" ::: "memory");
+        read_position_ = read_position + count;
+        return count;
+    }
+
+private:
+    static void IRAM_ATTR interruptHandler(void *opaque) {
+        auto *ring = static_cast<DirectUartRxRing *>(opaque);
+        const uint32_t status =
+            uart_ll_get_intsts_mask(&UART0) &
+            kDirectRxInterruptMask;
+        if (!status) return;
+
+        if (status & kDirectRxErrorMask) {
+            ring->error_flags_ |=
+                status & kDirectRxErrorMask;
+        }
+        if (status & UART_INTR_RXFIFO_OVF) {
+            uart_ll_rxfifo_rst(&UART0);
+        } else if (status &
+                   (UART_INTR_RXFIFO_FULL |
+                    UART_INTR_RXFIFO_TOUT)) {
+            uint32_t fifo_bytes =
+                uart_ll_get_rxfifo_len(&UART0);
+            while (fifo_bytes) {
+                const uint32_t write_position =
+                    ring->write_position_;
+                const uint32_t read_position =
+                    ring->read_position_;
+                const uint32_t free_bytes =
+                    kDirectRxRingBytes -
+                    (write_position - read_position);
+                if (!free_bytes) {
+                    uint8_t discarded = 0;
+                    while (fifo_bytes--) {
+                        readDirectRxFifo(&discarded, 1);
+                    }
+                    ring->error_flags_ |=
+                        kDirectRxSoftwareOverflow;
+                    break;
+                }
+
+                const uint32_t offset =
+                    write_position &
+                    (kDirectRxRingBytes - 1);
+                uint32_t count =
+                    kDirectRxRingBytes - offset;
+                if (count > free_bytes) count = free_bytes;
+                if (count > fifo_bytes) count = fifo_bytes;
+                readDirectRxFifo(
+                    ring->data_ + offset, count);
+                asm volatile("memw" ::: "memory");
+                ring->write_position_ =
+                    write_position + count;
+                fifo_bytes -= count;
+            }
+        }
+        uart_ll_clr_intsts_mask(&UART0, status);
+    }
+
+    uint8_t *data_ = nullptr;
+    intr_handle_t interrupt_ = nullptr;
+    volatile uint32_t read_position_ = 0;
+    volatile uint32_t write_position_ = 0;
+    volatile uint32_t error_flags_ = 0;
+    bool active_ = false;
+};
+
+DirectUartRxRing direct_rx_ring;
+
+void writeDirectUart(const char *bytes, size_t count) {
+    const auto *source =
+        reinterpret_cast<const uint8_t *>(bytes);
+    while (count) {
+        uint32_t writable =
+            uart_ll_get_txfifo_len(&UART0);
+        if (!writable) {
+            taskYIELD();
+            continue;
+        }
+        if (writable > count) writable = count;
+        uart_ll_write_txfifo(&UART0, source, writable);
+        source += writable;
+        count -= writable;
+    }
+}
 
 struct UploadBlock {
     uint8_t *data = nullptr;
@@ -151,25 +385,9 @@ bool buildPath(char *destination, size_t destination_bytes,
 
 esp_err_t UartFileUpload::begin(uint32_t control_baud) {
     control_baud_ = control_baud;
-    uart_config_t config{};
-    config.baud_rate = static_cast<int>(control_baud);
-    config.data_bits = UART_DATA_8_BITS;
-    config.parity = UART_PARITY_DISABLE;
-    config.stop_bits = UART_STOP_BITS_1;
-    config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-    config.source_clk = UART_SCLK_DEFAULT;
-
-    esp_err_t result = uart_param_config(kUploadUart, &config);
+    const esp_err_t result =
+        installStandardUart(control_baud);
     if (result != ESP_OK) return result;
-    result = uart_set_pin(kUploadUart, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
-                          UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    if (result != ESP_OK) return result;
-    if (!uart_is_driver_installed(kUploadUart)) {
-        result = uart_driver_install(kUploadUart, kUartRxBufferBytes, 0, 0,
-                                     nullptr, 0);
-        if (result != ESP_OK) return result;
-    }
-    uart_flush_input(kUploadUart);
     ready_ = true;
     writeResponse("HLVUART 1 READY %u\n",
                   static_cast<unsigned>(control_baud_));
@@ -476,10 +694,23 @@ bool UartFileUpload::readExact(uint8_t *destination, size_t bytes,
         esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
     size_t received = 0;
     while (received < bytes && esp_timer_get_time() < deadline) {
-        const int count = uart_read_bytes(
-            kUploadUart, destination + received, bytes - received,
-            pdMS_TO_TICKS(100));
-        if (count > 0) received += static_cast<size_t>(count);
+        if (direct_rx_ring.active()) {
+            const size_t count = direct_rx_ring.read(
+                destination + received, bytes - received);
+            if (count) {
+                received += count;
+            } else if (direct_rx_ring.failed()) {
+                return false;
+            } else {
+                vTaskDelay(1);
+            }
+        } else {
+            const int count = uart_read_bytes(
+                kUploadUart, destination + received,
+                bytes - received, pdMS_TO_TICKS(100));
+            if (count > 0)
+                received += static_cast<size_t>(count);
+        }
     }
     return received == bytes;
 }
@@ -496,7 +727,11 @@ void UartFileUpload::writeResponse(const char *format, ...) {
         static_cast<size_t>(length) < sizeof response
             ? static_cast<size_t>(length)
             : sizeof response - 1;
-    uart_write_bytes(kUploadUart, response, bytes);
+    if (direct_rx_ring.active()) {
+        writeDirectUart(response, bytes);
+    } else {
+        uart_write_bytes(kUploadUart, response, bytes);
+    }
 }
 
 void UartFileUpload::finishResponse(const char *format, ...) {
@@ -511,10 +746,21 @@ void UartFileUpload::finishResponse(const char *format, ...) {
             static_cast<size_t>(length) < sizeof response
                 ? static_cast<size_t>(length)
                 : sizeof response - 1;
-        uart_write_bytes(kUploadUart, response, bytes);
-        uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+        if (direct_rx_ring.active()) {
+            writeDirectUart(response, bytes);
+            uart_wait_tx_idle_polling(kUploadUart);
+        } else {
+            uart_write_bytes(kUploadUart, response, bytes);
+            uart_wait_tx_done(
+                kUploadUart, pdMS_TO_TICKS(1000));
+        }
     }
-    setBaud(control_baud_);
+    if (direct_rx_ring.active()) {
+        direct_rx_ring.stop();
+        installStandardUart(control_baud_);
+    } else {
+        setBaud(control_baud_);
+    }
 }
 
 void UartFileUpload::reject(const char *reason) {
@@ -596,11 +842,34 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     };
 
     uart_flush_input(kUploadUart);
+    if (!direct_rx_ring.prepare()) {
+        stop_writer();
+        std::fclose(output);
+        unlink(temporary);
+        vQueueDelete(ready);
+        vQueueDelete(completed);
+        heap_caps_free(buffer);
+        reject("NO_MEMORY");
+        return false;
+    }
+    if (direct_rx_ring.start(control_baud_) != ESP_OK) {
+        direct_rx_ring.stop();
+        installStandardUart(control_baud_);
+        stop_writer();
+        std::fclose(output);
+        unlink(temporary);
+        vQueueDelete(ready);
+        vQueueDelete(completed);
+        heap_caps_free(buffer);
+        reject("UART_ISR_FAILED");
+        return false;
+    }
+
     writeResponse("HLVREADY 2 %u %u %u\n",
                   static_cast<unsigned>(kChunkBytes),
                   static_cast<unsigned>(request.data_baud),
                   static_cast<unsigned>(kBufferCount));
-    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    uart_wait_tx_idle_polling(kUploadUart);
     vTaskDelay(pdMS_TO_TICKS(20));
     if (!setBaud(request.data_baud)) {
         stop_writer();
@@ -609,7 +878,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         vQueueDelete(ready);
         vQueueDelete(completed);
         heap_caps_free(buffer);
-        reject("BAUD_FAILED");
+        finishResponse("HLVERR 2 BAUD_FAILED\n");
         return false;
     }
 
@@ -673,7 +942,9 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
 
         uint8_t header[kBlockHeaderBytes];
         if (!readExact(header, sizeof header, kChunkTimeoutMs)) {
-            failure = "TIMEOUT";
+            failure = direct_rx_ring.failed()
+                          ? "UART_RX_FAILED"
+                          : "TIMEOUT";
             success = false;
             break;
         }
@@ -690,7 +961,9 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
             &blocks[sequence % kBufferCount];
         if (!readExact(
                 block->data, block_bytes, kChunkTimeoutMs)) {
-            failure = "TIMEOUT";
+            failure = direct_rx_ring.failed()
+                          ? "UART_RX_FAILED"
+                          : "TIMEOUT";
             success = false;
             break;
         }

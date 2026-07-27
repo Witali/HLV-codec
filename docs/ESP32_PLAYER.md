@@ -426,8 +426,14 @@ written into the card's `/HLV` directory without removing the card:
 
 The command handshake remains at 460800 baud; the verified data-transfer
 default is 2 Mbaud. The player stops video and audio, allocates two temporary
-32 KiB receive blocks, shows a progress bar, and verifies per-block and
-whole-file CRC32 before replacing the target. Upload protocol v2 uses both
+32 KiB receive blocks plus a temporary 32 KiB UART SPSC ring, shows a progress
+bar, and verifies per-block and whole-file CRC32 before replacing the target.
+The 2 KiB ESP-IDF UART ring serves only the command channel. During binary
+transfer it is replaced by a level-2 IRAM ISR that batches up to 112 FIFO bytes
+directly into the 32 KiB ring. The ISR does not allocate, calculate CRC, parse
+the protocol, call FreeRTOS, use queues, or wake a task. One `nop` between APB
+FIFO reads is the minimum hardware wait required by the `-O3` main component
+on the original ESP32. Upload protocol v2 uses both
 blocks as a sliding window. The PC retains unacknowledged packets for
 Go-Back-N retransmission, while an ACK returns a credit after the corresponding
 SD write completes. `HLVWAIT` keeps the connection alive during an SD stall;
@@ -436,7 +442,10 @@ cumulative progress. On this CH340C board, CRC-verified 5.19 MB windowed
 transfers with two 32 KiB blocks sustained 122.4 KiB/s at 2 Mbaud and
 122.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
 remains the default because the combined upload pipeline prevents a meaningful
-gain. An autonomous 16 MiB SD write benchmark using 32 KiB blocks, including
+gain. Full-file tests through the direct ISR ring sustained the same
+122.3 KiB/s at both rates and produced the expected `66780fa2` CRC32, so the
+ESP-IDF ISR ring/queue path was not the active throughput limit. An autonomous
+16 MiB SD write benchmark using 32 KiB blocks, including
 final flush, sync and close, sustained 1897 KiB/s for zeros and 1905 KiB/s for
 prefilled deterministic pseudorandom data. Therefore raw SD-card bandwidth is
 not the upload bottleneck. `HLVSDBENCH 1 <zero|random> <size-MiB>` exposes this

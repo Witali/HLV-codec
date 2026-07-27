@@ -180,10 +180,17 @@ the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
 seconds without cumulative progress. Hardware flow control is therefore not
 required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
-interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer was replaced by two 32 KiB buffers that exist only during an upload,
-while the decoder and audio buffers are released. CPU0 receives and validates
-the next UART block while a CPU1 writer task stores the preceding block on SD.
+interrupted or corrupt upload leaves the existing video intact. During data
+transfer, a level-2 IRAM ISR moves batches of up to 112 bytes directly from the
+UART0 hardware FIFO into a temporary 32 KiB SPSC ring. It performs no CRC,
+protocol parsing, allocation, FreeRTOS calls, queue operations or task wakeups.
+The single `nop` between FIFO register reads is required because `main` is
+compiled with `-O3` on the original ESP32. The normal 2 KiB ESP-IDF RX ring is
+used only for the 460800-baud command channel and is removed during binary
+transfer. The direct ring and two 32 KiB block buffers therefore use about
+96 KiB transiently and are released before playback resumes. CPU0 consumes and
+validates the next UART block while a CPU1 writer task stores the preceding
+block on SD.
 An ACK means that a block passed its RAM CRC and completed its SD write;
 `HLVDONE` is emitted only after both buffers are written, `fsync` completes and
 the full-file CRC matches. After each transfer the player reads
@@ -211,7 +218,10 @@ transfers. The same full transfer passed at 3000000 baud but delivered only
 the current limit. Protocol v2 sliding-window transfers of the same file with
 two 32 KiB blocks delivered 122.4 KiB/s at 2000000 baud and 122.3 KiB/s at
 3000000 baud, with matching full-file CRC32. The larger window removes the
-mandatory per-block wait but raises throughput only marginally. The autonomous
+mandatory per-block wait but raises throughput only marginally. Repeating both
+full-file tests with the direct 32 KiB ISR ring produced 122.3 KiB/s and the
+matching `66780fa2` CRC32. This removes the ESP-IDF ring/queue path without
+changing the current end-to-end limit. The autonomous
 SD benchmark reaches about 1.85 MiB/s, so raw card bandwidth is not the
 bottleneck; the remaining limit is in the combined UART/SD pipeline. An
 experimental 2500000-baud transfer never entered normal data reception and
