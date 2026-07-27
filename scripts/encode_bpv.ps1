@@ -32,8 +32,8 @@ param(
     [ValidateRange(0, 1000000000)]
     [double]$Lambda = 64,
 
-    [ValidateRange(1, 8)]
-    [int]$CandidatePalettes = 3,
+    [ValidateRange(1, 64)]
+    [int]$CandidatePalettes = 8,
 
     [ValidateRange(64, 262144)]
     [int]$SampleBlocks = 32768,

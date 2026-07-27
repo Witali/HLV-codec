@@ -50,7 +50,7 @@ formats:
     toleranceDb: 0.10
     lambdaMin: 0
     lambdaMax: 4096
-    candidatePalettes: 3
+    candidatePalettes: 8
     samplesPerFrame: 256
     activePalettes: true
     threads: 6

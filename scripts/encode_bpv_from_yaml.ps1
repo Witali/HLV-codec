@@ -316,7 +316,7 @@ foreach ($video in $config["videos"]) {
         SceneThreshold = [double](Get-OptionalSetting `
             -Map $video -Name "sceneThreshold" -Default 0.35)
         CandidatePalettes = [int](Get-OptionalSetting `
-            -Map $video -Name "candidatePalettes" -Default 3)
+            -Map $video -Name "candidatePalettes" -Default 8)
         SampleBlocks = [int](Get-OptionalSetting `
             -Map $video -Name "sampleBlocks" -Default 32768)
         SamplesPerFrame = [int](Get-OptionalSetting `

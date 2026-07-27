@@ -147,6 +147,7 @@ try {
       "--gop", "12",
       "--min-gop", "2",
       "--scene-threshold", "0.35",
+      "--candidate-palettes", "64",
     ],
   );
 
@@ -229,6 +230,9 @@ try {
   assert.equal(report.frames, 6);
   assert.equal(report.paletteMode, "active-gop");
   assert.equal(report.paletteUpdates, 2);
+  assert.equal(report.candidatePaletteCount, 8);
+  assert.equal(report.paletteSearch, "rgb-lut");
+  assert.equal(report.paletteIndexBitsPerChannel, 4);
   assert.ok(Number.isFinite(report.rgbPsnrDb));
   assert.ok(report.rgbPsnrDb > 0);
   assert.equal(report.version, 6);
@@ -262,6 +266,7 @@ try {
     JSON.parse(fs.readFileSync(sceneReport, "utf8"));
   assert.equal(parsedSceneReport.sceneKeyframes, 1);
   assert.equal(parsedSceneReport.paletteUpdates, 2);
+  assert.equal(parsedSceneReport.candidatePaletteCount, 64);
   assert.deepEqual(
     parsedSceneReport.keyframes.map((keyframe) => keyframe.frame),
     [0, 4],

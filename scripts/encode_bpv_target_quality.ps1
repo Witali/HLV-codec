@@ -49,8 +49,8 @@ param(
     [ValidateRange(0.0, 1.0)]
     [double]$SceneThreshold = 0.35,
 
-    [ValidateRange(1, 8)]
-    [int]$CandidatePalettes = 3,
+    [ValidateRange(1, 64)]
+    [int]$CandidatePalettes = 8,
 
     [ValidateRange(64, 262144)]
     [int]$SampleBlocks = 32768,

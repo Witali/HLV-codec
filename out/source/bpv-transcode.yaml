@@ -20,7 +20,7 @@ videos:
     gop: 48
     minGop: 12
     sceneThreshold: 0.35
-    candidatePalettes: 3
+    candidatePalettes: 8
     samplesPerFrame: 256
     activePalettes: true
 
@@ -39,7 +39,7 @@ videos:
     gop: 48
     minGop: 12
     sceneThreshold: 0.35
-    candidatePalettes: 3
+    candidatePalettes: 8
     samplesPerFrame: 256
     activePalettes: true
 
@@ -58,7 +58,7 @@ videos:
     gop: 48
     minGop: 12
     sceneThreshold: 0.35
-    candidatePalettes: 3
+    candidatePalettes: 8
     samplesPerFrame: 256
     activePalettes: true
 
@@ -77,6 +77,6 @@ videos:
     gop: 48
     minGop: 12
     sceneThreshold: 0.35
-    candidatePalettes: 3
+    candidatePalettes: 8
     samplesPerFrame: 256
     activePalettes: true

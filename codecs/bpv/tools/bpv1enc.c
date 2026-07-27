@@ -20,7 +20,11 @@
 #define DIRECT_RECORD_FLAG 0x80
 #define RECORD_BYTES 9
 #define PATTERN_BYTES 4
-#define MAX_CANDIDATE_PALETTES 8
+#define MAX_CANDIDATE_PALETTES PALETTE_COUNT
+#define PALETTE_INDEX_CHANNEL_BITS 4
+#define PALETTE_INDEX_CHANNEL_BINS (1U << PALETTE_INDEX_CHANNEL_BITS)
+#define PALETTE_INDEX_BIN_COUNT \
+    (1U << (PALETTE_INDEX_CHANNEL_BITS * 3))
 
 enum {
     MODE_SKIP = 0,
@@ -71,6 +75,10 @@ typedef struct {
     float block_centers[PALETTE_COUNT][6];
     uint8_t palette[PALETTE_COUNT][COLORS_PER_PALETTE][3];
 } Training;
+
+typedef struct {
+    uint32_t *distances;
+} PaletteIndex;
 
 typedef struct {
     int threads;
@@ -160,7 +168,7 @@ static void usage(FILE *stream) {
         "  --scene-threshold N            cut score 0..1 (default 0.35)\n"
         "  --no-scene-cuts                use only fixed GOP boundaries\n"
         "  --lambda N                     RD multiplier (default 64)\n"
-        "  --candidate-palettes N         nearby palettes 1..8 (default 3)\n"
+        "  --candidate-palettes N         indexed palettes 1..64 (default 8)\n"
         "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
         "  --samples-per-frame N          training blocks/frame (default 256)\n"
@@ -567,6 +575,111 @@ static uint32_t color_distance(const uint8_t *left, const uint8_t *right) {
     int green = (int)left[1] - right[1];
     int blue = (int)left[2] - right[2];
     return (uint32_t)(red * red + green * green + blue * blue);
+}
+
+static void palette_index_free(PaletteIndex *index) {
+    if (!index) return;
+    free(index->distances);
+    index->distances = NULL;
+}
+
+static int palette_index_build(
+    const Training *training,
+    PaletteIndex *index
+) {
+    const size_t entry_count =
+        (size_t)PALETTE_INDEX_BIN_COUNT * PALETTE_COUNT;
+    unsigned red_bin, green_bin, blue_bin;
+    if (!training || !index ||
+        entry_count > SIZE_MAX / sizeof *index->distances) {
+        return -1;
+    }
+    index->distances = (uint32_t *)malloc(
+        entry_count * sizeof *index->distances);
+    if (!index->distances) return -1;
+    for (red_bin = 0; red_bin < PALETTE_INDEX_CHANNEL_BINS; ++red_bin) {
+        for (green_bin = 0;
+             green_bin < PALETTE_INDEX_CHANNEL_BINS;
+             ++green_bin) {
+            for (blue_bin = 0;
+                 blue_bin < PALETTE_INDEX_CHANNEL_BINS;
+                 ++blue_bin) {
+                const unsigned bin =
+                    (red_bin << (PALETTE_INDEX_CHANNEL_BITS * 2)) |
+                    (green_bin << PALETTE_INDEX_CHANNEL_BITS) |
+                    blue_bin;
+                const uint8_t center[3] = {
+                    (uint8_t)((red_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS))),
+                    (uint8_t)((green_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS))),
+                    (uint8_t)((blue_bin << (8 -
+                        PALETTE_INDEX_CHANNEL_BITS)) +
+                        (1U << (7 - PALETTE_INDEX_CHANNEL_BITS)))
+                };
+                int palette;
+                for (palette = 0; palette < PALETTE_COUNT; ++palette) {
+                    uint32_t nearest = UINT32_MAX;
+                    int color;
+                    for (color = 0; color < COLORS_PER_PALETTE; ++color) {
+                        uint32_t distance = color_distance(
+                            center, training->palette[palette][color]);
+                        if (distance < nearest) nearest = distance;
+                    }
+                    index->distances[
+                        (size_t)bin * PALETTE_COUNT + palette] = nearest;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static void palette_index_candidates(
+    const uint8_t pixels[PIXELS_PER_BLOCK][3],
+    const PaletteIndex *index,
+    int count,
+    int *indices
+) {
+    uint64_t best_scores[MAX_CANDIDATE_PALETTES];
+    int palette, slot;
+    for (slot = 0; slot < count; ++slot) {
+        best_scores[slot] = UINT64_MAX;
+        indices[slot] = 0;
+    }
+    for (palette = 0; palette < PALETTE_COUNT; ++palette) {
+        uint64_t score = 0;
+        int pixel;
+        for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+            const unsigned bin =
+                ((unsigned)(pixels[pixel][0] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS))
+                    << (PALETTE_INDEX_CHANNEL_BITS * 2)) |
+                ((unsigned)(pixels[pixel][1] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS))
+                    << PALETTE_INDEX_CHANNEL_BITS) |
+                (unsigned)(pixels[pixel][2] >>
+                    (8 - PALETTE_INDEX_CHANNEL_BITS));
+            score += index->distances[
+                (size_t)bin * PALETTE_COUNT + palette];
+        }
+        for (slot = 0; slot < count; ++slot) {
+            if (score < best_scores[slot] ||
+                (score == best_scores[slot] &&
+                 palette < indices[slot])) {
+                int move;
+                for (move = count - 1; move > slot; --move) {
+                    best_scores[move] = best_scores[move - 1];
+                    indices[move] = indices[move - 1];
+                }
+                best_scores[slot] = score;
+                indices[slot] = palette;
+                break;
+            }
+        }
+    }
 }
 
 static int train_color_centers(
@@ -1260,37 +1373,6 @@ static int buffer_raw_direct(Buffer *output, const Block *block) {
            buffer_write(output, block_direct_bytes_const(block), 8);
 }
 
-static void nearest_palettes(
-    const float descriptor[6],
-    const Training *training,
-    int count,
-    int *indices
-) {
-    float distances[MAX_CANDIDATE_PALETTES];
-    int center, slot;
-    for (slot = 0; slot < count; ++slot) {
-        distances[slot] = INFINITY;
-        indices[slot] = 0;
-    }
-    for (center = 0; center < PALETTE_COUNT; ++center) {
-        float distance = descriptor_distance(
-            descriptor, training->block_centers[center]);
-        for (slot = 0; slot < count; ++slot) {
-            if (distance < distances[slot] ||
-                (distance == distances[slot] && center < indices[slot])) {
-                int move;
-                for (move = count - 1; move > slot; --move) {
-                    distances[move] = distances[move - 1];
-                    indices[move] = indices[move - 1];
-                }
-                distances[slot] = distance;
-                indices[slot] = center;
-                break;
-            }
-        }
-    }
-}
-
 static int better_candidate(
     double score,
     int bits,
@@ -1368,6 +1450,7 @@ static int encode_gop(GopJob *job) {
     Block *current = NULL;
     uint8_t *modes = NULL;
     uint8_t *packed_modes = NULL;
+    PaletteIndex palette_index = {0};
     BlockDictionary block_dictionary = {0}, shadow_blocks = {0};
     int frame_index;
     if (options->active_palettes) {
@@ -1381,6 +1464,7 @@ static int encode_gop(GopJob *job) {
         training = &active_training;
     }
     if (!training) goto fail;
+    if (palette_index_build(training, &palette_index)) goto fail;
     previous = (Block *)calloc((size_t)block_count, sizeof *previous);
     current = (Block *)calloc((size_t)block_count, sizeof *current);
     modes = (uint8_t *)malloc((size_t)block_count);
@@ -1401,7 +1485,6 @@ static int encode_gop(GopJob *job) {
         int block_index;
         for (block_index = 0; block_index < block_count; ++block_index) {
             uint8_t pixels[PIXELS_PER_BLOCK][3];
-            float descriptor[6];
             int palette_indices[MAX_CANDIDATE_PALETTES];
             Block best_block, candidate;
             uint64_t best_error = UINT64_MAX;
@@ -1410,7 +1493,6 @@ static int encode_gop(GopJob *job) {
             int best_source_previous = 0;
             int palette_slot;
             extract_block(frame, info, block_index, pixels);
-            describe_pixels(pixels, descriptor);
             memset(&best_block, 0, sizeof best_block);
             if (frame_index > 0) {
                 best_block = previous[block_index];
@@ -1420,7 +1502,7 @@ static int encode_gop(GopJob *job) {
                 best_bits = 0;
                 best_source_previous = 1;
             }
-            nearest_palettes(descriptor, training,
+            palette_index_candidates(pixels, &palette_index,
                 options->candidate_palettes, palette_indices);
             for (palette_slot = 0;
                  palette_slot < options->candidate_palettes;
@@ -1561,6 +1643,7 @@ frame_fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
+    palette_index_free(&palette_index);
     return 0;
 fail:
     free(previous);
@@ -1569,6 +1652,7 @@ fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
+    palette_index_free(&palette_index);
     buffer_free(&job->output);
     return -1;
 }
@@ -1958,6 +2042,8 @@ static int write_report(
         "  \"sceneKeyframes\": %u,\n"
         "  \"lambda\": %.6f,\n"
         "  \"candidatePaletteCount\": %d,\n"
+        "  \"paletteSearch\": \"rgb-lut\",\n"
+        "  \"paletteIndexBitsPerChannel\": %d,\n"
         "  \"searchRadius\": %d,\n"
         "  \"paletteMode\": \"%s\",\n"
         "  \"paletteUpdates\": %u,\n"
@@ -1996,7 +2082,8 @@ static int write_report(
         options->audio_path ? 1 : 0,
         options->threads, options->gop, options->minimum_gop,
         options->scene_threshold, scene_keyframes, options->lambda,
-        options->candidate_palettes, options->search_radius,
+        options->candidate_palettes, PALETTE_INDEX_CHANNEL_BITS,
+        options->search_radius,
         options->active_palette_path ? "active-override" :
             options->active_palettes ? "active-gop" : "fixed-global",
         palette_updates,
@@ -2030,7 +2117,7 @@ static int write_report(
 
 int main(int argc, char **argv) {
     Options options = {
-        8, 48, 12, 0.35, 64.0, 3, 2, 256, 32768, 256,
+        8, 48, 12, 0.35, 64.0, 8, 2, 256, 32768, 256,
         10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL
     };
     const char *input_path = NULL;

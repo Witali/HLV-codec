@@ -84,8 +84,14 @@ that bank, and is written in presentation order. GOP training and encoding
 run in parallel. Eight worker threads, a 48-frame maximum GOP, a 12-frame
 minimum scene GOP, scene threshold 0.35, active palettes and lambda 64 are the
 defaults. Palette training samples 256 evenly spaced blocks from every frame
-and rotates the spatial phase between frames. `--no-scene-cuts` retains
-fixed-interval GOPs for comparison.
+and rotates the spatial phase between frames. For every trained GOP bank the
+encoder builds a 4-bit-per-RGB-channel lookup table that estimates each
+block's error against all 64 palettes. Only the best eight indexed palettes
+receive the full 4/8/16-color RDO search by default. `--candidate-palettes`
+accepts 1 through 64; 16 is a high-quality offline choice and 64 retains
+exhaustive search for reference measurements. The lookup table is encoder-only
+and does not change the BPV v6 stream. `--no-scene-cuts` retains fixed-interval
+GOPs for comparison.
 
 ```sh
 ffmpeg -hide_banner -loglevel error -i input.mov -an \
@@ -94,6 +100,7 @@ ffmpeg -hide_banner -loglevel error -i input.mov -an \
 ./codecs/bpv/bpv1enc input.y4m output.bpv1 \
   --threads 8 --gop 48 --lambda 64 \
   --min-gop 12 --scene-threshold 0.35 \
+  --candidate-palettes 8 \
   --active-palettes \
   --audio-u8 input-mono-16000.u8 --audio-rate 16000 \
   --report output.json
