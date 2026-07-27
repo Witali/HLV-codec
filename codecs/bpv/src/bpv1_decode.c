@@ -1256,27 +1256,31 @@ typedef struct {
     size_t available;
 } PixelStreamReader;
 
+static int pixel_stream_refill(PixelStreamReader *reader) {
+    const size_t refill =
+        reader->remaining < reader->decoder->stream_capacity
+            ? reader->remaining
+            : reader->decoder->stream_capacity;
+    if (!refill ||
+        profile_input_read_exact(
+            reader->decoder, reader->read, reader->input_opaque,
+            reader->decoder->stream_data, refill) != BPV1_OK) {
+        return BPV1_ERR_IO;
+    }
+    reader->remaining -= refill;
+    reader->offset = 0;
+    reader->available = refill;
+    return BPV1_OK;
+}
+
 static int pixel_stream_read(
     PixelStreamReader *reader, uint8_t *destination, size_t size
 ) {
     while (size) {
         size_t chunk;
-        if (!reader->available) {
-            const size_t refill =
-                reader->remaining < reader->decoder->stream_capacity
-                    ? reader->remaining
-                    : reader->decoder->stream_capacity;
-            if (!refill ||
-                profile_input_read_exact(
-                    reader->decoder, reader->read,
-                    reader->input_opaque,
-                    reader->decoder->stream_data, refill) != BPV1_OK) {
-                return BPV1_ERR_IO;
-            }
-            reader->remaining -= refill;
-            reader->offset = 0;
-            reader->available = refill;
-        }
+        if (!reader->available &&
+            pixel_stream_refill(reader) != BPV1_OK)
+            return BPV1_ERR_IO;
         chunk = size < reader->available ? size : reader->available;
         memcpy(
             destination,
@@ -1287,6 +1291,18 @@ static int pixel_stream_read(
         reader->offset += chunk;
         reader->available -= chunk;
     }
+    return BPV1_OK;
+}
+
+static int pixel_stream_read_u8(
+    PixelStreamReader *reader, uint8_t *destination
+) {
+    if (!reader->available &&
+        pixel_stream_refill(reader) != BPV1_OK)
+        return BPV1_ERR_IO;
+    *destination =
+        reader->decoder->stream_data[reader->offset++];
+    --reader->available;
     return BPV1_OK;
 }
 
@@ -1331,7 +1347,7 @@ static int decode_stream_pixel_block(
         int source_y;
         unsigned row;
         if (!decoder->has_previous) return BPV1_ERR_DECODE;
-        read_result = pixel_stream_read(reader, &packed, 1);
+        read_result = pixel_stream_read_u8(reader, &packed);
         if (read_result != BPV1_OK) return read_result;
         motion_x = signed_nibble(packed >> 4);
         motion_y = signed_nibble(packed & 15U);
@@ -1369,7 +1385,7 @@ static int decode_stream_pixel_block(
         const uint8_t *end;
         unsigned subtype;
         size_t packed_size;
-        int read_result = pixel_stream_read(reader, packed, 1);
+        int read_result = pixel_stream_read_u8(reader, packed);
         if (read_result != BPV1_OK) return read_result;
         subtype = packed[0] >> 6;
         packed_size = subtype == 0U ? 2U :
