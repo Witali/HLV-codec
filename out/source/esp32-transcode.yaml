@@ -147,7 +147,7 @@ formats:
         codedPaddingY: 24
         bitrateKbps: 2048
         maximumBitrateKbps: 2048
-        vbvBufferKbps: 1024
+        vbvBufferKbps: 2048
         gop: 1
 
 videos:

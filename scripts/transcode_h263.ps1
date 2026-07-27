@@ -40,7 +40,7 @@ $arguments = @{
     Profile = "352x288"
     FitMode = "Crop"
     VideoBitrateKbps = 2048
-    VideoBufferKbps = 1024
+    VideoBufferKbps = 2048
     Gop = 1
     Threads = $Threads
     MaxFrames = $MaxFrames
@@ -52,4 +52,3 @@ if ($NoAudio) {
 if ($LASTEXITCODE -ne 0) {
     throw "H.263 profile transcode failed."
 }
-

@@ -67,7 +67,7 @@ if (-not $constantQuality -and -not $VideoBitrateKbps) {
     $VideoBitrateKbps = if ($isCif) { 2048 } else { 384 }
 }
 if (-not $constantQuality -and -not $VideoBufferKbps) {
-    $VideoBufferKbps = if ($isCif) { 1024 } else { 512 }
+    $VideoBufferKbps = if ($isCif) { 2048 } else { 512 }
 }
 
 $inputReportText = & $ffprobe -v error `

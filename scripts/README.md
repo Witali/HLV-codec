@@ -97,7 +97,7 @@ select the production parameters and output directory automatically:
 | --- | --- |
 | `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
 | `transcode_bpv5.ps1` | BPV v5, source FPS, target RGB PSNR 40 dB, lambda 0–4096, three active palettes, GOP 48. |
-| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, CBR 2048 kbit/s, VBV 1024 kbit, full source FPS, intra-only. |
+| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, CBR 2048 kbit/s, VBV 2048 kbit, full source FPS, intra-only. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
