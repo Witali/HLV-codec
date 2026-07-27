@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-Transcodes one video to the production ESP32 BPV v5 profile.
+Transcodes one video to the production ESP32 BPV v6 profile.
 #>
 [CmdletBinding()]
 param(
@@ -76,5 +76,5 @@ if ($Force) {
 }
 & (Join-Path $PSScriptRoot "encode_bpv_target_quality.ps1") @arguments
 if ($LASTEXITCODE -ne 0) {
-    throw "BPV v5 profile transcode failed."
+    throw "BPV v6 profile transcode failed."
 }

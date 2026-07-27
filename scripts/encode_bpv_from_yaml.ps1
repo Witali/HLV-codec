@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-Encodes BPV1 v5 profiles declared in a repository YAML file.
+Encodes BPV1 v6 profiles declared in a repository YAML file.
 
 .DESCRIPTION
 Reads the deliberately small, dependency-free YAML subset used by
@@ -222,7 +222,7 @@ $summaryFile = if ($config.Contains("summaryFile")) {
         -BaseDirectory $configDirectory
 }
 else {
-    Join-Path $outputDirectory "BPVv5_yaml_summary.json"
+    Join-Path $outputDirectory "BPVv6_yaml_summary.json"
 }
 if (-not $ValidateOnly -and
     (Test-Path -LiteralPath $summaryFile) -and -not $Force) {
@@ -260,7 +260,7 @@ foreach ($video in $config["videos"]) {
     $format = [string](Get-RequiredSetting `
         -Map $video -Name "format" -Profile $profileNumber)
     $codec = [string](Get-OptionalSetting `
-        -Map $video -Name "codec" -Default "BPVv5")
+        -Map $video -Name "codec" -Default "BPVv6")
     if (-not $format.Equals(
         "bpv1",
         [StringComparison]::OrdinalIgnoreCase
@@ -268,7 +268,7 @@ foreach ($video in $config["videos"]) {
         throw "YAML video $profileNumber has unsupported format '$format'."
     }
     if (-not $codec.Equals(
-        "BPVv5",
+        "BPVv6",
         [StringComparison]::OrdinalIgnoreCase
     )) {
         throw "YAML video $profileNumber has unsupported codec '$codec'."

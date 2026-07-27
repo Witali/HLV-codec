@@ -50,7 +50,7 @@ try {
     & (Join-Path $PSScriptRoot "transcode_hlv14.ps1") $source `
         -OutputFile (Join-Path $work "hlv14.hlv") `
         -MaxFrames 2 -NoAudio -Force
-    & (Join-Path $PSScriptRoot "transcode_bpv5.ps1") $source `
+    & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
         -OutputDirectory (Join-Path $work "BPV") `
         -Width 320 -Height 180 -MaxFrames 2 -NoAudio -Force
 
@@ -82,6 +82,14 @@ try {
     if ($bpvFiles.Count -ne 1) {
         throw "BPV wrapper did not create exactly one output video."
     }
+    $bpvInfo = & node (Join-Path $repo "codecs\bpv\tools\bpv1info.js") `
+        $bpvFiles[0].FullName --json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or
+        $bpvInfo.version -ne 6 -or
+        $bpvInfo.maxPatternDictionary -ne 0 -or
+        @($bpvInfo.modeCounts.PSObject.Properties).Count -ne 4) {
+        throw "BPV wrapper did not create a valid four-mode BPV v6 stream."
+    }
 
     Write-Host "All six production transcode wrappers passed."
 }
@@ -97,4 +105,3 @@ finally {
         Remove-Item -LiteralPath $resolvedWork -Recurse -Force
     }
 }
-

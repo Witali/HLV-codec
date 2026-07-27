@@ -36,11 +36,11 @@ formats:
     audioSampleRate: 16000
     audioChannels: 1
 
-  BPVv5:
+  BPVv6:
     outputDirectory: ../BPV
     extension: bpv1
     container: BPV
-    version: 5
+    version: 6
     fps: source
     gop: 48
     qualityMode: targetPsnr

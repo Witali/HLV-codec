@@ -14,7 +14,7 @@ Options:
   --lambda N                    RD multiplier (default: 64)
   --candidate-palettes N        Nearby BPAL palettes to test (default: 3)
   --gop N                       Keyframe interval (default: 30)
-  --search-radius N             Motion radius in 4x4 blocks (default: 4)
+  --search-radius N             Motion radius 0..7 blocks (default: 4)
   --max-frames N                Stop after N frames (default: all)
   --max-sample-blocks N         Palette-training block sample (default: 32768)
   --max-pixels-per-cluster N    Palette color sample (default: 8192)
@@ -22,7 +22,6 @@ Options:
   --color-iterations N          Color k-means iterations (default: 10)
   --color-space oklab|rgb       Palette-training color space (default: oklab)
   --max-block-dictionary N      Full-block dictionary entries (default: 256)
-  --max-pattern-dictionary N    Pattern dictionary entries (default: 256)
   --no-rd                       Use nearest-palette encoding without RD
   --no-progress                 Suppress progress messages
   -h, --help                    Show this help
@@ -45,7 +44,6 @@ function parseArguments(argv) {
     colorClusterIterations: 10,
     colorSpace: "oklab",
     maxBlockDictionary: 256,
-    maxPatternDictionary: 256,
     rateDistortion: true,
     progress: true,
   };
@@ -66,7 +64,7 @@ function parseArguments(argv) {
     } else if (argument === "--gop") {
       options.keyframeInterval = integer(value(), argument, 1, 65535);
     } else if (argument === "--search-radius") {
-      options.searchRadius = integer(value(), argument, 0, 127);
+      options.searchRadius = integer(value(), argument, 0, 7);
     } else if (argument === "--max-frames") {
       options.maxFrames = integer(value(), argument, 0, 0xffffffff);
     } else if (argument === "--max-sample-blocks") {
@@ -84,8 +82,6 @@ function parseArguments(argv) {
       }
     } else if (argument === "--max-block-dictionary") {
       options.maxBlockDictionary = integer(value(), argument, 1, 65535);
-    } else if (argument === "--max-pattern-dictionary") {
-      options.maxPatternDictionary = integer(value(), argument, 1, 65535);
     } else if (argument === "--no-rd") {
       options.rateDistortion = false;
     } else if (argument === "--no-progress") {
@@ -164,7 +160,6 @@ function main() {
     colorClusterIterations: options.colorClusterIterations,
     colorSpace: options.colorSpace,
     maxBlockDictionary: options.maxBlockDictionary,
-    maxPatternDictionary: options.maxPatternDictionary,
     onProgress: createProgressReporter(options.progress),
   };
   const encoded = options.rateDistortion
@@ -174,7 +169,7 @@ function main() {
 
   const report = {
     codec: "BPV1",
-    version: 2,
+    version: 6,
     width: video.width,
     height: video.height,
     frames: video.frames.length,

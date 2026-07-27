@@ -29,7 +29,6 @@
     const candidatePaletteCount = integerOption(settings.candidatePaletteCount, 3, 1, 8);
     const keyframeInterval = integerOption(settings.keyframeInterval, 30, 1, 65535);
     const maximumBlockDictionary = integerOption(settings.maxBlockDictionary, 256, 1, 65535);
-    const maximumPatternDictionary = integerOption(settings.maxPatternDictionary, 256, 1, 65535);
     const training = autoPalette.buildAutomaticPalettes(normalized, settings);
     const blocksX = Math.ceil(normalized.width / BLOCK_SIZE);
     const blocksY = Math.ceil(normalized.height / BLOCK_SIZE);
@@ -37,7 +36,6 @@
     const selectedFrames = new Array(normalized.frames.length);
     let previousBlocks = null;
     let blockSet = new Set();
-    let patternSet = new Set();
     let totalSquaredError = 0;
     const decisionCounts = { previous: 0, quantized: 0 };
 
@@ -46,7 +44,6 @@
       if (keyframe) {
         previousBlocks = null;
         blockSet = new Set();
-        patternSet = new Set();
       }
       const frame = normalized.frames[frameIndex];
       const blocks = new Array(blockCount);
@@ -69,13 +66,9 @@
             training.palette,
           );
           const bkey = blockKey(candidate.block);
-          const pkey = patternKey(candidate.block.pattern);
           let bits = rawPayloadBits(candidate.block);
           if (previousBlocks && equalBlock(candidate.block, previousBlocks[blockIndex])) bits = 0;
           else if (blockSet.has(bkey)) bits = BLOCK_DICTIONARY_BITS;
-          else if (patternSet.has(pkey)) {
-            bits = patternDictionaryPayloadBits(candidate.block);
-          }
           const score = candidate.error + lambda * bits;
           if (!best || score < best.score ||
               (score === best.score && bits < best.bits) ||
@@ -92,15 +85,9 @@
         // This shadow dictionary is used only for future rate estimates. The
         // canonical encoder still decides the actual SKIP/MOTION/DICT/RAW mode.
         const bkey = blockKey(best.block);
-        const pkey = patternKey(best.block.pattern);
         const samePrevious = previousBlocks && equalBlock(best.block, previousBlocks[blockIndex]);
         if (!samePrevious && !blockSet.has(bkey)) {
-          if (patternSet.has(pkey)) {
-            addBounded(blockSet, bkey, maximumBlockDictionary);
-          } else {
-            addBounded(patternSet, pkey, maximumPatternDictionary);
-            addBounded(blockSet, bkey, maximumBlockDictionary);
-          }
+          addBounded(blockSet, bkey, maximumBlockDictionary);
         }
       }
       selectedFrames[frameIndex] = { blocks };
@@ -131,9 +118,8 @@
         criterion: "RGB block SSE + lambda * payload bits",
         payloadBits: {
           skip: 0,
-          motion: 16,
+          motion: 8,
           blockDictionary: BLOCK_DICTIONARY_BITS,
-          patternDictionary: "32 or 40",
           raw: "16, 32 or 56",
         },
         mse,
@@ -313,9 +299,6 @@
   function rawPayloadBits(block) {
     const count = patternColorCount(block.pattern);
     return count === 1 ? 16 : count === 2 ? 32 : 56;
-  }
-  function patternDictionaryPayloadBits(block) {
-    return patternColorCount(block.pattern) <= 2 ? 32 : 40;
   }
   function cloneBlock(block) { return { paletteIndex: block.paletteIndex, localColors: Array.from(block.localColors), pattern: Uint8Array.from(block.pattern) }; }
   function equalBlock(a, b) { return a.paletteIndex === b.paletteIndex && equalArray(a.localColors, b.localColors) && equalArray(a.pattern, b.pattern); }

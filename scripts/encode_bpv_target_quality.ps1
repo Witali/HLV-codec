@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-Encodes several videos to BPV1 v5 while targeting an RGB PSNR value.
+Encodes several videos to BPV1 v6 while targeting an RGB PSNR value.
 
 .DESCRIPTION
 Prepares every input once, searches the BPV rate-distortion lambda against the
@@ -134,7 +134,7 @@ $targetFileText = $targetText.Replace(".", "p")
 if (-not $NoSummary) {
     if (-not $SummaryFile) {
         $SummaryFile = Join-Path $OutputDirectory (
-            "BPVv5_target_${targetFileText}dB_summary.json"
+            "BPVv6_target_${targetFileText}dB_summary.json"
         )
     }
     $SummaryFile = [IO.Path]::GetFullPath($SummaryFile)
@@ -220,7 +220,6 @@ function Invoke-BpvQualityTrial {
         "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,
         "--max-block-dictionary", 256,
-        "--max-pattern-dictionary", 256,
         "--sample-blocks", $SampleBlocks,
         "--samples-per-frame", $SamplesPerFrame,
         "--block-iterations", $BlockIterations,
@@ -544,7 +543,7 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
         }
         $outputStem = (
             "${baseName}_${Width}x${Height}_${fpsText}fps_" +
-            "BPVv5_${qualitySuffix}"
+            "BPVv6_${qualitySuffix}"
         )
         $outputPath = Join-Path $OutputDirectory "${outputStem}.bpv1"
         $reportPath = Join-Path $OutputDirectory "${outputStem}.json"

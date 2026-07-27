@@ -199,7 +199,6 @@ try {
         "--candidate-palettes", $CandidatePalettes,
         "--search-radius", 2,
         "--max-block-dictionary", 256,
-        "--max-pattern-dictionary", 256,
         "--sample-blocks", $SampleBlocks,
         "--samples-per-frame", $SamplesPerFrame,
         "--block-iterations", $BlockIterations,
@@ -216,7 +215,7 @@ try {
     else {
         $encoderArguments += "--fixed-palettes"
     }
-    $bpvVersion = 5
+    $bpvVersion = 6
     $paletteMode = if ($ActivePalettes) {
         "active GOP palettes"
     }
