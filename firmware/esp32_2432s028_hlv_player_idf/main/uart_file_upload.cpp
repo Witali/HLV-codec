@@ -1,5 +1,6 @@
 #include "uart_file_upload.hpp"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,9 @@ constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr size_t kBlockHeaderBytes = 14;
 constexpr uint32_t kWriterStackBytes = 4096;
 constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
+constexpr size_t kSdBenchmarkBlockBytes = 32 * 1024;
+constexpr uint32_t kMaximumSdBenchmarkMiB = 64;
+constexpr char kSdBenchmarkFilename[] = ".hlv-sd-benchmark.tmp";
 
 struct UploadBlock {
     uint8_t *data = nullptr;
@@ -191,6 +195,28 @@ bool UartFileUpload::parseRequest(const char *line,
         crc_requested_ = true;
         return false;
     }
+    if (!std::strncmp(line, "HLVSDBENCH ", 11)) {
+        char pattern[8]{};
+        unsigned size_mib = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVSDBENCH 1 %7s %u %c",
+            pattern, &size_mib, &trailing);
+        if (fields != 2 || !size_mib ||
+            size_mib > kMaximumSdBenchmarkMiB ||
+            (std::strcmp(pattern, "zero") &&
+             std::strcmp(pattern, "random"))) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        sd_benchmark_request_.pattern =
+            !std::strcmp(pattern, "zero")
+                ? SdBenchmarkPattern::kZeros
+                : SdBenchmarkPattern::kPseudoRandom;
+        sd_benchmark_request_.size_mib = size_mib;
+        sd_benchmark_requested_ = true;
+        return false;
+    }
     if (std::strncmp(line, "HLVPUT ", 7)) return false;
 
     UartUploadRequest parsed{};
@@ -253,6 +279,15 @@ bool UartFileUpload::takeCrcRequest(char *filename, size_t filename_bytes) {
     std::snprintf(filename, filename_bytes, "%s", crc_filename_);
     crc_requested_ = false;
     crc_filename_[0] = '\0';
+    return true;
+}
+
+bool UartFileUpload::takeSdBenchmarkRequest(
+        SdBenchmarkRequest *request) {
+    if (!sd_benchmark_requested_ || !request) return false;
+    *request = sd_benchmark_request_;
+    sd_benchmark_request_ = {};
+    sd_benchmark_requested_ = false;
     return true;
 }
 
@@ -337,6 +372,97 @@ bool UartFileUpload::checksumFile(const char *directory,
     finishResponse("HLVCRC 1 %u %08x %s\n",
                    static_cast<unsigned>(file_size),
                    static_cast<unsigned>(file_crc), filename);
+    return true;
+}
+
+bool UartFileUpload::benchmarkSd(
+        const char *directory, const SdBenchmarkRequest &request) {
+    if (!directory || !request.size_mib ||
+        request.size_mib > kMaximumSdBenchmarkMiB) {
+        reject("BAD_REQUEST");
+        return false;
+    }
+
+    char path[384];
+    if (!buildPath(path, sizeof path, directory,
+                   kSdBenchmarkFilename, "")) {
+        reject("PATH_TOO_LONG");
+        return false;
+    }
+    unlink(path);
+
+    auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(
+        kSdBenchmarkBlockBytes, MALLOC_CAP_8BIT));
+    if (!buffer) {
+        reject("NO_MEMORY");
+        return false;
+    }
+    const char *pattern_name = "zero";
+    if (request.pattern == SdBenchmarkPattern::kZeros) {
+        std::memset(buffer, 0, kSdBenchmarkBlockBytes);
+    } else {
+        pattern_name = "random";
+        uint32_t state = 0x9e3779b9U;
+        for (size_t index = 0;
+             index < kSdBenchmarkBlockBytes; ++index) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            buffer[index] = static_cast<uint8_t>(state);
+        }
+    }
+
+    FILE *output = std::fopen(path, "wb");
+    if (!output) {
+        heap_caps_free(buffer);
+        reject("OPEN_FAILED");
+        return false;
+    }
+    std::setvbuf(output, nullptr, _IONBF, 0);
+
+    const uint32_t total_bytes = request.size_mib * 1024U * 1024U;
+    writeResponse("HLVSDBENCHBEGIN 1 %s %u %u\n",
+                  pattern_name, static_cast<unsigned>(total_bytes),
+                  static_cast<unsigned>(kSdBenchmarkBlockBytes));
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+
+    bool success = true;
+    uint32_t written = 0;
+    const int64_t started_us = esp_timer_get_time();
+    while (written < total_bytes) {
+        const size_t bytes =
+            std::min<size_t>(kSdBenchmarkBlockBytes,
+                             total_bytes - written);
+        if (std::fwrite(buffer, 1, bytes, output) != bytes) {
+            success = false;
+            break;
+        }
+        written += static_cast<uint32_t>(bytes);
+    }
+    if (success &&
+        (std::fflush(output) || fsync(fileno(output)))) {
+        success = false;
+    }
+    if (std::fclose(output)) success = false;
+    const int64_t elapsed_us = esp_timer_get_time() - started_us;
+    const bool removed = unlink(path) == 0;
+    heap_caps_free(buffer);
+
+    if (!success || written != total_bytes) {
+        finishResponse("HLVERR 1 SD_WRITE_FAILED\n");
+        return false;
+    }
+    if (!removed) {
+        finishResponse("HLVERR 1 SD_CLEANUP_FAILED\n");
+        return false;
+    }
+    const uint32_t kib_per_second = static_cast<uint32_t>(
+        (static_cast<uint64_t>(written) * 1000000ULL) /
+        static_cast<uint64_t>(elapsed_us) / 1024ULL);
+    finishResponse("HLVSDBENCHRESULT 1 %s %u %u %u\n",
+                   pattern_name, static_cast<unsigned>(written),
+                   static_cast<unsigned>(elapsed_us),
+                   static_cast<unsigned>(kib_per_second));
     return true;
 }
 

@@ -4084,6 +4084,25 @@ extern "C" void app_main(void) {
             }
             continue;
         }
+        SdBenchmarkRequest sd_benchmark_request{};
+        if (uart_upload.takeSdBenchmarkRequest(
+                &sd_benchmark_request)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                closeVideo();
+                const bool completed = uart_upload.benchmarkSd(
+                    player_settings::kVideoDirectory,
+                    sd_benchmark_request);
+                showStatus(completed ? "SD benchmark complete"
+                                     : "SD benchmark failed",
+                           completed ? "temporary file removed"
+                                     : "see UART error");
+                if (!openVideo()) last_retry_ms = millisNow();
+            }
+            continue;
+        }
         if (video_file && video_codec == VideoCodec::kMpeg1 &&
             mpeg_video) {
             if (player_settings::kUseDualCorePipeline) {

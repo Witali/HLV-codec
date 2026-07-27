@@ -14,6 +14,16 @@ struct UartUploadRequest {
     uint32_t data_baud = 0;
 };
 
+enum class SdBenchmarkPattern : uint8_t {
+    kZeros,
+    kPseudoRandom,
+};
+
+struct SdBenchmarkRequest {
+    SdBenchmarkPattern pattern = SdBenchmarkPattern::kZeros;
+    uint32_t size_mib = 0;
+};
+
 class UartFileUpload {
 public:
     static constexpr size_t kChunkBytes = 32 * 1024;
@@ -25,8 +35,11 @@ public:
     bool pollRequest(UartUploadRequest *request);
     bool takeListRequest();
     bool takeCrcRequest(char *filename, size_t filename_bytes);
+    bool takeSdBenchmarkRequest(SdBenchmarkRequest *request);
     bool listDirectory(const char *directory);
     bool checksumFile(const char *directory, const char *filename);
+    bool benchmarkSd(const char *directory,
+                     const SdBenchmarkRequest &request);
     bool receive(const UartUploadRequest &request, const char *directory,
                  char *stored_path, size_t stored_path_bytes,
                  ProgressCallback progress = nullptr,
@@ -49,4 +62,6 @@ private:
     bool list_requested_ = false;
     char crc_filename_[UartUploadRequest::kMaximumFilenameBytes + 1]{};
     bool crc_requested_ = false;
+    SdBenchmarkRequest sd_benchmark_request_{};
+    bool sd_benchmark_requested_ = false;
 };

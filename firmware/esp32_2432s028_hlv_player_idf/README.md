@@ -137,6 +137,20 @@ The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
 returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
 `HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
 
+The autonomous SD write benchmark uses:
+
+```text
+HLVSDBENCH 1 <zero|random> <size-MiB>
+```
+
+The size is limited to 1--64 MiB. The player stops playback, pre-fills one
+32 KiB block with zeros or deterministic pseudorandom bytes, writes it
+directly to a temporary file, and includes `fflush`, `fsync` and `fclose` in
+the elapsed time. The temporary file is deleted before the result is returned.
+On the installed card, 16 MiB tests delivered 1897 KiB/s for zeros and
+1905 KiB/s for pseudorandom data. Both temporary files were confirmed absent
+through `HLVLIST 1`.
+
 The destination defaults to the source filename. `/sdcard/HLV/play.txt`
 contains the one video filename that the player opens:
 
@@ -193,13 +207,15 @@ delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
 16 KiB UART receive and SD writes delivered 44.5, 79.6, 108.5 and 121.0 KiB/s
 at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
 transfers. The same full transfer passed at 3000000 baud but delivered only
-121.3 KiB/s, showing that the SD/pipeline path, rather than the UART line, is
+121.3 KiB/s, showing that the upload pipeline, rather than the UART line, is
 the current limit. Protocol v2 sliding-window transfers of the same file with
 two 32 KiB blocks delivered 122.4 KiB/s at 2000000 baud and 122.3 KiB/s at
 3000000 baud, with matching full-file CRC32. The larger window removes the
-mandatory per-block wait but raises throughput only marginally while the SD
-path remains the bottleneck. An experimental
-2500000-baud transfer never entered normal data reception and timed out.
+mandatory per-block wait but raises throughput only marginally. The autonomous
+SD benchmark reaches about 1.85 MiB/s, so raw card bandwidth is not the
+bottleneck; the remaining limit is in the combined UART/SD pipeline. An
+experimental 2500000-baud transfer never entered normal data reception and
+timed out.
 Therefore 2000000 baud remains the default; 3000000 baud is retained only as
 an optional verified mode. The Windows CH340 driver rejected attempts to
 configure both 4000000 and 5000000 baud with device error 31, before either
