@@ -121,7 +121,23 @@ function(schedule_mjpeg_hot_iram component_target)
     endif()
 endfunction()
 
-if(MJPEG_QEMU_BENCHMARK)
+if(SDSPI_QEMU_TEST)
+    idf_component_register(
+        SRCS
+            "qemu_sdspi_test.c"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_driver_sdspi
+            esp_driver_spi
+            esp_rom
+            esp_system
+            fatfs
+            freertos
+            log
+            sdmmc
+            vfs
+    )
+elseif(MJPEG_QEMU_BENCHMARK)
     set(MJPEG_QEMU_FRAME_LIMIT 12 CACHE STRING
         "Number of embedded MJPEG frames decoded by the QEMU benchmark")
     idf_component_register(

@@ -1,0 +1,648 @@
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 4fea1f5..1b8d33b 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -21,11 +21,37 @@
+ 
+ 
+ 
++REG32(GPIO_OUT, 0x0004)
++REG32(GPIO_OUT_W1TS, 0x0008)
++REG32(GPIO_OUT_W1TC, 0x000c)
++REG32(GPIO_OUT1, 0x0010)
++REG32(GPIO_OUT1_W1TS, 0x0014)
++REG32(GPIO_OUT1_W1TC, 0x0018)
++
++static void esp32_gpio_set_outputs(Esp32GpioState *s,
++                                   uint32_t out, uint32_t out1)
++{
++    s->out = out;
++    s->out1 = out1 & 0xff;
++    for (int pin = 0; pin < ESP32_GPIO_PIN_COUNT; pin++) {
++        uint32_t level = pin < 32
++            ? extract32(s->out, pin, 1)
++            : extract32(s->out1, pin - 32, 1);
++        qemu_set_irq(s->out_gpio[pin], level);
++    }
++}
++
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+     uint64_t r = 0;
+     switch (addr) {
++    case A_GPIO_OUT:
++        r = s->out;
++        break;
++    case A_GPIO_OUT1:
++        r = s->out1;
++        break;
+     case A_GPIO_STRAP:
+         r = s->strap_mode;
+         break;
+@@ -39,6 +65,30 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ static void esp32_gpio_write(void *opaque, hwaddr addr,
+                        uint64_t value, unsigned int size)
+ {
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++
++    switch (addr) {
++    case A_GPIO_OUT:
++        esp32_gpio_set_outputs(s, value, s->out1);
++        break;
++    case A_GPIO_OUT_W1TS:
++        esp32_gpio_set_outputs(s, s->out | value, s->out1);
++        break;
++    case A_GPIO_OUT_W1TC:
++        esp32_gpio_set_outputs(s, s->out & ~value, s->out1);
++        break;
++    case A_GPIO_OUT1:
++        esp32_gpio_set_outputs(s, s->out, value);
++        break;
++    case A_GPIO_OUT1_W1TS:
++        esp32_gpio_set_outputs(s, s->out, s->out1 | value);
++        break;
++    case A_GPIO_OUT1_W1TC:
++        esp32_gpio_set_outputs(s, s->out, s->out1 & ~value);
++        break;
++    default:
++        break;
++    }
+ }
+ 
+ static const MemoryRegionOps uart_ops = {
+@@ -49,6 +99,9 @@ static const MemoryRegionOps uart_ops = {
+ 
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++
++    esp32_gpio_set_outputs(s, 0, 0);
+ }
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+@@ -67,6 +120,8 @@ static void esp32_gpio_init(Object *obj)
+                           TYPE_ESP32_GPIO, 0x1000);
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
++    qdev_init_gpio_out_named(DEVICE(s), s->out_gpio,
++                             "gpio-out", ESP32_GPIO_PIN_COUNT);
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+diff --git a/hw/sd/sd.c b/hw/sd/sd.c
+index f9bd03f..75b3b00 100644
+--- a/hw/sd/sd.c
++++ b/hw/sd/sd.c
+@@ -1577,7 +1577,8 @@ static sd_rsp_type_t emmc_cmd_SEND_EXT_CSD(SDState *sd, SDRequest req)
+ /* CMD9 */
+ static sd_rsp_type_t spi_cmd_SEND_CSD(SDState *sd, SDRequest req)
+ {
+-    if (sd->state != sd_standby_state) {
++    if (sd->state != sd_standby_state &&
++        sd->state != sd_transfer_state) {
+         return sd_invalid_state_for_cmd(sd, req);
+     }
+     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
+@@ -1596,7 +1597,8 @@ static sd_rsp_type_t sd_cmd_SEND_CSD(SDState *sd, SDRequest req)
+ /* CMD10 */
+ static sd_rsp_type_t spi_cmd_SEND_CID(SDState *sd, SDRequest req)
+ {
+-    if (sd->state != sd_standby_state) {
++    if (sd->state != sd_standby_state &&
++        sd->state != sd_transfer_state) {
+         return sd_invalid_state_for_cmd(sd, req);
+     }
+     return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
+diff --git a/hw/sd/ssi-sd.c b/hw/sd/ssi-sd.c
+index 1594051..a9973fb 100644
+--- a/hw/sd/ssi-sd.c
++++ b/hw/sd/ssi-sd.c
+@@ -182,8 +182,10 @@ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
+                 s->arglen = 5;
+                 s->response[0] = 1;
+                 memcpy(&s->response[1], longresp, 4);
+-            } else if (s->arglen != 4) {
+-                BADF("Unexpected response to cmd %d\n", s->cmd);
++            } else if (s->arglen != 4 &&
++                       !(s->cmd == 13 && s->arglen == 16)) {
++                BADF("Unexpected response length %d to cmd %d\n",
++                     s->arglen, s->cmd);
+                 /* Illegal command is about as near as we can get.  */
+                 s->arglen = 1;
+                 s->response[0] = 4;
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index f47bfca..cce158d 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -12,6 +12,7 @@
+ #include "qemu/log.h"
+ #include "qemu/module.h"
+ #include "sysemu/sysemu.h"
++#include "sysemu/dma.h"
+ #include "hw/hw.h"
+ #include "hw/sysbus.h"
+ #include "hw/registerfields.h"
+@@ -40,9 +41,25 @@ enum {
+ 
+ 
+ #define ESP32_SPI_REG_SIZE    0x1000
++#define ESP32_SPI_DMA_CONF    0x100
++#define ESP32_SPI_DMA_OUT_LINK 0x104
++#define ESP32_SPI_DMA_IN_LINK 0x108
++#define ESP32_SPI_DMA_LINK_ADDR_MASK 0x000fffff
++#define ESP32_SPI_DMA_LINK_START BIT(29)
++#define ESP32_SPI_DMA_DRAM_BASE 0x3ff00000
++#define ESP32_SPI_DMA_MAX_DESCRIPTORS 128
+ 
+ static void esp32_spi_do_command(Esp32SpiState* state, uint32_t cmd_reg);
+ 
++static void esp32_spi_update_irq(Esp32SpiState *s)
++{
++    bool level =
++        FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_DONE) &&
++        FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_INTEN);
++
++    qemu_set_irq(s->irq, level);
++}
++
+ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32SpiState *s = ESP32_SPI(opaque);
+@@ -87,8 +104,17 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
+     case A_SPI_EXT2:
+         r = 0;
+         break;
++    case ESP32_SPI_DMA_CONF:
++        r = s->dma_conf_reg;
++        break;
++    case ESP32_SPI_DMA_OUT_LINK:
++        r = s->dma_out_link_reg;
++        break;
++    case ESP32_SPI_DMA_IN_LINK:
++        r = s->dma_in_link_reg;
++        break;
+     case A_SPI_SLAVE:
+-        r = BIT(R_SPI_SLAVE_TRANS_DONE_SHIFT) | BIT(R_SPI_SLAVE_TRANS_INTEN_SHIFT);
++        r = s->slave_reg;
+         break;
+     }
+     return r;
+@@ -135,6 +161,19 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
+     case A_SPI_PIN:
+         s->pin_reg = value;
+         break;
++    case A_SPI_SLAVE:
++        s->slave_reg = value;
++        esp32_spi_update_irq(s);
++        break;
++    case ESP32_SPI_DMA_CONF:
++        s->dma_conf_reg = value;
++        break;
++    case ESP32_SPI_DMA_OUT_LINK:
++        s->dma_out_link_reg = value;
++        break;
++    case ESP32_SPI_DMA_IN_LINK:
++        s->dma_in_link_reg = value;
++        break;
+     case A_SPI_CMD:
+         esp32_spi_do_command(s, value);
+         break;
+@@ -151,22 +190,103 @@ typedef struct Esp32SpiTransaction {
+     uint32_t* data;
+ } Esp32SpiTransaction;
+ 
+-static void esp32_spi_txrx_buffer(Esp32SpiState *s, void *buf, int tx_bytes, int rx_bytes)
++static void esp32_spi_txrx_buffer(Esp32SpiState *s,
++                                  const void *tx_buf, int tx_bytes,
++                                  void *rx_buf, int rx_bytes)
+ {
+     int bytes = MAX(tx_bytes, rx_bytes);
+-    uint8_t *c_buf = (uint8_t*) buf;
++    const uint8_t *tx = tx_buf;
++    uint8_t *rx = rx_buf;
+     for (int i = 0; i < bytes; ++i) {
+-        uint8_t byte = 0;
+-        if (byte < tx_bytes) {
+-            memcpy(&byte, c_buf + i, 1);
++        uint8_t byte = 0xff;
++        if (i < tx_bytes) {
++            byte = tx[i];
+         }
+         uint32_t res = ssi_transfer(s->spi, byte);
+-        if (byte < rx_bytes) {
+-            memcpy(c_buf + i, &res, 1);
++        if (i < rx_bytes) {
++            rx[i] = res;
+         }
+     }
+ }
+ 
++static size_t esp32_spi_dma_read(uint32_t link_reg,
++                                 uint8_t *buffer, size_t bytes)
++{
++    hwaddr descriptor =
++        ESP32_SPI_DMA_DRAM_BASE |
++        (link_reg & ESP32_SPI_DMA_LINK_ADDR_MASK);
++    size_t copied = 0;
++
++    for (int i = 0;
++         i < ESP32_SPI_DMA_MAX_DESCRIPTORS && copied < bytes;
++         i++) {
++        uint32_t raw[3];
++        uint32_t flags;
++        uint32_t length;
++        uint32_t data;
++        uint32_t next;
++        size_t chunk;
++
++        cpu_physical_memory_read(descriptor, raw, sizeof(raw));
++        flags = le32_to_cpu(raw[0]);
++        length = extract32(flags, 12, 12);
++        data = le32_to_cpu(raw[1]);
++        next = le32_to_cpu(raw[2]);
++        if (length == 0 || data == 0) {
++            break;
++        }
++        chunk = MIN((size_t)length, bytes - copied);
++        cpu_physical_memory_read(data, buffer + copied, chunk);
++        copied += chunk;
++        if (extract32(flags, 30, 1) || next == 0) {
++            break;
++        }
++        descriptor = next;
++    }
++    return copied;
++}
++
++static size_t esp32_spi_dma_write(uint32_t link_reg,
++                                  const uint8_t *buffer, size_t bytes)
++{
++    hwaddr descriptor =
++        ESP32_SPI_DMA_DRAM_BASE |
++        (link_reg & ESP32_SPI_DMA_LINK_ADDR_MASK);
++    size_t copied = 0;
++
++    for (int i = 0;
++         i < ESP32_SPI_DMA_MAX_DESCRIPTORS && copied < bytes;
++         i++) {
++        uint32_t raw[3];
++        uint32_t flags;
++        uint32_t capacity;
++        uint32_t data;
++        uint32_t next;
++        size_t chunk;
++
++        cpu_physical_memory_read(descriptor, raw, sizeof(raw));
++        flags = le32_to_cpu(raw[0]);
++        capacity = extract32(flags, 0, 12);
++        data = le32_to_cpu(raw[1]);
++        next = le32_to_cpu(raw[2]);
++        if (capacity == 0 || data == 0) {
++            break;
++        }
++        chunk = MIN((size_t)capacity, bytes - copied);
++        cpu_physical_memory_write(data, buffer + copied, chunk);
++        flags = deposit32(flags, 12, 12, chunk);
++        flags = deposit32(flags, 31, 1, 0);
++        raw[0] = cpu_to_le32(flags);
++        cpu_physical_memory_write(descriptor, raw, sizeof(raw[0]));
++        copied += chunk;
++        if (extract32(flags, 30, 1) || next == 0) {
++            break;
++        }
++        descriptor = next;
++    }
++    return copied;
++}
++
+ static void esp32_spi_cs_set(Esp32SpiState *s, int value)
+ {
+     for (int i = 0; i < ESP32_SPI_CS_COUNT; ++i) {
+@@ -176,11 +296,45 @@ static void esp32_spi_cs_set(Esp32SpiState *s, int value)
+ 
+ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+ {
++    uint8_t *dma_tx = NULL;
++    uint8_t *dma_rx = NULL;
++    const uint8_t *tx = (uint8_t *)t->data;
++    uint8_t *rx = (uint8_t *)t->data;
++
++    if (t->data_tx_bytes &&
++        (s->dma_out_link_reg & ESP32_SPI_DMA_LINK_START)) {
++        dma_tx = g_malloc(t->data_tx_bytes);
++        if (esp32_spi_dma_read(s->dma_out_link_reg, dma_tx,
++                               t->data_tx_bytes) != t->data_tx_bytes) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "esp32_spi: short TX DMA descriptor chain\n");
++        }
++        tx = dma_tx;
++        s->dma_out_link_reg &= ~ESP32_SPI_DMA_LINK_START;
++    }
++    if (t->data_rx_bytes &&
++        (s->dma_in_link_reg & ESP32_SPI_DMA_LINK_START)) {
++        dma_rx = g_malloc0(t->data_rx_bytes);
++        rx = dma_rx;
++        s->dma_in_link_reg &= ~ESP32_SPI_DMA_LINK_START;
++    }
++
+     esp32_spi_cs_set(s, 0);
+-    esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
+-    esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+-    esp32_spi_txrx_buffer(s, t->data, t->data_tx_bytes, t->data_rx_bytes);
++    esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, NULL, 0);
++    esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, NULL, 0);
++    esp32_spi_txrx_buffer(s, tx, t->data_tx_bytes,
++                          rx, t->data_rx_bytes);
+     esp32_spi_cs_set(s, 1);
++
++    if (dma_rx) {
++        if (esp32_spi_dma_write(s->dma_in_link_reg, dma_rx,
++                                t->data_rx_bytes) != t->data_rx_bytes) {
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "esp32_spi: short RX DMA descriptor chain\n");
++        }
++    }
++    g_free(dma_tx);
++    g_free(dma_rx);
+ }
+ 
+ /* Convert one of the hardware "bitlen" registers to a byte count */
+@@ -275,7 +429,7 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+ 
+     case R_SPI_CMD_USR_MASK:
+         maybe_encrypt_data(s);
+-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
++        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND)) {
+             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
+             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
+         } else {
+@@ -298,6 +452,9 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+         return;
+     }
+     esp32_spi_transaction(s, &t);
++    s->slave_reg =
++        FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 1);
++    esp32_spi_update_irq(s);
+ }
+ 
+ 
+@@ -316,6 +473,12 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
+     s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
+     s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
+     s->status_reg = 0;
++    s->slave_reg =
++        FIELD_DP32(0, SPI_SLAVE, TRANS_DONE, 1);
++    s->dma_conf_reg = 0;
++    s->dma_out_link_reg = 0;
++    s->dma_in_link_reg = 0;
++    esp32_spi_update_irq(s);
+ }
+ 
+ static void esp32_spi_realize(DeviceState *dev, Error **errp)
+diff --git a/hw/xtensa/Kconfig b/hw/xtensa/Kconfig
+index 5866207..c6bb33c 100644
+--- a/hw/xtensa/Kconfig
++++ b/hw/xtensa/Kconfig
+@@ -25,6 +25,7 @@ config XTENSA_ESP32
+     default y
+     depends on XTENSA
+     select SSI
++    select SSI_SD
+     select SSI_M25P80
+     select UNIMP
+     select OPENCORES_ETH
+@@ -45,4 +46,3 @@ config XTENSA_ESP32S3
+     select TMP105
+     select ESP_RGB
+ 
+-
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index e000470..25a6c05 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -25,7 +25,9 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/xtensa/esp32.h"
+ #include "hw/misc/ssi_psram.h"
++#include "hw/sd/sd.h"
+ #include "hw/sd/dwc_sdmmc.h"
++#include "hw/ssi/ssi.h"
+ #include "core-esp32/core-isa.h"
+ #include "qemu/datadir.h"
+ #include "sysemu/sysemu.h"
+@@ -695,6 +697,7 @@ struct Esp32MachineState {
+ 
+     Esp32SocState esp32;
+     DeviceState *flash_dev;
++    bool sdspi;
+ };
+ #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
+ 
+@@ -775,12 +778,32 @@ static void esp32_machine_init_openeth(Esp32SocState *ss)
+     memory_region_add_subregion(sys_mem, desc_base, sysbus_mmio_get_region(sbd, 1));
+ }
+ 
+-static void esp32_machine_init_sd(Esp32SocState *ss)
++static void esp32_machine_init_sd(Esp32MachineState *ms)
+ {
++    Esp32SocState *ss = &ms->esp32;
+     DriveInfo *dinfo = drive_get(IF_SD, 0, 0);
+     if (dinfo) {
+         DeviceState *card;
+ 
++        if (ms->sdspi) {
++            DeviceState *sd_adapter;
++            SSIBus *spi_bus = ss->spi[3].spi;
++
++            sd_adapter = ssi_create_peripheral(spi_bus, "ssi-sd");
++            qdev_connect_gpio_out_named(
++                DEVICE(&ss->gpio), "gpio-out", 5,
++                qdev_get_gpio_in_named(sd_adapter, SSI_GPIO_CS, 0));
++
++            card = qdev_new(TYPE_SD_CARD_SPI);
++            qdev_prop_set_drive_err(card, "drive",
++                                    blk_by_legacy_dinfo(dinfo),
++                                    &error_fatal);
++            qdev_realize_and_unref(
++                card, qdev_get_child_bus(sd_adapter, "sd-bus"),
++                &error_fatal);
++            return;
++        }
++
+         card = qdev_new(TYPE_SD_CARD);
+         qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(dinfo),
+                                 &error_fatal);
+@@ -830,7 +853,7 @@ static void esp32_machine_init(MachineState *machine)
+ 
+     esp32_machine_init_openeth(ss);
+ 
+-    esp32_machine_init_sd(ss);
++    esp32_machine_init_sd(ms);
+ 
+     /* Need MMU initialized prior to ELF loading,
+      * so that ELF gets loaded into virtual addresses
+@@ -921,6 +944,16 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
+     return size;
+ }
+ 
++static bool esp32_machine_get_sdspi(Object *obj, Error **errp)
++{
++    return ESP32_MACHINE(obj)->sdspi;
++}
++
++static void esp32_machine_set_sdspi(Object *obj, bool value, Error **errp)
++{
++    ESP32_MACHINE(obj)->sdspi = value;
++}
++
+ /* Initialize machine type */
+ static void esp32_machine_class_init(ObjectClass *oc, void *data)
+ {
+@@ -931,6 +964,11 @@ static void esp32_machine_class_init(ObjectClass *oc, void *data)
+     mc->default_cpus = 2;
+     mc->default_ram_size = 0;
+     mc->fixup_ram_size = esp32_fixup_ram_size;
++    object_class_property_add_bool(oc, "sdspi",
++                                   esp32_machine_get_sdspi,
++                                   esp32_machine_set_sdspi);
++    object_class_property_set_description(
++        oc, "sdspi", "Attach the SD drive to ESP32 SPI3 with CS on GPIO5");
+ }
+ 
+ static const TypeInfo esp32_info = {
+diff --git a/hw/xtensa/esp32_intc.c b/hw/xtensa/esp32_intc.c
+index fed7cf7..323bf8d 100644
+--- a/hw/xtensa/esp32_intc.c
++++ b/hw/xtensa/esp32_intc.c
+@@ -22,23 +22,41 @@
+ 
+ #define IRQ_MAP(cpu, input) s->irq_map[cpu][input]
+ 
+-static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
++static void esp32_intmatrix_update_output(Esp32IntMatrixState *s,
++                                          int cpu_index, int out_index)
+ {
+-    Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+-    for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+-        if (s->outputs[i] == NULL) {
+-            continue;
++    bool level = false;
++
++    if (s->outputs[cpu_index] == NULL) {
++        return;
++    }
++    for (int source = 0; source < ESP32_INT_MATRIX_INPUTS; source++) {
++        if (IRQ_MAP(cpu_index, source) == out_index &&
++            s->input_levels[source]) {
++            level = true;
++            break;
+         }
+-        int out_index = IRQ_MAP(i, n);
+-        for (int int_index = 0; int_index < s->cpu[i]->env.config->nextint; ++int_index) {
+-            if (s->cpu[i]->env.config->extint[int_index] == out_index) {
+-                qemu_set_irq(s->outputs[i][int_index], level);
+-                break;
+-            }
++    }
++    for (int int_index = 0;
++         int_index < s->cpu[cpu_index]->env.config->nextint;
++         int_index++) {
++        if (s->cpu[cpu_index]->env.config->extint[int_index] == out_index) {
++            qemu_set_irq(s->outputs[cpu_index][int_index], level);
++            break;
+         }
+     }
+ }
+ 
++static void esp32_intmatrix_irq_handler(void *opaque, int n, int level)
++{
++    Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
++
++    s->input_levels[n] = level;
++    for (int cpu = 0; cpu < ESP32_CPU_COUNT; cpu++) {
++        esp32_intmatrix_update_output(s, cpu, IRQ_MAP(cpu, n));
++    }
++}
++
+ static inline uint8_t* get_map_entry(Esp32IntMatrixState* s, hwaddr addr)
+ {
+     int source_index = addr / sizeof(uint32_t);
+@@ -63,7 +81,13 @@ static void esp32_intmatrix_write(void* opaque, hwaddr addr, uint64_t value, uns
+     Esp32IntMatrixState *s = ESP32_INTMATRIX(opaque);
+     uint8_t* map_entry = get_map_entry(s, addr);
+     if (map_entry != NULL) {
++        int entry = addr / sizeof(uint32_t);
++        int cpu = entry / ESP32_INT_MATRIX_INPUTS;
++        int old_output = *map_entry;
++
+         *map_entry = value & 0x1f;
++        esp32_intmatrix_update_output(s, cpu, old_output);
++        esp32_intmatrix_update_output(s, cpu, *map_entry);
+     }
+ }
+ 
+@@ -77,6 +101,7 @@ static void esp32_intmatrix_reset_hold(Object *obj, ResetType type)
+ {
+     Esp32IntMatrixState *s = ESP32_INTMATRIX(obj);
+     memset(s->irq_map, INTMATRIX_UNINT_VALUE, sizeof(s->irq_map));
++    memset(s->input_levels, 0, sizeof(s->input_levels));
+     for (int i = 0; i < ESP32_CPU_COUNT; ++i) {
+         if (s->outputs[i] == NULL) {
+             continue;
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index 163b41a..899bccf 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -13,12 +13,16 @@ REG32(GPIO_STRAP, 0x0038)
+ 
+ #define ESP32_STRAP_MODE_FLASH_BOOT 0x12
+ #define ESP32_STRAP_MODE_UART_BOOT  0x0f
++#define ESP32_GPIO_PIN_COUNT 40
+ 
+ typedef struct Esp32GpioState {
+     SysBusDevice parent_obj;
+ 
+     MemoryRegion iomem;
+     qemu_irq irq;
++    qemu_irq out_gpio[ESP32_GPIO_PIN_COUNT];
++    uint32_t out;
++    uint32_t out1;
+     uint32_t strap_mode;
+ } Esp32GpioState;
+ 
+diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
+index dcf9bc8..ef3629f 100644
+--- a/include/hw/ssi/esp32_spi.h
++++ b/include/hw/ssi/esp32_spi.h
+@@ -30,7 +30,11 @@ typedef struct Esp32SpiState {
+     uint32_t mosi_dlen_reg;
+     uint32_t miso_dlen_reg;
+     uint32_t pin_reg;
++    uint32_t slave_reg;
+     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
++    uint32_t dma_conf_reg;
++    uint32_t dma_out_link_reg;
++    uint32_t dma_in_link_reg;
+ } Esp32SpiState;
+ 
+ 
+@@ -91,4 +95,3 @@ REG32(SPI_EXT1, 0xF4)
+ REG32(SPI_EXT2, 0xF8)
+ REG32(SPI_EXT3, 0xFC)
+ 
+-
+diff --git a/include/hw/xtensa/esp32_intc.h b/include/hw/xtensa/esp32_intc.h
+index 262dbd1..96c7f42 100644
+--- a/include/hw/xtensa/esp32_intc.h
++++ b/include/hw/xtensa/esp32_intc.h
+@@ -34,8 +34,8 @@ typedef struct Esp32IntMatrixState {
+     MemoryRegion iomem;
+     qemu_irq *outputs[ESP32_CPU_COUNT];
+     uint8_t irq_map[ESP32_CPU_COUNT][ESP32_INT_MATRIX_INPUTS];
++    bool input_levels[ESP32_INT_MATRIX_INPUTS];
+ 
+     /* properties */
+     XtensaCPU *cpu[ESP32_CPU_COUNT];
+ } Esp32IntMatrixState;
+-

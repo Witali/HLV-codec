@@ -305,6 +305,53 @@ reinitializes the interface but does not power-cycle the card.
 Place the video and `play.txt` in the FAT16/FAT32 card's `/HLV` directory.
 Neither file is written to internal flash.
 
+## SPI SD card in Xtensa QEMU
+
+The repository patch for Espressif QEMU connects an `if=sd` drive to the same
+controller and chip-select configuration as the physical ESP32-2432S028:
+
+- `SPI3_HOST`;
+- SCK GPIO18, MOSI GPIO23 and MISO GPIO19;
+- active-low CS on GPIO5;
+- `SPI_DMA_CH_AUTO`;
+- the Player's configured 40 MHz SD clock limit.
+
+The stock Espressif QEMU connects `-drive if=sd` to the ESP32 SDMMC model.
+Run the following once to clone
+`esp-develop-9.2.2-20260417` at commit
+`40edccac415693c5130f91c01d84176ae6008566`, apply the SDSPI patch and build
+the Xtensa emulator under the repository-root `local_tools/qemu-sdspi`
+directory:
+
+```powershell
+.\setup-qemu-sdspi.ps1 -InstallWslDependencies
+```
+
+Later setup runs do not need `-InstallWslDependencies`. The complete smoke test
+builds a small C99 firmware through the normal ESP-IDF SDSPI/FAT path, creates
+a 64 MiB FAT32 image, reads its 512-byte FAT sectors through SPI DMA, mounts
+it and verifies the file contents:
+
+```powershell
+.\qemu-sdspi-test.ps1
+```
+
+To boot another merged 4 MiB ESP32 flash image with an existing FAT card
+image:
+
+```powershell
+.\run-qemu-sdspi.ps1 `
+    -FlashImage .\build\qemu_flash_4mb.bin `
+    -SdImage .\build\qemu_sdcard.img
+```
+
+The patched machine option is `-machine esp32,sdspi=on`; it leaves the
+existing SDMMC behavior unchanged when omitted. QEMU models SPI3 transfers,
+DMA descriptor chains, the interrupt matrix, GPIO output and GPIO5 CS. It
+does not model the electrical ESP32 IO-matrix routing of SCK/MOSI/MISO or
+physical-card timing, so it validates the real driver, mount and sector/file
+I/O paths but is not an SD throughput benchmark.
+
 ## Xtensa QEMU decoder benchmark
 
 An off-board benchmark boots the real ESP-IDF decoder in Espressif QEMU and
@@ -450,11 +497,12 @@ ROM TJpgDec implementation and its benchmark modes were removed after the
 accelerated backend passed the A/B checks. Display SPI/DMA time is measured
 only on the physical board.
 
-The first run installs QEMU under this project's `.tools` directory. Generated
-clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
-32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
-physical board because QEMU is not cycle-accurate and does not model SD or
-display DMA timing.
+The first decoder-benchmark run installs the stock QEMU under this project's
+`.tools` directory. Generated clips and QEMU builds are excluded from Git.
+Guest cycle ratios are useful for 32-bit Xtensa A/B comparisons, but absolute
+playback speed still requires the physical board because QEMU is not
+cycle-accurate. The custom SDSPI machine above models the storage data path,
+but not physical SD or display DMA timing.
 
 ## Resource choices
 
