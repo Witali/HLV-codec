@@ -26,11 +26,12 @@ DAC GPIO26.
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
   stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263 and 16 KiB otherwise); HLV then
   streams each packet through one reusable 7,680-byte refill buffer, while MJPEG
-  and BPV use bounded maximum-frame packet buffers;
+  and BPV v1-v6 use bounded maximum-frame packet buffers; BPV v7 instead
+  uses a fixed 4 KiB refill buffer plus its mode map;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
   DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
   two 320x8 strips. Other codecs use two 320x16 allocations;
-- decodes HLV, BPV or MPEG-1 frame N on CPU1 while CPU0 converts and queues
+- decodes HLV, BPV v1-v6 or MPEG-1 frame N on CPU1 while CPU0 converts and queues
   frame N-1 for the display, without copying compressed packets or frame
   payloads;
 - plays unsigned 8-bit mono PCM through the ESP32 DAC and onboard amplifier;
@@ -241,9 +242,16 @@ underlying general-purpose BPV wrapper only when CPU fallback is required:
 
 The stable wrapper output remains v6. Pass `-PixelMotion` to
 `transcode_bpv6.ps1` for experimental v7. Its one-byte vector is measured in
-pixels, and the decoder reconstructs across compact-block palette boundaries
-by resolving source pixels to RGB and remapping them to the nearest color.
-This needs no full RGB framebuffer and does not require the palettes to match.
+pixels. The decoder keeps one previous display-native RGB565 frame and copies
+motion pixels directly, regardless of palette boundaries. The compressed
+current frame is consumed through a fixed 4 KiB refill buffer and expands into
+two alternating eight-row SPI/DMA buffers. The 1200-byte 320x240 mode map is
+retained, but compressed-input capacity is independent of packet size. Once a
+buffer has been displayed and its rows are outside the ±7 motion window, it is
+copied in-place over the corresponding rows of the previous reference and
+reused. The RGB565 reference itself is allocated in independent eight-row
+pages so ESP32 never needs a contiguous 153.6 KiB heap block. No current RGB
+framebuffer or decoder-side color search is needed.
 
 For an ESP32-safe MPEG Program Stream:
 

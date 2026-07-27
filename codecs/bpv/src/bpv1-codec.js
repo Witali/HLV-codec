@@ -40,6 +40,13 @@
     const streamVersion = pixelMotion
       ? PIXEL_MOTION_VERSION
       : BLOCK_MOTION_VERSION;
+    if (pixelMotion &&
+        (video.width % BLOCK_SIZE !== 0 ||
+         video.height % BLOCK_SIZE !== 0)) {
+      throw new RangeError(
+        "BPV1 v7 dimensions must be multiples of four",
+      );
+    }
 
     const blocksX = Math.ceil(video.width / BLOCK_SIZE);
     const blocksY = Math.ceil(video.height / BLOCK_SIZE);
@@ -64,6 +71,7 @@
     pushU8(output, 0);
 
     let previousBlocks = null;
+    let previousPixels = null;
     let blockDictionary = [];
     const stats = createStats(video.frames.length, blockCount);
 
@@ -71,30 +79,49 @@
       const keyframe = frameIndex === 0 || frameIndex % keyframeInterval === 0;
       if (keyframe) {
         previousBlocks = null;
+        previousPixels = null;
         blockDictionary = [];
       }
       const frame = normalizeFrame(video.frames[frameIndex], video.width, video.height, blocksX, blocksY);
       const encodedBlocks = [];
       const modeBytes = [];
+      const currentPixels = pixelMotion
+        ? new Uint16Array(video.width * video.height)
+        : null;
 
       for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
         const block = frame.blocks[blockIndex];
+        const blockPixels = pixelMotion
+          ? blockToRgb565(block, palette)
+          : null;
         let record = null;
 
-        if (!keyframe && previousBlocks && equalBlock(block, previousBlocks[blockIndex])) {
+        if (!keyframe &&
+            (pixelMotion
+              ? equalPixelRegion(
+                blockPixels,
+                previousPixels,
+                blockIndex,
+                blocksX,
+                video.width,
+                video.height,
+              )
+              : previousBlocks &&
+                equalBlock(block, previousBlocks[blockIndex]))) {
           record = { mode: MODE_SKIP };
         }
 
-        if (!record && !keyframe && previousBlocks && searchRadius > 0) {
+        if (!record && !keyframe &&
+            (pixelMotion ? previousPixels : previousBlocks) &&
+            searchRadius > 0) {
           const motion = pixelMotion
             ? findPixelMotion(
-              block,
-              previousBlocks,
+              blockPixels,
+              previousPixels,
               blockIndex,
               blocksX,
               video.width,
               video.height,
-              palette,
               searchRadius,
             )
             : findMotion(
@@ -135,6 +162,18 @@
         if (record.mode === MODE_RAW) {
           addUniqueBlock(blockDictionary, block, maxBlockDictionary);
         }
+        if (pixelMotion) {
+          reconstructPixelBlock(
+            currentPixels,
+            previousPixels,
+            blockPixels,
+            blockIndex,
+            blocksX,
+            video.width,
+            video.height,
+            record,
+          );
+        }
       }
 
       const packedModes = packModes(modeBytes);
@@ -157,6 +196,7 @@
       pushBytes(output, packedModes);
       pushBytes(output, encodedBlocks);
       previousBlocks = frame.blocks;
+      if (pixelMotion) previousPixels = currentPixels;
       stats.frameBytes.push(
         13 + paletteBytes.length + packedModes.length +
         encodedBlocks.length,
@@ -209,6 +249,8 @@
       throw new RangeError("Non-zero BPV1 reserved byte");
     }
     if (maxBlockDictionary === 0 ||
+        (version >= PIXEL_MOTION_VERSION &&
+         (width % BLOCK_SIZE !== 0 || height % BLOCK_SIZE !== 0)) ||
         (version >= FOUR_MODE_VERSION
           ? maxPatternDictionary !== 0 || searchRadius > 7
           : maxPatternDictionary === 0)) {
@@ -230,6 +272,7 @@
     const blockCount = blocksX * blocksY;
     const frames = [];
     let previousBlocks = null;
+    let previousPixels = null;
     let blockDictionary = [];
     let patternDictionary = [];
     let activePalette = palette;
@@ -249,6 +292,7 @@
       }
       if (keyframe) {
         previousBlocks = null;
+        previousPixels = null;
         blockDictionary = [];
         patternDictionary = [];
         if (version >= ACTIVE_PALETTE_VERSION) {
@@ -277,15 +321,31 @@
       );
       offset += modeBytesLength;
       const blocks = new Array(blockCount);
+      const pixels = version >= PIXEL_MOTION_VERSION
+        ? new Uint16Array(width * height)
+        : null;
 
       for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
         const mode = modes[blockIndex];
         let block;
         if (mode === MODE_SKIP) {
-          if (!previousBlocks) throw new RangeError("SKIP in keyframe");
-          block = cloneBlock(previousBlocks[blockIndex]);
+          if (version >= PIXEL_MOTION_VERSION) {
+            if (!previousPixels) throw new RangeError("SKIP in keyframe");
+            copyRgb565Region(
+              previousPixels, pixels, width, height,
+              blockIndex, blocksX, 0, 0,
+            );
+            block = null;
+          } else {
+            if (!previousBlocks) throw new RangeError("SKIP in keyframe");
+            block = cloneBlock(previousBlocks[blockIndex]);
+          }
         } else if (mode === MODE_MOTION) {
-          if (!previousBlocks) throw new RangeError("MOTION in keyframe");
+          if (version >= PIXEL_MOTION_VERSION
+              ? !previousPixels
+              : !previousBlocks) {
+            throw new RangeError("MOTION in keyframe");
+          }
           let dx;
           let dy;
           if (version >= FOUR_MODE_VERSION) {
@@ -302,20 +362,15 @@
           const bx = blockIndex % blocksX;
           const by = Math.floor(blockIndex / blocksX);
           if (version >= PIXEL_MOTION_VERSION) {
-            block = buildPixelMotionBlock(
-              previousBlocks,
-              width,
-              height,
-              blocksX,
-              activePalette,
-              bx * BLOCK_SIZE + dx,
-              by * BLOCK_SIZE + dy,
-            );
-            if (!block) {
+            if (!copyRgb565Region(
+              previousPixels, pixels, width, height,
+              blockIndex, blocksX, dx, dy,
+            )) {
               throw new RangeError(
                 "Invalid BPV1 v7 pixel motion vector",
               );
             }
+            block = null;
           } else {
             const sx = bx + dx;
             const sy = by + dy;
@@ -420,14 +475,21 @@
           throw new RangeError(`Invalid BPV1 block mode: ${mode}`);
         }
         blocks[blockIndex] = block;
+        if (version >= PIXEL_MOTION_VERSION && block) {
+          storeRgb565Block(
+            pixels, width, height, blockIndex, blocksX,
+            blockToRgb565(block, activePalette),
+          );
+        }
       }
       if (offset !== frameEnd) throw new RangeError("BPV1 frame size mismatch");
       const audioEnd = offset + audioBytes;
       if (audioEnd > bytes.length) throw new RangeError("Truncated BPV1 audio");
       const audio = bytes.slice(offset, audioEnd);
       offset = audioEnd;
-      frames.push({ blocks, audio, palette: activePalette });
+      frames.push({ blocks, pixels, audio, palette: activePalette });
       previousBlocks = blocks;
+      previousPixels = pixels;
     }
     if (offset !== bytes.length) throw new RangeError("Trailing BPV1 data");
     return {
@@ -445,6 +507,20 @@
     const frame = decoded.frames[frameIndex];
     if (!frame) throw new RangeError("Frame index out of range");
     const out = new Uint8ClampedArray(decoded.width * decoded.height * 4);
+    if (frame.pixels) {
+      for (let pixel = 0; pixel < frame.pixels.length; pixel += 1) {
+        const color = frame.pixels[pixel];
+        const o = pixel * 4;
+        const red = (color >>> 11) & 31;
+        const green = (color >>> 5) & 63;
+        const blue = color & 31;
+        out[o] = (red << 3) | (red >>> 2);
+        out[o + 1] = (green << 2) | (green >>> 4);
+        out[o + 2] = (blue << 3) | (blue >>> 2);
+        out[o + 3] = 255;
+      }
+      return out;
+    }
     const blocksX = Math.ceil(decoded.width / BLOCK_SIZE);
     for (let y = 0; y < decoded.height; y += 1) {
       for (let x = 0; x < decoded.width; x += 1) {
@@ -560,88 +636,13 @@
       : block.localColors[read2Bit(block.pattern, pixel)];
   }
 
-  function buildPixelMotionBlock(
-    previousBlocks,
-    width,
-    height,
-    blocksX,
-    palette,
-    sourceX,
-    sourceY,
-  ) {
-    if (sourceX < 0 || sourceY < 0 ||
-        sourceX + BLOCK_SIZE > width ||
-        sourceY + BLOCK_SIZE > height) {
-      return null;
-    }
-    const firstBlock =
-      Math.floor(sourceY / BLOCK_SIZE) * blocksX +
-      Math.floor(sourceX / BLOCK_SIZE);
-    const paletteIndex = previousBlocks[firstBlock].paletteIndex;
-    const colors = new Array(16);
-    let pixel = 0;
-    for (let localY = 0; localY < BLOCK_SIZE; localY += 1) {
-      const y = sourceY + localY;
-      for (let localX = 0; localX < BLOCK_SIZE; localX += 1) {
-        const x = sourceX + localX;
-        const sourceBlock =
-          previousBlocks[
-            Math.floor(y / BLOCK_SIZE) * blocksX +
-            Math.floor(x / BLOCK_SIZE)
-          ];
-        const sourcePixel =
-          (y & 3) * BLOCK_SIZE + (x & 3);
-        const sourceColor =
-          palette[
-            sourceBlock.paletteIndex * COLORS_PER_PALETTE +
-            blockPixelColor(sourceBlock, sourcePixel)
-          ];
-        let nearestColor = 0;
-        let nearestDistance = Number.POSITIVE_INFINITY;
-        for (let candidate = 0;
-             candidate < COLORS_PER_PALETTE;
-             candidate += 1) {
-          const targetColor =
-            palette[paletteIndex * COLORS_PER_PALETTE + candidate];
-          const red = sourceColor.r - targetColor.r;
-          const green = sourceColor.g - targetColor.g;
-          const blue = sourceColor.b - targetColor.b;
-          const distance =
-            red * red + green * green + blue * blue;
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestColor = candidate;
-          }
-        }
-        colors[pixel++] = nearestColor;
-      }
-    }
-    const usedColors = Array.from(new Set(colors))
-      .sort((left, right) => left - right);
-    if (usedColors.length > LOCAL_COLORS) {
-      return createDirectBlock(paletteIndex, colors);
-    }
-    const localColors = [0, 0, 0, 0];
-    const colorToLocal = new Uint8Array(COLORS_PER_PALETTE);
-    for (let slot = 0; slot < usedColors.length; slot += 1) {
-      localColors[slot] = usedColors[slot];
-      colorToLocal[usedColors[slot]] = slot;
-    }
-    const pattern = new Uint8Array(PATTERN_BYTES);
-    for (pixel = 0; pixel < 16; pixel += 1) {
-      writeBits(pattern, pixel * 2, colorToLocal[colors[pixel]], 2);
-    }
-    return createBlock(paletteIndex, localColors, pattern);
-  }
-
   function findPixelMotion(
-    block,
-    previousBlocks,
+    blockPixels,
+    previousPixels,
     blockIndex,
     blocksX,
     width,
     height,
-    palette,
     radius,
   ) {
     const destinationX =
@@ -654,22 +655,123 @@
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== distance) {
             continue;
           }
-          const candidate = buildPixelMotionBlock(
-            previousBlocks,
-            width,
-            height,
-            blocksX,
-            palette,
-            destinationX + dx,
-            destinationY + dy,
-          );
-          if (candidate && equalBlock(block, candidate)) {
+          if (equalRgb565Source(
+            blockPixels, previousPixels, width, height,
+            destinationX + dx, destinationY + dy,
+          )) {
             return { dx, dy };
           }
         }
       }
     }
     return null;
+  }
+
+  function rgb888To565(color) {
+    return ((color.r & 0xf8) << 8) |
+      ((color.g & 0xfc) << 3) |
+      (color.b >>> 3);
+  }
+
+  function blockToRgb565(block, palette) {
+    const pixels = new Uint16Array(16);
+    for (let pixel = 0; pixel < 16; pixel += 1) {
+      const color =
+        block.paletteIndex * COLORS_PER_PALETTE +
+        blockPixelColor(block, pixel);
+      pixels[pixel] = rgb888To565(palette[color]);
+    }
+    return pixels;
+  }
+
+  function equalRgb565Source(
+    blockPixels, source, width, height, sourceX, sourceY,
+  ) {
+    if (!source || sourceX < 0 || sourceY < 0 ||
+        sourceX + BLOCK_SIZE > width ||
+        sourceY + BLOCK_SIZE > height) {
+      return false;
+    }
+    for (let y = 0; y < BLOCK_SIZE; y += 1) {
+      for (let x = 0; x < BLOCK_SIZE; x += 1) {
+        if (blockPixels[y * BLOCK_SIZE + x] !==
+            source[(sourceY + y) * width + sourceX + x]) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function equalPixelRegion(
+    blockPixels, source, blockIndex, blocksX, width, height,
+  ) {
+    const x = (blockIndex % blocksX) * BLOCK_SIZE;
+    const y = Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+    return equalRgb565Source(
+      blockPixels, source, width, height, x, y,
+    );
+  }
+
+  function storeRgb565Block(
+    destination, width, height, blockIndex, blocksX, blockPixels,
+  ) {
+    const destinationX =
+      (blockIndex % blocksX) * BLOCK_SIZE;
+    const destinationY =
+      Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+    for (let y = 0;
+         y < BLOCK_SIZE && destinationY + y < height; y += 1) {
+      for (let x = 0;
+           x < BLOCK_SIZE && destinationX + x < width; x += 1) {
+        destination[(destinationY + y) * width + destinationX + x] =
+          blockPixels[y * BLOCK_SIZE + x];
+      }
+    }
+  }
+
+  function copyRgb565Region(
+    source, destination, width, height,
+    blockIndex, blocksX, dx, dy,
+  ) {
+    const destinationX =
+      (blockIndex % blocksX) * BLOCK_SIZE;
+    const destinationY =
+      Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+    const sourceX = destinationX + dx;
+    const sourceY = destinationY + dy;
+    if (!source || sourceX < 0 || sourceY < 0 ||
+        sourceX + BLOCK_SIZE > width ||
+        sourceY + BLOCK_SIZE > height) {
+      return false;
+    }
+    for (let y = 0; y < BLOCK_SIZE; y += 1) {
+      for (let x = 0; x < BLOCK_SIZE; x += 1) {
+        destination[(destinationY + y) * width + destinationX + x] =
+          source[(sourceY + y) * width + sourceX + x];
+      }
+    }
+    return true;
+  }
+
+  function reconstructPixelBlock(
+    destination, previous, blockPixels, blockIndex, blocksX,
+    width, height, record,
+  ) {
+    if (record.mode === MODE_SKIP ||
+        record.mode === MODE_MOTION) {
+      if (!copyRgb565Region(
+        previous, destination, width, height, blockIndex, blocksX,
+        record.mode === MODE_MOTION ? record.dx : 0,
+        record.mode === MODE_MOTION ? record.dy : 0,
+      )) {
+        throw new RangeError("Invalid BPV1 pixel reconstruction");
+      }
+      return;
+    }
+    storeRgb565Block(
+      destination, width, height, blockIndex, blocksX, blockPixels,
+    );
   }
 
   function findExactBlock(dictionary, block) {

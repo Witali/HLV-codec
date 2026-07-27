@@ -213,8 +213,9 @@ static void usage(FILE *stream) {
         "one color, 4 bytes for two, 7 bytes for a four-color block, or\n"
         "9 bytes for 5-16 direct colors. --fixed-palettes repeats one global\n"
         "bank in each GOP. --pixel-motion emits BPV1 v7 and interprets the\n"
-        "packed motion-vector nibbles as pixel offsets. Source pixels are read\n"
-        "as RGB and remapped to the source region's top-left block palette.\n");
+        "packed motion-vector nibbles as pixel offsets. Motion copies the\n"
+        "previous reconstructed RGB565 pixels directly; v7 dimensions must\n"
+        "be multiples of four.\n");
 }
 
 static int buffer_reserve(Buffer *buffer, size_t extra) {
@@ -1458,104 +1459,93 @@ static unsigned block_pixel_color(const Block *block, unsigned pixel) {
     }
 }
 
-static int build_pixel_motion_block(
-    const Block *previous,
-    int blocks_x,
-    int width,
-    int height,
+static uint16_t encoder_rgb888_to_rgb565(const uint8_t *color) {
+    return (uint16_t)(((uint16_t)(color[0] & 0xf8U) << 8) |
+                      ((uint16_t)(color[1] & 0xfcU) << 3) |
+                      (color[2] >> 3));
+}
+
+static void block_to_rgb565(
+    const Block *block,
+    const Training *training,
+    uint16_t output[PIXELS_PER_BLOCK]
+) {
+    const unsigned palette = block_palette_index(block);
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const unsigned color = block_pixel_color(block, pixel);
+        output[pixel] = encoder_rgb888_to_rgb565(
+            training->palette[palette][color]);
+    }
+}
+
+static uint64_t rgb565_block_error(
+    const uint8_t pixels[PIXELS_PER_BLOCK][3],
+    const uint16_t reconstructed[PIXELS_PER_BLOCK]
+) {
+    uint64_t error = 0;
+    unsigned pixel;
+    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
+        const unsigned red = (reconstructed[pixel] >> 11) & 31U;
+        const unsigned green = (reconstructed[pixel] >> 5) & 63U;
+        const unsigned blue = reconstructed[pixel] & 31U;
+        const uint8_t rgb[3] = {
+            (uint8_t)((red << 3) | (red >> 2)),
+            (uint8_t)((green << 2) | (green >> 4)),
+            (uint8_t)((blue << 3) | (blue >> 2))
+        };
+        error += color_distance(pixels[pixel], rgb);
+    }
+    return error;
+}
+
+static void copy_pixel_region(
+    const uint16_t *previous,
+    int stride,
     int source_x,
     int source_y,
-    const Training *training,
-    Block *block
+    uint16_t output[PIXELS_PER_BLOCK]
 ) {
-    uint8_t colors[PIXELS_PER_BLOCK];
-    uint8_t color_to_local[COLORS_PER_PALETTE] = {0};
-    uint16_t used_mask = 0;
-    unsigned palette_index;
-    unsigned color_count;
-    int local_y;
-    int local_x;
-    int pixel = 0;
-    if (!previous || !training || !block ||
-        source_x < 0 || source_y < 0 ||
-        source_x + BLOCK_SIZE > width ||
-        source_y + BLOCK_SIZE > height) {
-        return 0;
+    int y;
+    for (y = 0; y < BLOCK_SIZE; ++y) {
+        memcpy(
+            output + y * BLOCK_SIZE,
+            previous + (size_t)(source_y + y) * stride + source_x,
+            BLOCK_SIZE * sizeof *output);
     }
-    palette_index = block_palette_index(
-        &previous[(source_y / BLOCK_SIZE) * blocks_x +
-                  source_x / BLOCK_SIZE]);
-    for (local_y = 0; local_y < BLOCK_SIZE; ++local_y) {
-        const int y = source_y + local_y;
-        for (local_x = 0; local_x < BLOCK_SIZE; ++local_x) {
-            const int x = source_x + local_x;
-            const Block *source =
-                &previous[(y / BLOCK_SIZE) * blocks_x +
-                          x / BLOCK_SIZE];
-            const unsigned source_palette =
-                block_palette_index(source);
-            const unsigned source_pixel =
-                (unsigned)(y & (BLOCK_SIZE - 1)) * BLOCK_SIZE +
-                (unsigned)(x & (BLOCK_SIZE - 1));
-            const unsigned source_color =
-                block_pixel_color(source, source_pixel);
-            const uint8_t *source_rgb =
-                training->palette[source_palette][source_color];
-            unsigned color = 0;
-            uint32_t nearest = UINT32_MAX;
-            unsigned candidate_color;
-            for (candidate_color = 0;
-                 candidate_color < COLORS_PER_PALETTE;
-                 ++candidate_color) {
-                const uint32_t distance = color_distance(
-                    source_rgb,
-                    training->palette[palette_index][candidate_color]);
-                if (distance < nearest) {
-                    nearest = distance;
-                    color = candidate_color;
-                }
-            }
-            colors[pixel++] = (uint8_t)color;
-            used_mask |= (uint16_t)(1U << color);
-        }
+}
+
+static void store_pixel_block(
+    uint16_t *current,
+    int stride,
+    int block_index,
+    int blocks_x,
+    const uint16_t indices[PIXELS_PER_BLOCK]
+) {
+    const int destination_x =
+        (block_index % blocks_x) * BLOCK_SIZE;
+    const int destination_y =
+        (block_index / blocks_x) * BLOCK_SIZE;
+    int y;
+    for (y = 0; y < BLOCK_SIZE; ++y) {
+        memcpy(
+            current + (size_t)(destination_y + y) * stride +
+                destination_x,
+            indices + y * BLOCK_SIZE,
+            BLOCK_SIZE * sizeof *indices);
     }
-    color_count = popcount16(used_mask);
-    memset(block, 0, sizeof *block);
-    block->palette_index = (uint8_t)palette_index;
-    if (color_count > LOCAL_COLORS) {
-        block->palette_index |= DIRECT_RECORD_FLAG;
-        for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel)
-            block_direct_color_store(
-                block, (unsigned)pixel, colors[pixel]);
-        return 1;
-    }
-    {
-        unsigned color;
-        unsigned slot = 0;
-        for (color = 0; color < COLORS_PER_PALETTE; ++color) {
-            if (!(used_mask & (1U << color))) continue;
-            color_to_local[color] = (uint8_t)slot;
-            block->local_colors[slot++] = (uint8_t)color;
-        }
-    }
-    for (pixel = 0; pixel < PIXELS_PER_BLOCK; ++pixel) {
-        const unsigned local = color_to_local[colors[pixel]];
-        block->pattern[pixel >> 2] |=
-            (uint8_t)(local << (6 - ((pixel & 3) * 2)));
-    }
-    return 1;
 }
 
 static int find_pixel_motion(
     const uint8_t pixels[PIXELS_PER_BLOCK][3],
-    const Block *previous,
+    const uint16_t *previous,
     int block_index,
     int blocks_x,
+    int stride,
     int width,
     int height,
     int radius,
-    const Training *training,
-    Block *motion_block,
+    uint16_t motion_pixels[PIXELS_PER_BLOCK],
     uint64_t *motion_error,
     int *motion_x,
     int *motion_y
@@ -1572,23 +1562,27 @@ static int find_pixel_motion(
     for (distance = 1; distance <= radius; ++distance) {
         for (dy = -distance; dy <= distance; ++dy) {
             for (dx = -distance; dx <= distance; ++dx) {
-                Block candidate;
+                uint16_t candidate[PIXELS_PER_BLOCK];
                 const int ring =
                     abs(dx) > abs(dy) ? abs(dx) : abs(dy);
                 if (ring != distance) continue;
-                if (!build_pixel_motion_block(
-                        previous, blocks_x, width, height,
-                        destination_x + dx, destination_y + dy,
-                        training,
-                        &candidate)) {
+                if (destination_x + dx < 0 ||
+                    destination_y + dy < 0 ||
+                    destination_x + dx + BLOCK_SIZE > width ||
+                    destination_y + dy + BLOCK_SIZE > height) {
                     continue;
                 }
+                copy_pixel_region(
+                    previous, stride, destination_x + dx,
+                    destination_y + dy, candidate);
                 {
                     const uint64_t error =
-                        block_error(pixels, &candidate, training);
+                        rgb565_block_error(pixels, candidate);
                     if (error < best_error) {
                         best_error = error;
-                        *motion_block = candidate;
+                        memcpy(
+                            motion_pixels, candidate,
+                            sizeof candidate);
                         *motion_error = error;
                         *motion_x = dx;
                         *motion_y = dy;
@@ -1625,6 +1619,10 @@ static int encode_gop(GopJob *job) {
     size_t mode_bytes = ((size_t)block_count * 2 + 7) / 8;
     Block *previous = NULL;
     Block *current = NULL;
+    uint16_t *previous_pixels = NULL;
+    uint16_t *current_pixels = NULL;
+    const int pixel_stride = blocks_x * BLOCK_SIZE;
+    const int pixel_rows = blocks_y * BLOCK_SIZE;
     uint8_t *modes = NULL;
     uint8_t *packed_modes = NULL;
     PaletteIndex palette_index = {0};
@@ -1652,6 +1650,14 @@ static int encode_gop(GopJob *job) {
     if (palette_index_build(training, &palette_index)) goto fail;
     previous = (Block *)calloc((size_t)block_count, sizeof *previous);
     current = (Block *)calloc((size_t)block_count, sizeof *current);
+    if (options->pixel_motion) {
+        const size_t pixel_count =
+            (size_t)pixel_stride * pixel_rows;
+        previous_pixels =
+            (uint16_t *)calloc(pixel_count, sizeof *previous_pixels);
+        current_pixels =
+            (uint16_t *)calloc(pixel_count, sizeof *current_pixels);
+    }
     modes = (uint8_t *)malloc((size_t)block_count);
     packed_modes = (uint8_t *)malloc(mode_bytes);
     block_dictionary.capacity = options->max_block_dictionary;
@@ -1660,7 +1666,10 @@ static int encode_gop(GopJob *job) {
         (size_t)block_dictionary.capacity * sizeof *block_dictionary.items);
     shadow_blocks.items = (Block *)malloc(
         (size_t)shadow_blocks.capacity * sizeof *shadow_blocks.items);
-    if (!previous || !current || !modes || !packed_modes ||
+    if (!previous || !current ||
+        (options->pixel_motion &&
+         (!previous_pixels || !current_pixels)) ||
+        !modes || !packed_modes ||
         !block_dictionary.items || !shadow_blocks.items) goto fail;
 #ifdef BPV1_WITH_CUDA
     if (options->use_cuda) {
@@ -1715,6 +1724,7 @@ static int encode_gop(GopJob *job) {
             uint8_t pixels[PIXELS_PER_BLOCK][3];
             int palette_indices[MAX_CANDIDATE_PALETTES];
             Block best_block, candidate;
+            uint16_t best_pixel_indices[PIXELS_PER_BLOCK] = {0};
             uint64_t best_error = UINT64_MAX;
             double best_score = HUGE_VAL;
             int best_bits = 0;
@@ -1726,9 +1736,22 @@ static int encode_gop(GopJob *job) {
             extract_block(frame, info, block_index, pixels);
             memset(&best_block, 0, sizeof best_block);
             if (frame_index > 0) {
-                best_block = previous[block_index];
-                best_error = block_error(
-                    pixels, &best_block, training);
+                if (options->pixel_motion) {
+                    const int source_x =
+                        (block_index % blocks_x) * BLOCK_SIZE;
+                    const int source_y =
+                        (block_index / blocks_x) * BLOCK_SIZE;
+                    copy_pixel_region(
+                        previous_pixels, pixel_stride,
+                        source_x, source_y,
+                        best_pixel_indices);
+                    best_error = rgb565_block_error(
+                        pixels, best_pixel_indices);
+                } else {
+                    best_block = previous[block_index];
+                    best_error = block_error(
+                        pixels, &best_block, training);
+                }
                 best_score = (double)best_error;
                 best_bits = 0;
                 best_source_previous = 1;
@@ -1772,8 +1795,16 @@ static int encode_gop(GopJob *job) {
                             &candidate);
                         canonicalize_block(&candidate);
                     }
+                    if (options->pixel_motion) {
+                        uint16_t reconstructed[PIXELS_PER_BLOCK];
+                        block_to_rgb565(
+                            &candidate, training, reconstructed);
+                        error = rgb565_block_error(
+                            pixels, reconstructed);
+                    }
                     bits = raw_payload_bits(&candidate);
-                    if (frame_index > 0 &&
+                    if (!options->pixel_motion &&
+                        frame_index > 0 &&
                         block_equal(
                             &candidate, &previous[block_index])) {
                         bits = 0;
@@ -1798,26 +1829,29 @@ static int encode_gop(GopJob *job) {
             }
             if (options->pixel_motion && frame_index > 0 &&
                 options->search_radius > 0) {
-                Block motion_candidate;
+                uint16_t motion_candidate[PIXELS_PER_BLOCK];
                 uint64_t motion_error;
                 int motion_x;
                 int motion_y;
                 if (find_pixel_motion(
-                        pixels, previous, block_index,
-                        blocks_x, info->width, info->height,
-                        options->search_radius, training,
-                        &motion_candidate, &motion_error,
+                        pixels, previous_pixels, block_index,
+                        blocks_x, pixel_stride,
+                        info->width, info->height,
+                        options->search_radius,
+                        motion_candidate, &motion_error,
                         &motion_x, &motion_y)) {
                     const int motion_bits = 8;
                     const double motion_score =
                         (double)motion_error +
                         options->lambda * motion_bits;
-                    if (better_candidate(
-                            motion_score, motion_bits,
-                            motion_error, &motion_candidate,
-                            best_score, best_bits, best_error,
-                            &best_block)) {
-                        best_block = motion_candidate;
+                    if (motion_score < best_score ||
+                        (motion_score == best_score &&
+                         (motion_bits < best_bits ||
+                          (motion_bits == best_bits &&
+                           motion_error < best_error)))) {
+                        memcpy(
+                            best_pixel_indices, motion_candidate,
+                            sizeof best_pixel_indices);
                         best_error = motion_error;
                         best_score = motion_score;
                         best_bits = motion_bits;
@@ -1828,20 +1862,51 @@ static int encode_gop(GopJob *job) {
                     }
                 }
             }
-            current[block_index] = best_block;
+            if (options->pixel_motion) {
+                if (!best_source_previous &&
+                    !best_source_motion) {
+                    block_to_rgb565(
+                        &best_block, training,
+                        best_pixel_indices);
+                }
+                store_pixel_block(
+                    current_pixels, pixel_stride,
+                    block_index, blocks_x,
+                    best_pixel_indices);
+            } else {
+                current[block_index] = best_block;
+            }
             job->stats.squared_error += best_error;
             job->stats.samples += PIXELS_PER_BLOCK * 3;
             if (best_source_previous) job->stats.previous_decisions++;
             else job->stats.quantized_decisions++;
 
-            if (!(frame_index > 0 &&
-                  block_equal(&best_block, &previous[block_index])) &&
-                block_dictionary_find(&shadow_blocks, &best_block) < 0) {
-                block_dictionary_add(&shadow_blocks, &best_block);
+            if (options->pixel_motion) {
+                if (!best_source_previous &&
+                    !best_source_motion &&
+                    block_dictionary_find(
+                        &shadow_blocks, &best_block) < 0) {
+                    block_dictionary_add(
+                        &shadow_blocks, &best_block);
+                }
+            } else if (!(frame_index > 0 &&
+                         block_equal(
+                             &best_block,
+                             &previous[block_index])) &&
+                       block_dictionary_find(
+                           &shadow_blocks, &best_block) < 0) {
+                block_dictionary_add(
+                    &shadow_blocks, &best_block);
             }
 
-            if (frame_index > 0 &&
-                block_equal(&best_block, &previous[block_index])) {
+            if (options->pixel_motion &&
+                best_source_previous) {
+                modes[block_index] = MODE_SKIP;
+            } else if (!options->pixel_motion &&
+                       frame_index > 0 &&
+                       block_equal(
+                           &best_block,
+                           &previous[block_index])) {
                 modes[block_index] = MODE_SKIP;
             } else {
                 int motion_x = best_motion_x;
@@ -1926,6 +1991,11 @@ static int encode_gop(GopJob *job) {
             previous = current;
             current = temporary;
         }
+        if (options->pixel_motion) {
+            uint16_t *temporary_pixels = previous_pixels;
+            previous_pixels = current_pixels;
+            current_pixels = temporary_pixels;
+        }
         continue;
 frame_fail:
         buffer_free(&payload);
@@ -1933,6 +2003,8 @@ frame_fail:
     }
     free(previous);
     free(current);
+    free(previous_pixels);
+    free(current_pixels);
     free(modes);
     free(packed_modes);
     free(block_dictionary.items);
@@ -1945,6 +2017,8 @@ frame_fail:
 fail:
     free(previous);
     free(current);
+    free(previous_pixels);
+    free(current_pixels);
     free(modes);
     free(packed_modes);
     free(block_dictionary.items);
@@ -2608,6 +2682,12 @@ int main(int argc, char **argv) {
             options.active_palettes ? NULL : &training, &frame_count,
             &gop_plan)) {
         fprintf(stderr, "bpv1enc: input scan failed\n");
+        goto cleanup;
+    }
+    if (options.pixel_motion &&
+        (info.width % BLOCK_SIZE || info.height % BLOCK_SIZE)) {
+        fprintf(stderr,
+            "bpv1enc: BPV1 v7 dimensions must be multiples of four\n");
         goto cleanup;
     }
     if (options.active_palette_path) {

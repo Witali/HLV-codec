@@ -85,10 +85,20 @@ typedef struct {
     uint32_t frame_index;
     uint8_t keyframe;
     const uint8_t *blocks;
+    /* BPV1 v7 display-native reconstructed pixels; v1-v6 use blocks. */
+    const uint16_t *rgb565;
+    /* Row pointers are used when the v7 reference is allocated in pages. */
+    const uint16_t *const *rgb565_rows;
     const uint8_t *palette;
 } BPV1Frame;
 
 typedef struct BPV1Decoder BPV1Decoder;
+
+typedef uint16_t *(*BPV1Rgb565StripAcquire)(
+    void *opaque, uint16_t y, uint16_t rows);
+typedef int (*BPV1Rgb565StripSubmit)(
+    void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows);
+typedef int (*BPV1Rgb565StripFlush)(void *opaque);
 
 const char *bpv1_strerror(int result);
 
@@ -120,6 +130,30 @@ int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet);
 int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                         const BPV1Frame **frame);
+/*
+ * BPV1 v7 can reconstruct directly into two alternating RGB565 output
+ * strips. A returned strip remains owned by the caller until acquire returns
+ * that same pointer again. rows_per_strip must be a multiple of four and
+ * larger than the stream's pixel-motion search radius. After a strip's output
+ * transfer completes, the decoder copies it in-place into the progressively
+ * replaced previous-frame reference before reusing it.
+ */
+int bpv1_decoder_decode_rgb565_strips(
+    BPV1Decoder *decoder, const BPV1Packet *packet,
+    uint16_t rows_per_strip, BPV1Rgb565StripAcquire acquire,
+    BPV1Rgb565StripSubmit submit, BPV1Rgb565StripFlush flush,
+    void *opaque, const BPV1Frame **frame);
+/*
+ * Read and decode one BPV1 v7 frame sequentially through a fixed-size refill
+ * buffer. The compressed-input capacity is independent of frame size. Pass
+ * all three strip callbacks for direct output, or pass all three as NULL to
+ * update the reconstructed reference without presenting the frame.
+ */
+int bpv1_decoder_decode_next_rgb565_strips(
+    BPV1Decoder *decoder, FILE *file, uint16_t rows_per_strip,
+    BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+    BPV1Rgb565StripFlush flush, void *opaque,
+    const BPV1Frame **frame);
 
 size_t bpv1_packet_audio_size(const BPV1Packet *packet);
 const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet);

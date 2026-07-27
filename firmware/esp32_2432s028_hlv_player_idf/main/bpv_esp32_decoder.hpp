@@ -25,6 +25,26 @@ public:
     int decode(const BPV1Packet *packet, const BPV1Frame **frame) {
         return bpv1_decoder_decode(decoder_, packet, frame);
     }
+    int decodeDirect(
+        const BPV1Packet *packet, uint16_t rows_per_strip,
+        BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+        BPV1Rgb565StripFlush flush, void *opaque,
+        const BPV1Frame **frame
+    ) {
+        return bpv1_decoder_decode_rgb565_strips(
+            decoder_, packet, rows_per_strip, acquire, submit, flush,
+            opaque, frame);
+    }
+    int decodeNextDirect(
+        FILE *file, uint16_t rows_per_strip,
+        BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
+        BPV1Rgb565StripFlush flush, void *opaque,
+        const BPV1Frame **frame
+    ) {
+        return bpv1_decoder_decode_next_rgb565_strips(
+            decoder_, file, rows_per_strip, acquire, submit, flush,
+            opaque, frame);
+    }
 
 private:
     BPV1Header header_{};

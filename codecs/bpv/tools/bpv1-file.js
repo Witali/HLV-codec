@@ -86,6 +86,8 @@ function parseHeader(input) {
   }
   if (keyframeInterval === 0 ||
       maxBlockDictionary === 0 ||
+      (version >= PIXEL_MOTION_VERSION &&
+       (width % BLOCK_SIZE !== 0 || height % BLOCK_SIZE !== 0)) ||
       (version >= FOUR_MODE_VERSION
         ? maxPatternDictionary !== 0 || searchRadius > 7
         : maxPatternDictionary === 0)) {
@@ -130,6 +132,7 @@ function walkFrames(input, onFrame) {
   const modeBits = header.version >= FOUR_MODE_VERSION ? 2 : 3;
   const requiredModeBytes = Math.ceil(blockCount * modeBits / 8);
   let previous = null;
+  let previousPixels = null;
   let blockDictionary = [];
   let patternDictionary = [];
   let offset = header.frameDataOffset;
@@ -198,11 +201,15 @@ function walkFrames(input, onFrame) {
 
     if (keyframe) {
       previous = null;
+      previousPixels = null;
       blockDictionary = [];
       patternDictionary = [];
       keyframes += 1;
     }
     const blocks = new Uint8Array(blockCount * RECORD_BYTES);
+    const pixels = header.version >= PIXEL_MOTION_VERSION
+      ? new Uint16Array(header.width * header.height)
+      : null;
 
     for (let blockIndex = 0; blockIndex < blockCount; blockIndex += 1) {
       const mode = readBits(modes, blockIndex * modeBits, modeBits);
@@ -216,10 +223,28 @@ function walkFrames(input, onFrame) {
       const destination = blockIndex * RECORD_BYTES;
 
       if (mode === MODE_SKIP) {
-        if (!previous) throw new RangeError(`SKIP without reference at ${frameIndex}:${blockIndex}`);
-        copyRecord(previous, destination, blocks, destination);
+        if (header.version >= PIXEL_MOTION_VERSION) {
+          if (!previousPixels ||
+              !copyPixelRegion(
+                previousPixels, pixels, header.width, header.height,
+                blockIndex, blocksX, 0, 0,
+              )) {
+            throw new RangeError(
+              `SKIP without reference at ${frameIndex}:${blockIndex}`,
+            );
+          }
+        } else {
+          if (!previous) throw new RangeError(`SKIP without reference at ${frameIndex}:${blockIndex}`);
+          copyRecord(previous, destination, blocks, destination);
+        }
       } else if (mode === MODE_MOTION) {
-        if (!previous) throw new RangeError(`MOTION without reference at ${frameIndex}:${blockIndex}`);
+        if (header.version >= PIXEL_MOTION_VERSION
+            ? !previousPixels
+            : !previous) {
+          throw new RangeError(
+            `MOTION without reference at ${frameIndex}:${blockIndex}`,
+          );
+        }
         const motionBytes = header.version >= FOUR_MODE_VERSION ? 1 : 2;
         requireFrameBytes(offset, motionBytes, frameEnd, frameIndex);
         const dx = motionBytes === 1
@@ -237,18 +262,14 @@ function walkFrames(input, onFrame) {
         const bx = blockIndex % blocksX;
         const by = Math.floor(blockIndex / blocksX);
         if (header.version >= PIXEL_MOTION_VERSION) {
-          const record = buildPixelMotionRecord(
-            previous,
-            header.width,
-            header.height,
-            blocksX,
-            activePalette,
-            bx * BLOCK_SIZE + dx,
-            by * BLOCK_SIZE + dy,
-            frameIndex,
-            blockIndex,
-          );
-          blocks.set(record, destination);
+          if (!copyPixelRegion(
+            previousPixels, pixels, header.width, header.height,
+            blockIndex, blocksX, dx, dy,
+          )) {
+            throw new RangeError(
+              `Invalid pixel motion vector at ${frameIndex}:${blockIndex}`,
+            );
+          }
         } else {
           const sourceX = bx + dx;
           const sourceY = by + dy;
@@ -433,6 +454,13 @@ function walkFrames(input, onFrame) {
           header.maxBlockDictionary,
         );
       }
+      if (header.version >= PIXEL_MOTION_VERSION &&
+          mode !== MODE_SKIP && mode !== MODE_MOTION) {
+        storeRecordPixels(
+          pixels, header.width, header.height, blockIndex, blocksX,
+          blocks, destination, activePalette,
+        );
+      }
     }
     if (offset !== frameEnd) {
       throw new RangeError(
@@ -455,6 +483,7 @@ function walkFrames(input, onFrame) {
     if (typeof onFrame === "function") {
       onFrame({
         blocks,
+        pixels,
         frameIndex,
         keyframe,
         frameBytes: storedFrameBytes,
@@ -465,6 +494,7 @@ function walkFrames(input, onFrame) {
       }, header);
     }
     previous = blocks;
+    previousPixels = pixels;
   }
   if (offset !== bytes.length) {
     throw new RangeError(`Trailing BPV1 data: ${bytes.length - offset} bytes`);
@@ -507,6 +537,24 @@ function walkFrames(input, onFrame) {
 }
 
 function renderFrameRgba(frame, header) {
+  if (frame.pixels instanceof Uint16Array &&
+      frame.pixels.length === header.width * header.height) {
+    const rgba = new Uint8ClampedArray(
+      header.width * header.height * 4,
+    );
+    for (let pixel = 0; pixel < frame.pixels.length; pixel += 1) {
+      const color = frame.pixels[pixel];
+      const red = (color >>> 11) & 31;
+      const green = (color >>> 5) & 63;
+      const blue = color & 31;
+      const output = pixel * 4;
+      rgba[output] = (red << 3) | (red >>> 2);
+      rgba[output + 1] = (green << 2) | (green >>> 4);
+      rgba[output + 2] = (blue << 3) | (blue >>> 2);
+      rgba[output + 3] = 255;
+    }
+    return rgba;
+  }
   const blocks = frame.blocks || frame;
   const expectedBlocks = Math.ceil(header.width / BLOCK_SIZE) *
     Math.ceil(header.height / BLOCK_SIZE);
@@ -702,13 +750,6 @@ function directColor(bytes, offset, pixel) {
   return pixel & 1 ? value & 15 : value >>> 4;
 }
 
-function storeDirectColor(record, pixel, color) {
-  const offset = 1 + (pixel >> 1);
-  record[offset] = pixel & 1
-    ? (record[offset] & 0xf0) | color
-    : (record[offset] & 0x0f) | (color << 4);
-}
-
 function recordPixelColor(bytes, offset, pixel) {
   if (bytes[offset] & DIRECT_RECORD_FLAG) {
     return directColor(bytes, offset, pixel);
@@ -719,96 +760,50 @@ function recordPixelColor(bytes, offset, pixel) {
   return bytes[offset + 1 + local];
 }
 
-function buildPixelMotionRecord(
-  previous,
-  width,
-  height,
-  blocksX,
-  palette,
-  sourceX,
-  sourceY,
-  frameIndex,
-  blockIndex,
+function copyPixelRegion(
+  source, destination, width, height,
+  blockIndex, blocksX, dx, dy,
 ) {
-  if (sourceX < 0 || sourceY < 0 ||
+  const destinationX = (blockIndex % blocksX) * BLOCK_SIZE;
+  const destinationY =
+    Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+  const sourceX = destinationX + dx;
+  const sourceY = destinationY + dy;
+  if (!source || sourceX < 0 || sourceY < 0 ||
       sourceX + BLOCK_SIZE > width ||
       sourceY + BLOCK_SIZE > height) {
-    throw new RangeError(
-      `Invalid pixel motion vector at ${frameIndex}:${blockIndex}`,
-    );
+    return false;
   }
-  const colors = new Uint8Array(16);
-  const firstBlock =
-    Math.floor(sourceY / BLOCK_SIZE) * blocksX +
-    Math.floor(sourceX / BLOCK_SIZE);
-  const paletteIndex = previous[firstBlock * RECORD_BYTES] & 63;
-  let usedMask = 0;
-  let pixel = 0;
-  for (let localY = 0; localY < BLOCK_SIZE; localY += 1) {
-    const y = sourceY + localY;
-    for (let localX = 0; localX < BLOCK_SIZE; localX += 1) {
-      const x = sourceX + localX;
-      const sourceBlock =
-        Math.floor(y / BLOCK_SIZE) * blocksX +
-        Math.floor(x / BLOCK_SIZE);
-      const sourceOffset = sourceBlock * RECORD_BYTES;
-      const sourcePalette = previous[sourceOffset] & 63;
-      const sourcePixel =
-        (y & 3) * BLOCK_SIZE + (x & 3);
-      const sourceColor = recordPixelColor(
-        previous,
-        sourceOffset,
-        sourcePixel,
-      );
-      const sourceRgb =
-        (sourcePalette * COLORS_PER_PALETTE + sourceColor) * 3;
-      let color = 0;
-      let nearest = Number.POSITIVE_INFINITY;
-      for (let candidate = 0;
-           candidate < COLORS_PER_PALETTE;
-           candidate += 1) {
-        const candidateRgb =
-          (paletteIndex * COLORS_PER_PALETTE + candidate) * 3;
-        const red = palette[sourceRgb] - palette[candidateRgb];
-        const green =
-          palette[sourceRgb + 1] - palette[candidateRgb + 1];
-        const blue =
-          palette[sourceRgb + 2] - palette[candidateRgb + 2];
-        const distance =
-          red * red + green * green + blue * blue;
-        if (distance < nearest) {
-          nearest = distance;
-          color = candidate;
-        }
-      }
-      colors[pixel++] = color;
-      usedMask |= 1 << color;
+  for (let y = 0; y < BLOCK_SIZE; y += 1) {
+    for (let x = 0; x < BLOCK_SIZE; x += 1) {
+      destination[(destinationY + y) * width + destinationX + x] =
+        source[(sourceY + y) * width + sourceX + x];
     }
   }
-  const record = new Uint8Array(RECORD_BYTES);
-  record[0] = paletteIndex;
-  const colorCount = popcount16(usedMask);
-  if (colorCount > 4) {
-    record[0] |= DIRECT_RECORD_FLAG;
-    for (pixel = 0; pixel < 16; pixel += 1) {
-      storeDirectColor(record, pixel, colors[pixel]);
+  return true;
+}
+
+function storeRecordPixels(
+  destination, width, height, blockIndex, blocksX,
+  blocks, record, palette,
+) {
+  const destinationX = (blockIndex % blocksX) * BLOCK_SIZE;
+  const destinationY =
+    Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+  const paletteIndex = blocks[record] & 63;
+  for (let y = 0; y < BLOCK_SIZE; y += 1) {
+    for (let x = 0; x < BLOCK_SIZE; x += 1) {
+      const pixel = y * BLOCK_SIZE + x;
+      const paletteColor =
+        recordPixelColor(blocks, record, pixel);
+      const color =
+        (paletteIndex * COLORS_PER_PALETTE + paletteColor) * 3;
+      destination[(destinationY + y) * width + destinationX + x] =
+        ((palette[color] & 0xf8) << 8) |
+        ((palette[color + 1] & 0xfc) << 3) |
+        (palette[color + 2] >>> 3);
     }
-    return record;
   }
-  const colorToLocal = new Uint8Array(COLORS_PER_PALETTE);
-  let slot = 0;
-  for (let color = 0; color < COLORS_PER_PALETTE; color += 1) {
-    if (!(usedMask & (1 << color))) continue;
-    colorToLocal[color] = slot;
-    record[1 + slot] = color;
-    slot += 1;
-  }
-  for (pixel = 0; pixel < 16; pixel += 1) {
-    const local = colorToLocal[colors[pixel]];
-    record[PATTERN_OFFSET + (pixel >> 2)] |=
-      local << (6 - ((pixel & 3) * 2));
-  }
-  return record;
 }
 
 function directUsedMask(bytes, offset) {

@@ -45,17 +45,18 @@ console.log("BPV1 tests passed", encoded.stats);
 const pixelPalette = palette.map((color) => ({ ...color }));
 for (let color = 0; color < 16; color += 1) {
   pixelPalette[color] = {
-    r: color === 0 ? 0 : color === 1 ? 10 : 200,
+    r: color === 0 ? 0 : color === 1 ? 10 :
+      color === 2 ? 40 : 200,
     g: 0,
     b: 0,
   };
 }
-pixelPalette[16] = { r: 12, g: 0, b: 0 };
+pixelPalette[16] = { r: 40, g: 0, b: 0 };
 const pixelA = block(0, [0, 0, 0, 0], new Array(16).fill(0));
 const pixelB = block(1, [0, 0, 0, 0], new Array(16).fill(0));
 const shifted = block(
   0,
-  [0, 1, 0, 0],
+  [0, 2, 0, 0],
   Array.from({ length: 16 }, (_, index) => index % 4 ? 1 : 0),
 );
 const pixelEncoded = codec.encodeVideo({
@@ -76,9 +77,11 @@ assert.ok(
   pixelEncoded.stats.modeCounts[codec.constants.MODE_MOTION] > 0,
 );
 const pixelDecoded = codec.decodeVideo(pixelEncoded.bytes);
+assert.equal(pixelDecoded.frames[1].blocks[1], null);
+const pixelRendered = codec.renderFrame(pixelDecoded, 1);
 assert.deepEqual(
-  pixelDecoded.frames[1].blocks[1],
-  shifted,
+  Array.from(pixelRendered.subarray(4 * 4, 8 * 4)),
+  [0, 0, 0, 255, 41, 0, 0, 255, 41, 0, 0, 255, 41, 0, 0, 255],
 );
 assert.equal(
   bpvFile.walkFrames(pixelEncoded.bytes).version,

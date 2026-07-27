@@ -16,7 +16,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Werror=return-type
 )
 
-# The repository v6 encoder emits RAW only for a novel full block. On the
+# The repository v6/v7 encoder emits RAW only for a novel full block. On the
 # constrained player this lets the FIFO block dictionary append directly,
 # avoiding two hash lookups for the common RAW mode while retaining the strict
 # portable default and legacy stream support.

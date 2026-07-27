@@ -242,6 +242,7 @@ Divx3AviInfo divx3_info{};
 uint8_t *divx3_packet = nullptr;
 BpvEsp32Decoder bpv_decoder;
 BPV1Header bpv_header{};
+uint8_t bpv_file_version = 0;
 plm_t *mpeg_video = nullptr;
 plm_t *mpeg_audio = nullptr;
 H2633gpDecoder *h263_decoder = nullptr;
@@ -1612,6 +1613,7 @@ SelectionReadResult readSelectedVideoPath() {
 }
 
 VideoOpenResult openVideoCandidate(const char *path) {
+    bpv_file_version = 0;
     errno = 0;
     video_file = std::fopen(path, "rb");
     if (!video_file) {
@@ -1634,6 +1636,7 @@ VideoOpenResult openVideoCandidate(const char *path) {
     } else if (signature_size >= 4 &&
                !std::memcmp(signature, "BPV1", 4)) {
         video_codec = VideoCodec::kBpv;
+        if (signature_size >= 5) bpv_file_version = signature[4];
     } else if (signature_size == sizeof signature &&
                !std::memcmp(signature, "RIFF", 4) &&
                !std::memcmp(signature + 8, "AVI ", 4)) {
@@ -1750,7 +1753,9 @@ bool openVideo() {
     }
     const bool use_double_display_buffer =
         video_codec != VideoCodec::kH263 &&
-        video_codec != VideoCodec::kDivx3;
+        video_codec != VideoCodec::kDivx3 &&
+        !(video_codec == VideoCodec::kBpv &&
+          bpv_file_version >= BPV1_PIXEL_MOTION_VERSION);
     if (display.setDoubleBuffered(use_double_display_buffer) != ESP_OK) {
         showStatus("Not enough RAM", "display buffer allocation failed");
         closeVideo();
@@ -2047,6 +2052,14 @@ bool openVideo() {
         const int result = bpv_decoder.begin(video_file, &bpv_header);
         if (result != BPV1_OK) {
             showStatus("Invalid video.bpv1", bpv1_strerror(result));
+            reportHeap("BPV1 decoder allocation failed");
+            closeVideo();
+            return false;
+        }
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
+            display.rowsPerTransfer() != 8) {
+            showStatus("Display buffer error",
+                       "cannot select two 8-row SPI buffers");
             closeVideo();
             return false;
         }
@@ -2074,7 +2087,8 @@ bool openVideo() {
                  bpv_header.audio_sample_rate,
                  static_cast<unsigned>(bpv_decoder.memoryBytes()),
                  static_cast<unsigned>(bpv_decoder.packetCapacity()));
-        if (!startDecodeWorker()) {
+        if (bpv_header.version < BPV1_PIXEL_MOTION_VERSION &&
+            !startDecodeWorker()) {
             showStatus("Dual-core init failed",
                        "cannot create CPU1 decoder task");
             closeVideo();
@@ -2196,11 +2210,14 @@ bool openVideo() {
                      : "native-centred");
     } else if (video_codec == VideoCodec::kBpv) {
         ESP_LOGI(kTag,
-                 "Playing BPV1 v%u in %s mode, frame storage=4x4 records",
+                 "Playing BPV1 v%u in %s mode, frame storage=%s",
                  bpv_header.version,
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
-                     : "native-centred");
+                     : "native-centred",
+                 bpv_header.version >= BPV1_PIXEL_MOTION_VERSION
+                     ? "previous RGB565 frame + two 8-row SPI buffers"
+                     : "two 4x4-record frames");
     } else {
         ESP_LOGI(kTag, "Playing HLV v%u in %s mode, frame storage=%s",
                  sequence_header.version,
@@ -3384,7 +3401,117 @@ void playOneDivx3FramePipelined() {
     pending_divx3_frame_valid = true;
 }
 
+struct BpvDirectRenderContext {
+    int x_offset = 0;
+    int y_offset = 0;
+    uint32_t render_us = 0;
+    bool display_failed = false;
+};
+
+uint16_t *acquireBpvDmaStrip(
+    void *opaque, uint16_t, uint16_t
+) {
+    auto *context = static_cast<BpvDirectRenderContext *>(opaque);
+    if (!context) return nullptr;
+    const int64_t render_start = microsNow();
+    uint16_t *pixels = display.acquireBuffer();
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    if (!pixels) context->display_failed = true;
+    return pixels;
+}
+
+int submitBpvDmaStrip(
+    void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows
+) {
+    auto *context = static_cast<BpvDirectRenderContext *>(opaque);
+    if (!context || !pixels) return 1;
+    const int64_t render_start = microsNow();
+    const esp_err_t result = display.drawBitmap(
+        context->x_offset, context->y_offset + y,
+        bpv_header.width, rows, pixels);
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    if (result != ESP_OK) context->display_failed = true;
+    return result == ESP_OK ? 0 : 1;
+}
+
+int flushBpvDmaStrips(void *opaque) {
+    auto *context = static_cast<BpvDirectRenderContext *>(opaque);
+    if (!context) return 1;
+    const int64_t render_start = microsNow();
+    const esp_err_t result = display.flush();
+    context->render_us +=
+        static_cast<uint32_t>(microsNow() - render_start);
+    if (result != ESP_OK) context->display_failed = true;
+    return result == ESP_OK ? 0 : 1;
+}
+
 void playOneBpvFrameSequential() {
+    if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION) {
+        if (decoded_frames >= bpv_header.frame_count) {
+            finishVideoLoop();
+            return;
+        }
+        const PresentationState presentation = beginPresentation();
+        const BPV1Frame *frame = nullptr;
+        uint32_t decode_us = 0;
+        uint32_t render_us = 0;
+        int decode_result;
+        if (presentation.render &&
+            !player_settings::kScaleVideoToDisplay) {
+            BpvDirectRenderContext render_context{
+                (kScreenWidth - bpv_header.width) / 2,
+                (kScreenHeight - bpv_header.height) / 2};
+            const int64_t combined_start = microsNow();
+            decode_result = bpv_decoder.decodeNextDirect(
+                video_file, display.rowsPerTransfer(),
+                acquireBpvDmaStrip, submitBpvDmaStrip,
+                flushBpvDmaStrips, &render_context, &frame);
+            const uint32_t combined_us =
+                static_cast<uint32_t>(
+                    microsNow() - combined_start);
+            render_us = render_context.render_us;
+            decode_us = combined_us > render_us
+                            ? combined_us - render_us
+                            : 0;
+            if (render_context.display_failed &&
+                decode_result != BPV1_OK) {
+                failPlayback("Display DMA error", BPV1_ERR_IO);
+                return;
+            }
+        } else {
+            const int64_t decode_start = microsNow();
+            decode_result = bpv_decoder.decodeNextDirect(
+                video_file, display.rowsPerTransfer(),
+                nullptr, nullptr, nullptr, nullptr, &frame);
+            decode_us = static_cast<uint32_t>(
+                microsNow() - decode_start);
+            if (decode_result == BPV1_OK &&
+                presentation.render) {
+                const int64_t render_start = microsNow();
+                if (!renderBpvFrame(frame)) {
+                    failPlayback(
+                        "Display DMA error", BPV1_ERR_IO);
+                    return;
+                }
+                render_us = static_cast<uint32_t>(
+                    microsNow() - render_start);
+            }
+        }
+        if (decode_result == BPV1_ERR_IO) {
+            failSdCardRead("cannot stream BPV1 video");
+            return;
+        }
+        if (decode_result != BPV1_OK) {
+            failPlayback("BPV1 decode error", decode_result);
+            return;
+        }
+        finishPresentation(
+            presentation, 0, decode_us, render_us);
+        return;
+    }
+
     BPV1Packet packet{};
     const int64_t read_start = microsNow();
     const int packet_result =
@@ -3404,18 +3531,28 @@ void playOneBpvFrameSequential() {
         return;
     }
 
+    const PresentationState presentation = beginPresentation();
     const BPV1Frame *frame = nullptr;
     const int64_t decode_start = microsNow();
     const int decode_result = bpv_decoder.decode(&packet, &frame);
     const uint32_t decode_us =
         static_cast<uint32_t>(microsNow() - decode_start);
+    uint32_t render_us = 0;
+    if (decode_result == BPV1_OK && presentation.render) {
+        const int64_t render_start = microsNow();
+        if (!renderBpvFrame(frame)) {
+            failPlayback("Display DMA error", BPV1_ERR_IO);
+            return;
+        }
+        render_us =
+            static_cast<uint32_t>(microsNow() - render_start);
+    }
     if (decode_result != BPV1_OK) {
         failPlayback("BPV1 decode error", decode_result);
         return;
     }
-    if (!presentBpvFrame(frame, read_us, decode_us)) {
-        failPlayback("Display DMA error", BPV1_ERR_IO);
-    }
+    finishPresentation(
+        presentation, read_us, decode_us, render_us);
 }
 
 void playOneBpvFramePipelined() {
@@ -3673,7 +3810,8 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kBpv &&
             bpv_decoder.ready()) {
-            if (player_settings::kUseDualCorePipeline) {
+            if (player_settings::kUseDualCorePipeline &&
+                bpv_header.version < BPV1_PIXEL_MOTION_VERSION) {
                 playOneBpvFramePipelined();
             } else {
                 playOneBpvFrameSequential();

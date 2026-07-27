@@ -22,6 +22,16 @@ The individual read, decode and render measurements sum to more than one
 frame period, but they are no longer serial. CPU1 decodes a packet and
 prefetches the next packet while CPU0 presents the preceding decoded frame.
 
+The experimental v7 direct-pixel path was separately measured with a
+300-frame 320x240 30 fps stream containing 389,840 pixel-motion blocks. It
+completed all frames without gaps at 29.716 observed fps. Sequential refill
+input plus decoding averaged 20,593 us, the interleaved SPI/DMA callbacks
+averaged 6,430 us, and total work averaged 27,023 us. The preceding
+nearest-color v7 implementation reached only 23.083 fps and averaged 58,272
+us of work. v7 now uses a 4 KiB refill buffer, a paged previous RGB565 frame
+and two alternating eight-row display buffers; v6 retains its faster
+dual-core compact-frame pipeline.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD

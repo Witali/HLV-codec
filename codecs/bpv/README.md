@@ -33,14 +33,16 @@ multi-video v4/v5 comparison is recorded in
 [`../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md`](../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md).
 
 BPV1 v7 is an opt-in pixel-motion experiment. The same one-byte vector uses
-pixel rather than block units. The decoder reads the shifted 4x4 area from
-the previously reconstructed compact frame, resolves every source pixel to
-RGB, and maps it to the nearest color in the source area's top-left palette.
-Palette equality is deliberately not required, so a small difference between
-neighboring palettes does not prevent reuse. The production encoder includes
-the resulting reconstruction error in the ordinary RD decision and emits v7
-only with `--pixel-motion`; all wrappers remain on stable v6 unless
-`-PixelMotion` is supplied.
+pixel rather than block units. Its normative reconstructed state is
+display-native RGB565, and `SKIP`/motion copy pixels directly from that
+previous frame. Palette equality is deliberately irrelevant and the decoder
+does no nearest-color search. On ESP32 the compressed current frame expands
+straight into two alternating eight-row SPI buffers; each completed buffer
+progressively replaces rows of the previous reference once the seven-pixel
+motion radius can no longer reach them. The production encoder includes
+RGB565 reconstruction error in the ordinary RD decision and emits v7 only
+with `--pixel-motion`; all wrappers remain on stable v6 unless `-PixelMotion`
+is supplied. v7 dimensions must be multiples of four.
 
 ## Test
 
@@ -102,13 +104,17 @@ make -C codecs/bpv test-c
 ```
 
 The native test covers all four v6 block modes, v7 cross-palette pixel motion,
-all four RAW subformats, legacy v1-v5 decoding, malformed direct records and
-row rendering. Passing an
+two alternating eight-row output strips, all four RAW subformats, legacy
+v1-v5 decoding, malformed direct records and row rendering. Passing an
 existing file performs a complete sequential C decode:
 
 ```powershell
 .\build\msvc\test_bpv1_decoder.exe .\out\video.bpv1
 ```
+
+For v7 that validation decodes once from contiguous packets and once through
+the 4 KiB refill path, then requires identical reconstructed-frame checksums.
+The test file may contain valid frames much larger than the refill buffer.
 
 ## Native C encoder
 
