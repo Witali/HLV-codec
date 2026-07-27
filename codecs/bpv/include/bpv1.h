@@ -9,7 +9,8 @@
 extern "C" {
 #endif
 
-#define BPV1_VERSION 6
+#define BPV1_VERSION 7
+#define BPV1_PIXEL_MOTION_VERSION 7
 #define BPV1_FOUR_MODE_VERSION 6
 #define BPV1_ADAPTIVE_RAW_VERSION 5
 #define BPV1_ACTIVE_PALETTE_VERSION 4
@@ -93,13 +94,13 @@ const char *bpv1_strerror(int result);
 
 /*
  * Read and validate the fixed header. Versions 1 through 3 store one palette
- * bank in the header; v4-v6 carry a complete active bank in every keyframe.
+ * bank in the header; v4-v7 carry a complete active bank in every keyframe.
  */
 int bpv1_header_read(FILE *file, BPV1Header *header);
 
 /*
  * Read one frame header and leave the file positioned at its payload.  The
- * header occupies nine bytes in v1/v2 and thirteen bytes in v3-v6. This is
+ * header occupies nine bytes in v1/v2 and thirteen bytes in v3-v7. This is
  * useful for seek-index construction.
  */
 int bpv1_frame_info_read(FILE *file, const BPV1Header *header,
@@ -140,7 +141,7 @@ int bpv1_frame_render_rgb565_rows(const BPV1Header *header,
                                   size_t stride_pixels, size_t pixels);
 /*
  * Convert the active palette bank once after opening v1-v3 streams and after
- * every v4-v6 keyframe. Cached render calls avoid repeated RGB888 conversion
+ * every v4-v7 keyframe. Cached render calls avoid repeated RGB888 conversion
  * for every block while preserving the allocation-free legacy API above.
  */
 int bpv1_palette_build_rgb565(const BPV1Header *header,

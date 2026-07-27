@@ -7,6 +7,7 @@
 #include <string.h>
 
 #define TEST_BPV1_V5_VERSION 5
+#define TEST_BPV1_V6_VERSION 6
 
 static int write_u8(FILE *file, uint8_t value) {
     return fputc(value, file) == EOF ? -1 : 0;
@@ -511,7 +512,7 @@ static int test_v6_four_modes(void) {
     int result = 1;
     if (!file ||
         fwrite("BPV1", 1, 4, file) != 4 ||
-        write_u8(file, BPV1_VERSION) ||
+        write_u8(file, TEST_BPV1_V6_VERSION) ||
         write_u16(file, 16) || write_u16(file, 4) ||
         write_u32(file, 2) ||
         write_u16(file, 24) || write_u16(file, 1) ||
@@ -535,7 +536,7 @@ static int test_v6_four_modes(void) {
             sizeof second_payload ||
         fseek(file, 0, SEEK_SET) ||
         bpv1_header_read(file, &header) != BPV1_OK ||
-        header.version != BPV1_VERSION ||
+        header.version != TEST_BPV1_V6_VERSION ||
         header.max_pattern_dictionary != 0 ||
         !(decoder = bpv1_decoder_create(&header)) ||
         bpv1_decoder_packet_capacity(decoder) !=
@@ -557,6 +558,73 @@ static int test_v6_four_modes(void) {
             fprintf(stderr, "BPV1 v6 frame %d failed\n", frame_index);
             goto cleanup;
         }
+    }
+    result = 0;
+
+cleanup:
+    bpv1_decoder_destroy(decoder);
+    if (file) fclose(file);
+    return result;
+}
+
+static int test_v7_pixel_motion_palette_remap(void) {
+    uint8_t palette[BPV1_MAX_PALETTE_BYTES] = {0};
+    const uint8_t first_modes = 0xf0;
+    const uint8_t first_payload[4] = {0x00, 0x00, 0x01, 0x00};
+    const uint8_t second_modes = 0x10;
+    const uint8_t motion = 0xf0;
+    const uint8_t expected[2][BPV1_RECORD_BYTES] = {
+        {0, 0, 0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 1, 0, 0, 0x15, 0x15, 0x15, 0x15}
+    };
+    FILE *file = tmpfile();
+    BPV1Header header;
+    BPV1Decoder *decoder = NULL;
+    BPV1Packet packet;
+    const BPV1Frame *frame = NULL;
+    unsigned color;
+    int result = 1;
+    for (color = 0; color < BPV1_COLORS_PER_PALETTE; ++color) {
+        palette[color * 3U] =
+            (uint8_t)(color == 0U ? 0U :
+                      color == 1U ? 10U : 200U);
+    }
+    palette[BPV1_COLORS_PER_PALETTE * 3U] = 12;
+    if (!file ||
+        fwrite("BPV1", 1, 4, file) != 4 ||
+        write_u8(file, BPV1_PIXEL_MOTION_VERSION) ||
+        write_u16(file, 8) || write_u16(file, 4) ||
+        write_u32(file, 2) ||
+        write_u16(file, 24) || write_u16(file, 1) ||
+        write_u16(file, 2) ||
+        write_u16(file, 8) || write_u16(file, 0) ||
+        write_u8(file, 2) || write_u8(file, BPV1_AUDIO_NONE) ||
+        write_u16(file, 0) || write_u8(file, 0) || write_u8(file, 0) ||
+        write_u8(file, 1) ||
+        write_u32(file, BPV1_MAX_PALETTE_BYTES + 1U +
+                         sizeof first_payload) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        fwrite(palette, 1, sizeof palette, file) != sizeof palette ||
+        write_u8(file, first_modes) ||
+        fwrite(first_payload, 1, sizeof first_payload, file) !=
+            sizeof first_payload ||
+        write_u8(file, 0) ||
+        write_u32(file, 2) ||
+        write_u32(file, 1) || write_u32(file, 0) ||
+        write_u8(file, second_modes) ||
+        write_u8(file, motion) ||
+        fseek(file, 0, SEEK_SET) ||
+        bpv1_header_read(file, &header) != BPV1_OK ||
+        header.version != BPV1_PIXEL_MOTION_VERSION ||
+        !(decoder = bpv1_decoder_create(&header)) ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+        bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+        bpv1_decoder_read_packet(decoder, file, &packet) != BPV1_OK ||
+        bpv1_decoder_decode(decoder, &packet, &frame) != BPV1_OK ||
+        !frame ||
+        memcmp(frame->blocks, expected, sizeof expected)) {
+        fprintf(stderr, "BPV1 v7 pixel-motion palette remap failed\n");
+        goto cleanup;
     }
     result = 0;
 
@@ -709,7 +777,8 @@ int main(int argc, char **argv) {
     if (test_adaptive_raw_records()) goto cleanup;
     if (test_direct_raw_records()) goto cleanup;
     if (test_invalid_direct_raw()) goto cleanup;
-    if (test_v6_four_modes()) goto cleanup;
+    if (test_v6_four_modes() ||
+        test_v7_pixel_motion_palette_remap()) goto cleanup;
     result = 0;
     puts("BPV1 portable C decoder tests passed");
 

@@ -55,6 +55,8 @@ param(
 
     [bool]$ActivePalettes = $true,
 
+    [switch]$PixelMotion,
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -243,7 +245,10 @@ try {
     else {
         $encoderArguments += "--fixed-palettes"
     }
-    $bpvVersion = 6
+    if ($PixelMotion) {
+        $encoderArguments += "--pixel-motion"
+    }
+    $bpvVersion = if ($PixelMotion) { 7 } else { 6 }
     $paletteMode = if ($ActivePalettes) {
         "active GOP palettes"
     }

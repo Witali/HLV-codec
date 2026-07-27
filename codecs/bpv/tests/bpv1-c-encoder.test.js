@@ -91,6 +91,10 @@ try {
   const report4 = path.join(temporary, "report-4.json");
   const outputCpu = path.join(temporary, "output-cpu.bpv1");
   const reportCpu = path.join(temporary, "report-cpu.json");
+  const outputPixel = path.join(temporary, "output-pixel.bpv1");
+  const reportPixel = path.join(temporary, "report-pixel.json");
+  const outputPixelCpu = path.join(temporary, "output-pixel-cpu.bpv1");
+  const reportPixelCpu = path.join(temporary, "report-pixel-cpu.json");
   const audio = path.join(temporary, "audio.u8");
   const outputAudio = path.join(temporary, "output-audio.bpv1");
   const reportAudio = path.join(temporary, "report-audio.json");
@@ -138,6 +142,16 @@ try {
   runEncoder(input, outputAudio, reportAudio, 4, audio);
   runEncoder(input, outputFixed, reportFixed, 1, null, false);
   runEncoder(
+    input,
+    outputPixel,
+    reportPixel,
+    1,
+    null,
+    true,
+    null,
+    ["--pixel-motion"],
+  );
+  runEncoder(
     sceneInput,
     sceneOutput,
     sceneReport,
@@ -155,6 +169,12 @@ try {
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
+  const pixelBytes = fs.readFileSync(outputPixel);
+  assert.equal(bpv.walkFrames(pixelBytes).version, 7);
+  assert.equal(
+    JSON.parse(fs.readFileSync(reportPixel, "utf8")).motionUnits,
+    "pixels",
+  );
   const primaryReport = JSON.parse(fs.readFileSync(report1, "utf8"));
   if (primaryReport.computeBackend === "cuda") {
     runEncoder(
@@ -175,6 +195,21 @@ try {
     assert.equal(
       JSON.parse(fs.readFileSync(reportCpu, "utf8")).computeBackend,
       "cpu",
+    );
+    runEncoder(
+      input,
+      outputPixelCpu,
+      reportPixelCpu,
+      1,
+      null,
+      true,
+      null,
+      ["--pixel-motion", "--device", "cpu"],
+    );
+    assert.deepEqual(
+      fs.readFileSync(outputPixelCpu),
+      pixelBytes,
+      "CUDA and CPU pixel-motion encoding must match",
     );
   }
   const activeBanks = [];

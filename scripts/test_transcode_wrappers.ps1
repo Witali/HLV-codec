@@ -53,6 +53,9 @@ try {
     & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
         -OutputDirectory (Join-Path $work "BPV") `
         -Width 320 -Height 180 -MaxFrames 2 -NoAudio -Force
+    & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
+        -OutputDirectory (Join-Path $work "BPV7") `
+        -Width 320 -Height 180 -MaxFrames 2 -NoAudio -PixelMotion -Force
 
     Assert-ProbedValue -File (Join-Path $work "h263.avi") `
         -Entries "codec_name,width,height" `
@@ -109,7 +112,28 @@ try {
         )
     }
 
-    Write-Host "All six production transcode wrappers passed."
+    $bpv7Files = @(Get-ChildItem -LiteralPath (Join-Path $work "BPV7") `
+        -Filter "*BPVv7*.bpv1")
+    if ($bpv7Files.Count -ne 1) {
+        throw "BPV pixel-motion wrapper did not create one BPV v7 file."
+    }
+    $bpv7Info = & node `
+        (Join-Path $repo "codecs\bpv\tools\bpv1info.js") `
+        $bpv7Files[0].FullName --json | ConvertFrom-Json
+    $bpv7Report = Get-Content -LiteralPath (
+        [IO.Path]::ChangeExtension($bpv7Files[0].FullName, ".json")
+    ) -Raw | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or
+        $bpv7Info.version -ne 7 -or
+        $bpv7Report.motionUnits -ne "pixels" -or
+        $bpv7Report.computeBackend -ne "cuda") {
+        throw "BPV pixel-motion wrapper did not use CUDA BPV v7."
+    }
+
+    Write-Host (
+        "All six production transcode wrappers and the BPV v7 " +
+        "pixel-motion variant passed."
+    )
 }
 finally {
     $resolvedWork = [IO.Path]::GetFullPath($work)

@@ -222,7 +222,7 @@ $summaryFile = if ($config.Contains("summaryFile")) {
         -BaseDirectory $configDirectory
 }
 else {
-    Join-Path $outputDirectory "BPVv6_yaml_summary.json"
+    Join-Path $outputDirectory "BPV_yaml_summary.json"
 }
 if (-not $ValidateOnly -and
     (Test-Path -LiteralPath $summaryFile) -and -not $Force) {
@@ -239,7 +239,7 @@ $allowedVideoKeys = @(
     "gop", "minGop", "sceneThreshold", "candidatePalettes",
     "sampleBlocks", "samplesPerFrame",
     "blockIterations", "colorIterations", "colorsPerCluster",
-    "activePalettes", "initialLambda", "maximumLambda",
+    "activePalettes", "pixelMotion", "initialLambda", "maximumLambda",
     "searchIterations"
 )
 $targetScript = Join-Path $PSScriptRoot "encode_bpv_target_quality.ps1"
@@ -268,12 +268,14 @@ foreach ($video in $config["videos"]) {
     )) {
         throw "YAML video $profileNumber has unsupported format '$format'."
     }
-    if (-not $codec.Equals(
-        "BPVv6",
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
+    if ($codec -notin @("BPVv6", "BPVv7")) {
         throw "YAML video $profileNumber has unsupported codec '$codec'."
     }
+    $pixelMotion = $codec.Equals(
+        "BPVv7",
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or [bool](Get-OptionalSetting `
+        -Map $video -Name "pixelMotion" -Default $false)
 
     $fpsSetting = Get-RequiredSetting `
         -Map $video -Name "fps" -Profile $profileNumber
@@ -344,6 +346,9 @@ foreach ($video in $config["videos"]) {
         -Map $video -Name "audio" -Default $true)
     if ($NoAudio -or -not $audioEnabled) {
         $arguments["NoAudio"] = $true
+    }
+    if ($pixelMotion) {
+        $arguments["PixelMotion"] = $true
     }
     if ($Force) {
         $arguments["Force"] = $true

@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const codec = require("../src/bpv1-codec.js");
+const bpvFile = require("../tools/bpv1-file.js");
 
 function pattern(values) {
   const out = new Uint8Array(4);
@@ -29,7 +30,8 @@ const encoded = codec.encodeVideo(video, { keyframeInterval: 30, searchRadius: 2
 const decoded = codec.decodeVideo(encoded.bytes);
 assert.equal(decoded.frames.length, 4);
 assert.equal(decoded.paletteCount, 64);
-assert.equal(codec.constants.VERSION, 6);
+assert.equal(codec.constants.VERSION, 7);
+assert.equal(encoded.bytes[4], 6);
 assert.equal(codec.constants.PALETTE_COUNT, 64);
 assert.deepEqual(Array.from(decoded.frames[3].blocks[0].pattern), Array.from(c.pattern));
 assert.deepEqual(decoded.frames[3].blocks[0].localColors, c.localColors);
@@ -39,6 +41,50 @@ assert.ok(encoded.stats.modeCounts[codec.constants.MODE_RAW] >= 1);
 assert.equal(encoded.stats.modeCounts.length, 4);
 assert.equal(codec.renderFrame(decoded, 0).length, 8 * 4 * 4);
 console.log("BPV1 tests passed", encoded.stats);
+
+const pixelPalette = palette.map((color) => ({ ...color }));
+for (let color = 0; color < 16; color += 1) {
+  pixelPalette[color] = {
+    r: color === 0 ? 0 : color === 1 ? 10 : 200,
+    g: 0,
+    b: 0,
+  };
+}
+pixelPalette[16] = { r: 12, g: 0, b: 0 };
+const pixelA = block(0, [0, 0, 0, 0], new Array(16).fill(0));
+const pixelB = block(1, [0, 0, 0, 0], new Array(16).fill(0));
+const shifted = block(
+  0,
+  [0, 1, 0, 0],
+  Array.from({ length: 16 }, (_, index) => index % 4 ? 1 : 0),
+);
+const pixelEncoded = codec.encodeVideo({
+  width: 8,
+  height: 4,
+  palette: pixelPalette,
+  frames: [
+    { blocks: [pixelA, pixelB] },
+    { blocks: [pixelA, shifted] },
+  ],
+}, {
+  keyframeInterval: 30,
+  searchRadius: 1,
+  pixelMotion: true,
+});
+assert.equal(pixelEncoded.bytes[4], 7);
+assert.ok(
+  pixelEncoded.stats.modeCounts[codec.constants.MODE_MOTION] > 0,
+);
+const pixelDecoded = codec.decodeVideo(pixelEncoded.bytes);
+assert.deepEqual(
+  pixelDecoded.frames[1].blocks[1],
+  shifted,
+);
+assert.equal(
+  bpvFile.walkFrames(pixelEncoded.bytes).version,
+  7,
+);
+console.log("BPV1 v7 pixel motion passed");
 
 const adaptiveBlocks = [
   block(1, [5, 6, 7, 8], new Array(16).fill(0)),

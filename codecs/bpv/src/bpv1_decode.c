@@ -353,6 +353,137 @@ static unsigned direct_color(const uint8_t *record, unsigned pixel) {
     return pixel & 1U ? packed & 15U : packed >> 4;
 }
 
+static void direct_color_store(uint8_t *record, unsigned pixel,
+                               unsigned color) {
+    uint8_t *packed = record + 1U + (pixel >> 1);
+    if (pixel & 1U)
+        *packed = (uint8_t)((*packed & 0xf0U) | color);
+    else
+        *packed = (uint8_t)((*packed & 0x0fU) | (color << 4));
+}
+
+static unsigned record_palette_index(const uint8_t *record) {
+    return record[0] & 0x3fU;
+}
+
+static unsigned record_pixel_color(const uint8_t *record,
+                                   unsigned pixel) {
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG)
+        return direct_color(record, pixel);
+    {
+        const unsigned shift = 6U - ((pixel & 3U) * 2U);
+        const unsigned local =
+            (record[PATTERN_OFFSET + (pixel >> 2)] >> shift) & 3U;
+        return record[1U + local];
+    }
+}
+
+static uint32_t rgb_distance(const uint8_t *left,
+                             const uint8_t *right) {
+    const int red = (int)left[0] - right[0];
+    const int green = (int)left[1] - right[1];
+    const int blue = (int)left[2] - right[2];
+    return (uint32_t)(red * red + green * green + blue * blue);
+}
+
+static int build_pixel_motion_record(
+    const BPV1Decoder *decoder,
+    int source_x,
+    int source_y,
+    uint8_t destination[BPV1_RECORD_BYTES]
+) {
+    uint8_t colors[BPV1_BLOCK_SIZE * BPV1_BLOCK_SIZE];
+    uint8_t color_to_local[BPV1_COLORS_PER_PALETTE] = {0};
+    uint16_t used_mask = 0;
+    unsigned palette_index;
+    unsigned color_count;
+    unsigned pixel = 0;
+    int local_y;
+    int local_x;
+    if (!decoder || !destination || source_x < 0 || source_y < 0 ||
+        source_x + BPV1_BLOCK_SIZE > decoder->header.width ||
+        source_y + BPV1_BLOCK_SIZE > decoder->header.height) {
+        return BPV1_ERR_DECODE;
+    }
+    palette_index = record_palette_index(
+        decoder->previous +
+        ((size_t)(source_y / BPV1_BLOCK_SIZE) *
+             decoder->frame.blocks_x +
+         (size_t)(source_x / BPV1_BLOCK_SIZE)) *
+            BPV1_RECORD_BYTES);
+    for (local_y = 0; local_y < BPV1_BLOCK_SIZE; ++local_y) {
+        const int y = source_y + local_y;
+        for (local_x = 0; local_x < BPV1_BLOCK_SIZE; ++local_x) {
+            const int x = source_x + local_x;
+            const uint8_t *source =
+                decoder->previous +
+                ((size_t)(y / BPV1_BLOCK_SIZE) *
+                     decoder->frame.blocks_x +
+                 (size_t)(x / BPV1_BLOCK_SIZE)) *
+                    BPV1_RECORD_BYTES;
+            const unsigned source_palette =
+                record_palette_index(source);
+            const unsigned source_pixel =
+                (unsigned)(y & (BPV1_BLOCK_SIZE - 1)) *
+                    BPV1_BLOCK_SIZE +
+                (unsigned)(x & (BPV1_BLOCK_SIZE - 1));
+            const unsigned source_color =
+                record_pixel_color(source, source_pixel);
+            const uint8_t *source_rgb =
+                decoder->header.palette +
+                ((size_t)source_palette *
+                     BPV1_COLORS_PER_PALETTE +
+                 source_color) *
+                    3U;
+            unsigned color = 0;
+            uint32_t nearest = UINT32_MAX;
+            unsigned candidate_color;
+            for (candidate_color = 0;
+                 candidate_color < BPV1_COLORS_PER_PALETTE;
+                 ++candidate_color) {
+                const uint8_t *candidate_rgb =
+                    decoder->header.palette +
+                    ((size_t)palette_index *
+                         BPV1_COLORS_PER_PALETTE +
+                     candidate_color) *
+                        3U;
+                const uint32_t distance =
+                    rgb_distance(source_rgb, candidate_rgb);
+                if (distance < nearest) {
+                    nearest = distance;
+                    color = candidate_color;
+                }
+            }
+            colors[pixel++] = (uint8_t)color;
+            used_mask |= (uint16_t)(1U << color);
+        }
+    }
+    color_count = popcount16(used_mask);
+    memset(destination, 0, BPV1_RECORD_BYTES);
+    destination[0] = (uint8_t)palette_index;
+    if (color_count > 4U) {
+        destination[0] |= BPV1_DIRECT_RECORD_FLAG;
+        for (pixel = 0; pixel < 16U; ++pixel)
+            direct_color_store(destination, pixel, colors[pixel]);
+        return BPV1_OK;
+    }
+    {
+        unsigned color;
+        unsigned slot = 0;
+        for (color = 0; color < BPV1_COLORS_PER_PALETTE; ++color) {
+            if (!(used_mask & (1U << color))) continue;
+            color_to_local[color] = (uint8_t)slot;
+            destination[1U + slot++] = (uint8_t)color;
+        }
+    }
+    for (pixel = 0; pixel < 16U; ++pixel) {
+        const unsigned local = color_to_local[colors[pixel]];
+        destination[PATTERN_OFFSET + (pixel >> 2)] |=
+            (uint8_t)(local << (6U - ((pixel & 3U) * 2U)));
+    }
+    return BPV1_OK;
+}
+
 static uint16_t direct_used_mask(const uint8_t *record) {
     uint16_t mask = 0;
     unsigned pixel;
@@ -839,19 +970,34 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
                 motion_x = (int)(int8_t)cursor[0];
                 motion_y = (int)(int8_t)cursor[1];
             }
-            source_x = block_x + motion_x;
-            source_y = block_y + motion_y;
             cursor += motion_bytes;
-            if (source_x < 0 || source_y < 0 ||
-                source_x >= decoder->frame.blocks_x ||
-                source_y >= decoder->frame.blocks_y) {
-                return BPV1_ERR_DECODE;
+            if (decoder->header.version >=
+                BPV1_PIXEL_MOTION_VERSION) {
+                source_x =
+                    block_x * BPV1_BLOCK_SIZE + motion_x;
+                source_y =
+                    block_y * BPV1_BLOCK_SIZE + motion_y;
+                if (build_pixel_motion_record(
+                        decoder, source_x, source_y,
+                        destination) != BPV1_OK) {
+                    return BPV1_ERR_DECODE;
+                }
+            } else {
+                source_x = block_x + motion_x;
+                source_y = block_y + motion_y;
+                if (source_x < 0 || source_y < 0 ||
+                    source_x >= decoder->frame.blocks_x ||
+                    source_y >= decoder->frame.blocks_y) {
+                    return BPV1_ERR_DECODE;
+                }
+                copy_record(
+                    destination,
+                    decoder->previous +
+                        ((size_t)source_y *
+                             decoder->frame.blocks_x +
+                         (size_t)source_x) *
+                            BPV1_RECORD_BYTES);
             }
-            copy_record(
-                destination,
-                decoder->previous +
-                    ((size_t)source_y * decoder->frame.blocks_x +
-                     (size_t)source_x) * BPV1_RECORD_BYTES);
         } else if (mode == MODE_BLOCK_DICTIONARY) {
             uint8_t *source;
             uint16_t dictionary_index;

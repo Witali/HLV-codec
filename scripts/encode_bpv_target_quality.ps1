@@ -72,6 +72,8 @@ param(
 
     [bool]$ActivePalettes = $true,
 
+    [switch]$PixelMotion,
+
     [ValidateRange(0.0, 10.0)]
     [double]$ToleranceDb = 0.10,
 
@@ -155,10 +157,11 @@ New-Item -ItemType Directory -Force -Path $temporaryRoot | Out-Null
 
 $targetText = $TargetPsnrDb.ToString("0.##", $culture)
 $targetFileText = $targetText.Replace(".", "p")
+$bpvVersion = if ($PixelMotion) { 7 } else { 6 }
 if (-not $NoSummary) {
     if (-not $SummaryFile) {
         $SummaryFile = Join-Path $OutputDirectory (
-            "BPVv6_target_${targetFileText}dB_summary.json"
+            "BPVv${bpvVersion}_target_${targetFileText}dB_summary.json"
         )
     }
     $SummaryFile = [IO.Path]::GetFullPath($SummaryFile)
@@ -268,6 +271,9 @@ function Invoke-BpvQualityTrial {
     }
     else {
         $arguments += "--fixed-palettes"
+    }
+    if ($PixelMotion) {
+        $arguments += "--pixel-motion"
     }
 
     Write-Host "  Trial $($State.Trial): lambda=$lambdaText"
@@ -571,7 +577,7 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
         }
         $outputStem = (
             "${baseName}_${Width}x${Height}_${fpsText}fps_" +
-            "BPVv6_${qualitySuffix}"
+            "BPVv${bpvVersion}_${qualitySuffix}"
         )
         $outputPath = Join-Path $OutputDirectory "${outputStem}.bpv1"
         $reportPath = Join-Path $OutputDirectory "${outputStem}.json"

@@ -2,7 +2,7 @@
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
 laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
-a portable streaming C decoder, the version 6 JavaScript reference
+a portable streaming C decoder, the version 7 JavaScript reference
 implementation, automatic active 64-palette training, rate-distortion block
 selection, strict stream inspection, Y4M command-line adapters, and tests.
 
@@ -12,7 +12,7 @@ The common video profile uses:
 - 64 shared palettes with 16 RGB888 colors each;
 - one to four canonical local colors with an adaptive 0/1/2-bit pixel pattern,
   or five to sixteen direct 4-bit palette indices;
-- four 2-bit modes: `SKIP`, exact block motion, full-block dictionary and
+- four 2-bit modes: `SKIP`, motion, full-block dictionary and
   unified raw blocks;
 - keyframes at scene cuts or the maximum GOP interval, resetting prediction
   and dictionaries;
@@ -32,6 +32,16 @@ motion and the full-block dictionary. It retains v3 interleaved unsigned
 multi-video v4/v5 comparison is recorded in
 [`../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md`](../../docs/BPV1_V5_ADAPTIVE_RAW_RESULTS.md).
 
+BPV1 v7 is an opt-in pixel-motion experiment. The same one-byte vector uses
+pixel rather than block units. The decoder reads the shifted 4x4 area from
+the previously reconstructed compact frame, resolves every source pixel to
+RGB, and maps it to the nearest color in the source area's top-left palette.
+Palette equality is deliberately not required, so a small difference between
+neighboring palettes does not prevent reuse. The production encoder includes
+the resulting reconstruction error in the ordinary RD decision and emits v7
+only with `--pixel-motion`; all wrappers remain on stable v6 unless
+`-PixelMotion` is supplied.
+
 ## Test
 
 The JavaScript reference suite has no third-party runtime dependency. Node.js
@@ -47,7 +57,7 @@ or:
 npm --prefix codecs/bpv test
 ```
 
-The suite covers v6 round-trip, legacy v1/v5 decoding, automatic palette
+The suite covers v6/v7 round-trip, legacy v1/v5 decoding, automatic palette
 training, RD selection, command-line Y4M round-trip and truncated-stream
 rejection.
 
@@ -91,8 +101,9 @@ On a POSIX C11 host:
 make -C codecs/bpv test-c
 ```
 
-The native test covers all four v6 block modes, all four RAW subformats,
-legacy v1-v5 decoding, malformed direct records and row rendering. Passing an
+The native test covers all four v6 block modes, v7 cross-palette pixel motion,
+all four RAW subformats, legacy v1-v5 decoding, malformed direct records and
+row rendering. Passing an
 existing file performs a complete sequential C decode:
 
 ```powershell
@@ -132,6 +143,18 @@ ffmpeg -hide_banner -loglevel error -i input.mov -an \
   --audio-u8 input-mono-16000.u8 --audio-rate 16000 \
   --report output.json
 ```
+
+Add `--pixel-motion` for a v7 stream, or use the production wrapper:
+
+```powershell
+.\scripts\transcode_bpv6.ps1 input.mov -PixelMotion
+```
+
+Pixel-motion search currently runs on the CPU after CUDA block quantization.
+On a 300-frame 320x240 real-video sample at the default radius and lambda it
+reduced the v6 stream from 6,527,234 to 5,396,149 bytes (17.3%) while RGB PSNR
+changed from 33.84 to 33.34 dB. This is an experimental trade-off, not the
+stable default.
 
 The saved Big Buck Bunny script always reads the project-approved 1080p MOV,
 preserves its native frame rate and 16:9 aspect ratio, and produces 320x180:
@@ -173,7 +196,8 @@ the normalized RGBA sequence in host memory. The command-line decoder does
 not retain decoded frames: it keeps compact 9-byte block records and renders
 one frame at a time.
 
-The encoder always writes v6. `--fixed-palettes` trains one global bank and
+The encoder writes v6 by default and v7 with `--pixel-motion`.
+`--fixed-palettes` trains one global bank and
 repeats it in each keyframe so every GOP remains independently decodable.
 Short PCM inputs are padded with unsigned silence (`128`), and trailing
 samples beyond the video duration are ignored.

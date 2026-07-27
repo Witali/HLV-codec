@@ -1,7 +1,8 @@
 "use strict";
 
 const MAGIC = [0x42, 0x50, 0x56, 0x31];
-const VERSION = 6;
+const VERSION = 7;
+const PIXEL_MOTION_VERSION = 7;
 const FOUR_MODE_VERSION = 6;
 const ADAPTIVE_RAW_VERSION = 5;
 const AUDIO_VERSION = 3;
@@ -229,23 +230,38 @@ function walkFrames(input, onFrame) {
           : readI8(bytes, offset + 1);
         if (motionBytes === 1 && (dx === -8 || dy === -8)) {
           throw new RangeError(
-            `Invalid v6 motion vector at ${frameIndex}:${blockIndex}`,
+            `Invalid packed motion vector at ${frameIndex}:${blockIndex}`,
           );
         }
         offset += motionBytes;
         const bx = blockIndex % blocksX;
         const by = Math.floor(blockIndex / blocksX);
-        const sourceX = bx + dx;
-        const sourceY = by + dy;
-        if (sourceX < 0 || sourceY < 0 || sourceX >= blocksX || sourceY >= blocksY) {
-          throw new RangeError(`Invalid motion vector at ${frameIndex}:${blockIndex}`);
+        if (header.version >= PIXEL_MOTION_VERSION) {
+          const record = buildPixelMotionRecord(
+            previous,
+            header.width,
+            header.height,
+            blocksX,
+            activePalette,
+            bx * BLOCK_SIZE + dx,
+            by * BLOCK_SIZE + dy,
+            frameIndex,
+            blockIndex,
+          );
+          blocks.set(record, destination);
+        } else {
+          const sourceX = bx + dx;
+          const sourceY = by + dy;
+          if (sourceX < 0 || sourceY < 0 || sourceX >= blocksX || sourceY >= blocksY) {
+            throw new RangeError(`Invalid motion vector at ${frameIndex}:${blockIndex}`);
+          }
+          copyRecord(
+            previous,
+            (sourceY * blocksX + sourceX) * RECORD_BYTES,
+            blocks,
+            destination,
+          );
         }
-        copyRecord(
-          previous,
-          (sourceY * blocksX + sourceX) * RECORD_BYTES,
-          blocks,
-          destination,
-        );
       } else if (mode === MODE_BLOCK_DICT) {
         requireFrameBytes(offset, 2, frameEnd, frameIndex);
         const index = readU16(bytes, offset);
@@ -686,6 +702,115 @@ function directColor(bytes, offset, pixel) {
   return pixel & 1 ? value & 15 : value >>> 4;
 }
 
+function storeDirectColor(record, pixel, color) {
+  const offset = 1 + (pixel >> 1);
+  record[offset] = pixel & 1
+    ? (record[offset] & 0xf0) | color
+    : (record[offset] & 0x0f) | (color << 4);
+}
+
+function recordPixelColor(bytes, offset, pixel) {
+  if (bytes[offset] & DIRECT_RECORD_FLAG) {
+    return directColor(bytes, offset, pixel);
+  }
+  const shift = 6 - ((pixel & 3) * 2);
+  const local =
+    (bytes[offset + PATTERN_OFFSET + (pixel >> 2)] >> shift) & 3;
+  return bytes[offset + 1 + local];
+}
+
+function buildPixelMotionRecord(
+  previous,
+  width,
+  height,
+  blocksX,
+  palette,
+  sourceX,
+  sourceY,
+  frameIndex,
+  blockIndex,
+) {
+  if (sourceX < 0 || sourceY < 0 ||
+      sourceX + BLOCK_SIZE > width ||
+      sourceY + BLOCK_SIZE > height) {
+    throw new RangeError(
+      `Invalid pixel motion vector at ${frameIndex}:${blockIndex}`,
+    );
+  }
+  const colors = new Uint8Array(16);
+  const firstBlock =
+    Math.floor(sourceY / BLOCK_SIZE) * blocksX +
+    Math.floor(sourceX / BLOCK_SIZE);
+  const paletteIndex = previous[firstBlock * RECORD_BYTES] & 63;
+  let usedMask = 0;
+  let pixel = 0;
+  for (let localY = 0; localY < BLOCK_SIZE; localY += 1) {
+    const y = sourceY + localY;
+    for (let localX = 0; localX < BLOCK_SIZE; localX += 1) {
+      const x = sourceX + localX;
+      const sourceBlock =
+        Math.floor(y / BLOCK_SIZE) * blocksX +
+        Math.floor(x / BLOCK_SIZE);
+      const sourceOffset = sourceBlock * RECORD_BYTES;
+      const sourcePalette = previous[sourceOffset] & 63;
+      const sourcePixel =
+        (y & 3) * BLOCK_SIZE + (x & 3);
+      const sourceColor = recordPixelColor(
+        previous,
+        sourceOffset,
+        sourcePixel,
+      );
+      const sourceRgb =
+        (sourcePalette * COLORS_PER_PALETTE + sourceColor) * 3;
+      let color = 0;
+      let nearest = Number.POSITIVE_INFINITY;
+      for (let candidate = 0;
+           candidate < COLORS_PER_PALETTE;
+           candidate += 1) {
+        const candidateRgb =
+          (paletteIndex * COLORS_PER_PALETTE + candidate) * 3;
+        const red = palette[sourceRgb] - palette[candidateRgb];
+        const green =
+          palette[sourceRgb + 1] - palette[candidateRgb + 1];
+        const blue =
+          palette[sourceRgb + 2] - palette[candidateRgb + 2];
+        const distance =
+          red * red + green * green + blue * blue;
+        if (distance < nearest) {
+          nearest = distance;
+          color = candidate;
+        }
+      }
+      colors[pixel++] = color;
+      usedMask |= 1 << color;
+    }
+  }
+  const record = new Uint8Array(RECORD_BYTES);
+  record[0] = paletteIndex;
+  const colorCount = popcount16(usedMask);
+  if (colorCount > 4) {
+    record[0] |= DIRECT_RECORD_FLAG;
+    for (pixel = 0; pixel < 16; pixel += 1) {
+      storeDirectColor(record, pixel, colors[pixel]);
+    }
+    return record;
+  }
+  const colorToLocal = new Uint8Array(COLORS_PER_PALETTE);
+  let slot = 0;
+  for (let color = 0; color < COLORS_PER_PALETTE; color += 1) {
+    if (!(usedMask & (1 << color))) continue;
+    colorToLocal[color] = slot;
+    record[1 + slot] = color;
+    slot += 1;
+  }
+  for (pixel = 0; pixel < 16; pixel += 1) {
+    const local = colorToLocal[colors[pixel]];
+    record[PATTERN_OFFSET + (pixel >> 2)] |=
+      local << (6 - ((pixel & 3) * 2));
+  }
+  return record;
+}
+
 function directUsedMask(bytes, offset) {
   let mask = 0;
   for (let pixel = 0; pixel < 16; pixel += 1) {
@@ -797,6 +922,7 @@ module.exports = {
     LEGACY_MODE_RAW_DIRECT: MODE_RAW_DIRECT,
     MODE_SKIP,
     PALETTE_COUNT,
+    PIXEL_MOTION_VERSION,
     RECORD_BYTES,
     VERSION,
   },

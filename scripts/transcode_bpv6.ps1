@@ -33,6 +33,7 @@ param(
     [int]$MaxFrames = 0,
 
     [switch]$NoAudio,
+    [switch]$PixelMotion,
     [switch]$Force
 )
 
@@ -74,6 +75,9 @@ $arguments = @{
 }
 if ($NoAudio) {
     $arguments.NoAudio = $true
+}
+if ($PixelMotion) {
+    $arguments.PixelMotion = $true
 }
 if ($Force) {
     $arguments.Force = $true

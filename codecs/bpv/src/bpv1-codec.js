@@ -7,7 +7,9 @@
   "use strict";
 
   const MAGIC = [0x42, 0x50, 0x56, 0x31]; // BPV1
-  const VERSION = 6;
+  const VERSION = 7;
+  const BLOCK_MOTION_VERSION = 6;
+  const PIXEL_MOTION_VERSION = 7;
   const FOUR_MODE_VERSION = 6;
   const ADAPTIVE_RAW_VERSION = 5;
   const AUDIO_VERSION = 3;
@@ -34,6 +36,10 @@
     const keyframeInterval = normalizeInt(settings.keyframeInterval, 30, 1, 65535);
     const maxBlockDictionary = normalizeInt(settings.maxBlockDictionary, 256, 1, 65535);
     const searchRadius = normalizeInt(settings.searchRadius, 4, 0, 7);
+    const pixelMotion = Boolean(settings.pixelMotion);
+    const streamVersion = pixelMotion
+      ? PIXEL_MOTION_VERSION
+      : BLOCK_MOTION_VERSION;
 
     const blocksX = Math.ceil(video.width / BLOCK_SIZE);
     const blocksY = Math.ceil(video.height / BLOCK_SIZE);
@@ -42,7 +48,7 @@
     const output = [];
 
     pushBytes(output, MAGIC);
-    pushU8(output, VERSION);
+    pushU8(output, streamVersion);
     pushU16(output, video.width);
     pushU16(output, video.height);
     pushU32(output, video.frames.length);
@@ -80,7 +86,25 @@
         }
 
         if (!record && !keyframe && previousBlocks && searchRadius > 0) {
-          const motion = findMotion(block, previousBlocks, blockIndex, blocksX, blocksY, searchRadius);
+          const motion = pixelMotion
+            ? findPixelMotion(
+              block,
+              previousBlocks,
+              blockIndex,
+              blocksX,
+              video.width,
+              video.height,
+              palette,
+              searchRadius,
+            )
+            : findMotion(
+              block,
+              previousBlocks,
+              blockIndex,
+              blocksX,
+              blocksY,
+              searchRadius,
+            );
           if (motion) record = { mode: MODE_MOTION, dx: motion.dx, dy: motion.dy };
         }
 
@@ -269,7 +293,7 @@
             dx = signedNibble(packed >>> 4);
             dy = signedNibble(packed & 15);
             if (dx === -8 || dy === -8) {
-              throw new RangeError("Invalid BPV1 v6 motion vector");
+              throw new RangeError("Invalid packed BPV1 motion vector");
             }
           } else {
             dx = readI8(bytes, offset++);
@@ -277,10 +301,27 @@
           }
           const bx = blockIndex % blocksX;
           const by = Math.floor(blockIndex / blocksX);
-          const sx = bx + dx;
-          const sy = by + dy;
-          if (sx < 0 || sy < 0 || sx >= blocksX || sy >= blocksY) throw new RangeError("Invalid motion vector");
-          block = cloneBlock(previousBlocks[sy * blocksX + sx]);
+          if (version >= PIXEL_MOTION_VERSION) {
+            block = buildPixelMotionBlock(
+              previousBlocks,
+              width,
+              height,
+              blocksX,
+              activePalette,
+              bx * BLOCK_SIZE + dx,
+              by * BLOCK_SIZE + dy,
+            );
+            if (!block) {
+              throw new RangeError(
+                "Invalid BPV1 v7 pixel motion vector",
+              );
+            }
+          } else {
+            const sx = bx + dx;
+            const sy = by + dy;
+            if (sx < 0 || sy < 0 || sx >= blocksX || sy >= blocksY) throw new RangeError("Invalid motion vector");
+            block = cloneBlock(previousBlocks[sy * blocksX + sx]);
+          }
         } else if (mode === MODE_BLOCK_DICT) {
           const index = readU16(bytes, offset); offset += 2;
           if (index >= blockDictionary.length) throw new RangeError("Invalid block dictionary index");
@@ -507,6 +548,124 @@
           const sx = bx + dx, sy = by + dy;
           if (sx < 0 || sy < 0 || sx >= blocksX || sy >= blocksY) continue;
           if (equalBlock(block, previousBlocks[sy * blocksX + sx])) return { dx, dy };
+        }
+      }
+    }
+    return null;
+  }
+
+  function blockPixelColor(block, pixel) {
+    return block.directColors
+      ? block.directColors[pixel]
+      : block.localColors[read2Bit(block.pattern, pixel)];
+  }
+
+  function buildPixelMotionBlock(
+    previousBlocks,
+    width,
+    height,
+    blocksX,
+    palette,
+    sourceX,
+    sourceY,
+  ) {
+    if (sourceX < 0 || sourceY < 0 ||
+        sourceX + BLOCK_SIZE > width ||
+        sourceY + BLOCK_SIZE > height) {
+      return null;
+    }
+    const firstBlock =
+      Math.floor(sourceY / BLOCK_SIZE) * blocksX +
+      Math.floor(sourceX / BLOCK_SIZE);
+    const paletteIndex = previousBlocks[firstBlock].paletteIndex;
+    const colors = new Array(16);
+    let pixel = 0;
+    for (let localY = 0; localY < BLOCK_SIZE; localY += 1) {
+      const y = sourceY + localY;
+      for (let localX = 0; localX < BLOCK_SIZE; localX += 1) {
+        const x = sourceX + localX;
+        const sourceBlock =
+          previousBlocks[
+            Math.floor(y / BLOCK_SIZE) * blocksX +
+            Math.floor(x / BLOCK_SIZE)
+          ];
+        const sourcePixel =
+          (y & 3) * BLOCK_SIZE + (x & 3);
+        const sourceColor =
+          palette[
+            sourceBlock.paletteIndex * COLORS_PER_PALETTE +
+            blockPixelColor(sourceBlock, sourcePixel)
+          ];
+        let nearestColor = 0;
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        for (let candidate = 0;
+             candidate < COLORS_PER_PALETTE;
+             candidate += 1) {
+          const targetColor =
+            palette[paletteIndex * COLORS_PER_PALETTE + candidate];
+          const red = sourceColor.r - targetColor.r;
+          const green = sourceColor.g - targetColor.g;
+          const blue = sourceColor.b - targetColor.b;
+          const distance =
+            red * red + green * green + blue * blue;
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestColor = candidate;
+          }
+        }
+        colors[pixel++] = nearestColor;
+      }
+    }
+    const usedColors = Array.from(new Set(colors))
+      .sort((left, right) => left - right);
+    if (usedColors.length > LOCAL_COLORS) {
+      return createDirectBlock(paletteIndex, colors);
+    }
+    const localColors = [0, 0, 0, 0];
+    const colorToLocal = new Uint8Array(COLORS_PER_PALETTE);
+    for (let slot = 0; slot < usedColors.length; slot += 1) {
+      localColors[slot] = usedColors[slot];
+      colorToLocal[usedColors[slot]] = slot;
+    }
+    const pattern = new Uint8Array(PATTERN_BYTES);
+    for (pixel = 0; pixel < 16; pixel += 1) {
+      writeBits(pattern, pixel * 2, colorToLocal[colors[pixel]], 2);
+    }
+    return createBlock(paletteIndex, localColors, pattern);
+  }
+
+  function findPixelMotion(
+    block,
+    previousBlocks,
+    blockIndex,
+    blocksX,
+    width,
+    height,
+    palette,
+    radius,
+  ) {
+    const destinationX =
+      (blockIndex % blocksX) * BLOCK_SIZE;
+    const destinationY =
+      Math.floor(blockIndex / blocksX) * BLOCK_SIZE;
+    for (let distance = 1; distance <= radius; distance += 1) {
+      for (let dy = -distance; dy <= distance; dy += 1) {
+        for (let dx = -distance; dx <= distance; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== distance) {
+            continue;
+          }
+          const candidate = buildPixelMotionBlock(
+            previousBlocks,
+            width,
+            height,
+            blocksX,
+            palette,
+            destinationX + dx,
+            destinationY + dy,
+          );
+          if (candidate && equalBlock(block, candidate)) {
+            return { dx, dy };
+          }
         }
       }
     }
@@ -755,5 +914,5 @@
   function readU16(bytes, o) { if (o + 2 > bytes.length) throw new RangeError("Truncated BPV1"); return bytes[o] | bytes[o+1] << 8; }
   function readU32(bytes, o) { if (o + 4 > bytes.length) throw new RangeError("Truncated BPV1"); return (bytes[o] | bytes[o+1] << 8 | bytes[o+2] << 16 | bytes[o+3] << 24) >>> 0; }
 
-  return { encodeVideo, decodeVideo, renderFrame, constants: { VERSION, AUDIO_VERSION, ACTIVE_PALETTE_VERSION, LEGACY_VERSION, MODE_SKIP, MODE_MOTION, MODE_BLOCK_DICT, MODE_RAW, LEGACY_MODE_PATTERN_DICT, LEGACY_MODE_RAW, LEGACY_MODE_RAW_DIRECT, BLOCK_SIZE, LOCAL_COLORS, PALETTE_COUNT, COLORS_PER_PALETTE } };
+  return { encodeVideo, decodeVideo, renderFrame, constants: { VERSION, PIXEL_MOTION_VERSION, AUDIO_VERSION, ACTIVE_PALETTE_VERSION, LEGACY_VERSION, MODE_SKIP, MODE_MOTION, MODE_BLOCK_DICT, MODE_RAW, LEGACY_MODE_PATTERN_DICT, LEGACY_MODE_RAW, LEGACY_MODE_RAW_DIRECT, BLOCK_SIZE, LOCAL_COLORS, PALETTE_COUNT, COLORS_PER_PALETTE } };
 });

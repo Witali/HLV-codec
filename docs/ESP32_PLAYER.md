@@ -10,7 +10,8 @@ DAC GPIO26.
 - reads the selected filename from `/sdcard/HLV/play.txt`;
 - decodes stable standalone HLV-1 v14, standard AVI/MJPEG, DivX 3
   (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
-  v1 through v5 including adaptive RAW records and active per-GOP palettes,
+  v1 through v7 including adaptive RAW records, active per-GOP palettes and
+  experimental v7 pixel motion,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
   mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
@@ -237,6 +238,12 @@ underlying general-purpose BPV wrapper only when CPU fallback is required:
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
     -InputFile .\out\BPV\BigBuckBunny_1080p_bpv1_v6_four-mode_lambda64_normalized_native-fps_320x180.bpv1
 ```
+
+The stable wrapper output remains v6. Pass `-PixelMotion` to
+`transcode_bpv6.ps1` for experimental v7. Its one-byte vector is measured in
+pixels, and the decoder reconstructs across compact-block palette boundaries
+by resolving source pixels to RGB and remapping them to the nearest color.
+This needs no full RGB framebuffer and does not require the palettes to match.
 
 For an ESP32-safe MPEG Program Stream:
 
