@@ -2,15 +2,15 @@ set(AMRNB_ROOT "../../../../codecs/amrnb")
 set(PV_ROOT "${AMRNB_ROOT}/third_party/pv")
 
 file(GLOB AMRNB_COMMON_SOURCES
-    "${PV_ROOT}/common/src/*.cpp"
+    "${PV_ROOT}/common/src/*.c"
 )
 file(GLOB AMRNB_DECODER_SOURCES
-    "${PV_ROOT}/dec/src/*.cpp"
+    "${PV_ROOT}/dec/src/*.c"
 )
 
 idf_component_register(
     SRCS
-        "${AMRNB_ROOT}/src/amrnb_3gp.cpp"
+        "${AMRNB_ROOT}/src/amrnb_3gp.c"
         ${AMRNB_COMMON_SOURCES}
         ${AMRNB_DECODER_SOURCES}
     INCLUDE_DIRS
@@ -20,7 +20,7 @@ idf_component_register(
         "${PV_ROOT}/include"
 )
 
-target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -include

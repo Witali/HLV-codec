@@ -13,6 +13,11 @@ $idf = Join-Path $tools "esp-idf-v$idfVersion"
 $idfTools = Join-Path $tools "espressif"
 $python = Join-Path $tools "python"
 $marker = Join-Path $tools "ready-v$idfVersion"
+$projectPath = [IO.Path]::GetFullPath($project).TrimEnd(
+    [IO.Path]::DirectorySeparatorChar,
+    [IO.Path]::AltDirectorySeparatorChar
+)
+$projectMarker = "Project=$projectPath"
 
 # SHA-256 values are for the official release files. Keeping them in source
 # makes repeated setup deterministic and catches interrupted downloads.
@@ -49,8 +54,18 @@ function Get-VerifiedDownload {
 }
 
 if (Test-Path -LiteralPath $marker) {
-    Write-Host "Project-local ESP-IDF v$idfVersion is ready."
-    return
+    $markerLines = @(Get-Content -LiteralPath $marker)
+    if ($markerLines -contains $projectMarker) {
+        Write-Host "Project-local ESP-IDF v$idfVersion is ready."
+        return
+    }
+
+    Write-Host "The firmware directory moved; rebuilding the ESP-IDF Python environment."
+    $pythonEnvironment = Join-Path $idfTools "python_env"
+    if (Test-Path -LiteralPath $pythonEnvironment) {
+        Remove-Item -LiteralPath $pythonEnvironment -Recurse -Force
+    }
+    Remove-Item -LiteralPath $marker -Force
 }
 
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
@@ -92,6 +107,7 @@ if ($LASTEXITCODE -ne 0) {
 Set-Content -LiteralPath $marker -Value @(
     "ESP-IDF=$idfVersion"
     "Python=$pythonVersion"
+    $projectMarker
     "Installed=$([DateTime]::UtcNow.ToString('o'))"
 ) -Encoding ascii
 Write-Host "Project-local ESP-IDF environment is ready."
