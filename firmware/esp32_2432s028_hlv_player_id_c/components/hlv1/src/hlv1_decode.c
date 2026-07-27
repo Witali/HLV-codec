@@ -27,7 +27,7 @@
 #define HLV1_PRED_STAT_ADD(stats, field, value) ((void)0)
 #endif
 
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || defined(ESP_PLATFORM)
 #include <esp_heap_caps.h>
 static void trace_decoder_heap(const char *stage) {
     printf("HLV decoder %s: heap=%u, largest=%u\n", stage,
@@ -100,6 +100,19 @@ static int compact_frame_alloc(HLV1Frame *f, int width, int height) {
     }
     f->storage = f->y;
     if (!f->y || !f->u || !f->v || !f->correction_storage) {
+#if defined(ARDUINO_ARCH_ESP32) || defined(ESP_PLATFORM)
+        printf("HLV compact allocation failed:"
+               " y=%p/%u u=%p/%u v=%p/%u q4=%p/%u"
+               " heap=%u largest=%u\n",
+               (void *)f->y, (unsigned)y_size,
+               (void *)f->u, (unsigned)c_size,
+               (void *)f->v, (unsigned)c_size,
+               (void *)f->correction_storage,
+               (unsigned)(y_correction_size + 2 * c_correction_size),
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(
+                   MALLOC_CAP_8BIT));
+#endif
         hlv1_frame_free(f);
         return HLV1_ERR_MEMORY;
     }
@@ -1486,12 +1499,17 @@ static HLV1Decoder *decoder_create_mode(const HLV1Header *header,
     d->compact_y7_u6_v6 = compact_y7_u6_v6;
     if (compact_y7_u6_v6) {
         if (compact_frame_alloc(&d->previous, header->width,
-                                header->height) < 0 ||
-            compact_frame_alloc(&d->compact_current, header->width,
                                 header->height) < 0) {
             hlv1_decoder_destroy(d);
             return NULL;
         }
+        trace_decoder_heap("after previous reference");
+        if (compact_frame_alloc(&d->compact_current, header->width,
+                                header->height) < 0) {
+            hlv1_decoder_destroy(d);
+            return NULL;
+        }
+        trace_decoder_heap("after current reference");
         d->current.width = header->width;
         d->current.height = header->height;
         d->current.padded_width = d->previous.padded_width;
