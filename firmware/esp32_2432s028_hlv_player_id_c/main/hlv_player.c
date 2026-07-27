@@ -289,6 +289,7 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
+int hlv_cached_chroma_y = -1;
 int32_t mpeg_red_add[kMaximumH263Width / 2];
 int32_t mpeg_green_add[kMaximumH263Width / 2];
 int32_t mpeg_blue_add[kMaximumH263Width / 2];
@@ -799,14 +800,17 @@ void convertNativeRow(const HLV1Frame *frame, int source_y,
             y_row, 0, source_y, HLV1_V14_LUMA_BITS,
             frame->correction_y, frame->correction_stride_y,
             native_y_row, frame->width);
-        hlv1_frame_unpack_corrected_samples(
-            u_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
-            frame->correction_u, frame->correction_stride_u,
-            native_u_row, (frame->width + 1) / 2);
-        hlv1_frame_unpack_corrected_samples(
-            v_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
-            frame->correction_v, frame->correction_stride_v,
-            native_v_row, (frame->width + 1) / 2);
+        if (chroma_y != hlv_cached_chroma_y) {
+            hlv1_frame_unpack_corrected_samples(
+                u_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
+                frame->correction_u, frame->correction_stride_u,
+                native_u_row, (frame->width + 1) / 2);
+            hlv1_frame_unpack_corrected_samples(
+                v_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
+                frame->correction_v, frame->correction_stride_v,
+                native_v_row, (frame->width + 1) / 2);
+            hlv_cached_chroma_y = chroma_y;
+        }
         y_row = native_y_row;
         u_row = native_u_row;
         v_row = native_v_row;
