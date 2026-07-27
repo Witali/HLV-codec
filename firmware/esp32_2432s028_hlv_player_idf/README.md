@@ -157,7 +157,7 @@ closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the
 transferred/total size beside it using three significant digits, with the
 destination filename below the bar.
-Each 16 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
+Each 32 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
 sliding window, so the PC can send both receive buffers without waiting for an
 individual ACK. An ACK is cumulative and returns buffer credit only after the
 CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
@@ -167,7 +167,7 @@ seconds without cumulative progress. Hardware flow control is therefore not
 required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer was replaced by two 16 KiB buffers that exist only during an upload,
+buffer was replaced by two 32 KiB buffers that exist only during an upload,
 while the decoder and audio buffers are released. CPU0 receives and validates
 the next UART block while a CPU1 writer task stores the preceding block on SD.
 An ACK means that a block passed its RAM CRC and completed its SD write;
@@ -181,7 +181,7 @@ Upload protocol version 2 starts with this ASCII line at the console baud:
 HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 2 16384 <data-baud> 2`, receives windowed `HLVB`
+The device replies `HLVREADY 2 32768 <data-baud> 2`, receives windowed `HLVB`
 binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
 `HLVDONE 2 <size> <crc32> <name>`.
 
@@ -194,10 +194,11 @@ delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
 at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
 transfers. The same full transfer passed at 3000000 baud but delivered only
 121.3 KiB/s, showing that the SD/pipeline path, rather than the UART line, is
-the current limit. Protocol v2 sliding-window transfers of the same file
-delivered 121.3 KiB/s at 2000000 baud and 121.1 KiB/s at 3000000 baud, with
-matching full-file CRC32. The window removes the mandatory per-block wait but
-cannot increase throughput until the SD path is faster. An experimental
+the current limit. Protocol v2 sliding-window transfers of the same file with
+two 32 KiB blocks delivered 122.4 KiB/s at 2000000 baud and 122.3 KiB/s at
+3000000 baud, with matching full-file CRC32. The larger window removes the
+mandatory per-block wait but raises throughput only marginally while the SD
+path remains the bottleneck. An experimental
 2500000-baud transfer never entered normal data reception and timed out.
 Therefore 2000000 baud remains the default; 3000000 baud is retained only as
 an optional verified mode. The Windows CH340 driver rejected attempts to

@@ -16,7 +16,7 @@ struct UartUploadRequest {
 
 class UartFileUpload {
 public:
-    static constexpr size_t kChunkBytes = 16 * 1024;
+    static constexpr size_t kChunkBytes = 32 * 1024;
     static constexpr size_t kBufferCount = 2;
     using ProgressCallback =
         void (*)(uint32_t received, uint32_t total, void *context);

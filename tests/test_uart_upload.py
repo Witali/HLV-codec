@@ -49,7 +49,7 @@ class FakeEsp32Port:
             self.responses.append(
                 (
                     f"HLVREADY {uart_upload.UPLOAD_PROTOCOL_VERSION} "
-                    f"{16 * 1024} {data_baud} 2\n"
+                    f"{32 * 1024} {data_baud} 2\n"
                 ).encode("ascii")
             )
             return len(packet)
@@ -124,7 +124,7 @@ class UartUploadTest(unittest.TestCase):
         )
 
     def test_complete_transfer(self):
-        content = b"HLV1" + bytes(range(256)) * 140
+        content = b"HLV1" + bytes(range(256)) * 300
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory) / "sample.hlv"
             source.write_bytes(content)
@@ -149,7 +149,7 @@ class UartUploadTest(unittest.TestCase):
             self.assertEqual(fake.maximum_unread_acks, 2)
 
     def test_go_back_n_after_rejected_block(self):
-        content = b"HLV1" + bytes(range(256)) * 140
+        content = b"HLV1" + bytes(range(256)) * 300
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory) / "sample.hlv"
             source.write_bytes(content)
