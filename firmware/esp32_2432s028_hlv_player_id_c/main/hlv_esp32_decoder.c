@@ -147,11 +147,26 @@ void hlv_esp32_decoder_set_reference_row_guard(
 int hlv_esp32_decoder_decode_next(hlv_esp32_decoder_t *decoder,
                                   FILE *file,
                                   const HLV1Frame **frame,
-                                  HLV1Packet *packet_info) {
+                                  HLV1Packet *packet_info,
+                                  HLV1StageProfile *profile) {
     if (!hlv_esp32_decoder_ready(decoder)) {
         return HLV1_ERR_ARGUMENT;
     }
+#if HLV1_ENABLE_STAGE_PROFILE
+    hlv1_decoder_stage_profile_reset(decoder->decoder);
+    const int result = hlv1_decoder_decode_file(
+        decoder->decoder, file, decoder->stream_buffer,
+        HLV_ESP32_STREAM_BUFFER_BYTES, packet_info, frame);
+    if (profile) {
+        const HLV1StageProfile *measured =
+            hlv1_decoder_stage_profile(decoder->decoder);
+        *profile = measured ? *measured : (HLV1StageProfile){0};
+    }
+    return result;
+#else
+    (void)profile;
     return hlv1_decoder_decode_file(
         decoder->decoder, file, decoder->stream_buffer,
         HLV_ESP32_STREAM_BUFFER_BYTES, packet_info, frame);
+#endif
 }

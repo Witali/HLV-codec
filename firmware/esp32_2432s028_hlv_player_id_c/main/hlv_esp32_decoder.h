@@ -40,7 +40,8 @@ void hlv_esp32_decoder_set_reference_row_guard(
 int hlv_esp32_decoder_decode_next(hlv_esp32_decoder_t *decoder,
                                   FILE *file,
                                   const HLV1Frame **frame,
-                                  HLV1Packet *packet_info);
+                                  HLV1Packet *packet_info,
+                                  HLV1StageProfile *profile);
 
 #ifdef __cplusplus
 }

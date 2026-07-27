@@ -125,7 +125,7 @@ void app_main(void) {
 
         start = esp_cpu_get_cycle_count();
         result = hlv_esp32_decoder_decode_next(
-            &decoder, file, &frame, &packet);
+            &decoder, file, &frame, &packet, NULL);
         elapsed = esp_cpu_get_cycle_count() - start;
         if (result == HLV1_EOF) {
             break;

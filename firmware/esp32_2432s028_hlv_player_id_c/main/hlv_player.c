@@ -244,6 +244,10 @@ typedef struct DecodeResult {
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
+#if HLV1_ENABLE_STAGE_PROFILE
+    HLV1StageProfile hlv_profile;
+    uint32_t hlv_row_guard_wait_us;
+#endif
     BPV1Packet bpv_next_packet;
     int bpv_read_result;
     uint32_t bpv_read_us;
@@ -511,7 +515,12 @@ void decodeTask(void *opaque) {
                     : HLV1_OK;
         } else if (request.codec == VIDEO_CODEC_kHlv) {
             result.result = hlv_esp32_decoder_decode_next(
-                &decoder, request.hlv_file, &result.hlv_frame, NULL);
+                &decoder, request.hlv_file, &result.hlv_frame, NULL,
+#if HLV1_ENABLE_STAGE_PROFILE
+                &result.hlv_profile);
+#else
+                NULL);
+#endif
         } else if (request.codec == VIDEO_CODEC_kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
@@ -534,6 +543,25 @@ void decodeTask(void *opaque) {
             result.result = HLV1_ERR_ARGUMENT;
         }
         result.decode_us = (uint32_t)(microsNow() - start);
+#if HLV1_ENABLE_STAGE_PROFILE
+        if (request.codec == VIDEO_CODEC_kHlv) {
+            result.hlv_row_guard_wait_us = __atomic_load_n(
+                &hlv_row_guard_wait_us, __ATOMIC_RELAXED);
+            if (result.hlv_profile.frames) {
+                esp_rom_printf(
+                    "H,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
+                    result.hlv_profile.total_cycles,
+                    result.hlv_profile.input_cycles,
+                    result.hlv_profile.crc_cycles,
+                    result.hlv_profile.prediction_cycles,
+                    result.hlv_profile.residual_cycles,
+                    result.hlv_profile.inverse_wht_cycles,
+                    result.hlv_profile.packing_cycles,
+                    result.hlv_profile.reference_commit_cycles,
+                    result.hlv_row_guard_wait_us);
+            }
+        }
+#endif
         if (request.codec == VIDEO_CODEC_kBpv &&
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {
@@ -3343,7 +3371,7 @@ void playOneFrameSequential() {
     const HLV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result = hlv_esp32_decoder_decode_next(
-        &decoder, video_file, &frame, NULL);
+        &decoder, video_file, &frame, NULL, NULL);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (decode_result == HLV1_EOF) {
