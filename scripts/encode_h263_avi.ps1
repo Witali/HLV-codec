@@ -21,7 +21,7 @@ param(
     [int]$VideoBufferKbps = 0,
 
     [ValidateRange(0, 31)]
-    [int]$VideoQuality = 0,
+    [int]$VideoQuality = 6,
 
     [ValidateRange(1, 300)]
     [int]$Gop = 30,

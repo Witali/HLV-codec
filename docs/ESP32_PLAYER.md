@@ -264,7 +264,8 @@ silently dropping frames. `-FitMode Crop` fills the 4:3 frame by cropping equal
 margins; `-FitMode Contain` retains the complete picture with black padding.
 Both modes fit at the original source resolution and then perform one Lanczos
 downscale to the complete QCIF or CIF frame. CIF is intra-only for the bounded
-ESP32 decoder memory profile.
+ESP32 decoder memory profile. The saved production default is constant-quality
+Q6; pass `-VideoQuality 0` only when an explicit CBR/VBV profile is required.
 
 Create a CIF AVI with PCM S16LE mono audio at 8 kHz:
 

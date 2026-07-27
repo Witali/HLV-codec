@@ -26,11 +26,12 @@ $ErrorActionPreference = "Stop"
 
 $info = Get-TranscodeVideoInfo -InputFile $InputFile
 $fpsText = Format-TranscodeNumber -Value $info.Fps
+$defaultQuality = 6
 $OutputFile = Get-TranscodeOutputFile `
     -OutputFile $OutputFile `
     -CodecDirectory "H263" `
     -FileName (
-        "$($info.BaseName)_352x288_${fpsText}fps_H263_CIF_2048kbps.avi"
+        "$($info.BaseName)_352x288_${fpsText}fps_H263_CIF_q${defaultQuality}.avi"
     )
 Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 
@@ -39,8 +40,7 @@ $arguments = @{
     OutputFile = $OutputFile
     Profile = "352x288"
     FitMode = "Crop"
-    VideoBitrateKbps = 2048
-    VideoBufferKbps = 2048
+    VideoQuality = $defaultQuality
     Gop = 1
     Threads = $Threads
     MaxFrames = $MaxFrames
