@@ -87,6 +87,11 @@ struct VideoFrame {
     std::vector<uint8_t> nv12;
 };
 
+enum class D3DInputFormat {
+    kNv12,
+    kBgra
+};
+
 enum class VideoCodec {
     kNone,
     kHlv,
@@ -223,101 +228,31 @@ uint8_t mpeg_sample_to_u8(float left, float right) {
     return static_cast<uint8_t>(std::clamp(value, 0L, 255L));
 }
 
-int rgb_to_y(int red, int green, int blue) {
-    return clamp8(16 + ((66 * red + 129 * green + 25 * blue + 128) >> 8));
-}
-
-int rgb_to_u(int red, int green, int blue) {
-    return clamp8(128 +
-                  ((-38 * red - 74 * green + 112 * blue + 128) >> 8));
-}
-
-int rgb_to_v(int red, int green, int blue) {
-    return clamp8(128 +
-                  ((112 * red - 94 * green - 18 * blue + 128) >> 8));
-}
-
 bool convert_bpv_frame(const BPV1Header *header, const BPV1Frame *source,
                        VideoFrame &destination) {
     if (!header || !source) return false;
     destination.width = source->width;
     destination.height = source->height;
-    const size_t luma_size =
-        static_cast<size_t>(source->width) * source->height;
-    destination.pixels.resize(luma_size);
-    const bool nv12_compatible =
-        !(source->width & 1U) && !(source->height & 1U);
-    destination.nv12.resize(
-        nv12_compatible ? luma_size + luma_size / 2U : 0);
-    std::vector<uint8_t> rows(
-        static_cast<size_t>(source->width) * 3U * 2U);
-    uint8_t *top = rows.data();
-    uint8_t *bottom = top + static_cast<size_t>(source->width) * 3U;
+    destination.pixels.resize(
+        static_cast<size_t>(source->width) * source->height);
+    destination.nv12.clear();
+    std::vector<uint8_t> row(
+        static_cast<size_t>(source->width) * 3U);
 
-    for (uint16_t y = 0; y < source->height; y += 2) {
+    for (uint16_t y = 0; y < source->height; ++y) {
         if (bpv1_frame_render_rgb24_row(
-                header, source, y, top,
+                header, source, y, row.data(),
                 static_cast<size_t>(source->width) * 3U) != BPV1_OK) {
             return false;
         }
-        const bool has_bottom = y + 1U < source->height;
-        if (has_bottom &&
-            bpv1_frame_render_rgb24_row(
-                header, source, static_cast<uint16_t>(y + 1U), bottom,
-                static_cast<size_t>(source->width) * 3U) != BPV1_OK) {
-            return false;
-        }
-        if (!has_bottom) {
-            std::memcpy(bottom, top,
-                        static_cast<size_t>(source->width) * 3U);
-        }
-
-        for (unsigned row = 0; row < (has_bottom ? 2U : 1U); ++row) {
-            const uint8_t *rgb = row ? bottom : top;
-            const size_t output_y = static_cast<size_t>(y) + row;
-            for (uint16_t x = 0; x < source->width; ++x) {
-                const int red = rgb[static_cast<size_t>(x) * 3U];
-                const int green = rgb[static_cast<size_t>(x) * 3U + 1U];
-                const int blue = rgb[static_cast<size_t>(x) * 3U + 2U];
-                destination.pixels[
-                    output_y * source->width + x] =
-                    (static_cast<uint32_t>(red) << 16) |
-                    (static_cast<uint32_t>(green) << 8) |
-                    static_cast<uint32_t>(blue);
-                if (nv12_compatible) {
-                    destination.nv12[
-                        output_y * source->width + x] =
-                        static_cast<uint8_t>(rgb_to_y(red, green, blue));
-                }
-            }
-        }
-
-        if (nv12_compatible) {
-            uint8_t *chroma =
-                destination.nv12.data() + luma_size +
-                static_cast<size_t>(y / 2U) * source->width;
-            for (uint16_t x = 0; x < source->width; x += 2) {
-                int red = 0;
-                int green = 0;
-                int blue = 0;
-                for (unsigned row = 0; row < 2; ++row) {
-                    const uint8_t *rgb = row ? bottom : top;
-                    for (unsigned column = 0; column < 2; ++column) {
-                        const size_t pixel =
-                            (static_cast<size_t>(x) + column) * 3U;
-                        red += rgb[pixel];
-                        green += rgb[pixel + 1U];
-                        blue += rgb[pixel + 2U];
-                    }
-                }
-                red = (red + 2) / 4;
-                green = (green + 2) / 4;
-                blue = (blue + 2) / 4;
-                chroma[x] =
-                    static_cast<uint8_t>(rgb_to_u(red, green, blue));
-                chroma[x + 1U] =
-                    static_cast<uint8_t>(rgb_to_v(red, green, blue));
-            }
+        uint32_t *output = destination.pixels.data() +
+                           static_cast<size_t>(y) * source->width;
+        for (uint16_t x = 0; x < source->width; ++x) {
+            const size_t pixel = static_cast<size_t>(x) * 3U;
+            output[x] =
+                (static_cast<uint32_t>(row[pixel]) << 16) |
+                (static_cast<uint32_t>(row[pixel + 1U]) << 8) |
+                static_cast<uint32_t>(row[pixel + 2U]);
         }
     }
     return true;
@@ -333,13 +268,15 @@ std::wstring hresult_error(const wchar_t *operation, HRESULT result) {
 class D3DVideoRenderer {
 public:
     bool open(HWND window, unsigned width, unsigned height,
-              unsigned fps_num, unsigned fps_den, std::wstring &error) {
+              unsigned fps_num, unsigned fps_den,
+              D3DInputFormat input_format, std::wstring &error) {
         close();
         window_ = window;
         source_width_ = width;
         source_height_ = height;
         fps_num_ = fps_num;
         fps_den_ = fps_den;
+        input_format_ = input_format;
 
         const D3D_FEATURE_LEVEL levels[] = {
             D3D_FEATURE_LEVEL_11_1,
@@ -431,7 +368,7 @@ public:
         result = create_video_resources(client_width, client_height);
         if (FAILED(result)) {
             error = hresult_error(
-                L"Cannot initialize NV12 D3D11 video processing", result);
+                L"Cannot initialize D3D11 video processing", result);
             close();
             return false;
         }
@@ -465,8 +402,11 @@ public:
     bool active() const { return active_; }
 
     std::wstring label() const {
-        std::wstring result = L"D3D11 NV12 flip";
-        if (overlay_capable_ && nv12_overlay_capable_)
+        std::wstring result = input_format_ == D3DInputFormat::kBgra
+                                  ? L"D3D11 BGRA flip"
+                                  : L"D3D11 NV12 flip";
+        if (input_format_ == D3DInputFormat::kNv12 &&
+            overlay_capable_ && nv12_overlay_capable_)
             result += L", MPO-capable";
         return result;
     }
@@ -476,10 +416,17 @@ public:
                  std::wstring &error) {
         if (!active_ || !swap_chain_ || frame.width <= 0 || frame.height <= 0)
             return false;
+        const bool bgra = input_format_ == D3DInputFormat::kBgra;
+        const size_t pixel_count =
+            static_cast<size_t>(frame.width) * frame.height;
         const size_t expected_size =
-            static_cast<size_t>(frame.width) * frame.height * 3U / 2U;
-        if (frame.nv12.size() != expected_size) {
-            error = L"The decoded frame has an invalid NV12 buffer";
+            bgra ? pixel_count * sizeof(uint32_t)
+                 : pixel_count * 3U / 2U;
+        if ((bgra && frame.pixels.size() != pixel_count) ||
+            (!bgra && frame.nv12.size() != expected_size)) {
+            error = bgra
+                        ? L"The decoded frame has an invalid BGRA buffer"
+                        : L"The decoded frame has an invalid NV12 buffer";
             close();
             return false;
         }
@@ -501,9 +448,15 @@ public:
         }
 
         const size_t slot = input_index_++ % input_textures_.size();
+        const void *input = bgra
+                                ? static_cast<const void *>(
+                                      frame.pixels.data())
+                                : static_cast<const void *>(
+                                      frame.nv12.data());
         context_->UpdateSubresource(
-            input_textures_[slot].Get(), 0, nullptr, frame.nv12.data(),
-            static_cast<UINT>(frame.width),
+            input_textures_[slot].Get(), 0, nullptr, input,
+            static_cast<UINT>(
+                frame.width * (bgra ? sizeof(uint32_t) : 1U)),
             static_cast<UINT>(expected_size));
 
         RECT source_rect = {0, 0, frame.width, frame.height};
@@ -603,9 +556,13 @@ private:
         HRESULT result = video_device_->CreateVideoProcessorEnumerator(
             &content, enumerator_.GetAddressOf());
         UINT format_flags = 0;
+        const DXGI_FORMAT input_format =
+            input_format_ == D3DInputFormat::kBgra
+                ? DXGI_FORMAT_B8G8R8A8_UNORM
+                : DXGI_FORMAT_NV12;
         if (SUCCEEDED(result)) {
             result = enumerator_->CheckVideoProcessorFormat(
-                DXGI_FORMAT_NV12, &format_flags);
+                input_format, &format_flags);
         }
         if (SUCCEEDED(result) &&
             !(format_flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) {
@@ -631,7 +588,7 @@ private:
         texture_desc.Height = source_height_;
         texture_desc.MipLevels = 1;
         texture_desc.ArraySize = 1;
-        texture_desc.Format = DXGI_FORMAT_NV12;
+        texture_desc.Format = input_format;
         texture_desc.SampleDesc.Count = 1;
         texture_desc.Usage = D3D11_USAGE_DEFAULT;
         texture_desc.BindFlags = 0;
@@ -664,9 +621,15 @@ private:
         if (FAILED(result)) return result;
 
         D3D11_VIDEO_PROCESSOR_COLOR_SPACE input_color = {};
-        input_color.YCbCr_Matrix = 0;
-        input_color.Nominal_Range =
-            D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        if (input_format_ == D3DInputFormat::kBgra) {
+            input_color.RGB_Range = 0;
+            input_color.Nominal_Range =
+                D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        } else {
+            input_color.YCbCr_Matrix = 0;
+            input_color.Nominal_Range =
+                D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        }
         D3D11_VIDEO_PROCESSOR_COLOR_SPACE output_color = {};
         output_color.RGB_Range = 0;
         output_color.Nominal_Range =
@@ -699,6 +662,7 @@ private:
     UINT client_width_ = 0;
     UINT client_height_ = 0;
     size_t input_index_ = 0;
+    D3DInputFormat input_format_ = D3DInputFormat::kNv12;
     bool active_ = false;
     bool overlay_capable_ = false;
     bool nv12_overlay_capable_ = false;
@@ -1014,10 +978,15 @@ public:
         }
 
         std::wstring video_error;
+        const D3DInputFormat input_format =
+            codec_ == VideoCodec::kBpv
+                ? D3DInputFormat::kBgra
+                : D3DInputFormat::kNv12;
         if (!video_renderer_.open(
                 window_, header_.width, header_.height,
-                header_.fps_num, header_.fps_den, video_error)) {
-            video_warning_ = L"D3D11/NV12 output is unavailable; "
+                header_.fps_num, header_.fps_den, input_format,
+                video_error)) {
+            video_warning_ = L"D3D11 output is unavailable; "
                              L"using double-buffered GDI: " + video_error;
         }
 
@@ -2013,7 +1982,7 @@ private:
                 return;
             }
             video_warning_ =
-                L"D3D11/NV12 output stopped; using double-buffered GDI: " +
+                L"D3D11 output stopped; using double-buffered GDI: " +
                 render_error;
             update_title();
         }
