@@ -107,6 +107,15 @@
 #define PV_H263_IRAM_INTRA_IDCT 0
 #endif
 
+#ifndef PV_H263_XTENSA_IDCT_DC_INTRA
+#define PV_H263_XTENSA_IDCT_DC_INTRA 0
+#endif
+
+#if PV_H263_XTENSA_IDCT_DC_INTRA
+extern void pv_h263_idct_dc_intra(
+    int16 *coefficients, PIXEL *component, int width);
+#endif
+
 #if PV_H263_IRAM_INTRA_IDCT
 #include "esp_attr.h"
 #define PV_H263_INTRA_IDCT_ATTR IRAM_ATTR
@@ -276,6 +285,14 @@ PV_H263_INTRA_IDCT_ATTR void BlockIDCT_intra(
     /*----------------------------------------------------------------------------
     ; Function body here
     ----------------------------------------------------------------------------*/
+#if PV_H263_XTENSA_IDCT_DC_INTRA
+    if (nz_coefs == 1)
+    {
+        pv_h263_idct_dc_intra(coeff_in, c_comp, width);
+        return;
+    }
+#endif
+
     if (nz_coefs <= 10)
     {
         bmapr = (nz_coefs - 1);

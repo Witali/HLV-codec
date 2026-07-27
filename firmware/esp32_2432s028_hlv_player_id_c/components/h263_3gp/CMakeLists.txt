@@ -27,12 +27,25 @@ idf_component_register(
         "${PV_ROOT}/src/vlc_tab.c"
         "${PV_ROOT}/src/vop.c"
         "${PV_ROOT}/src/zigzag_tab.c"
+        "h263_idct_optimized.S"
     INCLUDE_DIRS
         "${H263_ROOT}/include"
         "${PV_ROOT}/include"
     PRIV_INCLUDE_DIRS
         "${PV_ROOT}/src"
 )
+
+set(PV_H263_XTENSA_IDCT_DC_INTRA ON CACHE BOOL
+    "Use the Xtensa DC-only H.263 intra IDCT output kernel")
+if(PV_H263_XTENSA_IDCT_DC_INTRA)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_XTENSA_IDCT_DC_INTRA=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_XTENSA_IDCT_DC_INTRA=0
+    )
+endif()
 
 set(PV_H263_IRAM_BITSTREAM_FILL ON CACHE BOOL
     "Place the H.263 32-bit bitstream cache refill in IRAM")
