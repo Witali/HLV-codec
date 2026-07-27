@@ -2206,9 +2206,12 @@ static size_t file_decode_refill(void *opaque, const uint8_t **data,
         return 0;
     }
 #if HLV1_ENABLE_STAGE_PROFILE
-    if (stream->profile)
+    if (stream->profile) {
         stream->profile->input_cycles +=
             (uint32_t)(HLV1_PROFILE_NOW() - input_profile_start);
+        stream->profile->input_bytes += bytes;
+        ++stream->profile->input_refills;
+    }
 #else
     (void)input_profile_start;
 #endif

@@ -549,9 +549,11 @@ void decodeTask(void *opaque) {
                 &hlv_row_guard_wait_us, __ATOMIC_RELAXED);
             if (result.hlv_profile.frames) {
                 esp_rom_printf(
-                    "H,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
+                    "H,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
                     result.hlv_profile.total_cycles,
                     result.hlv_profile.input_cycles,
+                    result.hlv_profile.input_bytes,
+                    result.hlv_profile.input_refills,
                     result.hlv_profile.crc_cycles,
                     result.hlv_profile.prediction_cycles,
                     result.hlv_profile.residual_cycles,

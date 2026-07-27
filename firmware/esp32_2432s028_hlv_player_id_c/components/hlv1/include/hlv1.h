@@ -284,6 +284,8 @@ typedef struct HLV1StageProfile {
     uint64_t frames;
     uint64_t total_cycles;
     uint64_t input_cycles;
+    uint64_t input_bytes;
+    uint64_t input_refills;
     uint64_t crc_cycles;
     uint64_t prediction_cycles;
     uint64_t residual_cycles;

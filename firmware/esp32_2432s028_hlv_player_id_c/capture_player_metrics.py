@@ -60,6 +60,8 @@ class VideoRecord:
 class HlvProfileRecord:
     total_cycles: int
     input_cycles: int
+    input_bytes: int
+    input_refills: int
     crc_cycles: int
     prediction_cycles: int
     residual_cycles: int
@@ -112,7 +114,7 @@ def parse_audio(line: str) -> AudioRecord | None:
 
 def parse_hlv_profile(line: str) -> HlvProfileRecord | None:
     fields = line.split(",")
-    if len(fields) != 10 or fields[0] != "H":
+    if len(fields) != 12 or fields[0] != "H":
         return None
     try:
         values = [int(value) for value in fields[1:]]
@@ -337,6 +339,11 @@ def main() -> int:
         print(f"hlv_profile_records={len(selected_profiles)} cpu_mhz=240")
         print_metric("HLV total", profile_us("total_cycles"))
         print_metric("HLV input", profile_us("input_cycles"))
+        print(
+            "HLV input: "
+            f"avg_refills={statistics.fmean(record.input_refills for record in selected_profiles):.2f} "
+            f"avg_bytes={statistics.fmean(record.input_bytes for record in selected_profiles):.1f}"
+        )
         print_metric("HLV CRC", profile_us("crc_cycles"))
         print_metric("HLV prediction", profile_us("prediction_cycles"))
         print_metric("HLV residual", profile_us("residual_cycles"))
