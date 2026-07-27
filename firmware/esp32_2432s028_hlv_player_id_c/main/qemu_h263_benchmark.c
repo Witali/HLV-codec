@@ -89,7 +89,7 @@ void app_main(void) {
                  h263_3gp_strerror(result));
         finish(3);
     }
-    if (info.width != 320U || info.height != 240U) {
+    if (info.width != 352U || info.height != 288U) {
         finish(4);
     }
 
