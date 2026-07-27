@@ -889,6 +889,31 @@ bool drawStatusText(const char *text, int y, int scale) {
     return display.drawBitmap(x, y, width, height, pixels) == ESP_OK;
 }
 
+void formatUploadProgress(
+    char *text, size_t text_bytes, unsigned percent,
+    uint32_t received, uint32_t total
+) {
+    uint32_t divisor;
+    const char *unit;
+    if (total < 1000U * 1000U) {
+        divisor = 1000U;
+        unit = "KB";
+    } else if (total < 1000U * 1000U * 1000U) {
+        divisor = 1000U * 1000U;
+        unit = "MB";
+    } else {
+        divisor = 1000U * 1000U * 1000U;
+        unit = "GB";
+    }
+    const unsigned completed_units =
+        static_cast<unsigned>(received / divisor);
+    const unsigned total_units = static_cast<unsigned>(
+        (static_cast<uint64_t>(total) + divisor - 1U) / divisor);
+    std::snprintf(
+        text, text_bytes, "%u%% %u/%u%s", percent,
+        completed_units, total_units, unit);
+}
+
 void drawStatusTitle(const char *title) {
     if (!title || !*title) return;
     const size_t length = std::min<size_t>(std::strlen(title), 52);
@@ -918,9 +943,13 @@ void showStatus(const char *title, const char *detail = nullptr) {
     }
 }
 
-void beginUploadProgress(const char *filename) {
+void beginUploadProgress(const char *filename, uint32_t total) {
     display.clear(0x0000);
-    drawStatusText("0%", kUploadPercentY, kUploadPercentScale);
+    char progress_text[24]{};
+    formatUploadProgress(
+        progress_text, sizeof progress_text, 0U, 0U, total);
+    drawStatusText(
+        progress_text, kUploadPercentY, kUploadPercentScale);
     uint16_t *pixels = display.acquireBuffer();
     if (!pixels) return;
     for (int y = 0; y < kUploadBarHeight; ++y) {
@@ -976,8 +1005,9 @@ void updateUploadProgress(uint32_t received, uint32_t total, void *) {
             100U,
             (static_cast<uint64_t>(received) * 100U) / total));
     if (percent != upload_progress_percent) {
-        char text[5]{};
-        std::snprintf(text, sizeof text, "%u%%", percent);
+        char text[24]{};
+        formatUploadProgress(
+            text, sizeof text, percent, received, total);
         if (drawStatusText(
                 text, kUploadPercentY, kUploadPercentScale)) {
             upload_progress_percent = percent;
@@ -3964,7 +3994,8 @@ extern "C" void app_main(void) {
                 continue;
             }
             closeVideo();
-            beginUploadProgress(upload_request.filename);
+            beginUploadProgress(
+                upload_request.filename, upload_request.size);
             char stored_path[128]{};
             const bool stored = uart_upload.receive(
                 upload_request, player_settings::kVideoDirectory,
