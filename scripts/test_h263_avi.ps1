@@ -85,7 +85,7 @@ foreach ($profile in @("176x144", "352x288")) {
         )
     }
     if ($profile -eq "352x288" -and
-        $check.Output -notmatch "checksum e94a0118015deea1") {
+        $check.Output -notmatch "checksum 7cd1a3db7cd8e5f2") {
         throw (
             "The CIF pixel checksum changed while decoding packets larger " +
             "than the streaming input buffer. " + $check.Output
@@ -168,7 +168,7 @@ if (-not $rejectedHalfRate) {
 }
 
 Write-Host (
-    "Standard H.263 QCIF/CIF AVI tests passed at the full source rate; " +
-    "CIF is centered for a 320x240 display; custom sizes, 3GP, and " +
-    "half-rate fallback were rejected."
+    "Standard Q6 H.263 QCIF/CIF AVI tests passed at the full source " +
+    "rate; CIF is centered for a 320x240 display; custom sizes, 3GP, " +
+    "and half-rate fallback were rejected."
 )

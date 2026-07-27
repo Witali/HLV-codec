@@ -217,6 +217,10 @@ Create a baseline CIF H.263 AVI with PCM S16LE audio from any source:
     -InputFile .\input.mp4 -Profile 352x288
 ```
 
+The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`
+together with explicit bitrate and buffer values only for a deliberate
+CBR/VBV encode.
+
 The v14 literal/palette syntax and the decoder-cycle term used by RDO are
 described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).
 

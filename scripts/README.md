@@ -71,7 +71,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `prepare_esp32_video.ps1` | Produces an HLV file for ESP32 with configurable dimensions, frame rate, quality, duration, and 16 kHz audio normalization. Without `-InputFile`, it generates a deterministic test clip. |
 | `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
-| `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Use `VideoQuality=1..31` for constant-quantizer encoding or leave it at zero for bitrate control. |
+| `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Constant-quality Q6 is the default; use `VideoQuality=1..31` to override it or pass zero for bitrate control. |
 | `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v5 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v5 profile with its own source, resolution, FPS, format and target quality. |
@@ -79,7 +79,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 The production defaults for every format accepted by the ESP32 player are
 stored in `out/source/esp32-transcode.yaml`. It records source preparation,
 quality mode, rate control, audio profile and decoder limits in one place.
-HLV uses adaptive 35–42 dB quality, H.263 uses profile-specific CBR/VBV, and
+HLV uses adaptive 35–42 dB quality, H.263 uses constant-quality Q6, and
 the remaining codecs target 40 dB where that quality is attainable. DivX 3
 always uses half of the source frame rate (12 fps for Bunny, 15 fps for
 Danila).
@@ -97,7 +97,7 @@ select the production parameters and output directory automatically:
 | --- | --- |
 | `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
 | `transcode_bpv5.ps1` | BPV v5, source FPS, target RGB PSNR 40 dB, lambda 0–4096, three active palettes, GOP 48. |
-| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, CBR 2048 kbit/s, VBV 2048 kbit, full source FPS, intra-only. |
+| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
