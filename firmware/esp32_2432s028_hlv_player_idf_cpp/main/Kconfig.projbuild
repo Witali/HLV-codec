@@ -1,0 +1,21 @@
+menu "HLV player"
+
+    config HLV_PLAYER_DISPLAY_SPI_CLOCK_MHZ
+        int "ST7789 SPI clock (MHz)"
+        range 1 80
+        default 80
+        help
+            Clock used for commands and RGB565 pixel transfers to the ST7789.
+            The CYD2USB PCB may require a lower value if 80 MHz produces
+            corrupted pixels or intermittent SPI errors.
+
+    config HLV_PLAYER_SD_SPI_CLOCK_MHZ
+        int "SD-card SPI clock (MHz)"
+        range 1 40
+        default 40
+        help
+            Maximum SPI clock requested from the SDSPI host after card
+            initialization. Use a lower value only to diagnose cards or PCB
+            layouts with unreliable reads.
+
+endmenu

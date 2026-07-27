@@ -1,0 +1,77 @@
+# ESP32-2432S028 (original ESP32, 4 MiB QIO flash, no PSRAM)
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_MONITOR_BAUD=460800
+CONFIG_ESPTOOLPY_BEFORE_RESET=y
+CONFIG_ESPTOOLPY_AFTER_RESET=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Player SPI clocks. These can also be changed in the "HLV player" menu.
+CONFIG_HLV_PLAYER_DISPLAY_SPI_CLOCK_MHZ=80
+CONFIG_HLV_PLAYER_SD_SPI_CLOCK_MHZ=40
+
+# Decode and color conversion benefit from the full ESP32 clock.  Optimize the
+# rest for size to retain internal SRAM and instruction-cache headroom.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# The optional playback pipeline pins orchestration/rendering to PRO CPU and
+# decoding to APP CPU. RTC fast memory cannot join the heap in dual-core mode.
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
+# Do not enable ESP32_IRAM_AS_8BIT_ACCESSIBLE_MEMORY: byte accesses in that
+# mode are exception-emulated and far too slow for video planes.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_RTTI=n
+CONFIG_LIBC_NEWLIB_NANO_FORMAT=y
+
+# Keep UART0 for compact per-frame timing CSV records. Suppress ordinary
+# framework diagnostics so they do not perturb the measurement.
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=1
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=3
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+
+# The player has no network, Bluetooth, provisioning, shell, OTA or NVS.
+# MINIMAL_BUILD prevents those component libraries and their Kconfig trees
+# from entering the build; these options remove optional core facilities.
+CONFIG_ESP_TASK_WDT_EN=n
+CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=n
+CONFIG_FREERTOS_USE_TIMERS=n
+CONFIG_HEAP_POISONING_DISABLED=y
+
+# UART uploads require directory creation, replacement and descriptive ASCII
+# filenames. Long-name work buffers live on the heap only during filesystem
+# operations; the player still keeps per-file caches and string helpers off.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=63
+CONFIG_FATFS_VOLUME_COUNT=1
+CONFIG_FATFS_SECTOR_512=y
+CONFIG_FATFS_FS_LOCK=0
+CONFIG_FATFS_PER_FILE_CACHE=y
+CONFIG_FATFS_USE_FASTSEEK=y
+CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=64
+CONFIG_FATFS_USE_STRFUNC_NONE=y
+
+# fopen/read/write/lseek and directory mutations are required for HLV UART
+# uploads; directory iteration, select, termios and /dev/null are not.
+CONFIG_VFS_SUPPORT_IO=y
+CONFIG_VFS_MAX_COUNT=3
+CONFIG_VFS_SUPPORT_DIR=y
+CONFIG_VFS_SUPPORT_SELECT=n
+CONFIG_VFS_SUPPORT_TERMIOS=n
+CONFIG_VFS_INITIALIZE_DEV_NULL=n
+
+# Multi-codec open paths and stdio/FatFs calls need headroom on app_main.
+# Keep 8 KB: the former 4 KB stack overflowed while opening MJPEG after BPV
+# audio integration.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_HZ=1000
