@@ -20,6 +20,9 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
+    [ValidateSet("Cpu", "Auto", "Cuda")]
+    [string]$Device = "Auto",
+
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,
 
@@ -61,7 +64,17 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
-$encoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cpuEncoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cudaEncoder = Join-Path $repo "build\msvc\bpv1enc_cuda.exe"
+$encoder = if ($Device -eq "Cpu") {
+    $cpuEncoder
+}
+elseif (Test-Path -LiteralPath $cudaEncoder) {
+    $cudaEncoder
+}
+else {
+    $cpuEncoder
+}
 
 $InputFile = [IO.Path]::GetFullPath($InputFile)
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
@@ -79,7 +92,12 @@ if (-not (Test-Path -LiteralPath $InputFile)) {
 if (-not (Test-Path -LiteralPath $ffmpeg)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
 }
-if (-not (Test-Path -LiteralPath $encoder)) {
+if ($Device -eq "Cuda" -and
+    -not (Test-Path -LiteralPath $cudaEncoder)) {
+    & (Join-Path $PSScriptRoot "build_bpv_cuda.ps1")
+    $encoder = $cudaEncoder
+}
+elseif (-not (Test-Path -LiteralPath $encoder)) {
     & (Join-Path $PSScriptRoot "build_bpv_msvc.ps1")
 }
 if (-not (Test-Path -LiteralPath $ffmpeg) -or
@@ -200,6 +218,7 @@ try {
         $temporaryVideo,
         $OutputFile,
         "--threads", $Threads,
+        "--device", $Device.ToLowerInvariant(),
         "--gop", $Gop,
         "--min-gop", $MinGop,
         "--scene-threshold",
@@ -237,7 +256,7 @@ try {
         "scene threshold $SceneThreshold, " +
         "$paletteMode, " +
         "$CandidatePalettes candidate palettes, $SampleBlocks training " +
-        "blocks, $Threads worker threads..."
+        "blocks, $Threads worker threads, $Device device..."
     )
     & $encoder @encoderArguments
     if ($LASTEXITCODE -ne 0) {

@@ -40,6 +40,9 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
+    [ValidateSet("Cpu", "Auto", "Cuda")]
+    [string]$Device = "Auto",
+
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,
 
@@ -97,7 +100,17 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
-$encoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cpuEncoder = Join-Path $repo "build\msvc\bpv1enc.exe"
+$cudaEncoder = Join-Path $repo "build\msvc\bpv1enc_cuda.exe"
+$encoder = if ($Device -eq "Cpu") {
+    $cpuEncoder
+}
+elseif (Test-Path -LiteralPath $cudaEncoder) {
+    $cudaEncoder
+}
+else {
+    $cpuEncoder
+}
 $approvedBunnySource = Join-Path $repo (
     "out\sources\big_buck_bunny_1080p_h264\" +
     "big_buck_bunny_1080p_h264.mov"
@@ -122,7 +135,12 @@ if (-not (Test-Path -LiteralPath $ffmpeg) -or
     -not (Test-Path -LiteralPath $ffprobe)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
 }
-if (-not (Test-Path -LiteralPath $encoder)) {
+if ($Device -eq "Cuda" -and
+    -not (Test-Path -LiteralPath $cudaEncoder)) {
+    & (Join-Path $PSScriptRoot "build_bpv_cuda.ps1")
+    $encoder = $cudaEncoder
+}
+elseif (-not (Test-Path -LiteralPath $encoder)) {
     & (Join-Path $PSScriptRoot "build_bpv_msvc.ps1")
 }
 if (-not (Test-Path -LiteralPath $ffmpeg) -or
@@ -221,6 +239,7 @@ function Invoke-BpvQualityTrial {
         $PreparedVideo,
         $trialOutput,
         "--threads", $Threads,
+        "--device", $Device.ToLowerInvariant(),
         "--gop", $Gop,
         "--min-gop", $MinGop,
         "--scene-threshold",

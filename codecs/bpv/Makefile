@@ -1,6 +1,8 @@
 NODE ?= node
 CC ?= cc
 CFLAGS ?= -O3 -Wall -Wextra -std=c11
+NVCC ?= nvcc
+CUDA_ARCH ?= native
 
 SOURCES := \
 	src/bpv1-codec.js \
@@ -16,6 +18,15 @@ all: bpv1enc test_bpv1_decoder check
 
 bpv1enc: tools/bpv1enc.c
 	$(CC) $(CFLAGS) -pthread -o $@ $< -lm
+
+bpv1enc_cuda_host.o: tools/bpv1enc.c tools/bpv1_cuda.h
+	$(CC) $(CFLAGS) -DBPV1_WITH_CUDA -pthread -c -o $@ $<
+
+bpv1_cuda.o: tools/bpv1_cuda.cu tools/bpv1_cuda.h
+	$(NVCC) -O3 -std=c++17 -arch=$(CUDA_ARCH) -DBPV1_WITH_CUDA -c -o $@ $<
+
+bpv1enc_cuda: bpv1enc_cuda_host.o bpv1_cuda.o
+	$(NVCC) -arch=$(CUDA_ARCH) -Xcompiler -pthread -o $@ $^ -lm
 
 test_bpv1_decoder: tests/test_bpv1_decoder.c src/bpv1_decode.c include/bpv1.h
 	$(CC) $(CFLAGS) -Iinclude -o $@ tests/test_bpv1_decoder.c src/bpv1_decode.c
@@ -34,6 +45,7 @@ test-c: bpv1enc test_bpv1_decoder
 	BPV1ENC=./bpv1enc $(NODE) tests/bpv1-c-encoder.test.js
 
 clean:
-	rm -f bpv1enc test_bpv1_decoder
+	rm -f bpv1enc bpv1enc_cuda bpv1enc_cuda_host.o bpv1_cuda.o \
+		test_bpv1_decoder
 
 .PHONY: all check test test-c clean

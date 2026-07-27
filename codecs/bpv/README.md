@@ -58,6 +58,30 @@ one/four-thread determinism test on Windows:
 .\scripts\build_bpv_msvc.ps1
 ```
 
+An optional CUDA 13-compatible encoder offloads indexed palette candidate
+search and the complete 4/8/16-color block quantization to an NVIDIA GPU.
+Prediction, dictionaries and stream serialization stay on the CPU, so the
+result remains an ordinary BPV1 v6 file and requires no player changes.
+The compatibility test also requires the CUDA and CPU backends to produce
+the same bitstream:
+
+```powershell
+.\scripts\build_bpv_cuda.ps1
+.\scripts\transcode_bpv6.ps1 input.mov -Device Cuda
+```
+
+`bpv1enc_cuda.exe` defaults to `--device auto`; it uses CUDA when a runtime
+device is available and otherwise falls back to CPU. `--device cuda` makes
+the absence of CUDA an error, while `--device cpu` provides a direct A/B
+reference using the same executable. The regular `bpv1enc.exe` remains the
+portable CPU-only fallback.
+
+On a POSIX host with CUDA Toolkit:
+
+```sh
+make -C codecs/bpv bpv1enc_cuda CUDA_ARCH=native
+```
+
 On a POSIX C11 host:
 
 ```sh

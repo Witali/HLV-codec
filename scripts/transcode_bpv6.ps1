@@ -26,6 +26,9 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 6,
 
+    [ValidateSet("Cpu", "Auto", "Cuda")]
+    [string]$Device = "Auto",
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -59,6 +62,7 @@ $arguments = @{
     ResizeMode = $effectiveResizeMode
     Fps = 0
     Threads = $Threads
+    Device = $Device
     Gop = 48
     CandidatePalettes = 8
     ActivePalettes = $true

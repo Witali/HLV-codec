@@ -11,6 +11,8 @@
 #include <threads.h>
 #include <time.h>
 
+#include "bpv1_cuda.h"
+
 #define BPV_VERSION 6
 #define BLOCK_SIZE 4
 #define PIXELS_PER_BLOCK 16
@@ -33,6 +35,18 @@ enum {
     MODE_RAW = 3,
     MODE_COUNT = 4
 };
+
+enum {
+    DEVICE_CPU = 0,
+    DEVICE_AUTO = 1,
+    DEVICE_CUDA = 2
+};
+
+#ifdef BPV1_WITH_CUDA
+#define DEFAULT_DEVICE_MODE DEVICE_AUTO
+#else
+#define DEFAULT_DEVICE_MODE DEVICE_CPU
+#endif
 
 typedef struct {
     uint8_t palette_index;
@@ -102,6 +116,8 @@ typedef struct {
     int audio_rate;
     int active_palettes;
     const char *active_palette_path;
+    int device_mode;
+    int use_cuda;
 } Options;
 
 typedef struct {
@@ -169,6 +185,7 @@ static void usage(FILE *stream) {
         "  --no-scene-cuts                use only fixed GOP boundaries\n"
         "  --lambda N                     RD multiplier (default 64)\n"
         "  --candidate-palettes N         indexed palettes 1..64 (default 8)\n"
+        "  --device cpu|auto|cuda         block search backend\n"
         "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
         "  --samples-per-frame N          training blocks/frame (default 256)\n"
@@ -1452,6 +1469,14 @@ static int encode_gop(GopJob *job) {
     uint8_t *packed_modes = NULL;
     PaletteIndex palette_index = {0};
     BlockDictionary block_dictionary = {0}, shadow_blocks = {0};
+    Bpv1CudaContext *cuda_context = NULL;
+    uint8_t *cuda_candidate_blocks = NULL;
+    uint64_t *cuda_candidate_errors = NULL;
+#ifdef BPV1_WITH_CUDA
+    size_t cuda_result_count = 0;
+    size_t cuda_candidate_block_bytes = 0;
+    char cuda_error[256] = {0};
+#endif
     int frame_index;
     if (options->active_palettes) {
         if (options->active_palette_path
@@ -1477,12 +1502,55 @@ static int encode_gop(GopJob *job) {
         (size_t)shadow_blocks.capacity * sizeof *shadow_blocks.items);
     if (!previous || !current || !modes || !packed_modes ||
         !block_dictionary.items || !shadow_blocks.items) goto fail;
+#ifdef BPV1_WITH_CUDA
+    if (options->use_cuda) {
+        cuda_result_count =
+            (size_t)block_count *
+            (size_t)options->candidate_palettes *
+            BPV1_CUDA_COLOR_CLASSES;
+        if (cuda_result_count >
+            SIZE_MAX / BPV1_CUDA_RECORD_BYTES) goto fail;
+        cuda_candidate_block_bytes =
+            cuda_result_count * BPV1_CUDA_RECORD_BYTES;
+        cuda_candidate_blocks =
+            (uint8_t *)malloc(cuda_candidate_block_bytes);
+        cuda_candidate_errors = (uint64_t *)malloc(
+            cuda_result_count * sizeof *cuda_candidate_errors);
+        cuda_context = bpv1_cuda_create(
+            info->width, info->height, info->chroma_width,
+            options->candidate_palettes, info->frame_bytes,
+            cuda_error, sizeof cuda_error);
+        if (!cuda_candidate_blocks || !cuda_candidate_errors ||
+            !cuda_context ||
+            bpv1_cuda_set_palette(
+                cuda_context, &training->palette[0][0][0],
+                sizeof training->palette, palette_index.distances,
+                (size_t)PALETTE_INDEX_BIN_COUNT * PALETTE_COUNT,
+                cuda_error, sizeof cuda_error)) {
+            fprintf(stderr, "bpv1enc: CUDA setup failed: %s\n",
+                cuda_error[0] ? cuda_error : "out of host memory");
+            goto fail;
+        }
+    }
+#endif
 
     for (frame_index = 0; frame_index < job->frame_count; ++frame_index) {
         const uint8_t *frame =
             job->frames + (size_t)frame_index * info->frame_bytes;
         Buffer payload = {0};
         int block_index;
+#ifdef BPV1_WITH_CUDA
+        if (options->use_cuda &&
+            bpv1_cuda_encode_frame(
+                cuda_context, frame, info->frame_bytes,
+                cuda_candidate_blocks, cuda_candidate_block_bytes,
+                cuda_candidate_errors, cuda_result_count,
+                cuda_error, sizeof cuda_error)) {
+            fprintf(stderr, "bpv1enc: CUDA frame failed: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+            goto frame_fail;
+        }
+#endif
         for (block_index = 0; block_index < block_count; ++block_index) {
             uint8_t pixels[PIXELS_PER_BLOCK][3];
             int palette_indices[MAX_CANDIDATE_PALETTES];
@@ -1502,8 +1570,10 @@ static int encode_gop(GopJob *job) {
                 best_bits = 0;
                 best_source_previous = 1;
             }
-            palette_index_candidates(pixels, &palette_index,
-                options->candidate_palettes, palette_indices);
+            if (!options->use_cuda) {
+                palette_index_candidates(pixels, &palette_index,
+                    options->candidate_palettes, palette_indices);
+            }
             for (palette_slot = 0;
                  palette_slot < options->candidate_palettes;
                  ++palette_slot) {
@@ -1512,13 +1582,33 @@ static int encode_gop(GopJob *job) {
                 };
                 int color_class;
                 for (color_class = 0; color_class < 3; ++color_class) {
-                    uint64_t error = quantize_block(
-                        pixels, palette_indices[palette_slot],
-                        training, color_limits[color_class],
-                        &candidate);
+                    uint64_t error;
                     int bits;
                     double score;
-                    canonicalize_block(&candidate);
+                    if (options->use_cuda) {
+#ifdef BPV1_WITH_CUDA
+                        const size_t result_index =
+                            ((size_t)block_index *
+                                 (size_t)options->candidate_palettes +
+                             (size_t)palette_slot) *
+                                BPV1_CUDA_COLOR_CLASSES +
+                            (size_t)color_class;
+                        memcpy(
+                            &candidate,
+                            cuda_candidate_blocks +
+                                result_index * BPV1_CUDA_RECORD_BYTES,
+                            sizeof candidate);
+                        error = cuda_candidate_errors[result_index];
+#else
+                        error = UINT64_MAX;
+#endif
+                    } else {
+                        error = quantize_block(
+                            pixels, palette_indices[palette_slot],
+                            training, color_limits[color_class],
+                            &candidate);
+                        canonicalize_block(&candidate);
+                    }
                     bits = raw_payload_bits(&candidate);
                     if (frame_index > 0 &&
                         block_equal(
@@ -1643,6 +1733,9 @@ frame_fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
+    free(cuda_candidate_blocks);
+    free(cuda_candidate_errors);
+    bpv1_cuda_destroy(cuda_context);
     palette_index_free(&palette_index);
     return 0;
 fail:
@@ -1652,6 +1745,9 @@ fail:
     free(packed_modes);
     free(block_dictionary.items);
     free(shadow_blocks.items);
+    free(cuda_candidate_blocks);
+    free(cuda_candidate_errors);
+    bpv1_cuda_destroy(cuda_context);
     palette_index_free(&palette_index);
     buffer_free(&job->output);
     return -1;
@@ -2015,9 +2111,12 @@ static int write_report(
         "{\n"
         "  \"codec\": \"BPV1\",\n"
         "  \"version\": %d,\n"
-        "  \"encoder\": \"native C11\",\n"
+        "  \"encoder\": \"%s\",\n"
+        "  \"computeBackend\": \"%s\",\n"
         "  \"input\": ",
-        version) < 0 ||
+        version,
+        options->use_cuda ? "native C11 + CUDA" : "native C11",
+        options->use_cuda ? "cuda" : "cpu") < 0 ||
         write_json_string(stream, input_path) ||
         fputs(",\n  \"output\": ", stream) == EOF ||
         write_json_string(stream, output_path) ||
@@ -2118,7 +2217,8 @@ static int write_report(
 int main(int argc, char **argv) {
     Options options = {
         8, 48, 12, 0.35, 64.0, 8, 2, 256, 32768, 256,
-        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL
+        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL,
+        DEFAULT_DEVICE_MODE, 0
     };
     const char *input_path = NULL;
     const char *output_path = NULL;
@@ -2170,6 +2270,16 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argument, "--candidate-palettes") && value) {
             if (parse_int_option(value, 1, MAX_CANDIDATE_PALETTES,
                     &options.candidate_palettes)) goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--device") && value) {
+            if (!strcmp(value, "cpu"))
+                options.device_mode = DEVICE_CPU;
+            else if (!strcmp(value, "auto"))
+                options.device_mode = DEVICE_AUTO;
+            else if (!strcmp(value, "cuda"))
+                options.device_mode = DEVICE_CUDA;
+            else
+                goto bad_option;
             index++;
         } else if (!strcmp(argument, "--search-radius") && value) {
             if (parse_int_option(value, 0, 7, &options.search_radius))
@@ -2247,6 +2357,19 @@ int main(int argc, char **argv) {
             "bpv1enc: --active-palette-file requires active palettes\n");
         return 2;
     }
+    if (options.device_mode != DEVICE_CPU) {
+        char cuda_error[256] = {0};
+        if (bpv1_cuda_runtime_available(cuda_error, sizeof cuda_error)) {
+            options.use_cuda = 1;
+        } else if (options.device_mode == DEVICE_CUDA) {
+            fprintf(stderr, "bpv1enc: CUDA is unavailable: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+            return 2;
+        } else if (options.progress) {
+            fprintf(stderr, "BPV1 CUDA unavailable, using CPU: %s\n",
+                cuda_error[0] ? cuda_error : "unknown CUDA error");
+        }
+    }
     if (!options.force && file_exists(output_path)) {
         fprintf(stderr, "bpv1enc: output exists; use --force: %s\n",
             output_path);
@@ -2263,7 +2386,8 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     if (options.progress) {
-        fprintf(stderr, "BPV1 C encoder: %s pass...\n",
+        fprintf(stderr, "BPV1 C encoder (%s): %s pass...\n",
+            options.use_cuda ? "CUDA" : "CPU",
             options.active_palettes ? "frame-count" : "palette-training");
     }
     if (scan_and_train(input, &options, &info,

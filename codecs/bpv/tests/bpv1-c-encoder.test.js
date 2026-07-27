@@ -89,6 +89,8 @@ try {
   const output4 = path.join(temporary, "output-4.bpv1");
   const report1 = path.join(temporary, "report-1.json");
   const report4 = path.join(temporary, "report-4.json");
+  const outputCpu = path.join(temporary, "output-cpu.bpv1");
+  const reportCpu = path.join(temporary, "report-cpu.json");
   const audio = path.join(temporary, "audio.u8");
   const outputAudio = path.join(temporary, "output-audio.bpv1");
   const reportAudio = path.join(temporary, "report-audio.json");
@@ -153,6 +155,28 @@ try {
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
+  const primaryReport = JSON.parse(fs.readFileSync(report1, "utf8"));
+  if (primaryReport.computeBackend === "cuda") {
+    runEncoder(
+      input,
+      outputCpu,
+      reportCpu,
+      1,
+      null,
+      true,
+      null,
+      ["--device", "cpu"],
+    );
+    assert.deepEqual(
+      fs.readFileSync(outputCpu),
+      bytes1,
+      "CUDA block search must match the CPU BPV1 bitstream",
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(reportCpu, "utf8")).computeBackend,
+      "cpu",
+    );
+  }
   const activeBanks = [];
   bpv.walkFrames(bytes1, (frame) => {
     if (frame.keyframe) activeBanks.push(Buffer.from(frame.palette));
@@ -225,7 +249,13 @@ try {
   assert.equal(fixedInfo.paletteUpdates, 2);
 
   const report = JSON.parse(fs.readFileSync(report4, "utf8"));
-  assert.equal(report.encoder, "native C11");
+  assert.ok(["cpu", "cuda"].includes(report.computeBackend));
+  assert.equal(
+    report.encoder,
+    report.computeBackend === "cuda"
+      ? "native C11 + CUDA"
+      : "native C11",
+  );
   assert.equal(report.threads, 4);
   assert.equal(report.frames, 6);
   assert.equal(report.paletteMode, "active-gop");
