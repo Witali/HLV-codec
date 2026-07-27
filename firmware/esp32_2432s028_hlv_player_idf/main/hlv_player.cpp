@@ -82,6 +82,12 @@ constexpr int kUploadBarBorder = 2;
 constexpr uint16_t kUploadBarBorderColor = 0xffff;
 constexpr uint16_t kUploadBarEmptyColor = 0x2104;
 constexpr uint16_t kUploadBarFillColor = 0x07e0;
+constexpr int kUploadPercentScale = 2;
+constexpr int kUploadPercentY =
+    kUploadBarY - 7 * kUploadPercentScale - 12;
+constexpr int kUploadFilenameScale = 1;
+constexpr int kUploadFilenameY =
+    kUploadBarY + kUploadBarHeight + 12;
 // Five column, seven row glyphs for printable ASCII 0x20 through 0x7e.
 // Bits run from the top row (bit 0) to the bottom row (bit 6).
 constexpr uint8_t kStatusFont[95][5] = {
@@ -380,6 +386,7 @@ uint32_t pending_decode_us = 0;
 uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
+int upload_progress_percent = -1;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
@@ -842,26 +849,26 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
     }
 }
 
-void drawStatusTitle(const char *title) {
-    if (!title || !*title) return;
-    const size_t length = std::min<size_t>(std::strlen(title), 52);
-    const int available_rows = display.rowsPerTransfer();
-    const int scale =
-        length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
+bool drawStatusText(const char *text, int y, int scale) {
+    if (!text || !*text || scale < 1) return false;
+    const size_t maximum_length =
+        static_cast<size_t>((kScreenWidth + scale) / (6 * scale));
+    const size_t length =
+        std::min(std::strlen(text), maximum_length);
     const int glyph_advance = 6 * scale;
     const int width =
         static_cast<int>(length) * glyph_advance - scale;
     const int height = 7 * scale;
     uint16_t *pixels = display.acquireBuffer();
     if (!pixels || width <= 0 || width > kScreenWidth ||
-        height > available_rows) {
-        return;
-    }
+        height > display.rowsPerTransfer() || y < 0 ||
+        y + height > kScreenHeight)
+        return false;
     std::fill_n(pixels, width * height, 0x0000);
 
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
-            static_cast<unsigned char>(title[index]);
+            static_cast<unsigned char>(text[index]);
         if (character < 0x20 || character > 0x7e) character = '?';
         const uint8_t *columns = kStatusFont[character - 0x20];
         const int glyph_x = static_cast<int>(index) * glyph_advance;
@@ -879,8 +886,18 @@ void drawStatusTitle(const char *title) {
         }
     }
     const int x = (kScreenWidth - width) / 2;
-    const int y = (kScreenHeight - height) / 2;
-    if (display.drawBitmap(x, y, width, height, pixels) == ESP_OK) {
+    return display.drawBitmap(x, y, width, height, pixels) == ESP_OK;
+}
+
+void drawStatusTitle(const char *title) {
+    if (!title || !*title) return;
+    const size_t length = std::min<size_t>(std::strlen(title), 52);
+    const int available_rows = display.rowsPerTransfer();
+    const int scale =
+        length * 12U <= kScreenWidth && 14 <= available_rows ? 2 : 1;
+    const int height = 7 * scale;
+    if (drawStatusText(
+            title, (kScreenHeight - height) / 2, scale)) {
         display.flush();
     }
 }
@@ -901,8 +918,9 @@ void showStatus(const char *title, const char *detail = nullptr) {
     }
 }
 
-void beginUploadProgress() {
+void beginUploadProgress(const char *filename) {
     display.clear(0x0000);
+    drawStatusText("0%", kUploadPercentY, kUploadPercentScale);
     uint16_t *pixels = display.acquireBuffer();
     if (!pixels) return;
     for (int y = 0; y < kUploadBarHeight; ++y) {
@@ -920,26 +938,50 @@ void beginUploadProgress() {
                            kUploadBarHeight, pixels) != ESP_OK) {
         ESP_LOGE(kTag, "Could not draw UART upload progress bar");
     }
+    drawStatusText(
+        filename, kUploadFilenameY, kUploadFilenameScale);
+    display.flush();
     upload_progress_pixels = 0;
+    upload_progress_percent = 0;
 }
 
 void updateUploadProgress(uint32_t received, uint32_t total, void *) {
     if (!total) return;
     const int inner_width = kUploadBarWidth - 2 * kUploadBarBorder;
     const int filled = static_cast<int>(
-        (static_cast<uint64_t>(received) * inner_width) / total);
-    if (filled <= upload_progress_pixels) return;
+        std::min<uint64_t>(
+            static_cast<uint64_t>(inner_width),
+            (static_cast<uint64_t>(received) * inner_width) / total));
+    if (filled > upload_progress_pixels) {
+        const int changed = filled - upload_progress_pixels;
+        const int x = kUploadBarX + kUploadBarBorder +
+                      upload_progress_pixels;
+        uint16_t *pixels = display.acquireBuffer();
+        if (pixels) {
+            const int inner_height =
+                kUploadBarHeight - 2 * kUploadBarBorder;
+            std::fill_n(
+                pixels, changed * inner_height,
+                kUploadBarFillColor);
+            if (display.drawBitmap(
+                    x, kUploadBarY + kUploadBarBorder,
+                    changed, inner_height, pixels) == ESP_OK) {
+                upload_progress_pixels = filled;
+            }
+        }
+    }
 
-    const int changed = filled - upload_progress_pixels;
-    const int x = kUploadBarX + kUploadBarBorder +
-                  upload_progress_pixels;
-    uint16_t *pixels = display.acquireBuffer();
-    if (!pixels) return;
-    const int inner_height = kUploadBarHeight - 2 * kUploadBarBorder;
-    std::fill_n(pixels, changed * inner_height, kUploadBarFillColor);
-    if (display.drawBitmap(x, kUploadBarY + kUploadBarBorder,
-                           changed, inner_height, pixels) == ESP_OK) {
-        upload_progress_pixels = filled;
+    const unsigned percent = static_cast<unsigned>(
+        std::min<uint64_t>(
+            100U,
+            (static_cast<uint64_t>(received) * 100U) / total));
+    if (percent != upload_progress_percent) {
+        char text[5]{};
+        std::snprintf(text, sizeof text, "%u%%", percent);
+        if (drawStatusText(
+                text, kUploadPercentY, kUploadPercentScale)) {
+            upload_progress_percent = percent;
+        }
     }
 }
 
@@ -3922,7 +3964,7 @@ extern "C" void app_main(void) {
                 continue;
             }
             closeVideo();
-            beginUploadProgress();
+            beginUploadProgress(upload_request.filename);
             char stored_path[128]{};
             const bool stored = uart_upload.receive(
                 upload_request, player_settings::kVideoDirectory,

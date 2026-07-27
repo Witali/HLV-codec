@@ -152,8 +152,9 @@ characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
 The player finishes the current decode operation, stops video and audio, and
-closes both SD file cursors before acknowledging an upload. The screen shows a
-progress bar during the transfer. Each 60 KiB block has its own CRC32 and is
+closes both SD file cursors before acknowledging an upload. During the transfer
+the screen shows the completion percentage above the progress bar and the
+destination filename below it. Each 60 KiB block has its own CRC32 and is
 acknowledged before the PC sends the next block, so hardware flow control is
 not required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
