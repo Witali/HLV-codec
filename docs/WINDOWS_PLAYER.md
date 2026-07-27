@@ -1,7 +1,7 @@
 # Native Windows HLV/BPV/MPEG-1/H.263 player
 
-`hlvplay.exe` is a dependency-free Windows desktop player for HLV-1, BPV1
-v1 through v6, the constrained MPEG-1/MP2 profile, and the
+`hlvplay.exe` is a dependency-free Windows desktop player for stable HLV v14,
+BPV1 v1 through v7, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
 intra-only baseline `352x288` CIF, and intra-only H.263+ profiles at
 `256x144`, `256x192`, `320x180`, and `320x240`. CIF playback retains the
@@ -10,14 +10,19 @@ codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
 decoded and downmixed into that output format. AMR-NB is decoded from 8 kHz
-mono PCM16 into the same unsigned PCM8 output. HLV/MPEG YUV and decoded BPV
-palette blocks are prepared as NV12 plus BGRA; AVI PCM S16LE is converted
-directly to the same PCM8 output. The GPU performs colour conversion and
-scaling. If D3D11 initialisation or presentation fails, the
-player automatically switches to double-buffered GDI. BPV1 v4-v6 supports
+mono PCM16 into the same unsigned PCM8 output. HLV/MPEG/H.263 YUV is sent to
+D3D11 as NV12. BPV is sent directly as BGRA, preserving the RGB888 palette
+output of v1-v6 and the normative RGB565 output of v7 without an intermediate
+4:2:0 chroma conversion. AVI PCM S16LE is converted directly to the same PCM8
+output. The GPU performs colour conversion where needed and scales every
+format. If D3D11 initialisation or presentation fails, the player automatically
+switches to double-buffered GDI. BPV1 v4-v7 supports
 active per-GOP palettes and PCM_U8 audio; video-only files use the
 high-resolution frame timer without opening audio. BPV1 v6 uses four 2-bit
 block modes, one-byte motion vectors and unified 2/4/7/9-byte RAW records.
+BPV1 v7 additionally decodes pixel-motion frames and RGB565 palettes; its
+dimensions must be multiples of four. Standalone HLV files from versions
+1-13 are intentionally rejected because HLV v14 is the current stable format.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
 New project H.263 assets are restricted to baseline H.263 in AVI at standard
@@ -90,8 +95,10 @@ following the declared frame count.
 
 The window title reports the active presentation path:
 
-- `D3D11 NV12 flip`: NV12 input, GPU colour conversion and a two-buffer flip
-  swap chain.
+- `D3D11 BGRA flip`: direct full-colour BPV input and a two-buffer flip swap
+  chain, without RGB-to-NV12 conversion.
+- `D3D11 NV12 flip`: HLV/MPEG/H.263 NV12 input, GPU colour conversion and a
+  two-buffer flip swap chain.
 - `D3D11 NV12 flip, MPO-capable`: the active output and adapter also report
   NV12 hardware-overlay support. Windows decides dynamically whether a frame
   is promoted to a multiplane overlay.
