@@ -82,7 +82,7 @@ constexpr int kUploadBarBorder = 2;
 constexpr uint16_t kUploadBarBorderColor = 0xffff;
 constexpr uint16_t kUploadBarEmptyColor = 0x2104;
 constexpr uint16_t kUploadBarFillColor = 0x07e0;
-constexpr int kUploadPercentScale = 2;
+constexpr int kUploadPercentScale = 1;
 constexpr int kUploadPercentY =
     kUploadBarY - 7 * kUploadPercentScale - 12;
 constexpr int kUploadFilenameScale = 1;
