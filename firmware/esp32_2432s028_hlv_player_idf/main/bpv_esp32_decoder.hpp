@@ -53,6 +53,18 @@ public:
             decoder_, file, rows_per_strip, acquire, submit, flush,
             opaque, frame);
     }
+    int decodeNextDirectFromInput(
+        BPV1InputRead read, void *input_opaque,
+        uint16_t rows_per_strip,
+        BPV1Rgb565StripAcquire acquire,
+        BPV1Rgb565StripSubmit submit,
+        BPV1Rgb565StripFlush flush, void *output_opaque,
+        const BPV1Frame **frame
+    ) {
+        return bpv1_decoder_decode_next_rgb565_strips_from_input(
+            decoder_, read, input_opaque, rows_per_strip,
+            acquire, submit, flush, output_opaque, frame);
+    }
 
 private:
     BPV1Header header_{};

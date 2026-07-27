@@ -114,9 +114,10 @@ existing file performs a complete sequential C decode:
 .\build\msvc\test_bpv1_decoder.exe .\out\video.bpv1
 ```
 
-For v7 that validation decodes once from contiguous packets and once through
-the 4 KiB refill path, then requires identical reconstructed-frame checksums.
-The test file may contain valid frames much larger than the refill buffer.
+For v7 that validation decodes from contiguous packets, through the FILE-based
+4 KiB refill path, and through the public callback-input path backed by
+257-byte physical reads. All three reconstructed-frame checksums must match.
+The test file may contain valid frames much larger than either refill.
 
 ## Native C encoder
 

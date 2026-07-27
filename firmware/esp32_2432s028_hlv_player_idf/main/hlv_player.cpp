@@ -52,6 +52,14 @@ constexpr size_t kDivx3VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
 constexpr uint32_t kDivx3MaximumMacroblocks = 300;
 constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
+constexpr size_t kBpvVideoReadAheadBytes = 4 * 1024;
+// This capacity is deliberately unrelated to BPV's maximum encoded frame.
+// The decoder consumes sequential spans while CPU1 keeps the ring refilled.
+constexpr size_t kBpvInputRingBytes = 16 * 1024;
+constexpr size_t kBpvInputChunkBytes = 4 * 1024;
+constexpr uint32_t kBpvInputReaderStackBytes = 4096;
+constexpr uint32_t kBpvInputStopTimeoutMs = 500;
+constexpr uint32_t kBpvInputPrerollTimeoutMs = 1000;
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -340,6 +348,12 @@ QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
 TaskHandle_t decode_task_handle = nullptr;
 bool decode_in_flight = false;
+StreamBufferHandle_t bpv_input_stream = nullptr;
+TaskHandle_t bpv_input_reader_task_handle = nullptr;
+uint8_t *bpv_input_chunk = nullptr;
+volatile bool bpv_input_stop_requested = false;
+volatile bool bpv_input_reader_done = true;
+volatile int bpv_input_reader_result = BPV1_OK;
 HLV1Frame pending_frame{};
 bool pending_frame_valid = false;
 plm_frame_t pending_mpeg_frame{};
@@ -597,6 +611,122 @@ void stopDecodeWorker() {
         decode_result_queue = nullptr;
     }
     decode_in_flight = false;
+}
+
+void bpvInputReaderTask(void *) {
+    int result = BPV1_OK;
+    while (!bpv_input_stop_requested) {
+        const size_t count = std::fread(
+            bpv_input_chunk, 1, kBpvInputChunkBytes, video_file);
+        size_t sent = 0;
+        while (sent < count && !bpv_input_stop_requested) {
+            sent += xStreamBufferSend(
+                bpv_input_stream, bpv_input_chunk + sent,
+                count - sent, pdMS_TO_TICKS(20));
+        }
+        if (bpv_input_stop_requested) break;
+        if (count != kBpvInputChunkBytes) {
+            result = std::ferror(video_file)
+                         ? BPV1_ERR_IO
+                         : BPV1_EOF;
+            break;
+        }
+    }
+    bpv_input_reader_result = result;
+    bpv_input_reader_done = true;
+    bpv_input_reader_task_handle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void stopBpvInputPrefetch() {
+    if (!bpv_input_stream && !bpv_input_chunk &&
+        !bpv_input_reader_task_handle) {
+        return;
+    }
+    bpv_input_stop_requested = true;
+    const int64_t deadline =
+        millisNow() + kBpvInputStopTimeoutMs;
+    while (!bpv_input_reader_done && millisNow() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (!bpv_input_reader_done && bpv_input_reader_task_handle) {
+        ESP_LOGW(kTag, "BPV input reader stop timed out; deleting task");
+        vTaskDelete(bpv_input_reader_task_handle);
+        bpv_input_reader_task_handle = nullptr;
+        bpv_input_reader_done = true;
+    }
+    if (bpv_input_stream) {
+        vStreamBufferDelete(bpv_input_stream);
+        bpv_input_stream = nullptr;
+    }
+    heap_caps_free(bpv_input_chunk);
+    bpv_input_chunk = nullptr;
+    bpv_input_reader_result = BPV1_OK;
+}
+
+bool startBpvInputPrefetch() {
+    if (!video_file || bpv_input_stream ||
+        bpv_input_reader_task_handle) {
+        return false;
+    }
+    bpv_input_stream =
+        xStreamBufferCreate(kBpvInputRingBytes, 1);
+    bpv_input_chunk = static_cast<uint8_t *>(
+        heap_caps_malloc(kBpvInputChunkBytes, MALLOC_CAP_8BIT));
+    if (!bpv_input_stream || !bpv_input_chunk) {
+        stopBpvInputPrefetch();
+        return false;
+    }
+    bpv_input_stop_requested = false;
+    bpv_input_reader_done = false;
+    bpv_input_reader_result = BPV1_OK;
+    if (xTaskCreatePinnedToCore(
+            bpvInputReaderTask, "bpv-input-read",
+            kBpvInputReaderStackBytes, nullptr, 2,
+            &bpv_input_reader_task_handle, 1) != pdPASS) {
+        bpv_input_reader_done = true;
+        stopBpvInputPrefetch();
+        return false;
+    }
+    const size_t preroll_bytes = kBpvInputRingBytes / 2;
+    const int64_t deadline =
+        millisNow() + kBpvInputPrerollTimeoutMs;
+    while (xStreamBufferBytesAvailable(bpv_input_stream) <
+               preroll_bytes &&
+           !bpv_input_reader_done && millisNow() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    const size_t prefetched =
+        xStreamBufferBytesAvailable(bpv_input_stream);
+    if (!prefetched &&
+        (bpv_input_reader_done || millisNow() >= deadline)) {
+        stopBpvInputPrefetch();
+        return false;
+    }
+    ESP_LOGI(
+        kTag,
+        "BPV input: fixed %u-byte ring, %u-byte refill, "
+        "%u bytes prefetched, CPU1 reader",
+        static_cast<unsigned>(kBpvInputRingBytes),
+        static_cast<unsigned>(kBpvInputChunkBytes),
+        static_cast<unsigned>(prefetched));
+    return true;
+}
+
+size_t readBpvPrefetchedInput(
+    void *, uint8_t *destination, size_t size
+) {
+    size_t received = 0;
+    while (received < size && bpv_input_stream) {
+        received += xStreamBufferReceive(
+            bpv_input_stream, destination + received,
+            size - received, pdMS_TO_TICKS(20));
+        if (received < size && bpv_input_reader_done &&
+            !xStreamBufferBytesAvailable(bpv_input_stream)) {
+            break;
+        }
+    }
+    return received;
 }
 
 int clamp8(int value) {
@@ -1470,6 +1600,7 @@ void startAudio() {
 void closeVideo() {
     endH263RowPipeline();
     stopDecodeWorker();
+    stopBpvInputPrefetch();
     pending_frame_valid = false;
     pending_mpeg_frame_valid = false;
     pending_divx3_frame = {};
@@ -1772,7 +1903,11 @@ bool openVideo() {
                    ? kDivx3VideoReadAheadBytes
                    : (video_codec == VideoCodec::kH263
                           ? kH263VideoReadAheadBytes
-                          : kVideoReadAheadBytes));
+                          : (video_codec == VideoCodec::kBpv &&
+                                     bpv_file_version >=
+                                         BPV1_PIXEL_MOTION_VERSION
+                                 ? kBpvVideoReadAheadBytes
+                                 : kVideoReadAheadBytes)));
     video_read_ahead = static_cast<uint8_t *>(
         heap_caps_malloc(video_read_ahead_size, MALLOC_CAP_8BIT));
     if (!video_read_ahead) {
@@ -2092,6 +2227,13 @@ bool openVideo() {
                  bpv_header.audio_sample_rate,
                  static_cast<unsigned>(bpv_decoder.memoryBytes()),
                  static_cast<unsigned>(bpv_decoder.packetCapacity()));
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
+            !startBpvInputPrefetch()) {
+            showStatus("BPV input init failed",
+                       "cannot create CPU1 stream buffer");
+            closeVideo();
+            return false;
+        }
         if (bpv_header.version < BPV1_PIXEL_MOTION_VERSION &&
             !startDecodeWorker()) {
             showStatus("Dual-core init failed",
@@ -3492,8 +3634,9 @@ void playOneBpvFrameSequential() {
                 (kScreenWidth - bpv_header.width) / 2,
                 (kScreenHeight - bpv_header.height) / 2};
             const int64_t combined_start = microsNow();
-            decode_result = bpv_decoder.decodeNextDirect(
-                video_file, display.rowsPerTransfer(),
+            decode_result = bpv_decoder.decodeNextDirectFromInput(
+                readBpvPrefetchedInput, nullptr,
+                display.rowsPerTransfer(),
                 acquireBpvDmaStrip, submitBpvDmaStrip,
                 flushBpvDmaStrips, &render_context, &frame);
             const uint32_t combined_us =
@@ -3510,8 +3653,9 @@ void playOneBpvFrameSequential() {
             }
         } else {
             const int64_t decode_start = microsNow();
-            decode_result = bpv_decoder.decodeNextDirect(
-                video_file, display.rowsPerTransfer(),
+            decode_result = bpv_decoder.decodeNextDirectFromInput(
+                readBpvPrefetchedInput, nullptr,
+                display.rowsPerTransfer(),
                 nullptr, nullptr, nullptr, nullptr, &frame);
             decode_us = static_cast<uint32_t>(
                 microsNow() - decode_start);

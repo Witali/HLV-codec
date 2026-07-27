@@ -71,6 +71,7 @@ The current decoder audit is:
 | Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
 | BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
+| BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
 | DivX 3 video | One complete AVI video packet, capped at 96 KiB by the player | Technical debt: make the bit reader refill-aware and let the AVI reader expose a bounded packet span; the optimized VLC prefix path currently accesses contiguous bytes directly |
 | MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
 

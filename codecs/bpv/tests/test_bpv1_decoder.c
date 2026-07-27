@@ -842,11 +842,38 @@ cleanup:
     return result;
 }
 
+typedef struct {
+    FILE *file;
+    size_t refill_size;
+    size_t refill_count;
+} TestChunkedInput;
+
+static size_t test_chunked_input_read(
+    void *opaque, uint8_t *destination, size_t size
+) {
+    TestChunkedInput *input = (TestChunkedInput *)opaque;
+    size_t total = 0;
+    while (total < size) {
+        const size_t remaining = size - total;
+        const size_t chunk =
+            remaining < input->refill_size
+                ? remaining
+                : input->refill_size;
+        const size_t count =
+            fread(destination + total, 1, chunk, input->file);
+        input->refill_count++;
+        total += count;
+        if (count != chunk) break;
+    }
+    return total;
+}
+
 static int validate_file(const char *path) {
     FILE *file = fopen(path, "rb");
     BPV1Header header;
     BPV1Decoder *decoder = NULL;
     uint64_t hash = UINT64_C(1469598103934665603);
+    uint32_t maximum_frame_bytes = 0;
     uint32_t frame_index;
     int result = 1;
     if (!file) {
@@ -863,6 +890,10 @@ static int validate_file(const char *path) {
         const BPV1Frame *frame = NULL;
         size_t index;
         int status = bpv1_decoder_read_packet(decoder, file, &packet);
+        if (status == BPV1_OK &&
+            packet.info.frame_bytes > maximum_frame_bytes) {
+            maximum_frame_bytes = packet.info.frame_bytes;
+        }
         if (status == BPV1_OK)
             status = bpv1_decoder_decode(decoder, &packet, &frame);
         if (status != BPV1_OK || !frame) {
@@ -942,9 +973,72 @@ static int validate_file(const char *path) {
                     (unsigned long long)stream_hash);
             goto cleanup;
         }
+        {
+            BPV1Header callback_header;
+            BPV1Decoder *callback_decoder = NULL;
+            TestChunkedInput input = {file, 257U, 0U};
+            uint64_t callback_hash =
+                UINT64_C(1469598103934665603);
+            if (fseek(file, 0, SEEK_SET) ||
+                bpv1_header_read(file, &callback_header) != BPV1_OK ||
+                !(callback_decoder =
+                      bpv1_decoder_create(&callback_header))) {
+                fprintf(
+                    stderr,
+                    "Cannot initialize callback BPV1 decoder\n");
+                bpv1_decoder_destroy(callback_decoder);
+                goto cleanup;
+            }
+            for (frame_index = 0;
+                 frame_index < callback_header.frame_count;
+                 ++frame_index) {
+                const BPV1Frame *callback_frame = NULL;
+                size_t pixel;
+                const int status =
+                    bpv1_decoder_decode_next_rgb565_strips_from_input(
+                        callback_decoder,
+                        test_chunked_input_read, &input,
+                        8, NULL, NULL, NULL, NULL,
+                        &callback_frame);
+                if (status != BPV1_OK || !callback_frame ||
+                    (!callback_frame->rgb565 &&
+                     !callback_frame->rgb565_rows)) {
+                    fprintf(
+                        stderr,
+                        "Callback frame %u failed: %s\n",
+                        frame_index, bpv1_strerror(status));
+                    bpv1_decoder_destroy(callback_decoder);
+                    goto cleanup;
+                }
+                for (pixel = 0;
+                     pixel < (size_t)callback_frame->width *
+                                 callback_frame->height;
+                     ++pixel) {
+                    callback_hash ^=
+                        test_frame_pixel(callback_frame, pixel);
+                    callback_hash *= UINT64_C(1099511628211);
+                }
+            }
+            bpv1_decoder_destroy(callback_decoder);
+            if (callback_hash != hash) {
+                fprintf(
+                    stderr,
+                    "Contiguous/callback checksum mismatch: "
+                    "%016llx != %016llx\n",
+                    (unsigned long long)hash,
+                    (unsigned long long)callback_hash);
+                goto cleanup;
+            }
+            printf(
+                "BPV1 callback validation: %zu-byte refill, "
+                "%zu refills\n",
+                input.refill_size, input.refill_count);
+        }
     }
-    printf("BPV1 C validation: %ux%u, %u frames, hash %016llx\n",
+    printf("BPV1 C validation: %ux%u, %u frames, "
+           "max frame %u bytes, hash %016llx\n",
            header.width, header.height, header.frame_count,
+           maximum_frame_bytes,
            (unsigned long long)hash);
     result = 0;
 

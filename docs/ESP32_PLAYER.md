@@ -24,10 +24,11 @@ DAC GPIO26.
   bounded strips (16 rows normally, 8 rows for compact H.263 playback),
   without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
-  stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263 and 16 KiB otherwise); HLV then
+  stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263/BPV v7 and 16 KiB otherwise); HLV then
   streams each packet through one reusable 7,680-byte refill buffer, while MJPEG
-  and BPV v1-v6 use bounded maximum-frame packet buffers; BPV v7 instead
-  uses a fixed 4 KiB refill buffer plus its mode map;
+  and BPV v1-v6 use bounded maximum-frame packet buffers; BPV v7 instead uses
+  a fixed 16 KiB CPU1 producer ring, a 4 KiB decoder refill buffer and its
+  mode map;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
   DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
   two 320x8 strips. Other codecs use two 320x16 allocations;
@@ -114,8 +115,8 @@ latency spikes, so the retained default remains 40 MHz.
 ## Dual-core playback mode
 
 `kUseDualCorePipeline` in `main/player_settings.hpp` is enabled in the current
-build. The main task remains pinned to PRO CPU (CPU0) and owns SD reads, RGB565
-conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
+build. The main task remains pinned to PRO CPU (CPU0) and normally owns SD
+reads, RGB565 conversion and display DMA. A 4 KiB worker task pinned to APP CPU (CPU1)
 performs ordered HLV, BPV or MPEG-1 decoding. Two one-entry FreeRTOS queues
 pass a packet descriptor to CPU1 and return a frame descriptor to CPU0; pixel
 data remains in the decoder's two existing predictive frame buffers.
@@ -132,6 +133,11 @@ CPU1 writes the other buffer. BPV uses its two block-record arrays in the same
 way and finishes rendering the preceding frame before a v4 keyframe replaces
 the active palette. Set the flag to `false` to retain the sequential
 comparison mode.
+
+BPV v7 uses CPU1 differently: a dedicated 4 KiB-stack producer is the only
+task that reads its video cursor. It sends 4 KiB chunks into a fixed 16 KiB
+FreeRTOS stream buffer while CPU0 decodes and submits RGB565 strips. The ring
+is recreated on every open and destroyed before the file is closed.
 
 ## Streaming ESP32 decoder
 
@@ -263,6 +269,13 @@ reference-commit durations plus input call/byte counts to the ordinary `F`
 record. `capture-player-metrics.ps1` accepts both the legacy six-value record
 and this extended record, writes the additional columns to CSV and prints each
 BPV category separately.
+
+On the physical board, two identical 300-frame 320x240 30 fps runs with the
+CPU1 input ring averaged 98.0 and 98.3 us in the decoder's input callback,
+about 10,916 us complete decode and 19,396 and 19,384 us total work. Neither
+run had a frame gap, display skip or work interval beyond the 33,333-us frame
+period. The immediately preceding prefetch-free run averaged 6,709 us input,
+16,888 us decode and 25,614 us total work.
 
 For an ESP32-safe MPEG Program Stream:
 

@@ -99,6 +99,8 @@ typedef uint16_t *(*BPV1Rgb565StripAcquire)(
 typedef int (*BPV1Rgb565StripSubmit)(
     void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows);
 typedef int (*BPV1Rgb565StripFlush)(void *opaque);
+typedef size_t (*BPV1InputRead)(
+    void *opaque, uint8_t *destination, size_t size);
 
 typedef uint64_t (*BPV1ProfileClockMicros)(void *opaque);
 
@@ -171,6 +173,17 @@ int bpv1_decoder_decode_next_rgb565_strips(
     BPV1Rgb565StripAcquire acquire, BPV1Rgb565StripSubmit submit,
     BPV1Rgb565StripFlush flush, void *opaque,
     const BPV1Frame **frame);
+/*
+ * Callback-input equivalent used by fixed-capacity ring/stream buffers.
+ * read must block or accumulate as needed and return the requested size;
+ * a short result is reported as BPV1_ERR_IO. Audio bytes are consumed and
+ * discarded through the same sequential callback.
+ */
+int bpv1_decoder_decode_next_rgb565_strips_from_input(
+    BPV1Decoder *decoder, BPV1InputRead read, void *input_opaque,
+    uint16_t rows_per_strip, BPV1Rgb565StripAcquire acquire,
+    BPV1Rgb565StripSubmit submit, BPV1Rgb565StripFlush flush,
+    void *output_opaque, const BPV1Frame **frame);
 
 size_t bpv1_packet_audio_size(const BPV1Packet *packet);
 const uint8_t *bpv1_packet_audio_data(const BPV1Packet *packet);

@@ -59,6 +59,17 @@ packed selector bytes per row. Average complete decode fell from 18,936 to
 then waits longer for the fixed-rate display DMA. The two runs had zero display
 skips and respectively one and zero frames beyond the 33,333-us period.
 
+The retained v7 input path assigns SD reads to a dedicated CPU1 producer. It
+fills a fixed 16 KiB FreeRTOS stream buffer in 4 KiB chunks while CPU0 consumes
+sequential decoder requests; neither capacity depends on the maximum encoded
+frame. Two physical 300-frame runs measured 98.0 and 98.3 us average consumer
+input time, 10,916 us average complete decode, and 19,396 and 19,384 us average
+total work. Both runs decoded all frames without gaps, display skips or work
+beyond the 33,333-us period. The corresponding prefetch-free optimized run
+averaged 6,709 us input, 16,888 us decode and 25,614 us total work. A host
+validator also read the same real stream through 257-byte physical refills and
+matched the contiguous reconstruction hash `93682c11462696bc`.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD
@@ -90,6 +101,9 @@ clock then reached the native 30 fps.
       30 fps with no video gaps or audio underruns.
 - [x] Force a close/reopen through the UART CRC command and validate another
       300 frames at 29.993 fps with no gaps or audio errors.
+- [x] Replace the v7 main-task SD reads with a fixed 16 KiB CPU1 producer ring.
+      Validate packets larger than the decoder's 4 KiB refill against the
+      contiguous path and repeat the physical 300-frame measurement.
 
 ## Remaining work
 
