@@ -303,13 +303,30 @@ static int8_t compact_error_q4(int sum) {
     return compact_yuv420_error_q4(sum);
 }
 
+static void compact_store_luma8_y7(uint8_t *dst, uint8_t *src,
+                                   int *error_sum) {
+    unsigned code[8];
+    for (int i = 0; i < 8; ++i) {
+        unsigned quantized = ((unsigned)src[i] + 1U) >> 1;
+        quantized -= quantized >> 7;
+        code[i] = quantized;
+        *error_sum += (int)src[i] - (int)(quantized << 1);
+        src[i] = (uint8_t)(quantized << 1);
+    }
+    dst[0] = (uint8_t)(code[0] | code[1] << 7);
+    dst[1] = (uint8_t)(code[1] >> 1 | code[2] << 6);
+    dst[2] = (uint8_t)(code[2] >> 2 | code[3] << 5);
+    dst[3] = (uint8_t)(code[3] >> 3 | code[4] << 4);
+    dst[4] = (uint8_t)(code[4] >> 4 | code[5] << 3);
+    dst[5] = (uint8_t)(code[5] >> 5 | code[6] << 2);
+    dst[6] = (uint8_t)(code[6] >> 6 | code[7] << 1);
+}
+
 static void compact_store_luma16(uint8_t *dst, uint8_t *src,
                                  int error_sum[2]) {
-    compact_yuv420_pack_aligned_samples(
-        dst, src, 8, HLV1_V14_LUMA_BITS, &error_sum[0], src);
-    compact_yuv420_pack_aligned_samples(
-        dst + HLV1_V14_LUMA_BITS, src + 8, 8, HLV1_V14_LUMA_BITS,
-        &error_sum[1], src + 8);
+    compact_store_luma8_y7(dst, src, &error_sum[0]);
+    compact_store_luma8_y7(
+        dst + HLV1_V14_LUMA_BITS, src + 8, &error_sum[1]);
 }
 
 static void compact_store_chroma8(uint8_t *dst, uint8_t *src,
