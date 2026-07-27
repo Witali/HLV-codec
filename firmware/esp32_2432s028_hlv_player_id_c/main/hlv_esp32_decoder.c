@@ -14,15 +14,23 @@ int hlv_esp32_decoder_begin(hlv_esp32_decoder_t *decoder,
     size_t packed_frame_bytes;
     size_t correction_frame_bytes;
     size_t compact_work_bytes;
+    size_t compact_ring_bytes;
     size_t selected_frame_bytes;
+    size_t ring_luma_rows;
     if (decoder == NULL || header == NULL) {
         return HLV1_ERR_ARGUMENT;
     }
 
     hlv_esp32_decoder_end(decoder);
-    decoder->decoder = compact_y7_u6_v6
-                           ? hlv1_decoder_create_y7_u6_v6(header)
-                           : hlv1_decoder_create(header);
+    decoder->single_reference =
+        compact_y7_u6_v6 &&
+        header->search_radius <= HLV1_SINGLE_REFERENCE_MAX_RADIUS;
+    decoder->decoder =
+        decoder->single_reference
+            ? hlv1_decoder_create_y7_u6_v6_single_reference(header)
+            : (compact_y7_u6_v6
+                   ? hlv1_decoder_create_y7_u6_v6(header)
+                   : hlv1_decoder_create(header));
     if (decoder->decoder == NULL) {
         ESP_LOGE(k_tag, "Core decoder allocation failed");
         return HLV1_ERR_MEMORY;
@@ -39,11 +47,23 @@ int hlv_esp32_decoder_begin(hlv_esp32_decoder_t *decoder,
         2U * (padded_width / 16U) * (padded_height / 16U);
     compact_work_bytes =
         padded_width * 16U + 2U * (padded_width / 2U) * 8U;
+    ring_luma_rows =
+        padded_height < HLV1_SINGLE_REFERENCE_LUMA_ROWS
+            ? padded_height
+            : HLV1_SINGLE_REFERENCE_LUMA_ROWS;
+    compact_ring_bytes =
+        padded_width * ring_luma_rows * 7U / 8U +
+        2U * (padded_width / 2U) * (ring_luma_rows / 2U) * 6U / 8U +
+        (padded_width / 8U) * (ring_luma_rows / 8U) +
+        2U * (padded_width / 16U) * (ring_luma_rows / 16U);
     selected_frame_bytes =
-        decoder->compact_yuv
-            ? 2U * (packed_frame_bytes + correction_frame_bytes) +
-                  compact_work_bytes
-            : 2U * full_frame_bytes;
+        decoder->single_reference
+            ? packed_frame_bytes + correction_frame_bytes +
+                  compact_ring_bytes + compact_work_bytes
+            : (decoder->compact_yuv
+                   ? 2U * (packed_frame_bytes + correction_frame_bytes) +
+                         compact_work_bytes
+                   : 2U * full_frame_bytes);
     ESP_LOGI(k_tag,
              "Core ready (%s): heap=%u largest=%u, DMA=%u largest-DMA=%u",
              decoder->compact_yuv
@@ -89,6 +109,7 @@ void hlv_esp32_decoder_end(hlv_esp32_decoder_t *decoder) {
     }
     decoder->dma_buffer = false;
     decoder->compact_yuv = false;
+    decoder->single_reference = false;
 }
 
 bool hlv_esp32_decoder_ready(const hlv_esp32_decoder_t *decoder) {
@@ -108,6 +129,19 @@ bool hlv_esp32_decoder_dma_buffer(
 
 bool hlv_esp32_decoder_compact_yuv(const hlv_esp32_decoder_t *decoder) {
     return decoder != NULL && decoder->compact_yuv;
+}
+
+bool hlv_esp32_decoder_single_reference(
+    const hlv_esp32_decoder_t *decoder) {
+    return decoder != NULL && decoder->single_reference;
+}
+
+void hlv_esp32_decoder_set_reference_row_guard(
+    hlv_esp32_decoder_t *decoder,
+    HLV1ReferenceRowGuard guard, void *opaque) {
+    if (decoder == NULL || decoder->decoder == NULL) return;
+    hlv1_decoder_set_reference_row_guard(
+        decoder->decoder, guard, opaque);
 }
 
 int hlv_esp32_decoder_decode_next(hlv_esp32_decoder_t *decoder,

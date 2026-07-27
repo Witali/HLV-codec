@@ -279,6 +279,12 @@ typedef struct HLV1Stats {
 
 typedef struct HLV1Encoder HLV1Encoder;
 typedef struct HLV1Decoder HLV1Decoder;
+typedef void (*HLV1ReferenceRowGuard)(
+    void *opaque, int first_y, int rows);
+enum {
+    HLV1_SINGLE_REFERENCE_MAX_RADIUS = 8,
+    HLV1_SINGLE_REFERENCE_LUMA_ROWS = 32
+};
 
 /** Return a stable human-readable description of an HLV1Result code. */
 const char *hlv1_strerror(int result);
@@ -387,6 +393,19 @@ HLV1Decoder *hlv1_decoder_create(const HLV1Header *header);
  * Expanded and packed decoding reconstruct identical YUV samples.
  */
 HLV1Decoder *hlv1_decoder_create_y7_u6_v6(const HLV1Header *header);
+/**
+ * Create the packed decoder with one complete previous-frame reference and
+ * bounded rolling current rows. Streams must declare a motion search radius
+ * no larger than eight pixels; every decoded vector is validated.
+ */
+HLV1Decoder *hlv1_decoder_create_y7_u6_v6_single_reference(
+    const HLV1Header *header);
+/**
+ * Before progressively replacing old reference rows, call guard so a
+ * concurrent renderer can finish consuming those rows.
+ */
+void hlv1_decoder_set_reference_row_guard(
+    HLV1Decoder *decoder, HLV1ReferenceRowGuard guard, void *opaque);
 void hlv1_decoder_destroy(HLV1Decoder *decoder);
 
 /** Decode one packet.  P-frames require a successfully decoded reference. */
