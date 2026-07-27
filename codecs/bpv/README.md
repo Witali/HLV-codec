@@ -39,7 +39,9 @@ previous frame. Palette equality is deliberately irrelevant and the decoder
 does no nearest-color search. On ESP32 the compressed current frame expands
 straight into two alternating eight-row SPI buffers; each completed buffer
 progressively replaces rows of the previous reference once the seven-pixel
-motion radius can no longer reach them. The production encoder includes
+motion radius can no longer reach them. At each keyframe the decoder converts
+the file's RGB888 palette once into a 2 KiB table of 1024 RGB565 values, so
+RAW and dictionary pixels need only an indexed `uint16_t` load. The production encoder includes
 RGB565 reconstruction error in the ordinary RD decision and emits v7 only
 with `--pixel-motion`; all wrappers remain on stable v6 unless `-PixelMotion`
 is supplied. v7 dimensions must be multiples of four.

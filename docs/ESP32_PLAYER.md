@@ -251,7 +251,10 @@ buffer has been displayed and its rows are outside the ±7 motion window, it is
 copied in-place over the corresponding rows of the previous reference and
 reused. The RGB565 reference itself is allocated in independent eight-row
 pages so ESP32 never needs a contiguous 153.6 KiB heap block. No current RGB
-framebuffer or decoder-side color search is needed.
+framebuffer or decoder-side color search is needed. The RGB888 active palette
+is converted once per keyframe into a 2 KiB RGB565 lookup table. RAW and block
+dictionary reconstruction then reads ready-to-display `uint16_t` values
+instead of converting every output pixel.
 
 For an ESP32-safe MPEG Program Stream:
 

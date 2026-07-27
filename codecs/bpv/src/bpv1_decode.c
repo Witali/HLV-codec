@@ -39,6 +39,7 @@ typedef struct {
 struct BPV1Decoder {
     BPV1Header header;
     BPV1Frame frame;
+    uint16_t *palette_rgb565;
     uint8_t *previous;
     uint8_t *current;
     uint16_t **pixel_reference_rows;
@@ -397,8 +398,21 @@ static inline uint16_t decode_rgb888_to_rgb565(const uint8_t *color) {
                       (color[2] >> 3));
 }
 
+static void rebuild_rgb565_palette(BPV1Decoder *decoder) {
+    const size_t color_count =
+        (size_t)decoder->header.palette_count *
+        BPV1_COLORS_PER_PALETTE;
+    size_t color;
+    if (!decoder->palette_rgb565) return;
+    for (color = 0; color < color_count; ++color) {
+        decoder->palette_rgb565[color] =
+            decode_rgb888_to_rgb565(
+                decoder->header.palette + color * 3U);
+    }
+}
+
 static void record_to_rgb565(
-    const BPV1Header *header,
+    const BPV1Decoder *decoder,
     const uint8_t record[BPV1_RECORD_BYTES],
     uint16_t *destination,
     size_t stride
@@ -414,8 +428,7 @@ static void record_to_rgb565(
             const size_t color =
                 palette_base + record_pixel_color(record, pixel);
             destination[(size_t)y * stride + x] =
-                decode_rgb888_to_rgb565(
-                    header->palette + color * 3U);
+                decoder->palette_rgb565[color];
         }
     }
 }
@@ -778,6 +791,9 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
             }
         }
         decoder->pixel_rows = (uint16_t *)malloc(row_storage);
+        decoder->palette_rgb565 = (uint16_t *)malloc(
+            (size_t)header->palette_count *
+            BPV1_COLORS_PER_PALETTE * sizeof(uint16_t));
         decoder->mode_capacity = mode_bytes;
         decoder->stream_capacity = BPV1_STREAM_REFILL_BYTES;
         decoder->mode_map =
@@ -815,7 +831,7 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
              ? (!decoder->pixel_reference_rows ||
                 !decoder->pixel_reference_rows[
                     decoder->pixel_reference_row_count - 1U] ||
-                !decoder->pixel_rows)
+                !decoder->pixel_rows || !decoder->palette_rgb565)
                  || !decoder->mode_map || !decoder->stream_data
              : (!decoder->previous || !decoder->current)) ||
         (header->version < BPV1_PIXEL_MOTION_VERSION &&
@@ -827,6 +843,7 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
         return NULL;
     }
     decoder->header = *header;
+    rebuild_rgb565_palette(decoder);
     decoder->block_bytes = block_bytes;
     decoder->frame.width = header->width;
     decoder->frame.height = header->height;
@@ -843,6 +860,9 @@ BPV1Decoder *bpv1_decoder_create(const BPV1Header *header) {
                                            sizeof(uint16_t *) +
                                        decoder->pixel_row_bytes *
                                            decoder->pixel_row_slots +
+                                       (size_t)header->palette_count *
+                                           BPV1_COLORS_PER_PALETTE *
+                                           sizeof(uint16_t) +
                                        decoder->mode_capacity +
                                        decoder->stream_capacity
                                  : block_bytes * 2U) +
@@ -866,6 +886,7 @@ void bpv1_decoder_destroy(BPV1Decoder *decoder) {
     }
     free(decoder->pixel_reference_rows);
     free(decoder->pixel_rows);
+    free(decoder->palette_rgb565);
     free(decoder->mode_map);
     free(decoder->stream_data);
     free(decoder->packet_data);
@@ -1010,7 +1031,7 @@ static int decode_pixel_motion_frame(
                 &decoder->blocks, dictionary_index);
             if (!record) return BPV1_ERR_DECODE;
             record_to_rgb565(
-                &decoder->header, record, destination,
+                decoder, record, destination,
                 decoder->pixel_stride);
         } else if (mode == MODE_PATTERN_DICTIONARY) {
             uint8_t record[BPV1_RECORD_BYTES];
@@ -1020,7 +1041,7 @@ static int decode_pixel_motion_frame(
                 return BPV1_ERR_DECODE;
             }
             record_to_rgb565(
-                &decoder->header, record, destination,
+                decoder, record, destination,
                 decoder->pixel_stride);
             dictionary_add_unique(&decoder->blocks, record);
         } else {
@@ -1224,7 +1245,7 @@ static int decode_stream_pixel_block(
             &decoder->blocks, read_u16(packed));
         if (!record) return BPV1_ERR_DECODE;
         record_to_rgb565(
-            &decoder->header, record, destination, stride);
+            decoder, record, destination, stride);
     } else if (mode == MODE_PATTERN_DICTIONARY) {
         uint8_t packed[BPV1_PACKED_RECORD_BYTES];
         uint8_t record[BPV1_RECORD_BYTES];
@@ -1248,7 +1269,7 @@ static int decode_stream_pixel_block(
             return BPV1_ERR_DECODE;
         }
         record_to_rgb565(
-            &decoder->header, record, destination, stride);
+            decoder, record, destination, stride);
         dictionary_add_unique(&decoder->blocks, record);
     } else {
         return BPV1_ERR_DECODE;
@@ -1311,7 +1332,7 @@ static int decode_pixel_block(
         record = dictionary_entry(&decoder->blocks, dictionary_index);
         if (!record) return BPV1_ERR_DECODE;
         record_to_rgb565(
-            &decoder->header, record, destination, stride);
+            decoder, record, destination, stride);
     } else if (mode == MODE_PATTERN_DICTIONARY) {
         uint8_t record[BPV1_RECORD_BYTES];
         if (decode_v6_raw(
@@ -1320,7 +1341,7 @@ static int decode_pixel_block(
             return BPV1_ERR_DECODE;
         }
         record_to_rgb565(
-            &decoder->header, record, destination, stride);
+            decoder, record, destination, stride);
         dictionary_add_unique(&decoder->blocks, record);
     } else {
         return BPV1_ERR_DECODE;
@@ -1359,6 +1380,7 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
     }
     if (palette_bytes) {
         memcpy(decoder->header.palette, packet->data, palette_bytes);
+        rebuild_rgb565_palette(decoder);
     }
     modes = packet->data + palette_bytes;
     cursor = modes + packet->info.mode_bytes;
@@ -1586,8 +1608,10 @@ int bpv1_decoder_decode_rgb565_strips(
         packet->info.mode_bytes > packet->size - palette_bytes) {
         return BPV1_ERR_DECODE;
     }
-    if (palette_bytes)
+    if (palette_bytes) {
         memcpy(decoder->header.palette, packet->data, palette_bytes);
+        rebuild_rgb565_palette(decoder);
+    }
     modes = packet->data + palette_bytes;
     cursor = modes + packet->info.mode_bytes;
     payload_end = packet->data + packet->size;
@@ -1735,6 +1759,7 @@ int bpv1_decoder_decode_next_rgb565_strips(
         read_exact(file, decoder->header.palette, palette_bytes)) {
         return BPV1_ERR_IO;
     }
+    if (palette_bytes) rebuild_rgb565_palette(decoder);
     if (read_exact(file, decoder->mode_map, info.mode_bytes))
         return BPV1_ERR_IO;
     payload_bytes =

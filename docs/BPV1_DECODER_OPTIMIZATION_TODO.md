@@ -32,6 +32,16 @@ us of work. v7 now uses a 4 KiB refill buffer, a paged previous RGB565 frame
 and two alternating eight-row display buffers; v6 retains its faster
 dual-core compact-frame pipeline.
 
+Caching all 1024 active palette colors as RGB565 once per keyframe reduced
+median sequential refill/decode time over three identical physical-board runs
+from 20,593 to 19,014 us (7.7%). Median total work fell from 27,023 to
+26,228 us (2.9%), and frames exceeding the 33,333-us period fell from 51 to
+36 out of 300. All three runs decoded 300/300 frames without gaps or display
+skips. Display-callback time rose because the faster CPU path reaches the two
+fixed-rate SPI/DMA buffers earlier and waits for an outstanding transfer;
+that wait shifts between timing categories rather than representing extra
+RGB565 conversion.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD
