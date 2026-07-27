@@ -461,51 +461,60 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         }
         if (!fx) {
             int round = denominator >> 1;
+            uint8_t *top = top_samples;
+            uint8_t *bottom = bottom_samples;
+            hlv1_frame_unpack_corrected_samples(
+                packed_base + by * packed_stride,
+                bx, by, packed_bits,
+                correction_base, correction_stride,
+                top, w);
             for (int yy = 0; yy < h; ++yy) {
                 uint8_t *out = dst + yy * dst_stride;
-                hlv1_frame_unpack_corrected_samples(
-                    packed_base + (by + yy) * packed_stride,
-                    bx, by + yy, packed_bits,
-                    correction_base, correction_stride,
-                    top_samples, w);
                 hlv1_frame_unpack_corrected_samples(
                     packed_base + (by + yy + 1) * packed_stride,
                     bx, by + yy + 1, packed_bits,
                     correction_base, correction_stride,
-                    bottom_samples, w);
+                    bottom, w);
                 for (int xx = 0; xx < w; ++xx) {
                     out[xx] = (uint8_t)(
-                        (top_samples[xx] * inv_y +
-                         bottom_samples[xx] * fy + round) >>
+                        (top[xx] * inv_y +
+                         bottom[xx] * fy + round) >>
                         denominator_shift);
                 }
+                uint8_t *swap = top;
+                top = bottom;
+                bottom = swap;
             }
             return;
         }
         int round = (denominator * denominator) >> 1;
         unsigned bilinear_shift = denominator_shift * 2U;
+        uint8_t *top = top_samples;
+        uint8_t *bottom = bottom_samples;
+        hlv1_frame_unpack_corrected_samples(
+            packed_base + by * packed_stride,
+            bx, by, packed_bits,
+            correction_base, correction_stride,
+            top, row_samples);
         for (int yy = 0; yy < h; ++yy) {
             uint8_t *out = dst + yy * dst_stride;
             hlv1_frame_unpack_corrected_samples(
-                packed_base + (by + yy) * packed_stride,
-                bx, by + yy, packed_bits,
+                packed_base + (by + yy + 1) * packed_stride,
+                bx, by + yy + 1, packed_bits,
                 correction_base, correction_stride,
-                top_samples, row_samples);
-            if (fy) {
-                hlv1_frame_unpack_corrected_samples(
-                    packed_base + (by + yy + 1) * packed_stride,
-                    bx, by + yy + 1, packed_bits,
-                    correction_base, correction_stride,
-                    bottom_samples, row_samples);
-            }
+                bottom, row_samples);
             for (int xx = 0; xx < w; ++xx) {
-                int top_left = top_samples[xx];
-                int top = top_left * inv_x + top_samples[xx + 1] * fx;
-                int bottom = bottom_samples[xx] * inv_x +
-                             bottom_samples[xx + 1] * fx;
-                out[xx] = (uint8_t)((top * inv_y + bottom * fy + round) >>
-                                    bilinear_shift);
+                int top_value =
+                    top[xx] * inv_x + top[xx + 1] * fx;
+                int bottom_value =
+                    bottom[xx] * inv_x + bottom[xx + 1] * fx;
+                out[xx] = (uint8_t)(
+                    (top_value * inv_y + bottom_value * fy + round) >>
+                    bilinear_shift);
             }
+            uint8_t *swap = top;
+            top = bottom;
+            bottom = swap;
         }
         return;
     }
