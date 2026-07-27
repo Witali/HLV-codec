@@ -423,6 +423,15 @@ static uint16_t *pixel_reference_row(
     return decoder->pixel_reference_rows[y];
 }
 
+static inline void copy_rgb565_block_row(
+    uint16_t *destination, const uint16_t *source
+) {
+    destination[0] = source[0];
+    destination[1] = source[1];
+    destination[2] = source[2];
+    destination[3] = source[3];
+}
+
 static unsigned popcount16(uint16_t value) {
     unsigned count = 0;
     while (value) {
@@ -1080,14 +1089,13 @@ static int decode_pixel_motion_frame(
             unsigned row;
             if (!decoder->has_previous) return BPV1_ERR_DECODE;
             for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-                memcpy(
+                copy_rgb565_block_row(
                     destination + (size_t)row *
                                       decoder->pixel_stride,
                     pixel_reference_row(
                         decoder,
                         block_y * BPV1_BLOCK_SIZE + row) +
-                        (size_t)block_x * BPV1_BLOCK_SIZE,
-                    BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                        (size_t)block_x * BPV1_BLOCK_SIZE);
             }
         } else if (mode == MODE_MOTION) {
             int motion_x;
@@ -1116,13 +1124,12 @@ static int decode_pixel_motion_frame(
                 return BPV1_ERR_DECODE;
             }
             for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-                memcpy(
+                copy_rgb565_block_row(
                     destination + (size_t)row *
                                       decoder->pixel_stride,
                     pixel_reference_row(
                         decoder, (uint32_t)source_y + row) +
-                        (size_t)source_x,
-                    BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                        (size_t)source_x);
             }
         } else if (mode == MODE_BLOCK_DICTIONARY) {
             const uint8_t *record;
@@ -1308,13 +1315,12 @@ static int decode_stream_pixel_block(
         unsigned row;
         if (!decoder->has_previous) return BPV1_ERR_DECODE;
         for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-            memcpy(
+            copy_rgb565_block_row(
                 destination + (size_t)row * stride,
                 pixel_reference_row(
                     decoder,
                     block_y * BPV1_BLOCK_SIZE + row) +
-                    (size_t)block_x * BPV1_BLOCK_SIZE,
-                BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                    (size_t)block_x * BPV1_BLOCK_SIZE);
         }
     } else if (mode == MODE_MOTION) {
         uint8_t packed;
@@ -1339,12 +1345,11 @@ static int decode_stream_pixel_block(
             return BPV1_ERR_DECODE;
         }
         for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-            memcpy(
+            copy_rgb565_block_row(
                 destination + (size_t)row * stride,
                 pixel_reference_row(
                     decoder, (uint32_t)source_y + row) +
-                    (size_t)source_x,
-                BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                    (size_t)source_x);
         }
     } else if (mode == MODE_BLOCK_DICTIONARY) {
         uint8_t packed[2];
@@ -1397,13 +1402,12 @@ static int decode_pixel_block(
         unsigned row;
         if (!decoder->has_previous) return BPV1_ERR_DECODE;
         for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-            memcpy(
+            copy_rgb565_block_row(
                 destination + (size_t)row * stride,
                 pixel_reference_row(
                     decoder,
                     block_y * BPV1_BLOCK_SIZE + row) +
-                    (size_t)block_x * BPV1_BLOCK_SIZE,
-                BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                    (size_t)block_x * BPV1_BLOCK_SIZE);
         }
     } else if (mode == MODE_MOTION) {
         int motion_x;
@@ -1426,12 +1430,11 @@ static int decode_pixel_block(
             return BPV1_ERR_DECODE;
         }
         for (row = 0; row < BPV1_BLOCK_SIZE; ++row) {
-            memcpy(
+            copy_rgb565_block_row(
                 destination + (size_t)row * stride,
                 pixel_reference_row(
                     decoder, (uint32_t)source_y + row) +
-                    (size_t)source_x,
-                BPV1_BLOCK_SIZE * sizeof(uint16_t));
+                    (size_t)source_x);
         }
     } else if (mode == MODE_BLOCK_DICTIONARY) {
         const uint8_t *record;
