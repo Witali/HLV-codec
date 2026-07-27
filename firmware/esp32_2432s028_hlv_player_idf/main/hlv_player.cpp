@@ -864,8 +864,9 @@ bool drawStatusText(const char *text, int y, int scale) {
         height > display.rowsPerTransfer() || y < 0 ||
         y + height > kScreenHeight)
         return false;
-    std::fill_n(pixels, width * height, 0x0000);
+    std::fill_n(pixels, kScreenWidth * height, 0x0000);
 
+    const int text_x = (kScreenWidth - width) / 2;
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
             static_cast<unsigned char>(text[index]);
@@ -877,16 +878,17 @@ bool drawStatusText(const char *text, int y, int scale) {
                 if (!(columns[source_x] & (1U << source_y))) continue;
                 for (int dy = 0; dy < scale; ++dy) {
                     for (int dx = 0; dx < scale; ++dx) {
-                        pixels[(source_y * scale + dy) * width +
-                               glyph_x + source_x * scale + dx] =
+                        pixels[(source_y * scale + dy) * kScreenWidth +
+                               text_x + glyph_x +
+                               source_x * scale + dx] =
                             0xffff;
                     }
                 }
             }
         }
     }
-    const int x = (kScreenWidth - width) / 2;
-    return display.drawBitmap(x, y, width, height, pixels) == ESP_OK;
+    return display.drawBitmap(
+               0, y, kScreenWidth, height, pixels) == ESP_OK;
 }
 
 void formatUploadProgress(
