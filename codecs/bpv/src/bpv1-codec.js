@@ -268,6 +268,9 @@
             const packed = readU8(bytes, offset++);
             dx = signedNibble(packed >>> 4);
             dy = signedNibble(packed & 15);
+            if (dx === -8 || dy === -8) {
+              throw new RangeError("Invalid BPV1 v6 motion vector");
+            }
           } else {
             dx = readI8(bytes, offset++);
             dy = readI8(bytes, offset++);

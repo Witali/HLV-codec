@@ -227,6 +227,11 @@ function walkFrames(input, onFrame) {
         const dy = motionBytes === 1
           ? readSignedNibble(bytes[offset] & 15)
           : readI8(bytes, offset + 1);
+        if (motionBytes === 1 && (dx === -8 || dy === -8)) {
+          throw new RangeError(
+            `Invalid v6 motion vector at ${frameIndex}:${blockIndex}`,
+          );
+        }
         offset += motionBytes;
         const bx = blockIndex % blocksX;
         const by = Math.floor(blockIndex / blocksX);
@@ -786,9 +791,10 @@ module.exports = {
     LEGACY_VERSION,
     MODE_BLOCK_DICT,
     MODE_MOTION,
-    MODE_PATTERN_DICT,
-    MODE_RAW,
-    MODE_RAW_DIRECT,
+    MODE_RAW: MODE_PATTERN_DICT,
+    LEGACY_MODE_PATTERN_DICT: MODE_PATTERN_DICT,
+    LEGACY_MODE_RAW: MODE_RAW,
+    LEGACY_MODE_RAW_DIRECT: MODE_RAW_DIRECT,
     MODE_SKIP,
     PALETTE_COUNT,
     RECORD_BYTES,

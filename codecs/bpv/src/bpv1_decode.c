@@ -833,6 +833,8 @@ int bpv1_decoder_decode(BPV1Decoder *decoder, const BPV1Packet *packet,
             if (motion_bytes == 1U) {
                 motion_x = signed_nibble(cursor[0] >> 4);
                 motion_y = signed_nibble(cursor[0] & 15U);
+                if (motion_x == -8 || motion_y == -8)
+                    return BPV1_ERR_DECODE;
             } else {
                 motion_x = (int)(int8_t)cursor[0];
                 motion_y = (int)(int8_t)cursor[1];
