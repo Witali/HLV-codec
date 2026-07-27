@@ -129,15 +129,20 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 - [x] Measure row-guard wait time separately from prediction, residual,
       packing and input time.
-- [ ] Test a render-ahead watermark:
+- [x] Test a render-ahead watermark:
   - render at least the first 16 source rows before CPU1 starts decoding the
     next frame;
   - continue rendering the remaining rows concurrently;
   - keep the row guard as a correctness backstop for later CPU0 stalls;
   - reject the scheduling change if complete physical work or observed rate
     improves by less than 0.5%.
-- [ ] Replace the yielding row-guard spin with a task notification only if
-      measured wait time remains significant after render-ahead.
+  It removed guard stalls and reduced decoder time, but serialized the
+  `beginPresentation()` audio-clock wait ahead of CPU1 decode and reduced
+  actual throughput. The source change was removed.
+- [x] Re-evaluate replacing the yielding row-guard spin with a task
+      notification. With the watermark the guard averaged only 10 us, and
+      without it the median remains 10 us; notification complexity is not
+      justified for rare A/V scheduling stalls.
 
 ## Phase 2: packed prediction and reconstruction
 
@@ -193,11 +198,10 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Current priority order
 
-1. 16-row render-ahead for one-reference `320x240`;
-2. fixed-denominator packed prediction kernels;
-3. fused prediction/residual/packing;
-4. fused display unpack/Q4/RGB565;
-5. inverse-WHT and encoder decode-cost experiments.
+1. fixed-denominator packed prediction kernels;
+2. fused prediction/residual/packing;
+3. fused display unpack/Q4/RGB565;
+4. inverse-WHT and encoder decode-cost experiments.
 
 At `320x240`, 30 fps requires both decode and render wall time below 33.3 ms.
 The current approximately 68.4 ms decode and 34.1 ms render measurements mean
@@ -239,6 +243,7 @@ These experiments were already below the acceptance threshold or regressed:
 - duplicated version-specific mode parsing.
 - 8 KiB asynchronous direct-VFS HLV double bank on CPU0 at reader priority 1
   or 2.
+- 16-row HLV render-ahead before `beginPresentation()` completes.
 
 ## Results
 
@@ -257,6 +262,7 @@ These experiments were already below the acceptance threshold or regressed:
 | Opt-in current-C99 stage profiler | release build unchanged; every timer read compiled out with default `HLV1_STAGE_PROFILE=OFF` | 30-frame 320x240 hash `93531122144bec97`; 58,551-byte packet through 7,680-byte refill | 120 frames, no gaps/audio errors; input 35.686 of 68.291 ms decode; row guard 4.004 ms average, 10 us median | release unchanged | retained diagnostic |
 | Adaptive dual references through padded 320x192 | full 3,358-frame dual/single hashes agree | identical 30-frame 320x180 hash `a59ea6feba53a6dc`; 2,385,648 dual vs 2,404,625 single cycles (-0.79%); 320x240 remains single with hash `93531122144bec97` | three-run median at 320x180: decode 60.396 -> 54.968 ms (-8.99%), work 86.732 -> 81.728 ms (-5.77%), observed 16.664 -> 17.508 fps, skips 22 -> 20; final release test decoded 300 consecutive frames with no gaps/audio errors at 54.622 ms decode and 81.429 ms work | +65,200 bytes at padded 320x192; 320x240 remains 118,520 bytes; +64-byte app image, IRAM unchanged | retained |
 | Fixed 8 KiB async zero-copy double bank, 4 KiB direct VFS reads | experimental 113-byte span path preserved full 3,358-frame hash `7ff021b48acfe095` | not applicable; QEMU does not model SD/task scheduling | priority 2 preliminary run: input 14.568 ms and decode 41.346 ms, but render 40.516 ms and work 81.862 ms (+0.16%), skips 22; priority 1 three-run median: decode 59.130 ms (+7.57%), work 86.073 ms (+5.32%), observed 15.967 fps, skips 24; no gaps/audio errors | compressed buffers -15,872 bytes, but reader stack and queues reduce net saving to about 11 KiB | rejected; source removed |
+| Render first 16 rows before starting next single-reference decode | unchanged full decoder hashes | not applicable; player scheduling is not exercised | strict three-run 320x240 A/B: decode 68.745 -> 64.448 ms (-6.25%), work 102.871 -> 98.565 ms (-4.19%), row guard 4.246 ms -> 10 us and skips 23 -> 22, but observed rate 14.673 -> 14.000 fps (-4.59%) because the audio-clock wait moved ahead of decode | unchanged | rejected; source removed |
 | 32 KiB instead of 16 KiB stdio read-ahead | not applicable | not applicable | two-run average decode 67.724 ms, about -0.9%; input only -0.5% | +16,384 bytes | rejected; wrong speed/RAM trade-off |
 | Remove stdio read-ahead, retain `_IONBF` `fread` | not applicable | not applicable | input 732.399 ms, decode 761.522 ms | -16,384 bytes | rejected; severe regression |
 | Remove stdio read-ahead, direct ESP VFS `read` | not applicable | not applicable | input 42.311 ms, decode 74.348 ms (+8.8%) | -16,384 bytes | rejected; speed regression |
