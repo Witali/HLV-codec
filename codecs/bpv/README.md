@@ -2,7 +2,7 @@
 
 BPV1 is the BPAL-derived experimental codec supplied for the multi-codec
 laboratory. This package contains a bounded-memory, multi-threaded C11 encoder,
-a portable streaming C decoder, the version 5 JavaScript reference
+a portable streaming C decoder, the version 6 JavaScript reference
 implementation, automatic active 64-palette training, rate-distortion block
 selection, strict stream inspection, Y4M command-line adapters, and tests.
 
@@ -12,20 +12,20 @@ The common video profile uses:
 - 64 shared palettes with 16 RGB888 colors each;
 - one to four canonical local colors with an adaptive 0/1/2-bit pixel pattern,
   or five to sixteen direct 4-bit palette indices;
-- `SKIP`, exact block motion, full-block dictionary, pattern dictionary and
-  raw block modes;
+- four 2-bit modes: `SKIP`, exact block motion, full-block dictionary and
+  unified raw blocks;
 - periodic keyframes that reset prediction and dictionaries;
 - encoder-side selection by `J = RGB SSE + lambda * estimated payload bits`.
 
-BPV1 v5 trains and transmits an active 64x16 palette bank in every keyframe.
+BPV1 v6 trains and transmits an active 64x16 palette bank in every keyframe.
 Each GOP can therefore replace colors that are no longer useful for the
-current scene. RAW blocks use adaptive 2/4/7/7-byte records for one through
-four local colors. Blocks using five through sixteen colors use one
-9-byte `RAW_DIRECT` record, while pattern-dictionary blocks pack their 4-bit
-local indices. Direct records can be reused by skip, motion and the full-block
-dictionary. It retains v3 interleaved unsigned 8-bit mono PCM. The decoder
-also accepts v1 through v4 streams and earlier v5 streams without the direct
-mode. See
+current scene. Unified RAW blocks use 2/4/7-byte records for one color, two
+colors or four local slots; a three-color source block uses the fixed
+four-slot 7-byte form. Blocks using five through sixteen colors use one
+9-byte direct record selected by the same RAW tag. Motion vectors pack signed
+4-bit block offsets into one byte. Direct records can be reused by skip,
+motion and the full-block dictionary. It retains v3 interleaved unsigned
+8-bit mono PCM. The decoder also accepts v1 through v5 streams. See
 [BPV1_FORMAT_ru.md](BPV1_FORMAT_ru.md) for the byte-level format and
 [RATE_DISTORTION_ru.md](RATE_DISTORTION_ru.md) for the RD rule. The
 multi-video v4/v5 comparison is recorded in
@@ -46,7 +46,7 @@ or:
 npm --prefix codecs/bpv test
 ```
 
-The suite covers v2 round-trip, legacy v1 decoding, automatic palette
+The suite covers v6 round-trip, legacy v1/v5 decoding, automatic palette
 training, RD selection, command-line Y4M round-trip and truncated-stream
 rejection.
 
@@ -63,8 +63,8 @@ On a POSIX C11 host:
 make -C codecs/bpv test-c
 ```
 
-The native test covers all six block modes, both direct color-count classes,
-malformed direct records and row rendering. Passing an
+The native test covers all four v6 block modes, all four RAW subformats,
+legacy v1-v5 decoding, malformed direct records and row rendering. Passing an
 existing file performs a complete sequential C decode:
 
 ```powershell
@@ -120,7 +120,7 @@ node codecs/bpv/tools/bpv1superpalette.js output.bpv1 \
 
 The native encoder's `--active-palette-file FILE` option is an experimental
 test hook. `FILE` contains one consecutive 3,072-byte RGB888 bank for each
-GOP. The encoder uses those banks while writing ordinary BPV1 v5, which
+GOP. The encoder uses those banks while writing ordinary BPV1 v6, which
 allows controlled A/B tests without adding a production format version. The
 completed experiment and rejection measurements are recorded in
 [`../../docs/BPV1_SUPERPALETTE_TODO.md`](../../docs/BPV1_SUPERPALETTE_TODO.md).
@@ -131,7 +131,7 @@ the normalized RGBA sequence in host memory. The command-line decoder does
 not retain decoded frames: it keeps compact 9-byte block records and renders
 one frame at a time.
 
-The encoder always writes v5. `--fixed-palettes` trains one global bank and
+The encoder always writes v6. `--fixed-palettes` trains one global bank and
 repeats it in each keyframe so every GOP remains independently decodable.
 Short PCM inputs are padded with unsigned silence (`128`), and trailing
 samples beyond the video duration are ignored.
@@ -148,7 +148,7 @@ On ESP32, put the `.bpv1` file and a `play.txt` containing its base filename
 in `/HLV` on the microSD card. The decoder expands adaptive file records into
 two simple 9-byte block-record frames and renders RGB565 rows directly into
 the display's existing DMA strips. A 320x240 keyframe has a conservative
-48,072-byte packet bound when every block is `RAW_DIRECT`; ordinary adaptive
+47,472-byte packet bound when every block uses direct RAW; ordinary adaptive
 RAW records remain shorter. It uses the same PCM_U8 DAC/audio-clock pipeline
 as HLV; files without audio remain timer-clocked.
 

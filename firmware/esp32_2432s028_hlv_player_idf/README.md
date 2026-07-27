@@ -3,9 +3,9 @@
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
 application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
-MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v5
-with PCM_U8 audio, active per-GOP palettes, adaptive RAW and direct 5–16-color
-blocks, and the constrained MPEG-1 Video/MP2 profile up to 320x240. It also
+MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v6
+with PCM_U8 audio, active per-GOP palettes and unified RAW blocks, and the
+constrained MPEG-1 Video/MP2 profile up to 320x240. It also
 supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
 intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
@@ -70,7 +70,7 @@ The current decoder audit is:
 | MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
 | Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
-| BPV v1-v5 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
+| BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
 | DivX 3 video | One complete AVI video packet, capped at 96 KiB by the player | Technical debt: make the bit reader refill-aware and let the AVI reader expose a bounded packet span; the optimized VLC prefix path currently accesses contiguous bytes directly |
 | MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
 
@@ -112,7 +112,7 @@ BPV1 uses the same upload path:
 
 ```powershell
 .\upload-video.ps1 -Port COM8 `
-    -File ..\..\out\BigBuckBunny_320x180_24fps_BPVv5_35dB.bpv1 `
+    -File ..\..\out\BPV\BigBuckBunny_1080p_bpv1_v6_four-mode_lambda64_normalized_native-fps_320x180.bpv1 `
     -Name bunny.bpv1
 Set-Content play.txt "bunny.bpv1" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt

@@ -59,7 +59,7 @@ clock then reached the native 30 fps.
 ### 1. Separate RGB conversion from display waiting
 
 - [x] Measure CPU conversion separately from SPI/DMA buffer waiting.
-- [x] A/B test a 64x16 RGB565 table. BPV v4/v5 rebuild the 2 KiB table only
+- [x] A/B test a 64x16 RGB565 table. BPV v4-v6 rebuild the 2 KiB table only
       when a keyframe replaces the active palette.
 - [x] Preserve the portable RGB24 path used by the Windows player and tests.
 
@@ -90,8 +90,8 @@ is unchanged. All 900 frames play without gaps or audio errors. The cost is
       hash the old value again.
 - [ ] Specialize or unroll hashing and equality checks for the fixed 4-byte
       pattern and 9-byte block records.
-- [ ] Add per-mode counters and cycle measurements for `SKIP`, `MOTION`,
-      block-dictionary, pattern-dictionary and raw modes.
+- [ ] Add per-mode counters and cycle measurements for v6 `SKIP`, `MOTION`,
+      block-dictionary and unified raw modes.
 - [ ] Record the operation-count estimate and RAM increase for each tested
       change.
 

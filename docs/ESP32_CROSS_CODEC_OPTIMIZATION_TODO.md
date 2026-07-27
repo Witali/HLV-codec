@@ -191,7 +191,7 @@ or audio underruns. The smaller full-player gain is expected because its render
 timer also includes display-buffer and SPI/DMA waiting.
 
 The retained table adds 2,056 DRAM bytes and 388 Flash-code bytes. IRAM and
-Flash data are unchanged; 139,668 DRAM bytes remain free. BPV v4/v5 rebuild
+Flash data are unchanged; 139,668 DRAM bytes remain free. BPV v4-v6 rebuild
 the cache only when rendering a keyframe whose decode installed a new palette.
 The allocation-free legacy renderer and portable RGB24 path remain available.
 

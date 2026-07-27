@@ -227,13 +227,13 @@ its aspect ratio and native frame rate preserved:
 ```
 
 For BPV1, the corresponding script uses the same approved 1080p source,
-preserves native 24 fps and writes BPV1 v5 with adaptive RAW records,
-5–16-color direct blocks and active per-GOP palettes:
+preserves native 24 fps and writes BPV1 v6 with four 2-bit block modes,
+one-byte motion, unified RAW records and active per-GOP palettes:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
 .\scripts\copy_video_to_sd.ps1 -DestinationRoot E:\ `
-    -InputFile .\out\BigBuckBunny_1080p_bpv1_v5_adaptive_lambda64_normalized_native-fps_320x180.bpv1
+    -InputFile .\out\BPV\BigBuckBunny_1080p_bpv1_v6_four-mode_lambda64_normalized_native-fps_320x180.bpv1
 ```
 
 For an ESP32-safe MPEG Program Stream:
