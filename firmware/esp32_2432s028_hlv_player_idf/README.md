@@ -155,14 +155,18 @@ The player finishes the current decode operation, stops video and audio, and
 closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows the completion percentage above the progress bar and the
 transferred/total size beside it, with the destination filename below the bar.
-Each 60 KiB block has its own CRC32 and is
+Each 16 KiB block has its own CRC32 and is
 acknowledged before the PC sends the next block, so hardware flow control is
 not required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer exists only during an upload, while the decoder and audio buffers are
-released. After each transfer the player reads `/HLV/play.txt` again and opens
-its selection.
+buffer was replaced by two 16 KiB buffers that exist only during an upload,
+while the decoder and audio buffers are released. CPU0 receives and validates
+the next UART block while a CPU1 writer task stores the preceding block on SD.
+An ACK means that a block passed its RAM CRC and entered this bounded pipeline;
+`HLVDONE` is emitted only after both buffers are written, `fsync` completes and
+the full-file CRC matches. After each transfer the player reads
+`/HLV/play.txt` again and opens its selection.
 
 Protocol version 1 starts with this ASCII line at the console baud:
 
@@ -170,7 +174,7 @@ Protocol version 1 starts with this ASCII line at the console baud:
 HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 1 61440 <data-baud>`, receives acknowledged
+The device replies `HLVREADY 1 16384 <data-baud>`, receives acknowledged
 `HLVB` binary blocks, and finishes with
 `HLVDONE 1 <size> <crc32> <name>`.
 
@@ -178,9 +182,10 @@ The connected CH340C board completed three CRC-verified transfers at every
 supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
 baud delivered 70.4, 91.3 and 101.5 KiB/s. Enlarging the block to 16 KiB raised
 the 2 Mbaud result to 106.6 KiB/s. The retained 60 KiB block and ROM CRC32
-delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. An experimental
-2.5 Mbaud transfer timed out, so 2 Mbaud is the maximum verified setting for
-this board and driver.
+delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
+16 KiB UART receive and SD writes delivered 121.4 KiB/s in a CRC-verified
+5.19 MB BPV v7 transfer. An experimental 2.5 Mbaud transfer timed out, so
+2 Mbaud is the maximum verified setting for this board and driver.
 
 The repository-level wrappers run the same commands:
 

@@ -42,7 +42,7 @@ class FakeEsp32Port:
             self.expected_crc = int(fields[4], 16)
             data_baud = int(fields[5])
             self.responses.append(
-                f"HLVREADY 1 4096 {data_baud}\n".encode("ascii")
+                f"HLVREADY 1 {16 * 1024} {data_baud}\n".encode("ascii")
             )
             return len(packet)
 
@@ -93,7 +93,7 @@ class UartUploadTest(unittest.TestCase):
         )
 
     def test_complete_transfer(self):
-        content = b"HLV1" + bytes(range(256)) * 40
+        content = b"HLV1" + bytes(range(256)) * 140
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory) / "sample.hlv"
             source.write_bytes(content)
@@ -113,6 +113,7 @@ class UartUploadTest(unittest.TestCase):
                 uart_upload.time.sleep = original_sleep
                 uart_upload.print_progress = original_progress
             self.assertEqual(bytes(fake.data), content)
+            self.assertEqual(fake.sequence, 3)
             self.assertEqual(fake.baudrate, 921600)
 
 

@@ -12,6 +12,7 @@
 #include "esp_rom_crc.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 namespace {
@@ -25,6 +26,52 @@ constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr size_t kBlockHeaderBytes = 14;
+constexpr uint32_t kWriterStackBytes = 4096;
+constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
+
+struct UploadBlock {
+    uint8_t *data = nullptr;
+    size_t size = 0;
+};
+
+struct UploadWriter {
+    FILE *output = nullptr;
+    QueueHandle_t ready = nullptr;
+    QueueHandle_t completed = nullptr;
+    uint32_t file_crc = 0;
+    uint32_t written = 0;
+    bool failed = false;
+};
+
+void uploadWriterTask(void *opaque) {
+    auto *writer = static_cast<UploadWriter *>(opaque);
+    for (;;) {
+        UploadBlock *block = nullptr;
+        if (xQueueReceive(
+                writer->ready, &block, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (!block) {
+            xQueueSend(
+                writer->completed, &block, portMAX_DELAY);
+            vTaskDelete(nullptr);
+            return;
+        }
+        if (!writer->failed) {
+            if (std::fwrite(
+                    block->data, 1, block->size,
+                    writer->output) != block->size) {
+                writer->failed = true;
+            } else {
+                writer->file_crc = esp_rom_crc32_le(
+                    writer->file_crc, block->data, block->size);
+                writer->written += block->size;
+            }
+        }
+        xQueueSend(
+            writer->completed, &block, portMAX_DELAY);
+    }
+}
 
 uint16_t readLe16(const uint8_t *bytes) {
     return static_cast<uint16_t>(
@@ -361,20 +408,62 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         return false;
     }
 
-    auto *buffer = static_cast<uint8_t *>(
-        heap_caps_malloc(kChunkBytes, MALLOC_CAP_8BIT));
+    auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(
+        kChunkBytes * kBufferCount, MALLOC_CAP_8BIT));
     if (!buffer) {
+        reject("NO_MEMORY");
+        return false;
+    }
+    QueueHandle_t ready = xQueueCreate(
+        kBufferCount, sizeof(UploadBlock *));
+    QueueHandle_t completed = xQueueCreate(
+        kBufferCount, sizeof(UploadBlock *));
+    if (!ready || !completed) {
+        if (ready) vQueueDelete(ready);
+        if (completed) vQueueDelete(completed);
+        heap_caps_free(buffer);
         reject("NO_MEMORY");
         return false;
     }
     unlink(temporary);
     FILE *output = std::fopen(temporary, "wb");
     if (!output) {
+        vQueueDelete(ready);
+        vQueueDelete(completed);
         heap_caps_free(buffer);
         reject("OPEN_FAILED");
         return false;
     }
     std::setvbuf(output, nullptr, _IONBF, 0);
+
+    UploadBlock blocks[kBufferCount]{};
+    for (size_t index = 0; index < kBufferCount; ++index) {
+        blocks[index].data = buffer + index * kChunkBytes;
+    }
+    UploadWriter writer{};
+    writer.output = output;
+    writer.ready = ready;
+    writer.completed = completed;
+    if (xTaskCreatePinnedToCore(
+            uploadWriterTask, "uart_sd_writer", kWriterStackBytes,
+            &writer, kWriterPriority, nullptr, 1) != pdPASS) {
+        std::fclose(output);
+        unlink(temporary);
+        vQueueDelete(ready);
+        vQueueDelete(completed);
+        heap_caps_free(buffer);
+        reject("NO_MEMORY");
+        return false;
+    }
+    const auto stop_writer = [&writer]() {
+        UploadBlock *stop = nullptr;
+        xQueueSend(writer.ready, &stop, portMAX_DELAY);
+        UploadBlock *stopped = reinterpret_cast<UploadBlock *>(1);
+        while (stopped) {
+            xQueueReceive(
+                writer.completed, &stopped, portMAX_DELAY);
+        }
+    };
 
     uart_flush_input(kUploadUart);
     writeResponse("HLVREADY 1 %u %u\n",
@@ -383,8 +472,11 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
     vTaskDelay(pdMS_TO_TICKS(20));
     if (!setBaud(request.data_baud)) {
+        stop_writer();
         std::fclose(output);
         unlink(temporary);
+        vQueueDelete(ready);
+        vQueueDelete(completed);
         heap_caps_free(buffer);
         reject("BAUD_FAILED");
         return false;
@@ -392,10 +484,27 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
 
     uint32_t received = 0;
     uint32_t sequence = 0;
-    uint32_t file_crc = 0;
+    size_t pending_writes = 0;
     bool success = true;
     const char *failure = "TRANSFER_FAILED";
     while (received < request.size) {
+        if (pending_writes == kBufferCount) {
+            UploadBlock *finished = nullptr;
+            if (xQueueReceive(
+                    completed, &finished, portMAX_DELAY) != pdTRUE ||
+                !finished) {
+                failure = "WRITE_FAILED";
+                success = false;
+                break;
+            }
+            --pending_writes;
+            if (writer.failed) {
+                failure = "WRITE_FAILED";
+                success = false;
+                break;
+            }
+        }
+
         uint8_t header[kBlockHeaderBytes];
         if (!readExact(header, sizeof header, kChunkTimeoutMs)) {
             failure = "TIMEOUT";
@@ -413,22 +522,27 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
             success = false;
             break;
         }
-        if (!readExact(buffer, block_bytes, kChunkTimeoutMs)) {
+        UploadBlock *block =
+            &blocks[sequence % kBufferCount];
+        if (!readExact(
+                block->data, block_bytes, kChunkTimeoutMs)) {
             failure = "TIMEOUT";
             success = false;
             break;
         }
-        if (crc32(buffer, block_bytes) != block_crc) {
+        if (crc32(block->data, block_bytes) != block_crc) {
             writeResponse("HLVNAK %u CRC\n",
                           static_cast<unsigned>(sequence));
             continue;
         }
-        if (std::fwrite(buffer, 1, block_bytes, output) != block_bytes) {
+        block->size = block_bytes;
+        if (xQueueSend(
+                ready, &block, portMAX_DELAY) != pdTRUE) {
             failure = "WRITE_FAILED";
             success = false;
             break;
         }
-        file_crc = esp_rom_crc32_le(file_crc, buffer, block_bytes);
+        ++pending_writes;
         received += block_bytes;
         if (progress) {
             progress(received, request.size, progress_context);
@@ -438,6 +552,23 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         ++sequence;
     }
 
+    while (pending_writes) {
+        UploadBlock *finished = nullptr;
+        if (xQueueReceive(
+                completed, &finished, portMAX_DELAY) != pdTRUE ||
+            !finished) {
+            failure = "WRITE_FAILED";
+            success = false;
+            break;
+        }
+        --pending_writes;
+    }
+    if (writer.failed || writer.written != received) {
+        failure = "WRITE_FAILED";
+        success = false;
+    }
+    stop_writer();
+
     if (success && (std::fflush(output) || fsync(fileno(output)))) {
         failure = "FLUSH_FAILED";
         success = false;
@@ -446,9 +577,11 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         failure = "CLOSE_FAILED";
         success = false;
     }
+    vQueueDelete(ready);
+    vQueueDelete(completed);
     heap_caps_free(buffer);
 
-    const uint32_t actual_crc = file_crc;
+    const uint32_t actual_crc = writer.file_crc;
     if (success && actual_crc != request.crc32) {
         failure = "FILE_CRC";
         success = false;
