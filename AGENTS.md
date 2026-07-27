@@ -33,6 +33,17 @@
 - Test every streaming input path with a valid packet larger than its refill
   buffer and compare decoded-frame checksums with the contiguous-input path.
 
+## ESP32 firmware language
+
+- Treat `firmware/esp32_2432s028_hlv_player_id_c` as the primary ESP32 player
+  firmware and keep it compatible with C99.
+- Treat `firmware/esp32_2432s028_hlv_player_idf_cpp` only as the preserved C++
+  reference implementation. Do not leave an active firmware feature or fix
+  available only in the C++ variant; port it to the C firmware.
+- Translate required C++ code into C instead of compiling C++ sources or
+  adding a C++ runtime dependency to the C firmware. Do not add `.cpp`, `.cc`,
+  `.cxx` or `.hpp` files under the C firmware project.
+
 ## Permission review timeouts
 
 - If an automatic permission review times out before the requested command
