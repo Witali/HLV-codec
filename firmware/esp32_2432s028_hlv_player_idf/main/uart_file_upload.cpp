@@ -33,6 +33,8 @@ constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
 struct UploadBlock {
     uint8_t *data = nullptr;
     size_t size = 0;
+    uint32_t sequence = 0;
+    uint32_t end_offset = 0;
 };
 
 struct UploadWriter {
@@ -197,7 +199,7 @@ bool UartFileUpload::parseRequest(const char *line,
     unsigned baud = 0;
     char trailing = '\0';
     const int fields = std::sscanf(
-        line, "HLVPUT 1 %48s %lu %x %u %c", parsed.filename, &size, &crc,
+        line, "HLVPUT 2 %48s %lu %x %u %c", parsed.filename, &size, &crc,
         &baud, &trailing);
     if (fields != 4 || !size || size > UINT32_MAX ||
         !validFilename(parsed.filename) || !supportedDataBaud(baud)) {
@@ -468,9 +470,10 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     };
 
     uart_flush_input(kUploadUart);
-    writeResponse("HLVREADY 1 %u %u\n",
+    writeResponse("HLVREADY 2 %u %u %u\n",
                   static_cast<unsigned>(kChunkBytes),
-                  static_cast<unsigned>(request.data_baud));
+                  static_cast<unsigned>(request.data_baud),
+                  static_cast<unsigned>(kBufferCount));
     uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
     vTaskDelay(pdMS_TO_TICKS(20));
     if (!setBaud(request.data_baud)) {
@@ -489,23 +492,58 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     size_t pending_writes = 0;
     bool success = true;
     const char *failure = "TRANSFER_FAILED";
-    while (received < request.size) {
-        if (pending_writes == kBufferCount) {
-            UploadBlock *finished = nullptr;
-            if (xQueueReceive(
-                    completed, &finished, portMAX_DELAY) != pdTRUE ||
-                !finished) {
-                failure = "WRITE_FAILED";
-                success = false;
-                break;
+    uint32_t last_acked_sequence = UINT32_MAX;
+    uint32_t last_acked_bytes = 0;
+    bool nak_outstanding = false;
+    const auto acknowledge_write =
+        [&](TickType_t wait, bool send_heartbeat) -> int {
+        UploadBlock *finished = nullptr;
+        if (xQueueReceive(completed, &finished, wait) != pdTRUE) {
+            if (send_heartbeat) {
+                writeResponse(
+                    "HLVWAIT %u %u\n",
+                    static_cast<unsigned>(sequence),
+                    static_cast<unsigned>(received));
             }
-            --pending_writes;
-            if (writer.failed) {
-                failure = "WRITE_FAILED";
-                success = false;
-                break;
-            }
+            return 0;
         }
+        if (!finished || !pending_writes) {
+            failure = "WRITE_FAILED";
+            success = false;
+            return -1;
+        }
+        --pending_writes;
+        if (writer.failed) {
+            failure = "WRITE_FAILED";
+            success = false;
+            return -1;
+        }
+        last_acked_sequence = finished->sequence;
+        last_acked_bytes = finished->end_offset;
+        writeResponse(
+            "HLVACK %u %u\n",
+            static_cast<unsigned>(last_acked_sequence),
+            static_cast<unsigned>(last_acked_bytes));
+        return 1;
+    };
+
+    while (received < request.size) {
+        for (;;) {
+            int completed_result;
+            while ((completed_result =
+                        acknowledge_write(0, false)) > 0) {
+            }
+            if (completed_result < 0) break;
+            if (pending_writes == kBufferCount) {
+                if (acknowledge_write(
+                        pdMS_TO_TICKS(250), true) < 0) {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+        if (!success) break;
 
         uint8_t header[kBlockHeaderBytes];
         if (!readExact(header, sizeof header, kChunkTimeoutMs)) {
@@ -516,10 +554,8 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         const uint32_t block_sequence = readLe32(header + 4);
         const uint16_t block_bytes = readLe16(header + 8);
         const uint32_t block_crc = readLe32(header + 10);
-        const uint32_t remaining = request.size - received;
         if (std::memcmp(header, kBlockMagic, sizeof kBlockMagic) ||
-            block_sequence != sequence || !block_bytes ||
-            block_bytes > kChunkBytes || block_bytes > remaining) {
+            !block_bytes || block_bytes > kChunkBytes) {
             failure = "BAD_BLOCK";
             success = false;
             break;
@@ -532,12 +568,37 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
             success = false;
             break;
         }
+        if (block_sequence != sequence) {
+            if (block_sequence < sequence &&
+                last_acked_sequence != UINT32_MAX) {
+                writeResponse(
+                    "HLVACK %u %u\n",
+                    static_cast<unsigned>(last_acked_sequence),
+                    static_cast<unsigned>(last_acked_bytes));
+            } else if (!nak_outstanding) {
+                writeResponse(
+                    "HLVNAK %u ORDER\n",
+                    static_cast<unsigned>(sequence));
+                nak_outstanding = true;
+            }
+            continue;
+        }
+        const uint32_t remaining = request.size - received;
+        if (block_bytes > remaining) {
+            failure = "BAD_BLOCK";
+            success = false;
+            break;
+        }
         if (crc32(block->data, block_bytes) != block_crc) {
             writeResponse("HLVNAK %u CRC\n",
                           static_cast<unsigned>(sequence));
+            nak_outstanding = true;
             continue;
         }
+        nak_outstanding = false;
         block->size = block_bytes;
+        block->sequence = sequence;
+        block->end_offset = received + block_bytes;
         if (xQueueSend(
                 ready, &block, portMAX_DELAY) != pdTRUE) {
             failure = "WRITE_FAILED";
@@ -549,21 +610,13 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
         if (progress) {
             progress(received, request.size, progress_context);
         }
-        writeResponse("HLVACK %u %u\n", static_cast<unsigned>(sequence),
-                      static_cast<unsigned>(received));
         ++sequence;
     }
 
-    while (pending_writes) {
-        UploadBlock *finished = nullptr;
-        if (xQueueReceive(
-                completed, &finished, portMAX_DELAY) != pdTRUE ||
-            !finished) {
-            failure = "WRITE_FAILED";
-            success = false;
+    while (pending_writes && success) {
+        if (acknowledge_write(pdMS_TO_TICKS(250), true) < 0) {
             break;
         }
-        --pending_writes;
     }
     if (writer.failed || writer.written != received) {
         failure = "WRITE_FAILED";
@@ -590,7 +643,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     }
     if (!success) {
         unlink(temporary);
-        finishResponse("HLVERR 1 %s\n", failure);
+        finishResponse("HLVERR 2 %s\n", failure);
         return false;
     }
 
@@ -599,13 +652,13 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     unlink(backup);
     if (had_target && rename(target, backup)) {
         unlink(temporary);
-        finishResponse("HLVERR 1 BACKUP_FAILED\n");
+        finishResponse("HLVERR 2 BACKUP_FAILED\n");
         return false;
     }
     if (rename(temporary, target)) {
         if (had_target) rename(backup, target);
         unlink(temporary);
-        finishResponse("HLVERR 1 COMMIT_FAILED\n");
+        finishResponse("HLVERR 2 COMMIT_FAILED\n");
         return false;
     }
     if (had_target) unlink(backup);
@@ -613,7 +666,7 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     if (stored_path && stored_path_bytes) {
         std::snprintf(stored_path, stored_path_bytes, "%s", target);
     }
-    finishResponse("HLVDONE 1 %u %08x %s\n",
+    finishResponse("HLVDONE 2 %u %08x %s\n",
                    static_cast<unsigned>(request.size),
                    static_cast<unsigned>(actual_crc), request.filename);
     return true;

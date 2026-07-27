@@ -157,28 +157,33 @@ closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the
 transferred/total size beside it using three significant digits, with the
 destination filename below the bar.
-Each 16 KiB block has its own CRC32 and is
-acknowledged before the PC sends the next block, so hardware flow control is
-not required. CRC calculation uses the ESP32 ROM table implementation. The
+Each 16 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
+sliding window, so the PC can send both receive buffers without waiting for an
+individual ACK. An ACK is cumulative and returns buffer credit only after the
+CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
+the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
+250 ms; the client retries after a two-second ACK timeout and aborts after ten
+seconds without cumulative progress. Hardware flow control is therefore not
+required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
 buffer was replaced by two 16 KiB buffers that exist only during an upload,
 while the decoder and audio buffers are released. CPU0 receives and validates
 the next UART block while a CPU1 writer task stores the preceding block on SD.
-An ACK means that a block passed its RAM CRC and entered this bounded pipeline;
+An ACK means that a block passed its RAM CRC and completed its SD write;
 `HLVDONE` is emitted only after both buffers are written, `fsync` completes and
 the full-file CRC matches. After each transfer the player reads
 `/HLV/play.txt` again and opens its selection.
 
-Protocol version 1 starts with this ASCII line at the console baud:
+Upload protocol version 2 starts with this ASCII line at the console baud:
 
 ```text
-HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
+HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 1 16384 <data-baud>`, receives acknowledged
-`HLVB` binary blocks, and finishes with
-`HLVDONE 1 <size> <crc32> <name>`.
+The device replies `HLVREADY 2 16384 <data-baud> 2`, receives windowed `HLVB`
+binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
+`HLVDONE 2 <size> <crc32> <name>`.
 
 The connected CH340C board completed three CRC-verified transfers at every
 supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
@@ -189,11 +194,15 @@ delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
 at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
 transfers. The same full transfer passed at 3000000 baud but delivered only
 121.3 KiB/s, showing that the SD/pipeline path, rather than the UART line, is
-the current limit. An experimental 2500000-baud transfer never entered normal
-data reception and timed out. Therefore 2000000 baud remains the default;
-3000000 baud is retained only as an optional verified mode. The Windows CH340
-driver rejected attempts to configure both 4000000 and 5000000 baud with
-device error 31, before either transfer could send its first data block.
+the current limit. Protocol v2 sliding-window transfers of the same file
+delivered 121.3 KiB/s at 2000000 baud and 121.1 KiB/s at 3000000 baud, with
+matching full-file CRC32. The window removes the mandatory per-block wait but
+cannot increase throughput until the SD path is faster. An experimental
+2500000-baud transfer never entered normal data reception and timed out.
+Therefore 2000000 baud remains the default; 3000000 baud is retained only as
+an optional verified mode. The Windows CH340 driver rejected attempts to
+configure both 4000000 and 5000000 baud with device error 31, before either
+transfer could send its first data block.
 
 The repository-level wrappers run the same commands:
 
