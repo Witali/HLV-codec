@@ -7,6 +7,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
-$project = Join-Path $repo "firmware\esp32_2432s028_hlv_player_idf"
+$project = Join-Path $repo "firmware\esp32_2432s028_hlv_player_id_c"
 & (Join-Path $project "flash.ps1") -Port $Port -Baud $Baud `
     -SkipBuild:$SkipBuild

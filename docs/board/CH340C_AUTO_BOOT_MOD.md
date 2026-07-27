@@ -76,7 +76,7 @@ CONFIG_ESPTOOLPY_BEFORE_RESET=y
 CONFIG_ESPTOOLPY_AFTER_RESET=y
 ```
 
-Файл `firmware/esp32_2432s028_hlv_player_idf/esptool.cfg` задаёт проверенную
+Файл `firmware/esp32_2432s028_hlv_player_id_c/esptool.cfg` задаёт проверенную
 последовательность:
 
 ```text

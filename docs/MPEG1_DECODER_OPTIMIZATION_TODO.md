@@ -76,8 +76,8 @@ from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
 .\scripts\test_mpeg1_compact.ps1 `
     -InputFile .\out\VID_20260522_181611_center-crop_240x180_mpeg1_q3_native-fps.mpg
 
-.\firmware\esp32_2432s028_hlv_player_idf\flash.ps1 -Port COM8
+.\firmware\esp32_2432s028_hlv_player_id_c\flash.ps1 -Port COM8
 
-.\firmware\esp32_2432s028_hlv_player_idf\capture-player-metrics.ps1 `
+.\firmware\esp32_2432s028_hlv_player_id_c\capture-player-metrics.ps1 `
     -Port COM8 -Frames 300 -TimeoutSeconds 60 -AllowAudioUnderrun
 ```

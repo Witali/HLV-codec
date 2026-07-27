@@ -15,7 +15,7 @@
 
 На ESP32-2432S028 вывод `TE` дисплея к ESP32 не подключён. Это видно на
 [схеме дисплейного разъёма](board/ESP32-2432S028-schematic-LCM.jpg), а в
-[`board_config.hpp`](../firmware/esp32_2432s028_hlv_player_idf/main/board_config.hpp)
+[`board_config.h`](../firmware/esp32_2432s028_hlv_player_id_c/main/board_config.h)
 такой GPIO отсутствует.
 
 При этом линия чтения дисплея `TFT_MISO` подключена к `GPIO12`. Поэтому можно

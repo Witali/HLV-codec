@@ -58,7 +58,7 @@ Generated tool installations belong under `local_tools/`, build products under
 | `build_msvc.ps1` | Builds the HLV command-line tools and tests (`hlvenc`, `hlvdec`, `hlvinfo`, decoder benchmarks, and error/round-trip tests), then builds the Windows Player. |
 | `build_windows_player.ps1` | Builds `hlvplay.exe` with the HLV, BPV, MPEG-1, H.263, DivX 3, AMR-NB, and compact-frame-buffer decoders. |
 | `build_bpv_msvc.ps1` | Builds the native BPV encoder and decoder test, runs the decoder test, and runs the JavaScript/C encoder compatibility test when Node.js is available. |
-| `build_esp32.ps1` | Builds `firmware/esp32_2432s028_hlv_player_idf` with the pinned pure ESP-IDF environment. Pass `-Clean` for a clean build. |
+| `build_esp32.ps1` | Builds `firmware/esp32_2432s028_hlv_player_id_c` with the pinned pure ESP-IDF environment. Pass `-Clean` for a clean build. |
 | `build_littlefs.ps1` | Creates the legacy ESP32 LittleFS image from one HLV file. The current SD-card Player normally uses `copy_video_to_sd.ps1` instead. |
 
 ## General-purpose encoders

@@ -9,7 +9,7 @@ import zlib
 SCRIPT = (
     pathlib.Path(__file__).parents[1]
     / "firmware"
-    / "esp32_2432s028_hlv_player_idf"
+    / "esp32_2432s028_hlv_player_id_c"
     / "uart_upload.py"
 )
 SPEC = importlib.util.spec_from_file_location("uart_upload", SCRIPT)
