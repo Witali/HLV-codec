@@ -76,15 +76,14 @@ constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 constexpr int kUploadBarX = 16;
 constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
-constexpr int kUploadBarHeight = CydDisplay::kRowsPerTransfer / 2;
+constexpr int kUploadBarHeight = CydDisplay::kRowsPerTransfer;
 constexpr int kUploadBarY = (kScreenHeight - kUploadBarHeight) / 2;
 constexpr int kUploadBarBorder = 2;
 constexpr uint16_t kUploadBarBorderColor = 0xffff;
 constexpr uint16_t kUploadBarEmptyColor = 0x2104;
 constexpr uint16_t kUploadBarFillColor = 0x07e0;
-constexpr int kUploadPercentScale = 1;
-constexpr int kUploadPercentY =
-    kUploadBarY - 7 * kUploadPercentScale - 12;
+constexpr int kUploadPercentScale = 2;
+constexpr int kUploadPercentFallbackScale = 1;
 constexpr int kUploadFilenameScale = 1;
 constexpr int kUploadFilenameY =
     kUploadBarY + kUploadBarHeight + 12;
@@ -387,6 +386,7 @@ uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
 int upload_progress_percent = -1;
+int upload_progress_scale = kUploadPercentScale;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
@@ -895,23 +895,60 @@ void formatUploadProgress(
 ) {
     uint32_t divisor;
     const char *unit;
-    if (total < 1000U * 1000U) {
+    if (total < 999500U) {
         divisor = 1000U;
         unit = "KB";
-    } else if (total < 1000U * 1000U * 1000U) {
+    } else if (total < 999500000U) {
         divisor = 1000U * 1000U;
         unit = "MB";
     } else {
         divisor = 1000U * 1000U * 1000U;
         unit = "GB";
     }
-    const unsigned completed_units =
-        static_cast<unsigned>(received / divisor);
-    const unsigned total_units = static_cast<unsigned>(
-        (static_cast<uint64_t>(total) + divisor - 1U) / divisor);
+    const auto format_value = [divisor](
+        char *output, size_t output_bytes, uint32_t bytes
+    ) {
+        const uint64_t hundredths =
+            (static_cast<uint64_t>(bytes) * 100U + divisor / 2U) /
+            divisor;
+        if (hundredths >= 10000U) {
+            const unsigned rounded = static_cast<unsigned>(
+                (static_cast<uint64_t>(bytes) + divisor / 2U) /
+                divisor);
+            std::snprintf(output, output_bytes, "%u", rounded);
+        } else if (hundredths >= 1000U) {
+            const uint64_t tenths =
+                (static_cast<uint64_t>(bytes) * 10U +
+                 divisor / 2U) /
+                divisor;
+            if (tenths >= 1000U) {
+                const unsigned rounded = static_cast<unsigned>(
+                    (static_cast<uint64_t>(bytes) +
+                     divisor / 2U) /
+                    divisor);
+                std::snprintf(
+                    output, output_bytes, "%u", rounded);
+            } else {
+                std::snprintf(
+                    output, output_bytes, "%u.%u",
+                    static_cast<unsigned>(tenths / 10U),
+                    static_cast<unsigned>(tenths % 10U));
+            }
+        } else {
+            std::snprintf(
+                output, output_bytes, "%u.%02u",
+                static_cast<unsigned>(hundredths / 100U),
+                static_cast<unsigned>(hundredths % 100U));
+        }
+    };
+    char completed_value[24]{};
+    char total_value[24]{};
+    format_value(
+        completed_value, sizeof completed_value, received);
+    format_value(total_value, sizeof total_value, total);
     std::snprintf(
-        text, text_bytes, "%u%% %u/%u%s", percent,
-        completed_units, total_units, unit);
+        text, text_bytes, "%u%% %s/%s%s", percent,
+        completed_value, total_value, unit);
 }
 
 void drawStatusTitle(const char *title) {
@@ -944,12 +981,23 @@ void showStatus(const char *title, const char *detail = nullptr) {
 }
 
 void beginUploadProgress(const char *filename, uint32_t total) {
+    if (display.setDoubleBuffered(true) == ESP_OK) {
+        upload_progress_scale = kUploadPercentScale;
+    } else {
+        upload_progress_scale = kUploadPercentFallbackScale;
+        ESP_LOGW(
+            kTag,
+            "Could not allocate the second LCD DMA buffer for "
+            "large upload progress text");
+    }
     display.clear(0x0000);
-    char progress_text[24]{};
+    char progress_text[48]{};
     formatUploadProgress(
         progress_text, sizeof progress_text, 0U, 0U, total);
     drawStatusText(
-        progress_text, kUploadPercentY, kUploadPercentScale);
+        progress_text,
+        kUploadBarY - 7 * upload_progress_scale - 12,
+        upload_progress_scale);
     uint16_t *pixels = display.acquireBuffer();
     if (!pixels) return;
     for (int y = 0; y < kUploadBarHeight; ++y) {
@@ -1005,11 +1053,13 @@ void updateUploadProgress(uint32_t received, uint32_t total, void *) {
             100U,
             (static_cast<uint64_t>(received) * 100U) / total));
     if (percent != upload_progress_percent) {
-        char text[24]{};
+        char text[48]{};
         formatUploadProgress(
             text, sizeof text, percent, received, total);
         if (drawStatusText(
-                text, kUploadPercentY, kUploadPercentScale)) {
+                text,
+                kUploadBarY - 7 * upload_progress_scale - 12,
+                upload_progress_scale)) {
             upload_progress_percent = percent;
         }
     }
