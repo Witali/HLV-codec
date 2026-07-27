@@ -108,11 +108,13 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 - [ ] Re-evaluate use of only the primary LCD buffer after the one-reference
       path fits. The isolated attempt saved 10,240 bytes but made 320x180
       render average 1.78% slower and still did not open 320x240.
-- [ ] Replace HLV's 16 KiB stdio read-ahead plus decoder refill allocation with
-      one fixed-capacity asynchronous input ring/refill path. Start with an
-      8 KiB ring and a 4 KiB SD read chunk.
-- [ ] Ensure that only the reader owns the video file and that compressed data
-      is never copied between decode tasks.
+- [x] Evaluate replacing HLV's 16 KiB stdio read-ahead plus decoder refill
+      allocation with one fixed-capacity asynchronous path. An 8 KiB
+      double-bank with 4 KiB direct VFS reads was rejected: CPU0 reader
+      priority 2 displaced rendering, while priority 1 starved decoding.
+- [x] Verify in that experiment that only the reader owns the video descriptor
+      and compressed spans pass directly from each bank to the decoder. The
+      complete implementation was removed after the physical regression.
 - [x] Test a valid packet larger than the ring and compare its decoded hash
       with contiguous and direct-file decode.
 - [ ] Reorder large allocations only if heap logs show fragmentation rather
@@ -191,12 +193,11 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Current priority order
 
-1. fixed-capacity asynchronous zero-copy HLV input;
-2. 16-row render-ahead for one-reference `320x240`;
-3. fixed-denominator packed prediction kernels;
-4. fused prediction/residual/packing;
-5. fused display unpack/Q4/RGB565;
-6. inverse-WHT and encoder decode-cost experiments.
+1. 16-row render-ahead for one-reference `320x240`;
+2. fixed-denominator packed prediction kernels;
+3. fused prediction/residual/packing;
+4. fused display unpack/Q4/RGB565;
+5. inverse-WHT and encoder decode-cost experiments.
 
 At `320x240`, 30 fps requires both decode and render wall time below 33.3 ms.
 The current approximately 68.4 ms decode and 34.1 ms render measurements mean
@@ -236,6 +237,8 @@ These experiments were already below the acceptance threshold or regressed:
 - direct compact PALETTE;
 - direct zero-residual INTRA;
 - duplicated version-specific mode parsing.
+- 8 KiB asynchronous direct-VFS HLV double bank on CPU0 at reader priority 1
+  or 2.
 
 ## Results
 
@@ -253,6 +256,7 @@ These experiments were already below the acceptance threshold or regressed:
 | Byte-aligned eight-sample Y7 pack | full 3,358-frame hash `005878155c7f3057` unchanged; all four decoder/input paths agree | 3,224,408 cycles at 320x240 (-1.71%); hash `612a072f0b034761` unchanged | three-run median decode 68.447 ms (-0.88%) and complete work 102.534 ms (-0.88%); no gaps/audio errors | unchanged | retained |
 | Opt-in current-C99 stage profiler | release build unchanged; every timer read compiled out with default `HLV1_STAGE_PROFILE=OFF` | 30-frame 320x240 hash `93531122144bec97`; 58,551-byte packet through 7,680-byte refill | 120 frames, no gaps/audio errors; input 35.686 of 68.291 ms decode; row guard 4.004 ms average, 10 us median | release unchanged | retained diagnostic |
 | Adaptive dual references through padded 320x192 | full 3,358-frame dual/single hashes agree | identical 30-frame 320x180 hash `a59ea6feba53a6dc`; 2,385,648 dual vs 2,404,625 single cycles (-0.79%); 320x240 remains single with hash `93531122144bec97` | three-run median at 320x180: decode 60.396 -> 54.968 ms (-8.99%), work 86.732 -> 81.728 ms (-5.77%), observed 16.664 -> 17.508 fps, skips 22 -> 20; final release test decoded 300 consecutive frames with no gaps/audio errors at 54.622 ms decode and 81.429 ms work | +65,200 bytes at padded 320x192; 320x240 remains 118,520 bytes; +64-byte app image, IRAM unchanged | retained |
+| Fixed 8 KiB async zero-copy double bank, 4 KiB direct VFS reads | experimental 113-byte span path preserved full 3,358-frame hash `7ff021b48acfe095` | not applicable; QEMU does not model SD/task scheduling | priority 2 preliminary run: input 14.568 ms and decode 41.346 ms, but render 40.516 ms and work 81.862 ms (+0.16%), skips 22; priority 1 three-run median: decode 59.130 ms (+7.57%), work 86.073 ms (+5.32%), observed 15.967 fps, skips 24; no gaps/audio errors | compressed buffers -15,872 bytes, but reader stack and queues reduce net saving to about 11 KiB | rejected; source removed |
 | 32 KiB instead of 16 KiB stdio read-ahead | not applicable | not applicable | two-run average decode 67.724 ms, about -0.9%; input only -0.5% | +16,384 bytes | rejected; wrong speed/RAM trade-off |
 | Remove stdio read-ahead, retain `_IONBF` `fread` | not applicable | not applicable | input 732.399 ms, decode 761.522 ms | -16,384 bytes | rejected; severe regression |
 | Remove stdio read-ahead, direct ESP VFS `read` | not applicable | not applicable | input 42.311 ms, decode 74.348 ms (+8.8%) | -16,384 bytes | rejected; speed regression |
