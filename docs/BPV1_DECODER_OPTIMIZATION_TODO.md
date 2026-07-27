@@ -50,6 +50,15 @@ RGB565-reference commit (2.5%). An average frame reads 17,303 bytes through
 6.45 input calls. The reconstructed-frame hash remains
 `93682c11462696bc`.
 
+Specializing RGB565 reconstruction for the two canonical v7 record layouts
+reduced average block parsing/reconstruction from 11,773 to 9,711 us (17.5%)
+over two physical 300-frame runs. Local records resolve their four colors once
+and expand one packed pattern byte into four pixels; direct records expand two
+packed selector bytes per row. Average complete decode fell from 18,936 to
+16,885 us. Total work fell from 26,186 to 25,611 us because the faster decoder
+then waits longer for the fixed-rate display DMA. The two runs had zero display
+skips and respectively one and zero frames beyond the 33,333-us period.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD

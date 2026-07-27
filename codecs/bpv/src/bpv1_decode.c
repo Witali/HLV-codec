@@ -415,16 +415,11 @@ static unsigned record_palette_index(const uint8_t *record) {
     return record[0] & 0x3fU;
 }
 
-static unsigned record_pixel_color(const uint8_t *record,
-                                   unsigned pixel) {
-    if (record[0] & BPV1_DIRECT_RECORD_FLAG)
-        return direct_color(record, pixel);
-    {
-        const unsigned shift = 6U - ((pixel & 3U) * 2U);
-        const unsigned local =
-            (record[PATTERN_OFFSET + (pixel >> 2)] >> shift) & 3U;
-        return record[1U + local];
-    }
+static inline void store_rgb565_pair(uint16_t *destination,
+                                     uint16_t first,
+                                     uint16_t second) {
+    destination[0] = first;
+    destination[1] = second;
 }
 
 static inline uint16_t decode_rgb888_to_rgb565(const uint8_t *color) {
@@ -452,18 +447,39 @@ static void record_to_rgb565(
     uint16_t *destination,
     size_t stride
 ) {
-    const size_t palette_base =
+    const uint16_t *palette =
+        decoder->palette_rgb565 +
         (size_t)record_palette_index(record) *
         BPV1_COLORS_PER_PALETTE;
     unsigned y;
-    unsigned x;
-    for (y = 0; y < BPV1_BLOCK_SIZE; ++y) {
-        for (x = 0; x < BPV1_BLOCK_SIZE; ++x) {
-            const unsigned pixel = y * BPV1_BLOCK_SIZE + x;
-            const size_t color =
-                palette_base + record_pixel_color(record, pixel);
-            destination[(size_t)y * stride + x] =
-                decoder->palette_rgb565[color];
+    if (record[0] & BPV1_DIRECT_RECORD_FLAG) {
+        for (y = 0; y < BPV1_BLOCK_SIZE; ++y) {
+            const uint8_t first =
+                record[1U + y * 2U];
+            const uint8_t second =
+                record[2U + y * 2U];
+            uint16_t *row = destination + (size_t)y * stride;
+            store_rgb565_pair(
+                row, palette[first >> 4],
+                palette[first & 15U]);
+            store_rgb565_pair(
+                row + 2U, palette[second >> 4],
+                palette[second & 15U]);
+        }
+    } else {
+        const uint16_t colors[4] = {
+            palette[record[1]], palette[record[2]],
+            palette[record[3]], palette[record[4]]
+        };
+        for (y = 0; y < BPV1_BLOCK_SIZE; ++y) {
+            const uint8_t pattern = record[PATTERN_OFFSET + y];
+            uint16_t *row = destination + (size_t)y * stride;
+            store_rgb565_pair(
+                row, colors[pattern >> 6],
+                colors[(pattern >> 4) & 3U]);
+            store_rgb565_pair(
+                row + 2U, colors[(pattern >> 2) & 3U],
+                colors[pattern & 3U]);
         }
     }
 }

@@ -254,7 +254,9 @@ pages so ESP32 never needs a contiguous 153.6 KiB heap block. No current RGB
 framebuffer or decoder-side color search is needed. The RGB888 active palette
 is converted once per keyframe into a 2 KiB RGB565 lookup table. RAW and block
 dictionary reconstruction then reads ready-to-display `uint16_t` values
-instead of converting every output pixel.
+instead of converting every output pixel. The v7 hot path resolves four local
+colors once per block and expands packed selectors a complete four-pixel row
+at a time.
 
 The v7 timing record appends compressed-input, block reconstruction and
 reference-commit durations plus input call/byte counts to the ordinary `F`
