@@ -81,11 +81,15 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Phase 1: reduce RAM and open 320x240
 
-- [ ] Select the reference strategy by picture size and measured heap:
+- [x] Select the reference strategy by picture size and measured heap:
   - prefer dual references and an O(1) pointer swap at resolutions where both
     packed frames fit without reducing the player safety reserve;
   - retain one reference plus 32 rolling luma rows for `320x240`;
   - compare complete physical work, not decoder time alone.
+  The retained threshold uses dual references through the padded `320x192`
+  area and single-reference storage above it. If a smaller picture cannot
+  allocate both references, decoder creation retries the single-reference
+  path.
 - [x] Add a one-reference HLV fast path modelled on BPV v7:
   - enforce and validate the header motion-search radius for every actual
     global, macroblock, subblock and rectangular motion vector;
@@ -188,12 +192,11 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 ## Current priority order
 
 1. fixed-capacity asynchronous zero-copy HLV input;
-2. adaptive dual-reference selection for smaller pictures;
-3. 16-row render-ahead for one-reference `320x240`;
-4. fixed-denominator packed prediction kernels;
-5. fused prediction/residual/packing;
-6. fused display unpack/Q4/RGB565;
-7. inverse-WHT and encoder decode-cost experiments.
+2. 16-row render-ahead for one-reference `320x240`;
+3. fixed-denominator packed prediction kernels;
+4. fused prediction/residual/packing;
+5. fused display unpack/Q4/RGB565;
+6. inverse-WHT and encoder decode-cost experiments.
 
 At `320x240`, 30 fps requires both decode and render wall time below 33.3 ms.
 The current approximately 68.4 ms decode and 34.1 ms render measurements mean
@@ -249,6 +252,7 @@ These experiments were already below the acceptance threshold or regressed:
 | Audio reader priority 3 -> 1 | not applicable | not applicable | no underrun, but decode 59.661 -> 60.940 ms and observed rate 16.801 -> 16.468 fps | unchanged | rejected |
 | Byte-aligned eight-sample Y7 pack | full 3,358-frame hash `005878155c7f3057` unchanged; all four decoder/input paths agree | 3,224,408 cycles at 320x240 (-1.71%); hash `612a072f0b034761` unchanged | three-run median decode 68.447 ms (-0.88%) and complete work 102.534 ms (-0.88%); no gaps/audio errors | unchanged | retained |
 | Opt-in current-C99 stage profiler | release build unchanged; every timer read compiled out with default `HLV1_STAGE_PROFILE=OFF` | 30-frame 320x240 hash `93531122144bec97`; 58,551-byte packet through 7,680-byte refill | 120 frames, no gaps/audio errors; input 35.686 of 68.291 ms decode; row guard 4.004 ms average, 10 us median | release unchanged | retained diagnostic |
+| Adaptive dual references through padded 320x192 | full 3,358-frame dual/single hashes agree | identical 30-frame 320x180 hash `a59ea6feba53a6dc`; 2,385,648 dual vs 2,404,625 single cycles (-0.79%); 320x240 remains single with hash `93531122144bec97` | three-run median at 320x180: decode 60.396 -> 54.968 ms (-8.99%), work 86.732 -> 81.728 ms (-5.77%), observed 16.664 -> 17.508 fps, skips 22 -> 20; final release test decoded 300 consecutive frames with no gaps/audio errors at 54.622 ms decode and 81.429 ms work | +65,200 bytes at padded 320x192; 320x240 remains 118,520 bytes; +64-byte app image, IRAM unchanged | retained |
 | 32 KiB instead of 16 KiB stdio read-ahead | not applicable | not applicable | two-run average decode 67.724 ms, about -0.9%; input only -0.5% | +16,384 bytes | rejected; wrong speed/RAM trade-off |
 | Remove stdio read-ahead, retain `_IONBF` `fread` | not applicable | not applicable | input 732.399 ms, decode 761.522 ms | -16,384 bytes | rejected; severe regression |
 | Remove stdio read-ahead, direct ESP VFS `read` | not applicable | not applicable | input 42.311 ms, decode 74.348 ms (+8.8%) | -16,384 bytes | rejected; speed regression |
