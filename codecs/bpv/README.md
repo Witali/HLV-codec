@@ -58,8 +58,9 @@ one/four-thread determinism test on Windows:
 .\scripts\build_bpv_msvc.ps1
 ```
 
-An optional CUDA 13-compatible encoder offloads indexed palette candidate
-search and the complete 4/8/16-color block quantization to an NVIDIA GPU.
+The production BPV scripts use the CUDA 13-compatible encoder by default. It
+offloads indexed palette candidate search and the complete 4/8/16-color block
+quantization to an NVIDIA GPU.
 Prediction, dictionaries and stream serialization stay on the CPU, so the
 result remains an ordinary BPV1 v6 file and requires no player changes.
 The compatibility test also requires the CUDA and CPU backends to produce
@@ -67,14 +68,16 @@ the same bitstream:
 
 ```powershell
 .\scripts\build_bpv_cuda.ps1
-.\scripts\transcode_bpv6.ps1 input.mov -Device Cuda
+.\scripts\transcode_bpv6.ps1 input.mov
 ```
 
-`bpv1enc_cuda.exe` defaults to `--device auto`; it uses CUDA when a runtime
-device is available and otherwise falls back to CPU. `--device cuda` makes
-the absence of CUDA an error, while `--device cpu` provides a direct A/B
-reference using the same executable. The regular `bpv1enc.exe` remains the
-portable CPU-only fallback.
+`encode_bpv.ps1`, `encode_bpv_target_quality.ps1` and
+`transcode_bpv6.ps1` default to `-Device Cuda`. They build
+`bpv1enc_cuda.exe` when necessary and treat the absence of CUDA as an error.
+Use `-Device Auto` to allow automatic CPU fallback, or `-Device Cpu` for a
+direct A/B reference. The regular `bpv1enc.exe` remains the portable CPU-only
+fallback. The standalone CUDA executable likewise defaults to
+`--device cuda`; pass `--device auto` explicitly to permit fallback.
 
 On a POSIX host with CUDA Toolkit:
 

@@ -96,13 +96,17 @@ try {
     )
     $bpvReport = Get-Content -LiteralPath $bpvReportPath -Raw |
         ConvertFrom-Json
-    if ($bpvReport.samplesPerFrame -ne 256 -or
+    if ($bpvReport.computeBackend -ne "cuda" -or
+        $bpvReport.samplesPerFrame -ne 256 -or
         $bpvReport.minimumGop -ne 12 -or
         $bpvReport.candidatePaletteCount -ne 8 -or
         $bpvReport.paletteSearch -ne "rgb-lut" -or
         $bpvReport.paletteIndexBitsPerChannel -ne 4 -or
         [Math]::Abs($bpvReport.sceneThreshold - 0.35) -gt 0.000001) {
-        throw "BPV wrapper did not use production palette/scene defaults."
+        throw (
+            "BPV wrapper did not use the CUDA production " +
+            "palette/scene defaults."
+        )
     }
 
     Write-Host "All six production transcode wrappers passed."

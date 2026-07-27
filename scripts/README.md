@@ -72,9 +72,9 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
 | `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Constant-quality Q6 is the default; use `VideoQuality=1..31` to override it or pass zero for bitrate control. |
-| `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
-| `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v6 and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
-| `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v6 profile with its own source, resolution, FPS, format and target quality. |
+| `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. CUDA is the default backend; use `-Device Auto` or `-Device Cpu` for fallback. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, and frame limit. |
+| `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v6 with CUDA by default and searches lambda independently for the requested RGB PSNR. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
+| `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v6 profile with its own source, resolution, FPS, format and target quality. It inherits the default CUDA backend. |
 
 The production defaults for every format accepted by the ESP32 player are
 stored in `out/source/esp32-transcode.yaml`. It records source preparation,
@@ -96,7 +96,7 @@ select the production parameters and output directory automatically:
 | Wrapper | Fixed production rules |
 | --- | --- |
 | `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
-| `transcode_bpv6.ps1` | BPV v6, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. |
+| `transcode_bpv6.ps1` | BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. |
 | `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |

@@ -27,7 +27,7 @@ param(
     [int]$Threads = 6,
 
     [ValidateSet("Cpu", "Auto", "Cuda")]
-    [string]$Device = "Auto",
+    [string]$Device = "Cuda",
 
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,

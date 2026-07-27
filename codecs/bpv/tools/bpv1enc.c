@@ -43,7 +43,7 @@ enum {
 };
 
 #ifdef BPV1_WITH_CUDA
-#define DEFAULT_DEVICE_MODE DEVICE_AUTO
+#define DEFAULT_DEVICE_MODE DEVICE_CUDA
 #else
 #define DEFAULT_DEVICE_MODE DEVICE_CPU
 #endif
@@ -185,7 +185,8 @@ static void usage(FILE *stream) {
         "  --no-scene-cuts                use only fixed GOP boundaries\n"
         "  --lambda N                     RD multiplier (default 64)\n"
         "  --candidate-palettes N         indexed palettes 1..64 (default 8)\n"
-        "  --device cpu|auto|cuda         block search backend\n"
+        "  --device cpu|auto|cuda         block search backend "
+            "(CUDA build defaults to cuda)\n"
         "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
         "  --sample-blocks N              palette reservoir (default 32768)\n"
         "  --samples-per-frame N          training blocks/frame (default 256)\n"

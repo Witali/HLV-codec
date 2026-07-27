@@ -21,7 +21,7 @@ param(
     [int]$Threads = 8,
 
     [ValidateSet("Cpu", "Auto", "Cuda")]
-    [string]$Device = "Auto",
+    [string]$Device = "Cuda",
 
     [ValidateRange(1, 65535)]
     [int]$Gop = 48,

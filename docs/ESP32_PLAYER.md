@@ -228,7 +228,9 @@ its aspect ratio and native frame rate preserved:
 
 For BPV1, the corresponding script uses the same approved 1080p source,
 preserves native 24 fps and writes BPV1 v6 with four 2-bit block modes,
-one-byte motion, unified RAW records and active per-GOP palettes:
+one-byte motion, unified RAW records and active per-GOP palettes. BPV scripts
+use the CUDA encoder by default; pass `-Device Auto` or `-Device Cpu` to an
+underlying general-purpose BPV wrapper only when CPU fallback is required:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_bpv.ps1
