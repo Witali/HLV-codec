@@ -4,7 +4,8 @@ param(
     [string]$FlashImage,
     [Parameter(Mandatory)]
     [string]$SdImage,
-    [switch]$SkipSetup
+    [switch]$SkipSetup,
+    [switch]$Headless
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,9 +42,12 @@ if (-not (Test-Path -LiteralPath $qemu -PathType Leaf)) {
 $wslQemu = ConvertTo-WslPath $qemu
 $wslFlash = ConvertTo-WslPath $flash
 $wslSd = ConvertTo-WslPath $sd
+$display = if ($Headless) { "none" } else { "sdl" }
 & wsl.exe $wslQemu @(
-    "-machine", "esp32,sdspi=on",
-    "-nographic",
+    "-machine", "esp32,sdspi=on,st7789=on",
+    "-display", $display,
+    "-monitor", "none",
+    "-serial", "stdio",
     "-drive", "file=$wslFlash,if=mtd,format=raw",
     "-drive", "file=$wslSd,if=sd,format=raw"
 )

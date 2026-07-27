@@ -1,4 +1,4 @@
-# ESP32 SDSPI QEMU sources
+# ESP32 SDSPI/ST7789 QEMU sources
 
 Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
 
@@ -9,10 +9,30 @@ Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
 - Local patch: `patches/0001-esp32-sdspi.patch`
 - Full patched files: `modified_sources/`
 
+The local ST7789 device is an SSI peripheral connected like the physical
+ESP32-2432S028 board:
+
+- SPI2
+- CS on GPIO15
+- command/data on GPIO2
+- backlight on GPIO21
+- 320x240 RGB565 framebuffer
+
+It implements the command subset used by the pinned ESP-IDF ST7789 driver,
+including its RAMCTRL little-endian pixel mode. Raw SPI behavior was
+cross-checked against the MIT-licensed
+[Wokwi ST7789 custom-chip example](https://wokwi.com/projects/453755839909287937).
+The implementation itself uses QEMU's native
+[SSI device interface](https://www.qemu.org/docs/master/devel/ssi.html).
+
 `modified_sources/` preserves complete copies of every upstream file changed
 by the local patch, using the same paths as the original source tree:
 
 ```text
+hw/display/Kconfig
+hw/display/esp_rgb.c
+hw/display/meson.build
+hw/display/st7789.c
 hw/gpio/esp32_gpio.c
 hw/sd/sd.c
 hw/sd/ssi-sd.c
@@ -20,8 +40,10 @@ hw/ssi/esp32_spi.c
 hw/xtensa/Kconfig
 hw/xtensa/esp32.c
 hw/xtensa/esp32_intc.c
+include/hw/display/esp_rgb.h
 include/hw/gpio/esp32_gpio.h
 include/hw/ssi/esp32_spi.h
+include/hw/xtensa/esp32.h
 include/hw/xtensa/esp32_intc.h
 ```
 
@@ -29,3 +51,13 @@ The patch remains the canonical installation method used by
 `../setup-qemu-sdspi.ps1`; the full files are retained for inspection and
 recovery. These files remain subject to their upstream copyright and license
 terms. See the [QEMU license documentation](https://www.qemu.org/docs/master/about/license.html).
+
+Run a flash image and an SPI SD-card image with a visible ST7789 window:
+
+```powershell
+.\run-qemu-sdspi.ps1 -FlashImage <flash.bin> -SdImage <sd.img>
+```
+
+Use `-Headless` to keep the LCD active without opening an SDL window.
+Automated tests can capture console zero through the QEMU monitor with
+`screendump <path>.ppm`.

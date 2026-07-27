@@ -512,11 +512,14 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0,
                        qdev_get_gpio_in(intmatrix_dev, ETS_SDIO_HOST_INTR_SOURCE));
 
-    /* Provide internal RAM MemoryRegion to the RGB display */
+    /* Provide internal RAM MemoryRegion to the virtual RGB display */
     s->rgb.intram = dram;
+    qdev_prop_set_bit(DEVICE(&s->rgb), "console-enabled", s->rgb_enabled);
     qdev_realize(DEVICE(&s->rgb), &s->periph_bus, &error_abort);
     esp32_soc_add_periph_device(sys_mem, &s->rgb, DR_REG_FRAMEBUF_BASE);
-    memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
+    memory_region_add_subregion_overlap(
+        sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base,
+        &s->rgb.vram, 0);
 
     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
@@ -657,6 +660,7 @@ static void esp32_soc_init(Object *obj)
 }
 
 static Property esp32_soc_properties[] = {
+    DEFINE_PROP_BOOL("rgb-enabled", Esp32SocState, rgb_enabled, true),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -698,6 +702,7 @@ struct Esp32MachineState {
     Esp32SocState esp32;
     DeviceState *flash_dev;
     bool sdspi;
+    bool st7789;
 };
 #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
 
@@ -814,6 +819,27 @@ static void esp32_machine_init_sd(Esp32MachineState *ms)
     }
 }
 
+static void esp32_machine_init_st7789(Esp32MachineState *ms)
+{
+    Esp32SocState *ss = &ms->esp32;
+    DeviceState *panel;
+
+    if (!ms->st7789) {
+        return;
+    }
+
+    panel = ssi_create_peripheral(ss->spi[2].spi, "st7789");
+    qdev_connect_gpio_out_named(
+        DEVICE(&ss->gpio), "gpio-out", 15,
+        qdev_get_gpio_in_named(panel, SSI_GPIO_CS, 0));
+    qdev_connect_gpio_out_named(
+        DEVICE(&ss->gpio), "gpio-out", 2,
+        qdev_get_gpio_in_named(panel, "dc", 0));
+    qdev_connect_gpio_out_named(
+        DEVICE(&ss->gpio), "gpio-out", 21,
+        qdev_get_gpio_in_named(panel, "backlight", 0));
+}
+
 static void esp32_machine_init(MachineState *machine)
 {
     BlockBackend* blk = NULL;
@@ -838,6 +864,7 @@ static void esp32_machine_init(MachineState *machine)
     if (machine->ram_size > 0) {
         qdev_prop_set_bit(DEVICE(&ss->dport), "has_psram", true);
     }
+    qdev_prop_set_bit(DEVICE(ss), "rgb-enabled", !ms->st7789);
 
     qdev_realize(DEVICE(ss), NULL, &error_fatal);
 
@@ -854,6 +881,8 @@ static void esp32_machine_init(MachineState *machine)
     esp32_machine_init_openeth(ss);
 
     esp32_machine_init_sd(ms);
+
+    esp32_machine_init_st7789(ms);
 
     /* Need MMU initialized prior to ELF loading,
      * so that ELF gets loaded into virtual addresses
@@ -954,6 +983,16 @@ static void esp32_machine_set_sdspi(Object *obj, bool value, Error **errp)
     ESP32_MACHINE(obj)->sdspi = value;
 }
 
+static bool esp32_machine_get_st7789(Object *obj, Error **errp)
+{
+    return ESP32_MACHINE(obj)->st7789;
+}
+
+static void esp32_machine_set_st7789(Object *obj, bool value, Error **errp)
+{
+    ESP32_MACHINE(obj)->st7789 = value;
+}
+
 /* Initialize machine type */
 static void esp32_machine_class_init(ObjectClass *oc, void *data)
 {
@@ -969,6 +1008,12 @@ static void esp32_machine_class_init(ObjectClass *oc, void *data)
                                    esp32_machine_set_sdspi);
     object_class_property_set_description(
         oc, "sdspi", "Attach the SD drive to ESP32 SPI3 with CS on GPIO5");
+    object_class_property_add_bool(oc, "st7789",
+                                   esp32_machine_get_st7789,
+                                   esp32_machine_set_st7789);
+    object_class_property_set_description(
+        oc, "st7789",
+        "Attach an ST7789 LCD to ESP32 SPI2 (CS15, DC2, backlight21)");
 }
 
 static const TypeInfo esp32_info = {

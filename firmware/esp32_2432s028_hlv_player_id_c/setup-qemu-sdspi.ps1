@@ -11,6 +11,7 @@ $repository = [IO.Path]::GetFullPath((Join-Path $project "..\.."))
 $qemuRoot = Join-Path $repository "local_tools\qemu-sdspi"
 $source = Join-Path $qemuRoot "source"
 $build = Join-Path $qemuRoot "build"
+$configMarker = Join-Path $build ".hlv-sdspi-st7789-sdl-v1"
 $patch = Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"
 $qemuCommit = "40edccac415693c5130f91c01d84176ae6008566"
 $qemuTag = "esp-develop-9.2.2-20260417"
@@ -20,6 +21,7 @@ $packages = @(
     "libgcrypt20-dev",
     "libglib2.0-dev",
     "libpixman-1-dev",
+    "libsdl2-dev",
     "libslirp-dev",
     "mtools",
     "ninja-build",
@@ -115,18 +117,20 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $build "build.ninja"))) {
+if (-not (Test-Path -LiteralPath (Join-Path $build "build.ninja")) -or
+    -not (Test-Path -LiteralPath $configMarker)) {
     New-Item -ItemType Directory -Force -Path $build | Out-Null
-    Write-Host "Configuring the patched Xtensa QEMU"
+    Write-Host "Configuring the patched Xtensa QEMU with SDL"
     & wsl.exe bash -lc (
         "cd $quotedBuild && $quotedSource/configure " +
         "--target-list=xtensa-softmmu --without-default-features " +
-        "--enable-gcrypt --enable-pixman --enable-slirp " +
+        "--enable-gcrypt --enable-pixman --enable-sdl --enable-slirp " +
         "--enable-stack-protector --with-pkgversion=HLV-SDSPI"
     )
     if ($LASTEXITCODE -ne 0) {
         throw "QEMU configuration failed."
     }
+    Set-Content -LiteralPath $configMarker -Value $qemuCommit -NoNewline
 }
 
 Write-Host "Building the patched Xtensa QEMU"
@@ -135,4 +139,5 @@ if ($LASTEXITCODE -ne 0) {
     throw "QEMU build failed."
 }
 
-Write-Host "ESP32 SDSPI QEMU is ready: $(Join-Path $build 'qemu-system-xtensa')"
+Write-Host ("ESP32 SDSPI/ST7789 QEMU is ready: " +
+    (Join-Path $build "qemu-system-xtensa"))
