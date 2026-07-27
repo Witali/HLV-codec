@@ -432,7 +432,9 @@ CRC-verified 5.19 MB transfers sustained 121.0 KiB/s at 2 Mbaud and
 121.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
 remains the default because the SD/pipeline path prevents a meaningful gain.
 A 2.5 Mbaud experiment did not enter normal data reception and timed out. The
-1.5 Mbaud, 921600 and 460800 rates remain available as fallbacks.
+Windows CH340 driver rejected both 4 and 5 Mbaud with device error 31 before
+the first data block. The 1.5 Mbaud, 921600 and 460800 rates remain available
+as fallbacks.
 
 The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in

@@ -191,7 +191,9 @@ transfers. The same full transfer passed at 3000000 baud but delivered only
 121.3 KiB/s, showing that the SD/pipeline path, rather than the UART line, is
 the current limit. An experimental 2500000-baud transfer never entered normal
 data reception and timed out. Therefore 2000000 baud remains the default;
-3000000 baud is retained only as an optional verified mode.
+3000000 baud is retained only as an optional verified mode. The Windows CH340
+driver rejected attempts to configure both 4000000 and 5000000 baud with
+device error 31, before either transfer could send its first data block.
 
 The repository-level wrappers run the same commands:
 
