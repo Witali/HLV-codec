@@ -75,6 +75,8 @@ typedef struct {
 typedef struct {
     int threads;
     int gop;
+    int minimum_gop;
+    double scene_threshold;
     double lambda;
     int candidate_palettes;
     int search_radius;
@@ -127,10 +129,23 @@ typedef struct {
     uint8_t *frames;
     int frame_count;
     int first_frame;
+    size_t gop_index;
     Buffer output;
     EncodeStats stats;
     int result;
 } GopJob;
+
+typedef struct {
+    uint32_t first_frame;
+    double scene_score;
+    int scene_cut;
+} GopEntry;
+
+typedef struct {
+    GopEntry *entries;
+    size_t count;
+    size_t capacity;
+} GopPlan;
 
 _Static_assert(sizeof(Block) == RECORD_BYTES, "BPV1 Block must occupy 9 bytes");
 
@@ -140,7 +155,10 @@ static void usage(FILE *stream) {
         "  bpv1enc <input.y4m> <output.bpv1> [options]\n\n"
         "Options:\n"
         "  --threads N                    GOP workers 1..16 (default 8)\n"
-        "  --gop N                        keyframe/GOP interval (default 48)\n"
+        "  --gop N                        maximum GOP interval (default 48)\n"
+        "  --min-gop N                    minimum scene GOP (default 12)\n"
+        "  --scene-threshold N            cut score 0..1 (default 0.35)\n"
+        "  --no-scene-cuts                use only fixed GOP boundaries\n"
         "  --lambda N                     RD multiplier (default 64)\n"
         "  --candidate-palettes N         nearby palettes 1..8 (default 3)\n"
         "  --search-radius N              motion radius 0..7 blocks (default 2)\n"
@@ -384,16 +402,14 @@ static void describe_pixels(
 
 static int load_active_palette(
     const Options *options,
-    int first_frame,
+    size_t gop_index,
     Training *training
 ) {
     FILE *file;
-    size_t gop_index;
     size_t offset;
     int palette;
-    if (!options->active_palette_path || !training || first_frame < 0)
+    if (!options->active_palette_path || !training)
         return -1;
-    gop_index = (size_t)first_frame / (size_t)options->gop;
     if (gop_index > SIZE_MAX / sizeof training->palette) return -1;
     offset = gop_index * sizeof training->palette;
     if (offset > LONG_MAX) return -1;
@@ -703,23 +719,86 @@ static int train_palettes(
     return 0;
 }
 
+static int gop_plan_add(
+    GopPlan *plan,
+    uint32_t first_frame,
+    int scene_cut,
+    double scene_score
+) {
+    GopEntry *resized;
+    size_t capacity;
+    if (!plan || (plan->count &&
+        first_frame <= plan->entries[plan->count - 1].first_frame)) {
+        return -1;
+    }
+    if (plan->count == plan->capacity) {
+        capacity = plan->capacity ? plan->capacity * 2U : 64U;
+        if (capacity < plan->capacity ||
+            capacity > SIZE_MAX / sizeof *plan->entries) {
+            return -1;
+        }
+        resized = (GopEntry *)realloc(
+            plan->entries, capacity * sizeof *plan->entries);
+        if (!resized) return -1;
+        plan->entries = resized;
+        plan->capacity = capacity;
+    }
+    plan->entries[plan->count].first_frame = first_frame;
+    plan->entries[plan->count].scene_cut = scene_cut;
+    plan->entries[plan->count].scene_score = scene_score;
+    plan->count++;
+    return 0;
+}
+
+static double scene_change_score(
+    const uint8_t *previous,
+    const uint8_t *current,
+    const Y4mInfo *info,
+    double *previous_mafd
+) {
+    uint64_t absolute_difference = 0;
+    size_t pixel;
+    double mafd;
+    double delta;
+    if (!previous || !current || !info || !info->luma_bytes ||
+        !previous_mafd) {
+        return 0.0;
+    }
+    for (pixel = 0; pixel < info->luma_bytes; ++pixel) {
+        int difference = (int)current[pixel] - previous[pixel];
+        absolute_difference +=
+            (uint64_t)(difference < 0 ? -difference : difference);
+    }
+    mafd = absolute_difference / (double)info->luma_bytes;
+    delta = fabs(mafd - *previous_mafd);
+    *previous_mafd = mafd;
+    return fmin(mafd, delta) / 100.0;
+}
+
 static int scan_and_train(
     FILE *input,
     const Options *options,
     Y4mInfo *info,
     Training *training,
-    uint32_t *frame_count
+    uint32_t *frame_count,
+    GopPlan *plan
 ) {
     SampleReservoir reservoir;
     uint8_t *frame = NULL;
+    uint8_t *previous_frame = NULL;
     uint8_t *labels = NULL;
     uint32_t frames = 0;
+    double previous_mafd = 0.0;
     int blocks_x, blocks_y, block_count;
     int result = 0;
     memset(&reservoir, 0, sizeof reservoir);
-    if (parse_y4m_header(input, info)) goto fail;
+    if (!plan || parse_y4m_header(input, info)) goto fail;
     frame = (uint8_t *)malloc(info->frame_bytes);
     if (!frame) goto fail;
+    if (options->scene_threshold > 0.0) {
+        previous_frame = (uint8_t *)malloc(info->frame_bytes);
+        if (!previous_frame) goto fail;
+    }
     blocks_x = (info->width + BLOCK_SIZE - 1) / BLOCK_SIZE;
     blocks_y = (info->height + BLOCK_SIZE - 1) / BLOCK_SIZE;
     block_count = blocks_x * blocks_y;
@@ -732,6 +811,25 @@ static int scan_and_train(
     }
     while ((!options->max_frames || frames < options->max_frames) &&
            (result = read_y4m_frame(input, info, frame)) > 0) {
+        if (!frames) {
+            if (gop_plan_add(plan, 0, 0, 0.0)) goto fail;
+        } else {
+            const uint32_t first =
+                plan->entries[plan->count - 1].first_frame;
+            const uint32_t length = frames - first;
+            double score = 0.0;
+            int scene_cut = 0;
+            if (previous_frame) {
+                score = scene_change_score(
+                    previous_frame, frame, info, &previous_mafd);
+                scene_cut =
+                    length >= (uint32_t)options->minimum_gop &&
+                    score >= options->scene_threshold;
+            }
+            if (scene_cut || length >= (uint32_t)options->gop) {
+                if (gop_plan_add(plan, frames, scene_cut, score)) goto fail;
+            }
+        }
         if (training) {
             int sample_count = options->sample_blocks_per_frame < block_count
                 ? options->sample_blocks_per_frame : block_count;
@@ -746,6 +844,8 @@ static int scan_and_train(
                 reservoir_add(&reservoir, pixels);
             }
         }
+        if (previous_frame)
+            memcpy(previous_frame, frame, info->frame_bytes);
         frames++;
         if (options->progress && !(frames % 1000))
             fprintf(stderr, "BPV1 %s scan: %u frames\n",
@@ -767,11 +867,13 @@ static int scan_and_train(
     *frame_count = frames;
     free(labels);
     free(frame);
+    free(previous_frame);
     free(reservoir.blocks);
     return 0;
 fail:
     free(labels);
     free(frame);
+    free(previous_frame);
     free(reservoir.blocks);
     return -1;
 }
@@ -1267,7 +1369,7 @@ static int encode_gop(GopJob *job) {
     if (options->active_palettes) {
         if (options->active_palette_path
                 ? load_active_palette(
-                    options, job->first_frame, &active_training)
+                    options, job->gop_index, &active_training)
                 : train_gop_palette(job->frames, job->frame_count,
                     job->first_frame, info, options, &active_training)) {
             goto fail;
@@ -1602,32 +1704,44 @@ static int encode_all_gops(
     const Options *options,
     const Training *training,
     uint32_t frame_count,
+    const GopPlan *plan,
     EncodeStats *stats,
     uint64_t *payload_bytes,
     AudioInput *audio
 ) {
     Y4mInfo info;
     uint32_t next_frame = 0;
-    if (fseek(input, 0, SEEK_SET) || parse_y4m_header(input, &info) ||
+    size_t next_gop = 0;
+    if (!plan || !plan->count ||
+        fseek(input, 0, SEEK_SET) || parse_y4m_header(input, &info) ||
         memcmp(&info, expected_info, sizeof info)) return -1;
-    while (next_frame < frame_count) {
+    while (next_gop < plan->count) {
         GopJob jobs[16];
         thrd_t workers[16];
         int worker_active[16] = {0};
         int job_count = 0;
         int job_index;
         memset(jobs, 0, sizeof jobs);
-        while (job_count < options->threads && next_frame < frame_count) {
-            int remaining = (int)(frame_count - next_frame);
-            int count = remaining < options->gop ? remaining : options->gop;
+        while (job_count < options->threads && next_gop < plan->count) {
+            const uint32_t first = plan->entries[next_gop].first_frame;
+            const uint32_t end = next_gop + 1U < plan->count
+                ? plan->entries[next_gop + 1U].first_frame
+                : frame_count;
+            int count;
             int frame;
             GopJob *job = &jobs[job_count];
+            if (first != next_frame || end <= first ||
+                end - first > (uint32_t)INT_MAX) {
+                goto batch_fail;
+            }
+            count = (int)(end - first);
             job_count++;
             job->options = options;
             job->training = training;
             job->info = expected_info;
             job->frame_count = count;
-            job->first_frame = (int)next_frame;
+            job->first_frame = (int)first;
+            job->gop_index = next_gop;
             job->frames = (uint8_t *)malloc(
                 (size_t)count * expected_info->frame_bytes);
             if (!job->frames) goto batch_fail;
@@ -1636,7 +1750,8 @@ static int encode_all_gops(
                     job->frames + (size_t)frame * expected_info->frame_bytes);
                 if (result != 1) goto batch_fail;
             }
-            next_frame += (uint32_t)count;
+            next_frame = end;
+            next_gop++;
         }
         for (job_index = 0; job_index < job_count; ++job_index) {
             if (thrd_create(&workers[job_index], gop_worker,
@@ -1791,18 +1906,23 @@ static int write_report(
     const Options *options,
     const EncodeStats *stats,
     uint32_t frame_count,
+    const GopPlan *plan,
     uint64_t file_bytes,
     double elapsed_seconds
 ) {
     const int version = BPV_VERSION;
+    uint32_t scene_keyframes = 0;
     const uint32_t palette_updates =
-        (frame_count + (uint32_t)options->gop - 1U) /
-        (uint32_t)options->gop;
+        plan ? (uint32_t)plan->count : 0U;
+    size_t gop_index;
     double duration =
         frame_count * (double)info->fps_denominator / info->fps_numerator;
     double mse = stats->samples
         ? stats->squared_error / (double)stats->samples : 0.0;
     double psnr = mse > 0.0 ? 10.0 * log10(255.0 * 255.0 / mse) : 0.0;
+    if (!plan || !plan->count) return -1;
+    for (gop_index = 0; gop_index < plan->count; ++gop_index)
+        if (plan->entries[gop_index].scene_cut) scene_keyframes++;
     if (fprintf(stream,
         "{\n"
         "  \"codec\": \"BPV1\",\n"
@@ -1829,6 +1949,9 @@ static int write_report(
         "  \"audioChannels\": %d,\n"
         "  \"threads\": %d,\n"
         "  \"gop\": %d,\n"
+        "  \"minimumGop\": %d,\n"
+        "  \"sceneThreshold\": %.6f,\n"
+        "  \"sceneKeyframes\": %u,\n"
         "  \"lambda\": %.6f,\n"
         "  \"candidatePaletteCount\": %d,\n"
         "  \"searchRadius\": %d,\n"
@@ -1857,8 +1980,8 @@ static int write_report(
         "    \"quantized\": %" PRIu64 "\n"
         "  },\n"
         "  \"elapsedSeconds\": %.6f,\n"
-        "  \"encodeFps\": %.6f\n"
-        "}\n",
+        "  \"encodeFps\": %.6f,\n"
+        "  \"keyframes\": [",
         info->width, info->height, frame_count,
         info->fps_numerator, info->fps_denominator, duration, file_bytes,
         file_bytes * 8.0 / duration / 1000.0,
@@ -1867,7 +1990,8 @@ static int write_report(
         options->audio_path ? "pcm_u8" : "none",
         options->audio_path ? options->audio_rate : 0,
         options->audio_path ? 1 : 0,
-        options->threads, options->gop, options->lambda,
+        options->threads, options->gop, options->minimum_gop,
+        options->scene_threshold, scene_keyframes, options->lambda,
         options->candidate_palettes, options->search_radius,
         options->active_palette_path ? "active-override" :
             options->active_palettes ? "active-gop" : "fixed-global",
@@ -1885,12 +2009,24 @@ static int write_report(
         stats->direct_9_to_16,
         mse, psnr, stats->previous_decisions, stats->quantized_decisions,
         elapsed_seconds, frame_count / elapsed_seconds) < 0) return -1;
-    return 0;
+    for (gop_index = 0; gop_index < plan->count; ++gop_index) {
+        const GopEntry *entry = &plan->entries[gop_index];
+        const char *reason = !gop_index ? "initial" :
+            entry->scene_cut ? "scene" : "maximumGop";
+        if (fprintf(stream,
+                "%s{\"frame\":%u,\"reason\":\"%s\","
+                "\"sceneScore\":%.6f}",
+                gop_index ? "," : "", entry->first_frame,
+                reason, entry->scene_score) < 0) {
+            return -1;
+        }
+    }
+    return fputs("]\n}\n", stream) == EOF ? -1 : 0;
 }
 
 int main(int argc, char **argv) {
     Options options = {
-        8, 48, 64.0, 3, 2, 256, 32768, 16, 10, 10, 8192,
+        8, 48, 12, 0.35, 64.0, 3, 2, 256, 32768, 16, 10, 10, 8192,
         0, NULL, 0, 1, NULL, 16000, 1, NULL
     };
     const char *input_path = NULL;
@@ -1903,6 +2039,7 @@ int main(int argc, char **argv) {
     Y4mInfo info;
     Training training;
     EncodeStats stats;
+    GopPlan gop_plan = {0};
     uint32_t frame_count = 0;
     uint64_t payload_bytes = 0;
     uint64_t file_bytes;
@@ -1925,6 +2062,16 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argument, "--gop") && value) {
             if (parse_int_option(value, 1, 65535, &options.gop)) goto bad_option;
             index++;
+        } else if (!strcmp(argument, "--min-gop") && value) {
+            if (parse_int_option(value, 1, 65535,
+                    &options.minimum_gop)) goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--scene-threshold") && value) {
+            if (parse_double_option(value, 0, 1,
+                    &options.scene_threshold)) goto bad_option;
+            index++;
+        } else if (!strcmp(argument, "--no-scene-cuts")) {
+            options.scene_threshold = 0.0;
         } else if (!strcmp(argument, "--lambda") && value) {
             if (parse_double_option(value, 0, 1e9, &options.lambda))
                 goto bad_option;
@@ -2029,16 +2176,15 @@ int main(int argc, char **argv) {
             options.active_palettes ? "frame-count" : "palette-training");
     }
     if (scan_and_train(input, &options, &info,
-            options.active_palettes ? NULL : &training, &frame_count)) {
+            options.active_palettes ? NULL : &training, &frame_count,
+            &gop_plan)) {
         fprintf(stderr, "bpv1enc: input scan failed\n");
         goto cleanup;
     }
     if (options.active_palette_path) {
         FILE *palette_file = fopen(options.active_palette_path, "rb");
-        uint64_t gop_count =
-            ((uint64_t)frame_count + (uint64_t)options.gop - 1) /
-            (uint64_t)options.gop;
-        uint64_t expected = gop_count * sizeof training.palette;
+        uint64_t expected =
+            (uint64_t)gop_plan.count * sizeof training.palette;
         long actual;
         if (!palette_file || fseek(palette_file, 0, SEEK_END) ||
             (actual = ftell(palette_file)) < 0 ||
@@ -2067,7 +2213,7 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
     if (encode_all_gops(input, output, &info, &options, &training,
-            frame_count, &stats, &payload_bytes, &audio)) {
+            frame_count, &gop_plan, &stats, &payload_bytes, &audio)) {
         fprintf(stderr, "bpv1enc: GOP encoding failed\n");
         goto cleanup;
     }
@@ -2087,7 +2233,7 @@ int main(int argc, char **argv) {
     if (options.report_path) {
         report = fopen(options.report_path, "wb");
         if (!report || write_report(report, input_path, output_path,
-                &info, &options, &stats, frame_count, file_bytes,
+                &info, &options, &stats, frame_count, &gop_plan, file_bytes,
                 wall_seconds() - started)) {
             fprintf(stderr, "bpv1enc: cannot write report\n");
             goto cleanup;
@@ -2096,7 +2242,7 @@ int main(int argc, char **argv) {
         report = NULL;
     }
     write_report(stderr, input_path, output_path, &info, &options, &stats,
-        frame_count, file_bytes, wall_seconds() - started);
+        frame_count, &gop_plan, file_bytes, wall_seconds() - started);
     if (audio.file)
         fprintf(stderr, "BPV1 audio: PCM_U8 mono %u Hz, %.3f MiB\n",
                 audio.sample_rate, audio.bytes / 1048576.0);
@@ -2114,6 +2260,7 @@ cleanup:
     if (input) fclose(input);
     if (audio.file) fclose(audio.file);
     if (exit_code && partial_path) remove(partial_path);
+    free(gop_plan.entries);
     free(partial_path);
     return exit_code;
 }

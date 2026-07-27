@@ -40,6 +40,7 @@ function runEncoder(
   audio = null,
   activePalettes = true,
   activePaletteFile = null,
+  extraArguments = [],
 ) {
   const arguments_ = [
     input,
@@ -63,6 +64,7 @@ function runEncoder(
   if (audio) {
     arguments_.push("--audio-u8", audio, "--audio-rate", "16000");
   }
+  arguments_.push(...extraArguments);
   const result = childProcess.spawnSync(executable, arguments_, {
     cwd: packageRoot,
     encoding: "utf8",
@@ -97,6 +99,9 @@ try {
   const outputOverride4 = path.join(temporary, "output-override-4.bpv1");
   const reportOverride1 = path.join(temporary, "report-override-1.json");
   const reportOverride4 = path.join(temporary, "report-override-4.json");
+  const sceneInput = path.join(temporary, "scene-input.y4m");
+  const sceneOutput = path.join(temporary, "scene-output.bpv1");
+  const sceneReport = path.join(temporary, "scene-report.json");
   const width = 64;
   const height = 64;
   const parts = [y4m.y4mHeader(width, height, 24, 1)];
@@ -108,6 +113,20 @@ try {
     ));
   }
   fs.writeFileSync(input, Buffer.concat(parts));
+  const sceneParts = [y4m.y4mHeader(width, height, 24, 1)];
+  for (let frame = 0; frame < 8; frame += 1) {
+    const value = frame < 4 ? 0 : 255;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const offset = pixel * 4;
+      rgba[offset] = value;
+      rgba[offset + 1] = value;
+      rgba[offset + 2] = value;
+      rgba[offset + 3] = 255;
+    }
+    sceneParts.push(y4m.y4mFrame(rgba, width, height));
+  }
+  fs.writeFileSync(sceneInput, Buffer.concat(sceneParts));
   fs.writeFileSync(audio, Buffer.from(
     Array.from({ length: 4000 }, (_, index) => index & 255),
   ));
@@ -116,6 +135,20 @@ try {
   runEncoder(input, output4, report4, 4);
   runEncoder(input, outputAudio, reportAudio, 4, audio);
   runEncoder(input, outputFixed, reportFixed, 1, null, false);
+  runEncoder(
+    sceneInput,
+    sceneOutput,
+    sceneReport,
+    1,
+    null,
+    true,
+    null,
+    [
+      "--gop", "12",
+      "--min-gop", "2",
+      "--scene-threshold", "0.35",
+    ],
+  );
 
   const bytes1 = fs.readFileSync(output1);
   const bytes4 = fs.readFileSync(output4);
@@ -211,6 +244,29 @@ try {
   const overrideReport =
     JSON.parse(fs.readFileSync(reportOverride4, "utf8"));
   assert.equal(overrideReport.paletteMode, "active-override");
+
+  const sceneKeyframes = [];
+  const sceneInfo = bpv.walkFrames(
+    fs.readFileSync(sceneOutput),
+    (frame) => {
+      if (frame.keyframe) sceneKeyframes.push(frame.frameIndex);
+    },
+  );
+  assert.deepEqual(
+    sceneKeyframes,
+    [0, 4],
+    "a hard cut must start a new GOP at the changed frame",
+  );
+  assert.equal(sceneInfo.keyframes, 2);
+  const parsedSceneReport =
+    JSON.parse(fs.readFileSync(sceneReport, "utf8"));
+  assert.equal(parsedSceneReport.sceneKeyframes, 1);
+  assert.equal(parsedSceneReport.paletteUpdates, 2);
+  assert.deepEqual(
+    parsedSceneReport.keyframes.map((keyframe) => keyframe.frame),
+    [0, 4],
+  );
+  assert.equal(parsedSceneReport.keyframes[1].reason, "scene");
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }

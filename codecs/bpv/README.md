@@ -14,7 +14,8 @@ The common video profile uses:
   or five to sixteen direct 4-bit palette indices;
 - four 2-bit modes: `SKIP`, exact block motion, full-block dictionary and
   unified raw blocks;
-- periodic keyframes that reset prediction and dictionaries;
+- keyframes at scene cuts or the maximum GOP interval, resetting prediction
+  and dictionaries;
 - encoder-side selection by `J = RGB SSE + lambda * estimated payload bits`.
 
 BPV1 v6 trains and transmits an active 64x16 palette bank in every keyframe.
@@ -74,11 +75,15 @@ existing file performs a complete sequential C decode:
 ## Native C encoder
 
 The production encoder uses two bounded-memory passes over a seekable
-8-bit YUV 4:2:0 Y4M file. The first pass counts frames. During the second pass,
-each independent GOP trains its own 64x16 RGB palette bank from a reservoir
-sample, encodes with that bank, and is written in presentation order. GOP
-training and encoding run in parallel. Eight worker threads, a 48-frame GOP,
-active palettes and lambda 64 are the defaults.
+8-bit YUV 4:2:0 Y4M file. The first pass counts frames and detects hard cuts
+with a luma mean-absolute-frame-difference score. A detected cut starts a new
+GOP at the changed frame once the minimum GOP length is reached; 48 frames
+remain the maximum interval. During the second pass, each independent GOP
+trains its own 64x16 RGB palette bank from a reservoir sample, encodes with
+that bank, and is written in presentation order. GOP training and encoding
+run in parallel. Eight worker threads, a 48-frame maximum GOP, a 12-frame
+minimum scene GOP, scene threshold 0.35, active palettes and lambda 64 are the
+defaults. `--no-scene-cuts` retains fixed-interval GOPs for comparison.
 
 ```sh
 ffmpeg -hide_banner -loglevel error -i input.mov -an \
@@ -86,6 +91,7 @@ ffmpeg -hide_banner -loglevel error -i input.mov -an \
   -fps_mode passthrough -f yuv4mpegpipe input.y4m
 ./codecs/bpv/bpv1enc input.y4m output.bpv1 \
   --threads 8 --gop 48 --lambda 64 \
+  --min-gop 12 --scene-threshold 0.35 \
   --active-palettes \
   --audio-u8 input-mono-16000.u8 --audio-rate 16000 \
   --report output.json
