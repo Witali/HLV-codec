@@ -81,6 +81,11 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 
 ## Phase 1: reduce RAM and open 320x240
 
+- [ ] Select the reference strategy by picture size and measured heap:
+  - prefer dual references and an O(1) pointer swap at resolutions where both
+    packed frames fit without reducing the player safety reserve;
+  - retain one reference plus 32 rolling luma rows for `320x240`;
+  - compare complete physical work, not decoder time alone.
 - [x] Add a one-reference HLV fast path modelled on BPV v7:
   - enforce and validate the header motion-search radius for every actual
     global, macroblock, subblock and rectangular motion vector;
@@ -113,6 +118,20 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
 - [ ] Record stack high-water marks. HLV `320x240` now opens with audio enabled;
       after decoder allocation the board reports 89,048 free heap bytes and
       an 81,920-byte largest block.
+
+## Phase 1A: remove one-reference pipeline stalls
+
+- [ ] Measure row-guard wait time separately from prediction, residual,
+      packing and input time.
+- [ ] Test a render-ahead watermark:
+  - render at least the first 16 source rows before CPU1 starts decoding the
+    next frame;
+  - continue rendering the remaining rows concurrently;
+  - keep the row guard as a correctness backstop for later CPU0 stalls;
+  - reject the scheduling change if complete physical work or observed rate
+    improves by less than 0.5%.
+- [ ] Replace the yielding row-guard spin with a task notification only if
+      measured wait time remains significant after render-ahead.
 
 ## Phase 2: packed prediction and reconstruction
 
@@ -149,6 +168,9 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
       intermediate full luma row.
 - [ ] Precompute corrected U/V colour contributions once per chroma sample and
       reuse them for both associated luma rows.
+- [ ] Convert and submit RGB565 strips through both LCD DMA buffers so CPU0
+      conversion overlaps the previous transfer wherever the display driver
+      permits it.
 - [ ] Measure conversion CPU cycles separately from LCD DMA waits.
 
 ## Phase 5: encoder-side decode cost
@@ -159,6 +181,25 @@ eight-row reach, while larger stores are only inter-core scheduling slack.
       counts, physical decode time and render time.
 - [ ] Add a separate ESP32-oriented encoding profile only if it preserves the
       requested quality while producing a clear end-to-end improvement.
+- [ ] Do not reduce the current eight-pixel motion radius without matched
+      quality/bitrate tests: both Danila assets use actual vectors at -8 and
+      +8 rows.
+
+## Current priority order
+
+1. current-C99 stage profile and row-guard wait measurement;
+2. adaptive dual-reference selection for smaller pictures;
+3. 16-row render-ahead for one-reference `320x240`;
+4. fixed-denominator packed prediction kernels;
+5. fused prediction/residual/packing;
+6. fused display unpack/Q4/RGB565;
+7. inverse-WHT and encoder decode-cost experiments;
+8. CRC only after the dominant stages have been reduced.
+
+At `320x240`, 30 fps requires both decode and render wall time below 33.3 ms.
+The current approximately 68.4 ms decode and 34.1 ms render measurements mean
+that isolated micro-optimisations cannot reach that target; retained work must
+reduce a measured dominant stage or remove pipeline serialization.
 
 ## Do not repeat unchanged
 
