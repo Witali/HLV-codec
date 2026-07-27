@@ -1527,8 +1527,9 @@ OSCL_EXPORT_REF void PVSetCurrentYUVPlanes(
 /*  Note     :                                                              */
 /*  Modified :                                                              */
 /* ======================================================================== */
-uint VideoDecoderErrorDetected(VideoDecData *)
+uint VideoDecoderErrorDetected(VideoDecData *video)
 {
+    (void)video;
     /* This is only used for trapping bitstream error for debuging */
     return 0;
 }

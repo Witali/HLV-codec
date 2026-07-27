@@ -14,7 +14,7 @@ set(mjpeg_idct_sources)
 if(MJPEG_OPTIMIZED_IDCT AND MJPEG_HOT_IRAM)
     list(APPEND mjpeg_idct_sources "mjpeg_idct_optimized.S")
     if(MJPEG_IDCT_REDUCED_ROWS)
-        list(APPEND mjpeg_idct_sources "mjpeg_idct_reduced.cpp")
+        list(APPEND mjpeg_idct_sources "mjpeg_idct_reduced.c")
     endif()
 endif()
 set(mjpeg_clear_sources)
@@ -23,7 +23,7 @@ if(MJPEG_FAST_COEFFICIENT_CLEAR)
 endif()
 set(mjpeg_color_sources)
 if(MJPEG_FIXED_RGB565 AND MJPEG_HOT_IRAM)
-    list(APPEND mjpeg_color_sources "mjpeg_color_optimized.cpp")
+    list(APPEND mjpeg_color_sources "mjpeg_color_optimized.c")
 endif()
 
 function(enable_mjpeg_hot_iram component_target)
@@ -126,8 +126,8 @@ if(MJPEG_QEMU_BENCHMARK)
         "Number of embedded MJPEG frames decoded by the QEMU benchmark")
     idf_component_register(
         SRCS
-            "qemu_mjpeg_benchmark.cpp"
-            "mjpeg_avi_decoder.cpp"
+            "qemu_mjpeg_benchmark.c"
+            "mjpeg_avi_decoder.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
@@ -164,7 +164,7 @@ if(MJPEG_QEMU_BENCHMARK)
 elseif(BPV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_bpv_render_benchmark.cpp"
+            "qemu_bpv_render_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             bpv1
@@ -177,7 +177,7 @@ elseif(BPV_QEMU_BENCHMARK)
 elseif(H263_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_h263_benchmark.cpp"
+            "qemu_h263_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             esp_rom
@@ -193,7 +193,7 @@ elseif(H263_QEMU_BENCHMARK)
 elseif(MPEG1_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_mpeg1_benchmark.cpp"
+            "qemu_mpeg1_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             compact_yuv420
@@ -209,7 +209,7 @@ elseif(MPEG1_QEMU_BENCHMARK)
 elseif(DIVX3_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_divx3_benchmark.cpp"
+            "qemu_divx3_benchmark.c"
         INCLUDE_DIRS "."
         REQUIRES
             compact_yuv420
@@ -226,8 +226,8 @@ elseif(DIVX3_QEMU_BENCHMARK)
 elseif(HLV_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
-            "qemu_benchmark.cpp"
-            "hlv_esp32_decoder.cpp"
+            "qemu_benchmark.c"
+            "hlv_esp32_decoder.c"
         INCLUDE_DIRS "."
         REQUIRES
             hlv1
@@ -242,12 +242,12 @@ elseif(HLV_QEMU_BENCHMARK)
 else()
     idf_component_register(
         SRCS
-            "hlv_player.cpp"
-            "cyd_display.cpp"
-            "bpv_esp32_decoder.cpp"
-            "hlv_esp32_decoder.cpp"
-            "mjpeg_avi_decoder.cpp"
-            "uart_file_upload.cpp"
+            "hlv_player.c"
+            "cyd_display.c"
+            "bpv_esp32_decoder.c"
+            "hlv_esp32_decoder.c"
+            "mjpeg_avi_decoder.c"
+            "uart_file_upload.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
@@ -292,7 +292,7 @@ else()
     endif()
 endif()
 
-target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -ffunction-sections

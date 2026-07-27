@@ -12,64 +12,40 @@
 #endif
 
 #ifdef _MSC_VER
-#include <cstdint>
-#include <limits>
-#include <type_traits>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
 
-template <typename Left, typename Right, typename Result>
-static inline bool amrnb_add_overflow(Left left, Right right,
-                                      Result *result) {
-    static_assert(std::is_signed<Result>::value &&
-                      sizeof(Result) <= sizeof(int32_t),
-                  "AMR-NB arithmetic expects signed 16/32-bit values");
-    const int64_t wide =
-        static_cast<int64_t>(left) + static_cast<int64_t>(right);
-    *result = static_cast<Result>(
-        static_cast<typename std::make_unsigned<Result>::type>(wide));
-    return wide <
-               static_cast<int64_t>(std::numeric_limits<Result>::min()) ||
-           wide >
-               static_cast<int64_t>(std::numeric_limits<Result>::max());
+static inline bool amrnb_add_overflow_i32(int64_t left, int64_t right,
+                                          int32_t *result) {
+    const int64_t wide = left + right;
+    *result = (int32_t)(uint32_t)wide;
+    return wide < INT32_MIN || wide > INT32_MAX;
 }
 
-template <typename Left, typename Right, typename Result>
-static inline bool amrnb_sub_overflow(Left left, Right right,
-                                      Result *result) {
-    static_assert(std::is_signed<Result>::value &&
-                      sizeof(Result) <= sizeof(int32_t),
-                  "AMR-NB arithmetic expects signed 16/32-bit values");
-    const int64_t wide =
-        static_cast<int64_t>(left) - static_cast<int64_t>(right);
-    *result = static_cast<Result>(
-        static_cast<typename std::make_unsigned<Result>::type>(wide));
-    return wide <
-               static_cast<int64_t>(std::numeric_limits<Result>::min()) ||
-           wide >
-               static_cast<int64_t>(std::numeric_limits<Result>::max());
+static inline bool amrnb_sub_overflow_i32(int64_t left, int64_t right,
+                                          int32_t *result) {
+    const int64_t wide = left - right;
+    *result = (int32_t)(uint32_t)wide;
+    return wide < INT32_MIN || wide > INT32_MAX;
 }
 
-template <typename Left, typename Right, typename Result>
-static inline bool amrnb_mul_overflow(Left left, Right right,
-                                      Result *result) {
-    static_assert(std::is_signed<Result>::value &&
-                      sizeof(Result) <= sizeof(int32_t),
-                  "AMR-NB arithmetic expects signed 16/32-bit values");
-    const int64_t wide =
-        static_cast<int64_t>(left) * static_cast<int64_t>(right);
-    *result = static_cast<Result>(
-        static_cast<typename std::make_unsigned<Result>::type>(wide));
-    return wide <
-               static_cast<int64_t>(std::numeric_limits<Result>::min()) ||
-           wide >
-               static_cast<int64_t>(std::numeric_limits<Result>::max());
+static inline bool amrnb_mul_overflow_i32(int64_t left, int64_t right,
+                                          int32_t *result) {
+    const int64_t wide = left * right;
+    *result = (int32_t)(uint32_t)wide;
+    return wide < INT32_MIN || wide > INT32_MAX;
 }
 
 #define __builtin_add_overflow(left, right, result) \
-    amrnb_add_overflow((left), (right), (result))
+    amrnb_add_overflow_i32((int64_t)(left), (int64_t)(right), \
+                           (int32_t *)(result))
 #define __builtin_sub_overflow(left, right, result) \
-    amrnb_sub_overflow((left), (right), (result))
+    amrnb_sub_overflow_i32((int64_t)(left), (int64_t)(right), \
+                           (int32_t *)(result))
 #define __builtin_mul_overflow(left, right, result) \
-    amrnb_mul_overflow((left), (right), (result))
+    amrnb_mul_overflow_i32((int64_t)(left), (int64_t)(right), \
+                           (int32_t *)(result))
 #endif
 
 #endif

@@ -55,4 +55,3 @@ Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 if ($LASTEXITCODE -ne 0) {
     throw "MPEG-1 profile transcode failed."
 }
-

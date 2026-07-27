@@ -16,7 +16,17 @@ import serial
 
 CONTROL_BAUD = 460_800
 DEFAULT_DATA_BAUD = 2_000_000
-SUPPORTED_DATA_BAUDS = (460_800, 921_600, 1_500_000, 2_000_000)
+UPLOAD_PROTOCOL_VERSION = 2
+WINDOW_ACK_TIMEOUT_SECONDS = 2.0
+WINDOW_PROGRESS_TIMEOUT_SECONDS = 10.0
+MAX_BLOCK_ATTEMPTS = 5
+SUPPORTED_DATA_BAUDS = (
+    460_800,
+    921_600,
+    1_500_000,
+    2_000_000,
+    3_000_000,
+)
 MAX_FILE_SIZE = 0xFFFFFFFF
 BLOCK_MAGIC = b"HLVB"
 BLOCK_HEADER = struct.Struct("<4sIHI")
@@ -27,6 +37,10 @@ VALID_NAME = re.compile(
 
 
 class UploadError(RuntimeError):
+    pass
+
+
+class ResponseTimeout(UploadError):
     pass
 
 
@@ -51,7 +65,7 @@ def read_protocol_line(port: serial.Serial, deadline: float) -> str:
         line = raw.decode("ascii", errors="replace").strip()
         if line.startswith(("HLV",)):
             return line
-    raise UploadError("timeout waiting for the ESP32 response")
+    raise ResponseTimeout("timeout waiting for the ESP32 response")
 
 
 def wait_for_response(port: serial.Serial, prefixes: tuple[str, ...],
@@ -147,7 +161,8 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         # A leading newline discards a partial command left by a previous
         # interrupted terminal session.
         command = (
-            f"\nHLVPUT 1 {remote_name} {size} {file_crc:08x} "
+            f"\nHLVPUT {UPLOAD_PROTOCOL_VERSION} {remote_name} "
+            f"{size} {file_crc:08x} "
             f"{data_baud}\n"
         ).encode("ascii")
         port.write(command)
@@ -155,55 +170,157 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         ready = wait_for_response(
             port, ("HLVREADY ",), response_timeout)
         fields = ready.split()
-        if len(fields) != 4 or fields[:2] != ["HLVREADY", "1"]:
+        if (
+            len(fields) != 5
+            or fields[:2]
+            != ["HLVREADY", str(UPLOAD_PROTOCOL_VERSION)]
+        ):
             raise UploadError(f"malformed ready response: {ready}")
         chunk_size = int(fields[2])
         accepted_baud = int(fields[3])
-        if not 0 < chunk_size <= 65535 or accepted_baud != data_baud:
+        window_size = int(fields[4])
+        if (
+            not 0 < chunk_size <= 65535
+            or accepted_baud != data_baud
+            or not 0 < window_size <= 16
+        ):
             raise UploadError(f"unsupported ready response: {ready}")
 
         time.sleep(0.05)
         port.baudrate = accepted_baud
         time.sleep(0.02)
         started = time.monotonic()
-        sent = 0
-        sequence = 0
+        acknowledged = 0
+        next_sequence = 0
+        next_offset = 0
         next_report = 0.0
+        last_progress = started
+        in_flight: dict[int, tuple[bytes, int, int]] = {}
+
+        def retransmit_from(sequence: int) -> None:
+            retransmitted = False
+            for pending_sequence in sorted(in_flight):
+                if pending_sequence < sequence:
+                    continue
+                packet, end_offset, attempts = in_flight[pending_sequence]
+                if attempts >= MAX_BLOCK_ATTEMPTS:
+                    raise UploadError(
+                        f"block {pending_sequence} failed "
+                        f"{MAX_BLOCK_ATTEMPTS} times"
+                    )
+                in_flight[pending_sequence] = (
+                    packet, end_offset, attempts + 1
+                )
+                port.write(packet)
+                retransmitted = True
+            if not retransmitted:
+                raise UploadError(
+                    f"ESP32 requested unknown block {sequence}"
+                )
+
         with path.open("rb") as source:
-            while data := source.read(chunk_size):
-                packet = make_block(sequence, data)
-                for attempt in range(5):
+            source_finished = False
+            while in_flight or not source_finished:
+                while not source_finished and len(in_flight) < window_size:
+                    data = source.read(chunk_size)
+                    if not data:
+                        source_finished = True
+                        break
+                    packet = make_block(next_sequence, data)
+                    next_offset += len(data)
+                    in_flight[next_sequence] = (
+                        packet, next_offset, 1
+                    )
                     port.write(packet)
-                    port.flush()
-                    response = wait_for_response(
-                        port, ("HLVACK ", "HLVNAK "), response_timeout)
-                    if response.startswith("HLVNAK "):
-                        if attempt == 4:
-                            raise UploadError(
-                                f"block {sequence} failed CRC five times")
-                        continue
-                    fields = response.split()
-                    expected_sent = sent + len(data)
-                    if (len(fields) != 3 or int(fields[1]) != sequence or
-                            int(fields[2]) != expected_sent):
-                        raise UploadError(
-                            f"unexpected block acknowledgement: {response}")
-                    sent = expected_sent
-                    sequence += 1
+                    next_sequence += 1
+
+                if not in_flight:
                     break
+
+                try:
+                    response = wait_for_response(
+                        port,
+                        ("HLVACK ", "HLVNAK ", "HLVWAIT "),
+                        min(
+                            response_timeout,
+                            WINDOW_ACK_TIMEOUT_SECONDS,
+                        ),
+                    )
+                except ResponseTimeout:
+                    if (
+                        time.monotonic() - last_progress
+                        >= WINDOW_PROGRESS_TIMEOUT_SECONDS
+                    ):
+                        raise UploadError(
+                            "sliding window made no progress for "
+                            f"{WINDOW_PROGRESS_TIMEOUT_SECONDS:.0f} seconds"
+                        )
+                    retransmit_from(min(in_flight))
+                    continue
+
+                if response.startswith("HLVWAIT "):
+                    if (
+                        time.monotonic() - last_progress
+                        >= WINDOW_PROGRESS_TIMEOUT_SECONDS
+                    ):
+                        raise UploadError(
+                            "ESP32 is alive but the SD pipeline made no "
+                            f"progress for "
+                            f"{WINDOW_PROGRESS_TIMEOUT_SECONDS:.0f} seconds"
+                        )
+                    continue
+
+                if response.startswith("HLVNAK "):
+                    fields = response.split()
+                    if len(fields) < 2:
+                        raise UploadError(
+                            f"malformed block rejection: {response}"
+                        )
+                    retransmit_from(int(fields[1]))
+                    continue
+
+                fields = response.split()
+                if len(fields) != 3:
+                    raise UploadError(
+                        f"malformed block acknowledgement: {response}"
+                    )
+                acknowledged_sequence = int(fields[1])
+                acknowledged_bytes = int(fields[2])
+                if acknowledged_sequence not in in_flight:
+                    if acknowledged_bytes <= acknowledged:
+                        continue
+                    raise UploadError(
+                        f"unexpected block acknowledgement: {response}"
+                    )
+                expected_bytes = in_flight[acknowledged_sequence][1]
+                if acknowledged_bytes != expected_bytes:
+                    raise UploadError(
+                        f"unexpected block acknowledgement: {response}"
+                    )
+                for pending_sequence in list(in_flight):
+                    if pending_sequence <= acknowledged_sequence:
+                        del in_flight[pending_sequence]
+                acknowledged = acknowledged_bytes
+                last_progress = time.monotonic()
+
                 now = time.monotonic()
-                if now >= next_report or sent == size:
-                    print_progress(sent, size, started)
+                if now >= next_report or acknowledged == size:
+                    print_progress(acknowledged, size, started)
                     next_report = now + 0.5
 
         done = wait_for_response(port, ("HLVDONE ",), response_timeout)
         fields = done.split()
-        if (len(fields) != 5 or fields[:2] != ["HLVDONE", "1"] or
+        if (
+                len(fields) != 5
+                or fields[:2]
+                != ["HLVDONE", str(UPLOAD_PROTOCOL_VERSION)]
+                or
                 int(fields[2]) != size or
                 int(fields[3], 16) != file_crc or
-                fields[4] != remote_name):
+                fields[4] != remote_name
+        ):
             raise UploadError(f"malformed completion response: {done}")
-        print_progress(sent, size, started, force=True)
+        print_progress(acknowledged, size, started, force=True)
         print(f"Stored as /HLV/{remote_name}; CRC32 {file_crc:08x}")
 
 

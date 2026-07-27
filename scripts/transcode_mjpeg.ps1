@@ -63,4 +63,3 @@ Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 if ($LASTEXITCODE -ne 0) {
     throw "MJPEG profile transcode failed."
 }
-

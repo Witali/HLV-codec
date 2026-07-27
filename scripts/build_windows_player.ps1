@@ -39,19 +39,18 @@ $decoder = Join-Path $hlv "src\hlv1_decode.c"
 $bpvDecoder = Join-Path $bpv "src\bpv1_decode.c"
 $mpegDecoder = Join-Path $mpeg "src\pl_mpeg.c"
 $h263Sources = @(
-    (Join-Path $h263 "src\h263_3gp.cpp")
-) + @(Get-ChildItem -LiteralPath (Join-Path $pv "src") -Filter "*.cpp" |
+    (Join-Path $h263 "src\h263_3gp.c")
+) + @(Get-ChildItem -LiteralPath (Join-Path $pv "src") -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName })
 $h263SourceArguments = ($h263Sources | ForEach-Object {
     '"{0}"' -f $_
 }) -join " "
-$amrSources = @(
-    (Join-Path $amrnb "src\amrnb_3gp.cpp")
-) + @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
-        -Filter "*.cpp" |
+$amrAdapter = Join-Path $amrnb "src\amrnb_3gp.c"
+$amrSources = @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
+        -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName }) +
     @(Get-ChildItem -LiteralPath (Join-Path $amrPv "dec\src") `
-        -Filter "*.cpp" |
+        -Filter "*.c" |
     Sort-Object Name | ForEach-Object { $_.FullName })
 $amrObjectDirectory = Join-Path $OutputDirectory "amrnb-obj"
 New-Item -ItemType Directory -Force -Path $amrObjectDirectory | Out-Null
@@ -71,11 +70,23 @@ $output = Join-Path $OutputDirectory "hlvplay.exe"
 
 $amrCommandTemplate =
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
-    'cl /nologo /c /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
+    'cl /nologo /c /O2 /W4 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS @"{2}"'
 $amrCommand = $amrCommandTemplate -f
     $devcmd, $amrObjectDirectory, $amrResponse
 Write-Host "Building AMR-NB decoder library..."
+$amrAdapterCommand =
+    'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
+    'cl /nologo /c /O2 /W4 /utf-8 /D_CRT_SECURE_NO_WARNINGS ' +
+    '/I"{2}" /I"{3}" /I"{4}" /I"{5}" "{6}"'
+$amrAdapterCommand = $amrAdapterCommand -f
+    $devcmd, $amrObjectDirectory, (Join-Path $amrnb "include"),
+    (Join-Path $amrPv "common\include"), (Join-Path $amrPv "dec\src"),
+    (Join-Path $amrPv "include"), $amrAdapter
+& cmd.exe /d /c $amrAdapterCommand
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed while compiling the AMR-NB 3GP adapter."
+}
 & cmd.exe /d /c $amrCommand
 if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while compiling the AMR-NB decoder."

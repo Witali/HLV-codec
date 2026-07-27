@@ -10,6 +10,10 @@ supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
 intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
+The strict C99 migration plan, preserved C++ baseline and physical all-codec
+A/B acceptance matrix are documented in
+[`../../../docs/ESP32_C99_MIGRATION.md`](../../../docs/ESP32_C99_MIGRATION.md).
+
 New project H.263 assets use only baseline H.263 in AVI at standard QCIF
 `176x144` or CIF `352x288`, always at the full source frame rate. Custom-size
 H.263+ and 3GP/AMR-NB remain decoder-only compatibility paths. AVI's
@@ -122,8 +126,9 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The control handshake uses 460800 baud and block data uses
-2000000 baud by default. The verified fallback values are 1500000, 921600 and
-460800 baud.
+2000000 baud by default. The optional 3000000-baud mode is CRC-verified but
+does not improve end-to-end throughput on this board. The verified fallback
+values are 1500000, 921600 and 460800 baud.
 
 List the files currently stored in `/sdcard/HLV` without stopping playback:
 
@@ -135,6 +140,20 @@ List the files currently stored in `/sdcard/HLV` without stopping playback:
 The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
 returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
 `HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
+
+The autonomous SD write benchmark uses:
+
+```text
+HLVSDBENCH 1 <zero|random> <size-MiB>
+```
+
+The size is limited to 1--64 MiB. The player stops playback, pre-fills one
+32 KiB block with zeros or deterministic pseudorandom bytes, writes it
+directly to a temporary file, and includes `fflush`, `fsync` and `fclose` in
+the elapsed time. The temporary file is deleted before the result is returned.
+On the installed card, 16 MiB tests delivered 1897 KiB/s for zeros and
+1905 KiB/s for pseudorandom data. Both temporary files were confirmed absent
+through `HLVLIST 1`.
 
 The destination defaults to the source filename. `/sdcard/HLV/play.txt`
 contains the one video filename that the player opens:
@@ -153,34 +172,58 @@ or invalid, it displays `NO SELECTED FILE.` and waits.
 
 The player finishes the current decode operation, stops video and audio, and
 closes both SD file cursors before acknowledging an upload. During the transfer
-the screen shows the completion percentage above the progress bar and the
-transferred/total size beside it, with the destination filename below the bar.
-Each 60 KiB block has its own CRC32 and is
-acknowledged before the PC sends the next block, so hardware flow control is
-not required. CRC calculation uses the ESP32 ROM table implementation. The
+the screen shows a large completion percentage above the progress bar and the
+transferred/total size beside it using three significant digits, with the
+destination filename below the bar.
+Each 32 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
+sliding window, so the PC can send both receive buffers without waiting for an
+individual ACK. An ACK is cumulative and returns buffer credit only after the
+CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
+the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
+250 ms; the client retries after a two-second ACK timeout and aborts after ten
+seconds without cumulative progress. Hardware flow control is therefore not
+required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
 interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer exists only during an upload, while the decoder and audio buffers are
-released. After each transfer the player reads `/HLV/play.txt` again and opens
-its selection.
+buffer was replaced by two 32 KiB buffers that exist only during an upload,
+while the decoder and audio buffers are released. CPU0 receives and validates
+the next UART block while a CPU1 writer task stores the preceding block on SD.
+An ACK means that a block passed its RAM CRC and completed its SD write;
+`HLVDONE` is emitted only after both buffers are written, `fsync` completes and
+the full-file CRC matches. After each transfer the player reads
+`/HLV/play.txt` again and opens its selection.
 
-Protocol version 1 starts with this ASCII line at the console baud:
+Upload protocol version 2 starts with this ASCII line at the console baud:
 
 ```text
-HLVPUT 1 <name> <size> <crc32-hex> <data-baud>
+HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 1 61440 <data-baud>`, receives acknowledged
-`HLVB` binary blocks, and finishes with
-`HLVDONE 1 <size> <crc32> <name>`.
+The device replies `HLVREADY 2 32768 <data-baud> 2`, receives windowed `HLVB`
+binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
+`HLVDONE 2 <size> <crc32> <name>`.
 
 The connected CH340C board completed three CRC-verified transfers at every
 supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
 baud delivered 70.4, 91.3 and 101.5 KiB/s. Enlarging the block to 16 KiB raised
 the 2 Mbaud result to 106.6 KiB/s. The retained 60 KiB block and ROM CRC32
-delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. An experimental
-2.5 Mbaud transfer timed out, so 2 Mbaud is the maximum verified setting for
-this board and driver.
+delivered 111.3 KiB/s throughout a continuous 8 MiB transfer. Double-buffered
+16 KiB UART receive and SD writes delivered 44.5, 79.6, 108.5 and 121.0 KiB/s
+at 460800, 921600, 1500000 and 2000000 baud in CRC-verified 5.19 MB BPV v7
+transfers. The same full transfer passed at 3000000 baud but delivered only
+121.3 KiB/s, showing that the upload pipeline, rather than the UART line, is
+the current limit. Protocol v2 sliding-window transfers of the same file with
+two 32 KiB blocks delivered 122.4 KiB/s at 2000000 baud and 122.3 KiB/s at
+3000000 baud, with matching full-file CRC32. The larger window removes the
+mandatory per-block wait but raises throughput only marginally. The autonomous
+SD benchmark reaches about 1.85 MiB/s, so raw card bandwidth is not the
+bottleneck; the remaining limit is in the combined UART/SD pipeline. An
+experimental 2500000-baud transfer never entered normal data reception and
+timed out.
+Therefore 2000000 baud remains the default; 3000000 baud is retained only as
+an optional verified mode. The Windows CH340 driver rejected attempts to
+configure both 4000000 and 5000000 baud with device error 31, before either
+transfer could send its first data block.
 
 The repository-level wrappers run the same commands:
 

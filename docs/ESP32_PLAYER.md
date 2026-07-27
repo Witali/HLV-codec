@@ -5,6 +5,10 @@ two-USB ESP32-2432S028 variant commonly called CYD2USB. It normally uses an
 ST7789 display controller and an NS8002/8002A-class mono amplifier driven by
 DAC GPIO26.
 
+The staged rewrite of this firmware from C++ to strict C99, including its
+preserved baseline and all-codec physical A/B matrix, is tracked in
+[`ESP32_C99_MIGRATION.md`](ESP32_C99_MIGRATION.md).
+
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
@@ -425,12 +429,26 @@ written into the card's `/HLV` directory without removing the card:
 ```
 
 The command handshake remains at 460800 baud; the verified data-transfer
-default is 2 Mbaud. The player stops video and audio, allocates one temporary
-60 KiB receive block, shows a progress bar, and verifies per-block and
-whole-file CRC32 before replacing the target. On this CH340C board an 8 MiB
-transfer sustained 111.3 KiB/s. A 2.5 Mbaud experiment timed out, so 2 Mbaud is
-the maximum retained rate; 1.5 Mbaud, 921600 and 460800 are available as
-fallbacks.
+default is 2 Mbaud. The player stops video and audio, allocates two temporary
+32 KiB receive blocks, shows a progress bar, and verifies per-block and
+whole-file CRC32 before replacing the target. Upload protocol v2 uses both
+blocks as a sliding window. The PC retains unacknowledged packets for
+Go-Back-N retransmission, while an ACK returns a credit after the corresponding
+SD write completes. `HLVWAIT` keeps the connection alive during an SD stall;
+the PC retries after two seconds and aborts after ten seconds without
+cumulative progress. On this CH340C board, CRC-verified 5.19 MB windowed
+transfers with two 32 KiB blocks sustained 122.4 KiB/s at 2 Mbaud and
+122.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
+remains the default because the combined upload pipeline prevents a meaningful
+gain. An autonomous 16 MiB SD write benchmark using 32 KiB blocks, including
+final flush, sync and close, sustained 1897 KiB/s for zeros and 1905 KiB/s for
+prefilled deterministic pseudorandom data. Therefore raw SD-card bandwidth is
+not the upload bottleneck. `HLVSDBENCH 1 <zero|random> <size-MiB>` exposes this
+diagnostic for 1--64 MiB tests and deletes its temporary file before replying.
+A 2.5 Mbaud experiment did not enter normal data reception and timed out. The
+Windows CH340 driver rejected both 4 and 5 Mbaud with device error 31 before
+the first data block. The 1.5 Mbaud, 921600 and 460800 rates remain available
+as fallbacks.
 
 The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in

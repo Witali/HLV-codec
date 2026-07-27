@@ -41,31 +41,16 @@ typedef unsigned int uint;
 #define oscl_malloc malloc
 #define oscl_free free
 #define oscl_memcmp memcmp
-#define OSCL_DELETE(ptr) { delete(ptr); }
+#define OSCL_DELETE(ptr) free(ptr)
 
 // Request status values.  These are negative so that
 // they won't conflict with system error codes.
-const int32 OSCL_REQUEST_ERR_NONE = 0;
-const int32 OSCL_REQUEST_PENDING = (-0x7fffffff);
-const int32 OSCL_REQUEST_ERR_CANCEL = (-1);
-const int32 OSCL_REQUEST_ERR_GENERAL = (-2);
+#define OSCL_REQUEST_ERR_NONE ((int32)0)
+#define OSCL_REQUEST_PENDING ((int32)-0x7fffffff)
+#define OSCL_REQUEST_ERR_CANCEL ((int32)-1)
+#define OSCL_REQUEST_ERR_GENERAL ((int32)-2)
 
 // Request status type
-class OsclAOStatus
-{
-    public:
-        OsclAOStatus();
-        explicit OsclAOStatus(int32 aStatus);
-        int32 operator=(int32 aStatus);
-        int32 operator==(int32 aStatus) const;
-        int32 operator!=(int32 aStatus) const;
-        int32 operator>=(int32 aStatus) const;
-        int32 operator<=(int32 aStatus) const;
-        int32 operator>(int32 aStatus) const;
-        int32 operator<(int32 aStatus) const;
-        int32 Value() const;
-    private:
-        int32 iStatus;
-};
+typedef int32 OsclAOStatus;
 
 #endif  // M4V_H263_DECODER_PV_TYPES_H_
