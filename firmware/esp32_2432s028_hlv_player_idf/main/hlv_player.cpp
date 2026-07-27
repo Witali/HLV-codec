@@ -369,6 +369,10 @@ int upload_progress_pixels = -1;
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
+uint64_t bpvProfileNowMicros(void *) {
+    return static_cast<uint64_t>(microsNow());
+}
+
 int64_t millisNow() { return microsNow() / 1000; }
 
 void waitForH263OutputRow(void *, uint16_t first_y) {
@@ -2056,6 +2060,7 @@ bool openVideo() {
             closeVideo();
             return false;
         }
+        bpv_decoder.setProfileClock(bpvProfileNowMicros, nullptr);
         if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
             display.rowsPerTransfer() != 8) {
             showStatus("Display buffer error",
@@ -2237,7 +2242,9 @@ bool openVideo() {
             sequence_header.audio_sample_rate,
             static_cast<unsigned>(sequence_header.frame_count));
         esp_rom_printf(
-            "#frame,sd_us,decode_us,render_us,work_us,present_us\n");
+            "#frame,sd_us,decode_us,render_us,work_us,present_us"
+            "[,bpv_input_us,bpv_block_us,bpv_reference_us,"
+            "bpv_input_calls,bpv_input_bytes]\n");
     }
     return true;
 }
@@ -2760,6 +2767,14 @@ struct PresentationState {
     bool render = true;
 };
 
+struct BpvDecodeBreakdown {
+    uint32_t input_us = 0;
+    uint32_t block_us = 0;
+    uint32_t reference_us = 0;
+    uint32_t input_calls = 0;
+    uint32_t input_bytes = 0;
+};
+
 PresentationState beginPresentation() {
     PresentationState state{microsNow(), true};
     if (audio_enabled) {
@@ -2833,7 +2848,8 @@ PresentationState beginPresentation() {
 }
 
 void finishPresentation(const PresentationState &state, uint32_t read_us,
-                        uint32_t decode_us, uint32_t render_us) {
+                        uint32_t decode_us, uint32_t render_us,
+                        const BpvDecodeBreakdown *bpv_breakdown = nullptr) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
 
@@ -2854,8 +2870,20 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
         // Capture every value before printing. UART overhead is therefore not
         // charged to this record, although it can consume slack before the
         // following frame.
-        esp_rom_printf("F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
-                       decode_us, render_us, work_us, present_us);
+        if (bpv_breakdown) {
+            esp_rom_printf(
+                "F,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                decoded_frames, read_us, decode_us, render_us,
+                work_us, present_us, bpv_breakdown->input_us,
+                bpv_breakdown->block_us,
+                bpv_breakdown->reference_us,
+                bpv_breakdown->input_calls,
+                bpv_breakdown->input_bytes);
+        } else {
+            esp_rom_printf(
+                "F,%u,%u,%u,%u,%u,%u\n", decoded_frames, read_us,
+                decode_us, render_us, work_us, present_us);
+        }
         if (audio_enabled && decoded_frames % 30U == 0U) {
             esp_rom_printf(
                 "A,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
@@ -3507,8 +3535,20 @@ void playOneBpvFrameSequential() {
             failPlayback("BPV1 decode error", decode_result);
             return;
         }
+        const BPV1DecodeProfile profile = bpv_decoder.lastProfile();
+        const uint64_t non_block_us =
+            static_cast<uint64_t>(profile.input_us) +
+            profile.reference_commit_us;
+        const BpvDecodeBreakdown breakdown{
+            profile.input_us,
+            decode_us > non_block_us
+                ? static_cast<uint32_t>(decode_us - non_block_us)
+                : 0U,
+            profile.reference_commit_us,
+            profile.input_calls,
+            profile.input_bytes};
         finishPresentation(
-            presentation, 0, decode_us, render_us);
+            presentation, 0, decode_us, render_us, &breakdown);
         return;
     }
 

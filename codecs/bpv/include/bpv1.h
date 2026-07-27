@@ -100,6 +100,15 @@ typedef int (*BPV1Rgb565StripSubmit)(
     void *opaque, const uint16_t *pixels, uint16_t y, uint16_t rows);
 typedef int (*BPV1Rgb565StripFlush)(void *opaque);
 
+typedef uint64_t (*BPV1ProfileClockMicros)(void *opaque);
+
+typedef struct {
+    uint32_t input_us;
+    uint32_t reference_commit_us;
+    uint32_t input_calls;
+    uint32_t input_bytes;
+} BPV1DecodeProfile;
+
 const char *bpv1_strerror(int result);
 
 /*
@@ -121,6 +130,14 @@ void bpv1_decoder_destroy(BPV1Decoder *decoder);
 void bpv1_decoder_reset(BPV1Decoder *decoder);
 size_t bpv1_decoder_packet_capacity(const BPV1Decoder *decoder);
 size_t bpv1_decoder_memory_bytes(const BPV1Decoder *decoder);
+/*
+ * Optional profiling clock used by the sequential v7 path. Without a clock,
+ * timing values are zero while input call/byte counters remain available.
+ */
+void bpv1_decoder_set_profile_clock(
+    BPV1Decoder *decoder, BPV1ProfileClockMicros clock, void *opaque);
+void bpv1_decoder_last_profile(
+    const BPV1Decoder *decoder, BPV1DecodeProfile *profile);
 
 /*
  * The packet payload belongs to the decoder and remains valid until the next

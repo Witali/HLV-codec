@@ -42,6 +42,14 @@ fixed-rate SPI/DMA buffers earlier and waits for an outstanding transfer;
 that wait shifts between timing categories rather than representing extra
 RGB565 conversion.
 
+The retained per-frame profiler separates the v7 `Decode` category without
+putting a timer around every block. On the same physical 300-frame stream,
+18,936 us average decode time consists of 6,695 us compressed input (35.4%),
+11,773 us block parsing/reconstruction (62.2%), and 468 us progressive
+RGB565-reference commit (2.5%). An average frame reads 17,303 bytes through
+6.45 input calls. The reconstructed-frame hash remains
+`93682c11462696bc`.
+
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
 that to 19.368 fps at the same SD clock. Restoring the intended 40 MHz SD

@@ -256,6 +256,12 @@ is converted once per keyframe into a 2 KiB RGB565 lookup table. RAW and block
 dictionary reconstruction then reads ready-to-display `uint16_t` values
 instead of converting every output pixel.
 
+The v7 timing record appends compressed-input, block reconstruction and
+reference-commit durations plus input call/byte counts to the ordinary `F`
+record. `capture-player-metrics.ps1` accepts both the legacy six-value record
+and this extended record, writes the additional columns to CSV and prints each
+BPV category separately.
+
 For an ESP32-safe MPEG Program Stream:
 
 ```powershell

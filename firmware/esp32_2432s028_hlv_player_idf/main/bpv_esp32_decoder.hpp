@@ -18,6 +18,14 @@ public:
     size_t packetCapacity() const {
         return bpv1_decoder_packet_capacity(decoder_);
     }
+    void setProfileClock(BPV1ProfileClockMicros clock, void *opaque) {
+        bpv1_decoder_set_profile_clock(decoder_, clock, opaque);
+    }
+    BPV1DecodeProfile lastProfile() const {
+        BPV1DecodeProfile profile{};
+        bpv1_decoder_last_profile(decoder_, &profile);
+        return profile;
+    }
 
     int readPacket(FILE *file, BPV1Packet *packet) {
         return bpv1_decoder_read_packet(decoder_, file, packet);

@@ -60,9 +60,44 @@ struct BPV1Decoder {
     size_t memory_bytes;
     uint32_t frame_index;
     int has_previous;
+    BPV1ProfileClockMicros profile_clock;
+    void *profile_clock_opaque;
+    BPV1DecodeProfile last_profile;
     Dictionary blocks;
     Dictionary patterns;
 };
+
+static uint64_t profile_now_micros(const BPV1Decoder *decoder) {
+    return decoder->profile_clock
+               ? decoder->profile_clock(decoder->profile_clock_opaque)
+               : 0U;
+}
+
+static void profile_add_elapsed(uint32_t *total, uint64_t start,
+                                uint64_t end) {
+    const uint64_t elapsed = end >= start ? end - start : 0U;
+    if (elapsed >= UINT32_MAX - *total) {
+        *total = UINT32_MAX;
+    } else {
+        *total += (uint32_t)elapsed;
+    }
+}
+
+static int profile_read_exact(BPV1Decoder *decoder, FILE *file,
+                              void *data, size_t size) {
+    const uint64_t start = profile_now_micros(decoder);
+    const size_t count = fread(data, 1, size, file);
+    profile_add_elapsed(
+        &decoder->last_profile.input_us, start,
+        profile_now_micros(decoder));
+    decoder->last_profile.input_calls++;
+    if (count >= UINT32_MAX - decoder->last_profile.input_bytes) {
+        decoder->last_profile.input_bytes = UINT32_MAX;
+    } else {
+        decoder->last_profile.input_bytes += (uint32_t)count;
+    }
+    return count == size ? BPV1_OK : BPV1_ERR_IO;
+}
 
 static int read_exact(FILE *file, void *data, size_t size) {
     return fread(data, 1, size, file) == size ? BPV1_OK : BPV1_ERR_IO;
@@ -915,6 +950,25 @@ size_t bpv1_decoder_memory_bytes(const BPV1Decoder *decoder) {
     return decoder ? decoder->memory_bytes : 0;
 }
 
+void bpv1_decoder_set_profile_clock(
+    BPV1Decoder *decoder, BPV1ProfileClockMicros clock, void *opaque
+) {
+    if (!decoder) return;
+    decoder->profile_clock = clock;
+    decoder->profile_clock_opaque = opaque;
+}
+
+void bpv1_decoder_last_profile(
+    const BPV1Decoder *decoder, BPV1DecodeProfile *profile
+) {
+    if (!profile) return;
+    if (decoder) {
+        *profile = decoder->last_profile;
+    } else {
+        memset(profile, 0, sizeof *profile);
+    }
+}
+
 int bpv1_decoder_read_packet(BPV1Decoder *decoder, FILE *file,
                              BPV1Packet *packet) {
     int result;
@@ -1155,8 +1209,9 @@ static int pixel_stream_read(
                     ? reader->remaining
                     : reader->decoder->stream_capacity;
             if (!refill ||
-                fread(reader->decoder->stream_data, 1, refill,
-                      reader->file) != refill) {
+                profile_read_exact(
+                    reader->decoder, reader->file,
+                    reader->decoder->stream_data, refill) != BPV1_OK) {
                 return BPV1_ERR_IO;
             }
             reader->remaining -= refill;
@@ -1179,6 +1234,7 @@ static int pixel_stream_read(
 static void commit_pixel_strip(
     BPV1Decoder *decoder, const PendingPixelStrip *strip
 ) {
+    const uint64_t start = profile_now_micros(decoder);
     uint16_t row;
     for (row = 0; row < strip->rows; ++row) {
         memcpy(
@@ -1186,6 +1242,9 @@ static void commit_pixel_strip(
             strip->pixels + (size_t)row * decoder->header.width,
             (size_t)decoder->header.width * sizeof(uint16_t));
     }
+    profile_add_elapsed(
+        &decoder->last_profile.reference_commit_us, start,
+        profile_now_micros(decoder));
 }
 
 static int decode_stream_pixel_block(
@@ -1599,6 +1658,7 @@ int bpv1_decoder_decode_rgb565_strips(
         decoder->header.height % BPV1_BLOCK_SIZE) {
         return BPV1_ERR_ARGUMENT;
     }
+    memset(&decoder->last_profile, 0, sizeof decoder->last_profile);
     if (!decoder->frame_index && !packet->info.keyframe)
         return BPV1_ERR_DECODE;
     if (packet->info.keyframe) reset_references(decoder);
@@ -1743,7 +1803,21 @@ int bpv1_decoder_decode_next_rgb565_strips(
          rows_per_strip <= decoder->header.search_radius)) {
         return BPV1_ERR_ARGUMENT;
     }
-    result = bpv1_frame_info_read(file, &decoder->header, &info);
+    memset(&decoder->last_profile, 0, sizeof decoder->last_profile);
+    {
+        const uint64_t input_start = profile_now_micros(decoder);
+        result = bpv1_frame_info_read(file, &decoder->header, &info);
+        profile_add_elapsed(
+            &decoder->last_profile.input_us, input_start,
+            profile_now_micros(decoder));
+        decoder->last_profile.input_calls++;
+        if (result == BPV1_OK) {
+            decoder->last_profile.input_bytes +=
+                decoder->header.version >= BPV1_AUDIO_VERSION
+                    ? 13U
+                    : 9U;
+        }
+    }
     if (result != BPV1_OK) return result;
     if (!decoder->frame_index && !info.keyframe)
         return BPV1_ERR_DECODE;
@@ -1756,12 +1830,17 @@ int bpv1_decoder_decode_next_rgb565_strips(
         return BPV1_ERR_DECODE;
     }
     if (palette_bytes &&
-        read_exact(file, decoder->header.palette, palette_bytes)) {
+        profile_read_exact(
+            decoder, file, decoder->header.palette,
+            palette_bytes) != BPV1_OK) {
         return BPV1_ERR_IO;
     }
     if (palette_bytes) rebuild_rgb565_palette(decoder);
-    if (read_exact(file, decoder->mode_map, info.mode_bytes))
+    if (profile_read_exact(
+            decoder, file, decoder->mode_map,
+            info.mode_bytes) != BPV1_OK) {
         return BPV1_ERR_IO;
+    }
     payload_bytes =
         info.frame_bytes - palette_bytes - info.mode_bytes;
     memset(&reader, 0, sizeof reader);
@@ -1942,9 +2021,15 @@ int bpv1_decoder_decode_next_rgb565_strips(
     if (result != BPV1_OK) return result;
     if (reader.remaining || reader.available)
         return BPV1_ERR_DECODE;
-    if (info.audio_bytes &&
-        fseek(file, (long)info.audio_bytes, SEEK_CUR)) {
-        return BPV1_ERR_IO;
+    if (info.audio_bytes) {
+        const uint64_t input_start = profile_now_micros(decoder);
+        const int seek_result =
+            fseek(file, (long)info.audio_bytes, SEEK_CUR);
+        profile_add_elapsed(
+            &decoder->last_profile.input_us, input_start,
+            profile_now_micros(decoder));
+        decoder->last_profile.input_calls++;
+        if (seek_result) return BPV1_ERR_IO;
     }
     decoder->has_previous = 1;
     decoder->frame.frame_index = decoder->frame_index++;
