@@ -111,9 +111,12 @@ static int segmented_view(const HLV1Packet *source, HLV1Packet *view,
 static int decode_pass(const HLV1Header *header, const PacketList *list,
                        int compact, int compute_hash, uint64_t *hash,
                        uint64_t *guard, HLV1Stats *stats) {
-    HLV1Decoder *decoder = compact
-                               ? hlv1_decoder_create_y7_u6_v6(header)
-                               : hlv1_decoder_create(header);
+    HLV1Decoder *decoder =
+        compact == 2
+            ? hlv1_decoder_create_y7_u6_v6_single_reference(header)
+            : (compact
+                   ? hlv1_decoder_create_y7_u6_v6(header)
+                   : hlv1_decoder_create(header));
     if (!decoder) return HLV1_ERR_MEMORY;
     uint64_t local_hash = UINT64_C(14695981039346656037);
     const HLV1Frame *frame = NULL;
@@ -134,14 +137,18 @@ static int decode_pass(const HLV1Header *header, const PacketList *list,
     return result;
 }
 
-static int decode_file_pass(const char *path, uint64_t *hash) {
+static int decode_file_pass(const char *path, int single_reference,
+                            uint64_t *hash) {
     FILE *file = fopen(path, "rb");
     if (!file) return HLV1_ERR_IO;
     HLV1Header header;
     int result = hlv1_header_read(file, &header);
-    HLV1Decoder *decoder = result >= 0
-                               ? hlv1_decoder_create_y7_u6_v6(&header)
-                               : NULL;
+    HLV1Decoder *decoder =
+        result < 0
+            ? NULL
+            : (single_reference
+                   ? hlv1_decoder_create_y7_u6_v6_single_reference(&header)
+                   : hlv1_decoder_create_y7_u6_v6(&header));
     if (result >= 0 && !decoder) result = HLV1_ERR_MEMORY;
     uint8_t buffer[257];
     uint64_t local_hash = UINT64_C(14695981039346656037);
@@ -235,6 +242,28 @@ static size_t compact_frame_working_bytes(const HLV1Header *header) {
     return 2U * (packed_frame + corrections) + working_rows;
 }
 
+static size_t single_reference_working_bytes(const HLV1Header *header) {
+    size_t width = ((size_t)header->width + 15U) & ~(size_t)15U;
+    size_t height = ((size_t)header->height + 15U) & ~(size_t)15U;
+    size_t rows =
+        height < HLV1_SINGLE_REFERENCE_LUMA_ROWS
+            ? height
+            : HLV1_SINGLE_REFERENCE_LUMA_ROWS;
+    size_t packed_frame = width * HLV1_V14_LUMA_BITS / 8U * height +
+                          2U * (width / 2U * HLV1_V14_CHROMA_BITS / 8U) *
+                              (height / 2U);
+    size_t corrections =
+        width / 8U * (height / 8U) +
+        2U * (width / 16U) * (height / 16U);
+    size_t rolling_rows =
+        width * HLV1_V14_LUMA_BITS / 8U * rows +
+        2U * (width / 2U * HLV1_V14_CHROMA_BITS / 8U) * (rows / 2U) +
+        width / 8U * (rows / 8U) +
+        2U * (width / 16U) * (rows / 16U);
+    size_t working_rows = width * 16U + 2U * (width / 2U) * 8U;
+    return packed_frame + corrections + rolling_rows + working_rows;
+}
+
 static void usage(const char *program) {
     fprintf(stderr, "Usage: %s INPUT.hlv [LOOPS]\n", program);
 }
@@ -289,6 +318,8 @@ int main(int argc, char **argv) {
     uint64_t frame_hash = 0;
     uint64_t expanded_hash = 0;
     uint64_t streamed_hash = 0;
+    uint64_t single_hash = 0;
+    uint64_t single_streamed_hash = 0;
     uint64_t guard = 0;
     HLV1Stats stats = {0};
     result = decode_pass(&header, &list, 1, 1, &frame_hash, &guard, &stats);
@@ -314,12 +345,31 @@ int main(int argc, char **argv) {
         packet_list_free(&list);
         return 1;
     }
-    result = decode_file_pass(argv[1], &streamed_hash);
+    result = decode_file_pass(argv[1], 0, &streamed_hash);
     if (result < 0 || streamed_hash != frame_hash) {
         fprintf(stderr,
                 "Streamed reconstruction mismatch: %s, %016" PRIx64
                 " != %016" PRIx64 "\n",
                 hlv1_strerror(result), streamed_hash, frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_pass(
+        &header, &list, 2, 1, &single_hash, &guard, NULL);
+    if (result < 0 || single_hash != frame_hash) {
+        fprintf(stderr,
+                "Single-reference reconstruction mismatch: %s, %016" PRIx64
+                " != %016" PRIx64 "\n",
+                hlv1_strerror(result), single_hash, frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_file_pass(argv[1], 1, &single_streamed_hash);
+    if (result < 0 || single_streamed_hash != frame_hash) {
+        fprintf(stderr,
+                "Single-reference streamed reconstruction mismatch: %s, "
+                "%016" PRIx64 " != %016" PRIx64 "\n",
+                hlv1_strerror(result), single_streamed_hash, frame_hash);
         packet_list_free(&list);
         return 1;
     }
@@ -342,9 +392,12 @@ int main(int argc, char **argv) {
            PACKET_BLOCK_COUNT, PACKET_BLOCK_BYTES, maximum_packet);
     printf("Frame storage + working rows: %zu bytes\n",
            compact_frame_working_bytes(&header));
+    printf("Single reference + rolling rows: %zu bytes\n",
+           single_reference_working_bytes(&header));
     printf("Reconstruction hash: %016" PRIx64 "\n", frame_hash);
     printf("Compact/expanded reconstruction: bit exact\n");
     printf("257-byte refill reconstruction: bit exact\n");
+    printf("Single-reference segmented/refill reconstruction: bit exact\n");
     printf("Timed decode: %.3f s, %.1f fps, %.2f us/frame (%d loop%s)\n",
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
     if (stats.frames) {

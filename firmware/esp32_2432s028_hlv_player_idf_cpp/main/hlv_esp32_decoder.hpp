@@ -18,13 +18,17 @@ public:
     size_t streamBufferBytes() const { return kStreamBufferBytes; }
     bool dmaBuffer() const { return dma_buffer_; }
     bool compactYuv() const { return compact_yuv_; }
+    bool singleReference() const { return single_reference_; }
+    void setReferenceRowGuard(HLV1ReferenceRowGuard guard, void *opaque);
 
     int decodeNext(FILE *file, const HLV1Frame **frame,
-                   HLV1Packet *packet_info = nullptr);
+                   HLV1Packet *packet_info = nullptr,
+                   HLV1StageProfile *profile = nullptr);
 
 private:
     HLV1Decoder *decoder_ = nullptr;
     uint8_t *stream_buffer_ = nullptr;
     bool dma_buffer_ = false;
     bool compact_yuv_ = false;
+    bool single_reference_ = false;
 };

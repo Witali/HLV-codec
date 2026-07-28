@@ -10,9 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
 $repo = (Resolve-Path (Join-Path $project "..\..")).Path
-$packetBlockCount = 9
-$packetBlockBytes = 7680
-$packetPoolBytes = $packetBlockCount * $packetBlockBytes
+$decoderRefillBytes = 7680
 if (-not $InputFile) {
     $InputFile = Join-Path $repo "out\video.hlv"
 }
@@ -49,6 +47,7 @@ try {
     $packetSizes = [Collections.Generic.List[uint32]]::new()
     $packetTypes = [Collections.Generic.List[byte]]::new()
     $packetHeader = New-Object byte[] 20
+    [uint32]$maximumPacketBytes = 0
     for ($frame = 0; $frame -lt $sourceFrames; ++$frame) {
         $packetOffsets.Add($input.Position)
         Read-Exact -Stream $input -Buffer $packetHeader -Count $packetHeader.Length
@@ -56,8 +55,8 @@ try {
             throw "Bad frame marker at packet $frame."
         }
         $payloadBytes = [BitConverter]::ToUInt32($packetHeader, 12)
-        if ($payloadBytes -gt $packetPoolBytes) {
-            throw "Packet $frame exceeds the ESP32 $packetPoolBytes-byte pool."
+        if ($payloadBytes -gt $maximumPacketBytes) {
+            $maximumPacketBytes = $payloadBytes
         }
         $packetSizes.Add($payloadBytes)
         $packetTypes.Add($packetHeader[4])
@@ -116,3 +115,4 @@ try {
 $size = (Get-Item -LiteralPath $outputFile).Length
 Write-Host "Prepared QEMU benchmark clip: $($selected.Count) frames, $size bytes"
 Write-Host "Source frame windows: $($ranges -join ', ')"
+Write-Host "Largest source packet: $maximumPacketBytes bytes (decoder refill: $decoderRefillBytes bytes)"

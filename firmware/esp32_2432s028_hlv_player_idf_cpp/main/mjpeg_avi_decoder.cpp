@@ -20,6 +20,80 @@ constexpr uint32_t kMaximumFrameBytes = 1024 * 1024;
 constexpr unsigned kIoAttempts = 3;
 constexpr uint32_t kIoRetryDelayUs = 2000;
 
+bool isJpegSofMarker(uint8_t marker) {
+    return marker >= 0xc0U && marker <= 0xcfU &&
+           marker != 0xc4U && marker != 0xc8U && marker != 0xccU;
+}
+
+bool prepareJpegDecodeHeight(
+    uint8_t *jpeg, size_t size, uint16_t expected_width,
+    uint16_t expected_height, uint16_t *decode_height) {
+    size_t offset = 2U;
+    if (!decode_height) return false;
+    *decode_height = expected_height;
+    if ((expected_height & 7U) == 0U) return true;
+    if (!jpeg || size < 4U || jpeg[0] != 0xffU || jpeg[1] != 0xd8U)
+        return false;
+
+    while (offset + 1U < size) {
+        if (jpeg[offset++] != 0xffU) return false;
+        while (offset < size && jpeg[offset] == 0xffU) ++offset;
+        if (offset >= size) return false;
+        const uint8_t marker = jpeg[offset++];
+        if (marker == 0x00U) return false;
+        if (marker == 0xd8U || marker == 0x01U ||
+            (marker >= 0xd0U && marker <= 0xd7U)) {
+            continue;
+        }
+        if (marker == 0xd9U || marker == 0xdaU ||
+            offset + 2U > size) {
+            return false;
+        }
+        const uint16_t length = static_cast<uint16_t>(
+            (static_cast<uint16_t>(jpeg[offset]) << 8) |
+            jpeg[offset + 1U]);
+        if (length < 2U || offset + length > size) return false;
+        if (isJpegSofMarker(marker)) {
+            if (length < 8U) return false;
+            const uint16_t height = static_cast<uint16_t>(
+                (static_cast<uint16_t>(jpeg[offset + 3U]) << 8) |
+                jpeg[offset + 4U]);
+            const uint16_t width = static_cast<uint16_t>(
+                (static_cast<uint16_t>(jpeg[offset + 5U]) << 8) |
+                jpeg[offset + 6U]);
+            const uint8_t components = jpeg[offset + 7U];
+            if (height != expected_height || width != expected_width ||
+                components == 0U ||
+                length < static_cast<uint16_t>(8U + 3U * components)) {
+                return false;
+            }
+            uint8_t max_vertical_sampling = 0;
+            for (size_t component = 0; component < components; ++component) {
+                const uint8_t vertical_sampling =
+                    jpeg[offset + 8U + component * 3U + 1U] & 0x0fU;
+                max_vertical_sampling =
+                    std::max(max_vertical_sampling, vertical_sampling);
+            }
+            if (!max_vertical_sampling) return false;
+            const uint16_t aligned_height =
+                static_cast<uint16_t>((expected_height + 7U) & ~7U);
+            const uint16_t mcu_height =
+                static_cast<uint16_t>(8U * max_vertical_sampling);
+            if ((expected_height + mcu_height - 1U) / mcu_height !=
+                (aligned_height + mcu_height - 1U) / mcu_height) {
+                return false;
+            }
+            jpeg[offset + 3U] =
+                static_cast<uint8_t>(aligned_height >> 8);
+            jpeg[offset + 4U] = static_cast<uint8_t>(aligned_height);
+            *decode_height = aligned_height;
+            return true;
+        }
+        offset += length;
+    }
+    return false;
+}
+
 constexpr uint32_t fourcc(char a, char b, char c, char d) {
     return static_cast<uint32_t>(static_cast<uint8_t>(a)) |
            (static_cast<uint32_t>(static_cast<uint8_t>(b)) << 8) |
@@ -381,6 +455,7 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info,
     compressed_capacity_ = info_.max_video_frame_size;
     packet_index_ = 0;
     packet_offset_ = -1;
+    decode_height_ = info_.height;
     need_strip_ = need_strip;
     compressed_ = static_cast<uint8_t *>(
         heap_caps_malloc(compressed_capacity_, MALLOC_CAP_8BIT));
@@ -421,6 +496,7 @@ void MjpegAviDecoder::end() {
     compressed_capacity_ = 0;
     packet_index_ = 0;
     packet_offset_ = -1;
+    decode_height_ = 0;
     need_strip_ = false;
     info_ = {};
 }
@@ -480,6 +556,15 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
                  compressed_[size - 2], compressed_[size - 1]);
         return MJPEG_AVI_ERR_FORMAT;
     }
+    if (!prepareJpegDecodeHeight(
+            compressed_, size, info_.width, info_.height,
+            &decode_height_)) {
+        ESP_LOGE(kTag,
+                 "Packet %u cannot prepare JPEG height %u for hardware",
+                 static_cast<unsigned>(packet_index_),
+                 static_cast<unsigned>(info_.height));
+        return MJPEG_AVI_ERR_FORMAT;
+    }
     packet->jpeg = compressed_;
     packet->jpeg_size = size;
     ++packet_index_;
@@ -524,7 +609,7 @@ int MjpegAviDecoder::decodeImpl(
         esp_cpu_get_cycle_count() - phase_start;
 #endif
     if (header_result != JPEG_ERR_OK ||
-        header.width != info_.width || header.height != info_.height) {
+        header.width != info_.width || header.height != decode_height_) {
         ESP_LOGE(kTag, "esp_new_jpeg header failed (%ux%u)",
                  header.width, header.height);
         return MJPEG_AVI_ERR_DECODE;
@@ -558,12 +643,17 @@ int MjpegAviDecoder::decodeImpl(
 
     const uint16_t block_rows = static_cast<uint16_t>(
         output_bytes / (info_.width * sizeof(uint16_t)));
-    uint16_t output_y = 0;
+    uint16_t decoded_y = 0;
     for (int block = 0; block < process_count; ++block) {
         const uint16_t expected_rows = std::min<uint16_t>(
-            block_rows, info_.height - output_y);
+            block_rows, decode_height_ - decoded_y);
+        const uint16_t visible_rows =
+            decoded_y < info_.height
+                ? std::min<uint16_t>(
+                      expected_rows, info_.height - decoded_y)
+                : 0;
         uint16_t *destination =
-            acquire ? acquire(output_context, output_y, expected_rows)
+            acquire ? acquire(output_context, decoded_y, visible_rows)
                     : strip_;
         if (!destination) return MJPEG_AVI_ERR_IO;
         io.outbuf = reinterpret_cast<uint8_t *>(destination);
@@ -586,11 +676,13 @@ int MjpegAviDecoder::decodeImpl(
         const uint16_t rows = static_cast<uint16_t>(
             io.out_size / (info_.width * sizeof(uint16_t)));
         if (rows != expected_rows ||
-            !output(output_context, destination, output_y, rows)) {
+            visible_rows == 0 ||
+            !output(
+                output_context, destination, decoded_y, visible_rows)) {
             return MJPEG_AVI_ERR_IO;
         }
-        output_y = static_cast<uint16_t>(output_y + rows);
+        decoded_y = static_cast<uint16_t>(decoded_y + rows);
     }
-    return output_y == info_.height ? MJPEG_AVI_OK
-                                    : MJPEG_AVI_ERR_DECODE;
+    return decoded_y == decode_height_ ? MJPEG_AVI_OK
+                                       : MJPEG_AVI_ERR_DECODE;
 }

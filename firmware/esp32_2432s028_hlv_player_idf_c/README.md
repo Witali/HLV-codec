@@ -82,7 +82,7 @@ The current decoder audit is:
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
 | BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
 | BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
-| DivX 3 video | One complete AVI video packet, capped at 96 KiB by the player | Technical debt: make the bit reader refill-aware and let the AVI reader expose a bounded packet span; the optimized VLC prefix path currently accesses contiguous bytes directly |
+| DivX 3 video | One reusable 4 KiB decoder refill buffer over a bounded AVI packet span | Compliant; packets may exceed the refill buffer, the player caps their span at 96 KiB, and no packet payload is copied between tasks |
 | MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
 
 AVI container traversal itself is sequential and retains no chunk index.
@@ -565,18 +565,24 @@ but not physical SD or display DMA timing.
   and releases the second allocation before creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
-  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). HLV streams
+  (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). DivX 3 adds
+  one reusable 4 KiB decoder refill buffer rather than retaining an AVI
+  packet. HLV streams
   each packet through one reusable 7,680-byte refill buffer; MJPEG uses the maximum indexed
   JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
   two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
   TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
-- HLV video: two packed Y7/U6/V6 4:2:0 frames, one signed Q4 local correction per
-  8x8 plane block and a macroblock-row work area; 164,160 bytes at 320x180
-  instead of 184,320 bytes for two 8-bit frames. The 2,880-byte correction
-  tables preserve each block's discarded average to 1/16 sample. Stable HLV
-  v14 makes this compact reconstruction normative, so packed and expanded
-  decoders predict from identical samples. Literal blocks carry four separate
-  Y corrections plus one U and one V correction. BPV instead retains two
+- HLV video: packed Y7/U6/V6 4:2:0 references, one signed Q4 local correction
+  per 8x8 plane block and a macroblock-row work area. Profiles up to 320x192
+  keep two pointer-swapped references; that uses 164,160 bytes at 320x180
+  instead of 184,320 bytes for two 8-bit frames. Larger profiles use one
+  complete previous frame plus 32 rolling current luma rows. At 320x240 this
+  single-reference strategy uses 118,520 bytes, 84,760 fewer than two compact
+  references, while CPU0 waits only for source rows needed by rendering.
+  Correction tables preserve each block's discarded average to 1/16 sample.
+  Stable HLV v14 makes this compact reconstruction normative, so packed and
+  expanded decoders predict from identical samples. Literal blocks carry four
+  separate Y corrections plus one U and one V correction. BPV instead retains two
   32,400-byte block-record frames plus its
   bounded dictionaries; the complete BPV decoder allocation is about 106 KiB
   at 320x180 with the conservative 9-byte-per-block `RAW_DIRECT` packet bound
@@ -586,7 +592,8 @@ but not physical SD or display DMA timing.
   for the exact 8-bit decoder after the same predictor-row optimization.
   Each reference is allocated independently, limiting the largest frame
   request to 83,400 bytes. The player also uses one 10 KiB display allocation,
-  4 KiB stdio read-ahead and one compressed packet capped at 96 KiB. It is
+  4 KiB stdio read-ahead and one reusable 4 KiB decoder refill buffer. AVI
+  packet spans are capped at 96 KiB without retaining their payload. It is
   decoded on CPU1 while CPU0 renders the preceding ping-pong output. Physical
   tests completed without sequence gaps or audio underruns. Optimized q4
   playback reaches 12.005 observed fps with no display skips at 320x180.

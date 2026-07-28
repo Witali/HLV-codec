@@ -93,6 +93,7 @@ private:
     void *decoder_ = nullptr;
     uint32_t packet_index_ = 0;
     long packet_offset_ = -1;
+    uint16_t decode_height_ = 0;
     bool need_strip_ = false;
     MjpegAviDecodeCycles last_decode_cycles_{};
 

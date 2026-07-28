@@ -26,9 +26,34 @@ uint64_t hashFrame(uint64_t hash, const HLV1Frame &frame) {
     const size_t chroma_height = static_cast<size_t>(frame.padded_height) / 2U;
     const size_t u_bytes = static_cast<size_t>(frame.stride_u) * chroma_height;
     const size_t v_bytes = static_cast<size_t>(frame.stride_v) * chroma_height;
-    const uint8_t *planes[] = {frame.y, frame.u, frame.v};
-    const size_t sizes[] = {y_bytes, u_bytes, v_bytes};
-    for (size_t plane = 0; plane < 3; ++plane) {
+    const size_t correction_y_bytes =
+        static_cast<size_t>(frame.correction_stride_y) *
+        (static_cast<size_t>(frame.padded_height) / 8U);
+    const size_t correction_chroma_height =
+        static_cast<size_t>(frame.padded_height) / 16U;
+    const size_t correction_u_bytes =
+        static_cast<size_t>(frame.correction_stride_u) *
+        correction_chroma_height;
+    const size_t correction_v_bytes =
+        static_cast<size_t>(frame.correction_stride_v) *
+        correction_chroma_height;
+    const uint8_t *planes[] = {
+        frame.y,
+        frame.u,
+        frame.v,
+        reinterpret_cast<const uint8_t *>(frame.correction_y),
+        reinterpret_cast<const uint8_t *>(frame.correction_u),
+        reinterpret_cast<const uint8_t *>(frame.correction_v),
+    };
+    const size_t sizes[] = {
+        y_bytes,
+        u_bytes,
+        v_bytes,
+        correction_y_bytes,
+        correction_u_bytes,
+        correction_v_bytes,
+    };
+    for (size_t plane = 0; plane < 6; ++plane) {
         for (size_t i = 0; i < sizes[plane]; ++i) {
             hash ^= planes[plane][i];
             hash *= UINT64_C(1099511628211);
