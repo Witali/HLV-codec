@@ -62,6 +62,90 @@ static uint16_t min_u16(uint16_t left, uint16_t right) {
     return left < right ? left : right;
 }
 
+static bool is_jpeg_sof_marker(uint8_t marker) {
+    return marker >= 0xc0U && marker <= 0xcfU &&
+           marker != 0xc4U && marker != 0xc8U && marker != 0xccU;
+}
+
+static bool prepare_jpeg_decode_height(
+    uint8_t *jpeg, size_t size, uint16_t expected_width,
+    uint16_t expected_height, uint16_t *decode_height) {
+    size_t offset = 2U;
+
+    if (decode_height == NULL) return false;
+    *decode_height = expected_height;
+    if ((expected_height & 7U) == 0U) return true;
+    if (jpeg == NULL || size < 4U ||
+        jpeg[0] != 0xffU || jpeg[1] != 0xd8U) {
+        return false;
+    }
+
+    while (offset + 1U < size) {
+        uint8_t marker;
+        uint16_t length;
+        if (jpeg[offset++] != 0xffU) return false;
+        while (offset < size && jpeg[offset] == 0xffU) ++offset;
+        if (offset >= size) return false;
+        marker = jpeg[offset++];
+        if (marker == 0x00U) return false;
+        if (marker == 0xd8U ||
+            marker == 0x01U ||
+            (marker >= 0xd0U && marker <= 0xd7U)) {
+            continue;
+        }
+        if (marker == 0xd9U || marker == 0xdaU ||
+            offset + 2U > size) {
+            return false;
+        }
+        length = (uint16_t)(((uint16_t)jpeg[offset] << 8) |
+                            jpeg[offset + 1U]);
+        if (length < 2U || offset + length > size) return false;
+        if (is_jpeg_sof_marker(marker)) {
+            uint16_t height;
+            uint16_t width;
+            uint16_t aligned_height;
+            uint8_t components;
+            uint8_t max_vertical_sampling = 0;
+            size_t component;
+            uint16_t mcu_height;
+            if (length < 8U) return false;
+            height = (uint16_t)(((uint16_t)jpeg[offset + 3U] << 8) |
+                                jpeg[offset + 4U]);
+            width = (uint16_t)(((uint16_t)jpeg[offset + 5U] << 8) |
+                               jpeg[offset + 6U]);
+            components = jpeg[offset + 7U];
+            if (height != expected_height || width != expected_width ||
+                components == 0U ||
+                length < (uint16_t)(8U + 3U * components)) {
+                return false;
+            }
+            for (component = 0; component < components; ++component) {
+                const uint8_t vertical_sampling =
+                    jpeg[offset + 8U + component * 3U + 1U] & 0x0fU;
+                if (vertical_sampling > max_vertical_sampling) {
+                    max_vertical_sampling = vertical_sampling;
+                }
+            }
+            if (max_vertical_sampling == 0U) return false;
+            aligned_height =
+                (uint16_t)((expected_height + 7U) & ~7U);
+            mcu_height = (uint16_t)(8U * max_vertical_sampling);
+            if ((uint16_t)((expected_height + mcu_height - 1U) /
+                           mcu_height) !=
+                (uint16_t)((aligned_height + mcu_height - 1U) /
+                           mcu_height)) {
+                return false;
+            }
+            jpeg[offset + 3U] = (uint8_t)(aligned_height >> 8);
+            jpeg[offset + 4U] = (uint8_t)aligned_height;
+            *decode_height = aligned_height;
+            return true;
+        }
+        offset += length;
+    }
+    return false;
+}
+
 static bool seek_absolute(FILE *file, long position);
 
 static bool read_exact(FILE *file, void *buffer, size_t size) {
@@ -525,6 +609,7 @@ int mjpeg_avi_decoder_begin(mjpeg_avi_decoder_t *decoder,
     decoder->compressed_capacity =
         decoder->info.max_video_frame_size;
     decoder->packet_offset = -1;
+    decoder->decode_height = decoder->info.height;
     decoder->need_strip = need_strip;
     decoder->compressed =
         (uint8_t *)heap_caps_malloc(decoder->compressed_capacity,
@@ -652,6 +737,15 @@ int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
                  decoder->compressed[size - 1U]);
         return MJPEG_AVI_ERR_FORMAT;
     }
+    if (!prepare_jpeg_decode_height(
+            decoder->compressed, size, decoder->info.width,
+            decoder->info.height, &decoder->decode_height)) {
+        ESP_LOGE(k_tag,
+                 "Packet %u cannot prepare JPEG height %u for hardware",
+                 (unsigned)decoder->packet_index,
+                 (unsigned)decoder->info.height);
+        return MJPEG_AVI_ERR_FORMAT;
+    }
     packet->jpeg = decoder->compressed;
     packet->jpeg_size = size;
     ++decoder->packet_index;
@@ -672,7 +766,7 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
     int output_bytes = 0;
     int process_count = 0;
     uint16_t block_rows;
-    uint16_t output_y = 0;
+    uint16_t decoded_y = 0;
     int block;
 #ifdef MJPEG_PHASE_TIMING
     uint32_t phase_start;
@@ -701,7 +795,7 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
 #endif
     if (header_result != JPEG_ERR_OK ||
         header.width != decoder->info.width ||
-        header.height != decoder->info.height) {
+        header.height != decoder->decode_height) {
         ESP_LOGE(k_tag, "esp_new_jpeg header failed (%ux%u)",
                  header.width, header.height);
         return MJPEG_AVI_ERR_DECODE;
@@ -734,11 +828,17 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
         output_bytes /
         (decoder->info.width * sizeof(uint16_t)));
     for (block = 0; block < process_count; ++block) {
-        uint16_t expected_rows = min_u16(
-            block_rows, (uint16_t)(decoder->info.height - output_y));
+        const uint16_t expected_rows = min_u16(
+            block_rows, (uint16_t)(decoder->decode_height - decoded_y));
+        const uint16_t visible_rows =
+            decoded_y < decoder->info.height
+                ? min_u16(
+                      expected_rows,
+                      (uint16_t)(decoder->info.height - decoded_y))
+                : 0U;
         uint16_t *destination =
             acquire != NULL
-                ? acquire(output_context, output_y, expected_rows)
+                ? acquire(output_context, decoded_y, visible_rows)
                 : decoder->strip;
         jpeg_error_t process_result;
         uint16_t rows;
@@ -765,12 +865,14 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
             io.out_size /
             (decoder->info.width * sizeof(uint16_t)));
         if (rows != expected_rows ||
-            !output(output_context, destination, output_y, rows)) {
+            visible_rows == 0U ||
+            !output(
+                output_context, destination, decoded_y, visible_rows)) {
             return MJPEG_AVI_ERR_IO;
         }
-        output_y = (uint16_t)(output_y + rows);
+        decoded_y = (uint16_t)(decoded_y + rows);
     }
-    return output_y == decoder->info.height
+    return decoded_y == decoder->decode_height
                ? MJPEG_AVI_OK
                : MJPEG_AVI_ERR_DECODE;
 }

@@ -62,6 +62,7 @@ typedef struct {
     void *decoder;
     uint32_t packet_index;
     long packet_offset;
+    uint16_t decode_height;
     bool need_strip;
     mjpeg_avi_decode_cycles_t last_decode_cycles;
 } mjpeg_avi_decoder_t;

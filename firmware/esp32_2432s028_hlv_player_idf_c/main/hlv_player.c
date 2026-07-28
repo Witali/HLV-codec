@@ -2472,7 +2472,6 @@ bool openVideo() {
         const int width = plm_get_width(mpeg_video);
         const int height = plm_get_height(mpeg_video);
         const double fps = plm_get_framerate(mpeg_video);
-        const double duration = plm_get_duration(mpeg_video);
         const int probe_errno = errno;
         const bool probe_io_error = ferror(video_file) != 0;
         const long probe_position = ftell(video_file);
@@ -2480,12 +2479,11 @@ bool openVideo() {
             height <= 0 || height > UINT16_MAX ||
             !mpegFpsRational(
                 fps, &sequence_header.fps_num,
-                &sequence_header.fps_den) ||
-            !(duration > 0.0)) {
+                &sequence_header.fps_den)) {
             ESP_LOGE(kTag,
                      "MPEG probe failed: %dx%d fps=%.6f "
-                     "duration=%.6f pos=%ld ferror=%d errno=%d",
-                     width, height, fps, duration, probe_position,
+                     "pos=%ld ferror=%d errno=%d",
+                     width, height, fps, probe_position,
                      probe_io_error ? 1 : 0, probe_errno);
             showStatus("Invalid video.mpg", "unsupported MPEG-1 stream");
             closeVideo();
@@ -2493,16 +2491,7 @@ bool openVideo() {
         }
         sequence_header.width = (uint16_t)(width);
         sequence_header.height = (uint16_t)(height);
-        const double frame_count =
-            floor(duration * sequence_header.fps_num /
-                       sequence_header.fps_den + 0.5);
-        if (frame_count < 1.0 || frame_count > UINT32_MAX) {
-            showStatus("Invalid video.mpg", "invalid duration");
-            closeVideo();
-            return false;
-        }
-        sequence_header.frame_count =
-            (uint32_t)(frame_count);
+        sequence_header.frame_count = 0;
         if (audio_sample_rate > 0 && audio_sample_rate <= UINT16_MAX) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
             sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
@@ -2512,11 +2501,10 @@ bool openVideo() {
         }
         plm_rewind(mpeg_video);
         ESP_LOGI(kTag,
-                 "MPEG-1/PS: %ux%u, %u/%u fps, ~%u frames, "
+                 "MPEG-1/PS: %ux%u, %u/%u fps, streaming frame count, "
                  "MP2 audio=%u Hz, no-B two-frame decoder",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
-                 (unsigned)(sequence_header.frame_count),
                  sequence_header.audio_sample_rate);
         if (!startDecodeWorker()) {
             showStatus("Dual-core init failed",
