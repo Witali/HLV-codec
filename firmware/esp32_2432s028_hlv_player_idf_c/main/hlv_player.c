@@ -239,8 +239,9 @@ typedef struct DecodeRequest {
     VideoCodec codec;
     FILE *hlv_file;
     const BPV1Packet *bpv_packet;
-    const uint8_t *divx3_packet;
-    size_t divx3_packet_size;
+    FILE *divx3_file;
+    uint32_t divx3_packet_size;
+    long divx3_next_offset;
     FILE *bpv_file;
     bool bpv_prefetch;
 } DecodeRequest;
@@ -268,7 +269,6 @@ mjpeg_avi_decoder_t mjpeg_decoder = {0};
 mjpeg_avi_info_t mjpeg_info = {0};
 Divx3Decoder *divx3_decoder = NULL;
 Divx3AviInfo divx3_info = {0};
-uint8_t *divx3_packet = NULL;
 bpv_esp32_decoder_t bpv_decoder = {0};
 BPV1Header bpv_header = {0};
 uint8_t bpv_file_version = 0;
@@ -502,6 +502,14 @@ void endH263RowPipeline() {
     __atomic_store_n(&h263_row_pipeline_active, 0, __ATOMIC_RELEASE);
 }
 
+static size_t readDivx3Stream(
+    void *context, uint8_t *buffer, size_t capacity) {
+    FILE *file = (FILE *)(context);
+    return file && buffer && capacity
+               ? fread(buffer, 1, capacity, file)
+               : 0;
+}
+
 void decodeTask(void *opaque) {
     (void)opaque;
     DecodeRequest request = {0};
@@ -532,13 +540,22 @@ void decodeTask(void *opaque) {
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
         } else if (request.codec == VIDEO_CODEC_kDivx3) {
             result.result =
-                divx3_decoder && request.divx3_packet &&
-                        request.divx3_packet_size
-                    ? divx3_decoder_decode(
-                          divx3_decoder, request.divx3_packet,
-                          request.divx3_packet_size,
+                divx3_decoder && request.divx3_file &&
+                        request.divx3_packet_size &&
+                        request.divx3_next_offset >= 0
+                    ? divx3_decoder_decode_stream(
+                          divx3_decoder, request.divx3_packet_size,
+                          readDivx3Stream, request.divx3_file,
                           &result.divx3_frame)
                     : DIVX3_ERR_ARGUMENT;
+            if (request.divx3_file &&
+                request.divx3_next_offset >= 0 &&
+                divx3_avi_finish_video_packet(
+                    request.divx3_file,
+                    request.divx3_next_offset) != DIVX3_AVI_OK &&
+                result.result == DIVX3_OK) {
+                result.result = DIVX3_ERR_BITSTREAM;
+            }
         } else if (request.codec == VIDEO_CODEC_kH263) {
             result.result =
                 h263_decoder && video_file
@@ -612,15 +629,17 @@ bool submitMpegDecode() {
     return true;
 }
 
-bool submitDivx3Decode(const uint8_t *packet, size_t packet_size) {
+bool submitDivx3Decode(
+    FILE *file, uint32_t packet_size, long next_offset) {
     if (!decode_task_handle || decode_in_flight || !divx3_decoder ||
-        !packet || !packet_size) {
+        !file || !packet_size || next_offset < 0) {
         return false;
     }
     DecodeRequest request = {0};
     request.codec = VIDEO_CODEC_kDivx3;
-    request.divx3_packet = packet;
+    request.divx3_file = file;
     request.divx3_packet_size = packet_size;
+    request.divx3_next_offset = next_offset;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE)
         return false;
     decode_in_flight = true;
@@ -1817,8 +1836,6 @@ void closeVideo() {
     mjpeg_info = (mjpeg_avi_info_t){0};
     divx3_decoder_destroy(divx3_decoder);
     divx3_decoder = NULL;
-    heap_caps_free(divx3_packet);
-    divx3_packet = NULL;
     divx3_info = (Divx3AviInfo){0};
     bpv_esp32_decoder_end(&bpv_decoder);
     bpv_header = (BPV1Header){0};
@@ -2667,11 +2684,9 @@ bool openVideo() {
         divx3_decoder =
             divx3_decoder_create_y6_u5_v5(
                 divx3_info.width, divx3_info.height);
-        divx3_packet = (uint8_t *)(heap_caps_malloc(
-            divx3_info.max_video_packet_size, MALLOC_CAP_8BIT));
-        if (!divx3_decoder || !divx3_packet) {
+        if (!divx3_decoder) {
             showStatus("Not enough RAM",
-                       "use at most the 320x240 DivX 3 profile");
+                       "DivX 3 decoder allocation failed");
             reportHeap("DivX 3 decoder allocation failed");
             closeVideo();
             return false;
@@ -2693,7 +2708,7 @@ bool openVideo() {
         ESP_LOGI(kTag,
                  "DivX 3/AVI: %ux%u, %u/%u fps, %u frames, "
                  "PCM_U8 audio=%u Hz, compact decoder=%u bytes, "
-                 "packet=%u bytes",
+                 "4 KB stream buffer, max packet=%u bytes",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  (unsigned)(sequence_header.frame_count),
@@ -4008,21 +4023,20 @@ plm_frame_t makeDivx3RenderFrame(Divx3Frame source) {
 }
 
 void playOneDivx3Frame() {
-    size_t packet_size = 0;
+    uint32_t packet_size = 0;
+    long next_offset = -1;
     const long retry_offset = ftell(video_file);
     const int64_t read_start = microsNow();
-    int packet_result = divx3_avi_read_video_packet(
-        video_file, &divx3_info, divx3_packet,
-        divx3_info.max_video_packet_size, &packet_size);
+    int packet_result = divx3_avi_begin_video_packet(
+        video_file, &divx3_info, &packet_size, &next_offset);
     if (packet_result == DIVX3_AVI_ERR_IO && retry_offset >= 0) {
         for (unsigned attempt = 1; attempt <= 2; ++attempt) {
             ESP_LOGW(kTag,
                      "Recovering DivX 3 packet at %ld, attempt %u/2",
                      retry_offset, attempt);
             if (!reopenVideoAt(retry_offset)) break;
-            packet_result = divx3_avi_read_video_packet(
-                video_file, &divx3_info, divx3_packet,
-                divx3_info.max_video_packet_size, &packet_size);
+            packet_result = divx3_avi_begin_video_packet(
+                video_file, &divx3_info, &packet_size, &next_offset);
             if (packet_result == DIVX3_AVI_OK) {
                 ESP_LOGI(kTag, "DivX 3 packet recovered at %ld",
                          retry_offset);
@@ -4048,8 +4062,14 @@ void playOneDivx3Frame() {
 
     Divx3Frame decoded = {0};
     const int64_t decode_start = microsNow();
-    const int decode_result = divx3_decoder_decode(
-        divx3_decoder, divx3_packet, packet_size, &decoded);
+    int decode_result = divx3_decoder_decode_stream(
+        divx3_decoder, packet_size, readDivx3Stream,
+        video_file, &decoded);
+    if (divx3_avi_finish_video_packet(
+            video_file, next_offset) != DIVX3_AVI_OK &&
+        decode_result == DIVX3_OK) {
+        decode_result = DIVX3_ERR_BITSTREAM;
+    }
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (decode_result != DIVX3_OK) {
@@ -4064,21 +4084,20 @@ void playOneDivx3Frame() {
 }
 
 void playOneDivx3FramePipelined() {
-    size_t packet_size = 0;
+    uint32_t packet_size = 0;
+    long next_offset = -1;
     const long retry_offset = ftell(video_file);
     const int64_t read_start = microsNow();
-    int packet_result = divx3_avi_read_video_packet(
-        video_file, &divx3_info, divx3_packet,
-        divx3_info.max_video_packet_size, &packet_size);
+    int packet_result = divx3_avi_begin_video_packet(
+        video_file, &divx3_info, &packet_size, &next_offset);
     if (packet_result == DIVX3_AVI_ERR_IO && retry_offset >= 0) {
         for (unsigned attempt = 1; attempt <= 2; ++attempt) {
             ESP_LOGW(kTag,
                      "Recovering DivX 3 packet at %ld, attempt %u/2",
                      retry_offset, attempt);
             if (!reopenVideoAt(retry_offset)) break;
-            packet_result = divx3_avi_read_video_packet(
-                video_file, &divx3_info, divx3_packet,
-                divx3_info.max_video_packet_size, &packet_size);
+            packet_result = divx3_avi_begin_video_packet(
+                video_file, &divx3_info, &packet_size, &next_offset);
             if (packet_result == DIVX3_AVI_OK) {
                 ESP_LOGI(kTag, "DivX 3 packet recovered at %ld",
                          retry_offset);
@@ -4114,7 +4133,8 @@ void playOneDivx3FramePipelined() {
         failPlayback("DivX 3 packet error", packet_result);
         return;
     }
-    if (!submitDivx3Decode(divx3_packet, packet_size)) {
+    if (!submitDivx3Decode(
+            video_file, packet_size, next_offset)) {
         failPlayback("DivX 3 decode pipeline error",
                      DIVX3_ERR_BITSTREAM);
         return;
@@ -4619,7 +4639,7 @@ void app_main(void) {
             continue;
         }
         if (video_file && video_codec == VIDEO_CODEC_kDivx3 &&
-            divx3_decoder && divx3_packet) {
+            divx3_decoder) {
             if (PLAYER_USE_DUAL_CORE_PIPELINE) {
                 playOneDivx3FramePipelined();
             } else {

@@ -70,6 +70,11 @@ typedef struct {
 typedef struct {
     const uint8_t *next;
     const uint8_t *end;
+    uint8_t *refill;
+    size_t refill_capacity;
+    size_t unread_bytes;
+    Divx3ReadFunction read;
+    void *read_context;
     uint32_t cache;
     size_t bits;
     size_t position;
@@ -121,6 +126,7 @@ struct Divx3Decoder {
     uint8_t flipflop_rounding;
     uint8_t no_rounding;
     uint8_t compact_y6_u5_v5;
+    uint8_t stream_buffer[DIVX3_STREAM_BUFFER_BYTES];
 };
 
 static const uint8_t kScanZigzag[64] = {
@@ -144,18 +150,51 @@ static const uint8_t kScanAltVertical[64] = {
     53, 61, 22, 30, 7,  15, 23, 31, 38, 46, 54, 62, 39, 47, 55, 63,
 };
 
-static int DIVX3_BITREADER_ATTR bit_read(BitReader *reader) {
-    int value;
-    if (!reader->cached) {
-        if (reader->next >= reader->end) {
-            reader->failed = 1;
-            ++reader->position;
+static int DIVX3_BITREADER_ATTR
+bitreader_next_byte(BitReader *reader, uint8_t *value) {
+    if (reader->next >= reader->end) {
+        size_t wanted;
+        size_t received;
+        if (!reader->read || !reader->unread_bytes ||
+            !reader->refill || !reader->refill_capacity) {
             return 0;
         }
-        reader->cache = (uint32_t)*reader->next++ << 24;
-        reader->cached = 8;
+        wanted = reader->unread_bytes < reader->refill_capacity
+                     ? reader->unread_bytes
+                     : reader->refill_capacity;
+        received = reader->read(
+            reader->read_context, reader->refill, wanted);
+        if (!received || received > wanted) {
+            reader->failed = 1;
+            return 0;
+        }
+        reader->next = reader->refill;
+        reader->end = reader->refill + received;
+        reader->unread_bytes -= received;
     }
-    if (reader->position >= reader->bits) {
+    *value = *reader->next++;
+    return 1;
+}
+
+static int DIVX3_BITREADER_ATTR
+bitreader_fill_cache(BitReader *reader, unsigned count) {
+    while (reader->cached < count) {
+        uint8_t byte;
+        if (reader->cached > 24U ||
+            !bitreader_next_byte(reader, &byte)) {
+            return 0;
+        }
+        reader->cache |=
+            (uint32_t)byte << (24U - reader->cached);
+        reader->cached += 8U;
+    }
+    return 1;
+}
+
+static int DIVX3_BITREADER_ATTR bit_read(BitReader *reader) {
+    int value;
+    if (reader->position >= reader->bits ||
+        !bitreader_fill_cache(reader, 1U)) {
         reader->failed = 1;
         ++reader->position;
         return 0;
@@ -172,12 +211,8 @@ static uint32_t DIVX3_BITREADER_ATTR bits_read(BitReader *reader,
     uint32_t value;
     unsigned requested = count;
     if (!count) return 0;
-    while (reader->cached < count && reader->next < reader->end) {
-        reader->cache |=
-            (uint32_t)*reader->next++ << (24U - reader->cached);
-        reader->cached += 8;
-    }
-    if (reader->cached < count || reader->position > reader->bits ||
+    if (!bitreader_fill_cache(reader, count) ||
+        reader->position > reader->bits ||
         count > reader->bits - reader->position) {
         reader->failed = 1;
         reader->position += count;
@@ -193,10 +228,24 @@ static uint32_t DIVX3_BITREADER_ATTR bits_read(BitReader *reader,
 }
 
 static uint32_t bits_peek(BitReader *reader, unsigned count) {
-    BitReader saved = *reader;
-    uint32_t value = bits_read(reader, count);
-    *reader = saved;
-    return value;
+    if (!count || count > 32U ||
+        reader->position > reader->bits) {
+        reader->failed = 1;
+        return 0;
+    }
+    /*
+     * TCOEF escape codes are longer than some direct VLC entries. Near the
+     * end of a packet there may be too few bits left to form an escape while
+     * still having enough for a valid direct entry. Treat that as a definite
+     * non-match; the subsequent VLC walk validates the exact short code.
+     */
+    if (count > reader->bits - reader->position)
+        return UINT32_MAX;
+    if (!bitreader_fill_cache(reader, count)) {
+        reader->failed = 1;
+        return 0;
+    }
+    return reader->cache >> (32U - count);
 }
 
 static void bits_drop_cached(BitReader *reader, unsigned count) {
@@ -219,11 +268,8 @@ decode_vlc_index(BitReader *reader, const Divx3VlcNode *nodes,
     if (reader->position <= reader->bits &&
         reader->bits - reader->position >= 8U) {
         uint32_t prefix;
-        while (reader->cached < 8U) {
-            reader->cache |=
-                (uint32_t)*reader->next++ << (24U - reader->cached);
-            reader->cached += 8U;
-        }
+        if (!bitreader_fill_cache(reader, 8U))
+            return DIVX3_ERR_BITSTREAM;
         prefix = reader->cache;
         for (; depth < 8U; ++depth) {
             int child =
@@ -1476,25 +1522,16 @@ void divx3_decoder_destroy(Divx3Decoder *decoder) {
     free(decoder);
 }
 
-int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
-                         size_t packet_size, Divx3Frame *frame) {
-    BitReader reader;
+static int decode_with_reader(
+    Divx3Decoder *decoder, BitReader reader, Divx3Frame *frame) {
     unsigned picture_type;
     int quantizer;
     uint8_t output_index;
     uint8_t *output;
     int next_no_rounding;
     int result;
-    if (!decoder || !packet || !packet_size || !frame)
+    if (!decoder || !frame)
         return DIVX3_ERR_ARGUMENT;
-    reader.next = packet;
-    reader.end = packet + packet_size;
-    reader.cache = 0;
-    reader.bits = packet_size > SIZE_MAX / 8U ? SIZE_MAX
-                                              : packet_size * 8U;
-    reader.position = 0;
-    reader.cached = 0;
-    reader.failed = 0;
     picture_type = bits_read(&reader, 2);
     quantizer = (int)bits_read(&reader, 5);
     if (reader.failed || !quantizer) return DIVX3_ERR_BITSTREAM;
@@ -1563,6 +1600,36 @@ int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
                               : DIVX3_FRAME_STORAGE_YUV420;
     frame->intra = picture_type == 0;
     return DIVX3_OK;
+}
+
+int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
+                         size_t packet_size, Divx3Frame *frame) {
+    BitReader reader = {0};
+    if (!decoder || !packet || !packet_size || !frame)
+        return DIVX3_ERR_ARGUMENT;
+    reader.next = packet;
+    reader.end = packet + packet_size;
+    reader.bits = packet_size > SIZE_MAX / 8U ? SIZE_MAX
+                                              : packet_size * 8U;
+    return decode_with_reader(decoder, reader, frame);
+}
+
+int divx3_decoder_decode_stream(
+    Divx3Decoder *decoder, size_t packet_size,
+    Divx3ReadFunction read, void *read_context, Divx3Frame *frame) {
+    BitReader reader = {0};
+    if (!decoder || !packet_size || !read || !frame)
+        return DIVX3_ERR_ARGUMENT;
+    reader.next = decoder->stream_buffer;
+    reader.end = decoder->stream_buffer;
+    reader.refill = decoder->stream_buffer;
+    reader.refill_capacity = sizeof(decoder->stream_buffer);
+    reader.unread_bytes = packet_size;
+    reader.read = read;
+    reader.read_context = read_context;
+    reader.bits = packet_size > SIZE_MAX / 8U ? SIZE_MAX
+                                              : packet_size * 8U;
+    return decode_with_reader(decoder, reader, frame);
 }
 
 size_t divx3_decoder_memory_bytes(const Divx3Decoder *decoder) {
