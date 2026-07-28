@@ -25,6 +25,13 @@ dimensions must be multiples of four. Standalone HLV files from versions
 1-13 are intentionally rejected because HLV v14 is the current stable format.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
+The video output has its own child window above the timeline. The DXGI swap
+chain is bound only to that child window, while the seek bar and time label are
+separate sibling controls below it. This prevents a promoted hardware overlay
+from covering the controls even though they remain responsive. The GDI
+fallback draws into the same video child window and therefore uses identical
+layout boundaries.
+
 New project H.263 assets are restricted to baseline H.263 in AVI at standard
 QCIF `176x144` or CIF `352x288`, preserving the full source frame rate. The
 encoder prepares a complete 4:3 QCIF/CIF frame with one Lanczos downscale.

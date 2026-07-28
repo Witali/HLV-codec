@@ -41,6 +41,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr wchar_t kWindowClass[] = L"HLV1WindowsPlayer";
+constexpr wchar_t kVideoWindowClass[] = L"HLV1WindowsPlayerVideo";
 constexpr UINT_PTR kPlaybackTimer = 1;
 constexpr size_t kVideoLeadFrames = 3;
 constexpr size_t kAudioBufferCount = 8;
@@ -412,7 +413,6 @@ public:
     }
 
     bool present(const VideoFrame &frame, bool fit_to_window,
-                 int reserved_bottom,
                  std::wstring &error) {
         if (!active_ || !swap_chain_ || frame.width <= 0 || frame.height <= 0)
             return false;
@@ -438,8 +438,6 @@ public:
         if (raw_width <= 0 || raw_height <= 0) return true;
         const UINT width = static_cast<UINT>(raw_width);
         const UINT height = static_cast<UINT>(raw_height);
-        const UINT video_height = static_cast<UINT>(std::max<LONG>(
-            1, raw_height - std::max(0, reserved_bottom)));
         HRESULT result = ensure_size(width, height);
         if (FAILED(result)) {
             error = hresult_error(L"Cannot resize the DXGI video buffers", result);
@@ -467,21 +465,21 @@ public:
         int draw_height = frame.height;
         if (fit_to_window) {
             if (static_cast<int64_t>(width) * frame.height <=
-                static_cast<int64_t>(video_height) * frame.width) {
+                static_cast<int64_t>(height) * frame.width) {
                 draw_width = static_cast<int>(width);
                 draw_height = static_cast<int>(
                     static_cast<int64_t>(width) * frame.height / frame.width);
             } else {
-                draw_height = static_cast<int>(video_height);
+                draw_height = static_cast<int>(height);
                 draw_width = static_cast<int>(
-                    static_cast<int64_t>(video_height) *
+                    static_cast<int64_t>(height) *
                     frame.width / frame.height);
             }
         }
         destination_rect.left =
             (static_cast<int>(width) - draw_width) / 2;
         destination_rect.top =
-            (static_cast<int>(video_height) - draw_height) / 2;
+            (static_cast<int>(height) - draw_height) / 2;
         destination_rect.right = destination_rect.left + draw_width;
         destination_rect.bottom = destination_rect.top + draw_height;
 
@@ -982,8 +980,8 @@ public:
             codec_ == VideoCodec::kBpv
                 ? D3DInputFormat::kBgra
                 : D3DInputFormat::kNv12;
-        if (!video_renderer_.open(
-                window_, header_.width, header_.height,
+        if (!video_window_ || !video_renderer_.open(
+                video_window_, header_.width, header_.height,
                 header_.fps_num, header_.fps_den, input_format,
                 video_error)) {
             video_warning_ = L"D3D11 output is unavailable; "
@@ -1188,13 +1186,11 @@ public:
         return static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     }
 
-    void paint(HDC dc, const RECT &client) const {
+    void paint_video(HDC dc, const RECT &client) const {
         if (video_renderer_.active()) return;
 
         const int client_width = client.right - client.left;
         const int client_height = client.bottom - client.top;
-        const int video_height =
-            std::max(0, client_height - control_bar_height());
         HDC memory_dc = nullptr;
         HBITMAP bitmap = nullptr;
         HGDIOBJ previous_bitmap = nullptr;
@@ -1215,7 +1211,6 @@ public:
             SetBkMode(target, TRANSPARENT);
             SetTextColor(target, RGB(210, 210, 210));
             RECT text_rect = client;
-            text_rect.bottom = text_rect.top + video_height;
             const wchar_t *message = error_.empty()
                 ? L"Open an .hlv or .bpv1 file (Ctrl+O), or drag it here"
                 : error_.c_str();
@@ -1224,22 +1219,22 @@ public:
         } else {
             int draw_width = current_.width;
             int draw_height = current_.height;
-            if (fit_to_window_ && client_width > 0 && video_height > 0) {
+            if (fit_to_window_ && client_width > 0 && client_height > 0) {
                 if (static_cast<int64_t>(client_width) * current_.height <=
-                    static_cast<int64_t>(video_height) * current_.width) {
+                    static_cast<int64_t>(client_height) * current_.width) {
                     draw_width = client_width;
                     draw_height = static_cast<int>(
                         static_cast<int64_t>(client_width) * current_.height /
                         current_.width);
                 } else {
-                    draw_height = video_height;
+                    draw_height = client_height;
                     draw_width = static_cast<int>(
-                        static_cast<int64_t>(video_height) * current_.width /
+                        static_cast<int64_t>(client_height) * current_.width /
                         current_.height);
                 }
             }
             const int draw_x = (client_width - draw_width) / 2;
-            const int draw_y = (video_height - draw_height) / 2;
+            const int draw_y = (client_height - draw_height) / 2;
 
             BITMAPINFO info = {};
             info.bmiHeader.biSize = sizeof info.bmiHeader;
@@ -1268,13 +1263,13 @@ public:
     bool fit_to_window() const { return fit_to_window_; }
 
 private:
-    int control_bar_height() const {
-        return seek_bar_ && IsWindow(seek_bar_) ? kSeekBarHeight : 0;
-    }
-
     void create_controls() {
         const HINSTANCE instance = reinterpret_cast<HINSTANCE>(
             GetWindowLongPtrW(window_, GWLP_HINSTANCE));
+        video_window_ = CreateWindowExW(
+            WS_EX_ACCEPTFILES, kVideoWindowClass, L"",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            0, 0, 0, 0, window_, nullptr, instance, this);
         seek_bar_ = CreateWindowExW(
             0, TRACKBAR_CLASSW, L"",
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_TOOLTIPS,
@@ -1301,12 +1296,15 @@ private:
     }
 
     void layout_controls() const {
-        if (!seek_bar_ || !time_label_) return;
         RECT client = {};
         GetClientRect(window_, &client);
         const int width = std::max<LONG>(0, client.right - client.left);
         const int height = std::max<LONG>(0, client.bottom - client.top);
         const int top = std::max(0, height - kSeekBarHeight);
+        if (video_window_) {
+            MoveWindow(video_window_, 0, 0, width, top, TRUE);
+        }
+        if (!seek_bar_ || !time_label_) return;
         const int label_width = std::min(
             kTimeLabelWidth, std::max(0, width - 2 * kSeekMargin));
         const int label_x = std::max(
@@ -1977,8 +1975,7 @@ private:
         if (video_renderer_.active() && !current_.pixels.empty()) {
             std::wstring render_error;
             if (video_renderer_.present(
-                    current_, fit_to_window_, control_bar_height(),
-                    render_error)) {
+                    current_, fit_to_window_, render_error)) {
                 return;
             }
             video_warning_ =
@@ -1986,7 +1983,7 @@ private:
                 render_error;
             update_title();
         }
-        InvalidateRect(window_, nullptr, FALSE);
+        if (video_window_) InvalidateRect(video_window_, nullptr, FALSE);
     }
 
     void playback_failed() {
@@ -2020,6 +2017,7 @@ private:
     }
 
     HWND window_ = nullptr;
+    HWND video_window_ = nullptr;
     HWND seek_bar_ = nullptr;
     HWND time_label_ = nullptr;
     FILE *file_ = nullptr;
@@ -2061,6 +2059,42 @@ private:
     bool fit_to_window_ = true;
     bool seek_dragging_ = false;
 };
+
+LRESULT CALLBACK video_window_proc(HWND window, UINT message,
+                                   WPARAM wparam, LPARAM lparam) {
+    if (message == WM_NCCREATE) {
+        const auto *create = reinterpret_cast<const CREATESTRUCTW *>(lparam);
+        SetWindowLongPtrW(
+            window, GWLP_USERDATA,
+            reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    auto *player = reinterpret_cast<Player *>(
+        GetWindowLongPtrW(window, GWLP_USERDATA));
+    switch (message) {
+    case WM_PAINT: {
+        PAINTSTRUCT paint = {};
+        HDC dc = BeginPaint(window, &paint);
+        RECT client = {};
+        GetClientRect(window, &client);
+        if (player) {
+            player->paint_video(dc, client);
+        } else {
+            FillRect(
+                dc, &client,
+                static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        }
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_DROPFILES:
+        return SendMessageW(GetParent(window), message, wparam, lparam);
+    default:
+        break;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
 
 Player *g_player = nullptr;
 
@@ -2157,9 +2191,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message,
     case WM_PAINT: {
         PAINTSTRUCT paint = {};
         HDC dc = BeginPaint(window, &paint);
-        RECT client = {};
-        GetClientRect(window, &client);
-        g_player->paint(dc, client);
+        FillRect(
+            dc, &paint.rcPaint,
+            static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
         EndPaint(window, &paint);
         return 0;
     }
@@ -2470,6 +2504,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         timeEndPeriod(1);
         return 1;
     }
+    WNDCLASSEXW video_window_class = {};
+    video_window_class.cbSize = sizeof video_window_class;
+    video_window_class.style = CS_HREDRAW | CS_VREDRAW;
+    video_window_class.lpfnWndProc = video_window_proc;
+    video_window_class.hInstance = instance;
+    video_window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    video_window_class.hbrBackground =
+        static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    video_window_class.lpszClassName = kVideoWindowClass;
+    if (!RegisterClassExW(&video_window_class)) {
+        if (arguments) LocalFree(arguments);
+        timeEndPeriod(1);
+        return 1;
+    }
     WNDCLASSEXW window_class = {};
     window_class.cbSize = sizeof window_class;
     window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -2488,7 +2536,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     RECT window_rect = {0, 0, 640, 480};
     AdjustWindowRect(&window_rect, WS_OVERLAPPEDWINDOW, TRUE);
     HWND window = CreateWindowExW(
-        0, kWindowClass, L"HLV/BPV Player", WS_OVERLAPPEDWINDOW,
+        0, kWindowClass, L"HLV/BPV Player",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT,
         window_rect.right - window_rect.left,
         window_rect.bottom - window_rect.top,
