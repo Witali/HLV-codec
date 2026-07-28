@@ -12,7 +12,10 @@ $qemuRoot = Join-Path $repository "local_tools\qemu-sdspi"
 $source = Join-Path $qemuRoot "source"
 $build = Join-Path $qemuRoot "build"
 $configMarker = Join-Path $build ".hlv-sdspi-st7789-sdl-v1"
-$patch = Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"
+$patches = @(
+    (Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"),
+    (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch")
+)
 $qemuCommit = "40edccac415693c5130f91c01d84176ae6008566"
 $qemuTag = "esp-develop-9.2.2-20260417"
 $packages = @(
@@ -53,8 +56,10 @@ function Quote-Bash {
 if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
     throw "WSL is required to build the patched Espressif QEMU."
 }
-if (-not (Test-Path -LiteralPath $patch)) {
-    throw "Missing QEMU patch: $patch"
+foreach ($patch in $patches) {
+    if (-not (Test-Path -LiteralPath $patch)) {
+        throw "Missing QEMU patch: $patch"
+    }
 }
 
 $packageList = $packages -join " "
@@ -77,10 +82,8 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force -Path $qemuRoot | Out-Null
 $wslSource = ConvertTo-WslPath $source
 $wslBuild = ConvertTo-WslPath $build
-$wslPatch = ConvertTo-WslPath $patch
 $quotedSource = Quote-Bash $wslSource
 $quotedBuild = Quote-Bash $wslBuild
-$quotedPatch = Quote-Bash $wslPatch
 
 if (-not (Test-Path -LiteralPath (Join-Path $source ".git"))) {
     if (Test-Path -LiteralPath $source) {
@@ -103,22 +106,31 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $qemuCommit) {
     throw "Expected QEMU commit $qemuCommit, found $actualCommit."
 }
 
-& wsl.exe bash -lc (
-    "git -C $quotedSource apply --reverse --check $quotedPatch " +
-    ">/dev/null 2>&1"
-)
-if ($LASTEXITCODE -ne 0) {
+foreach ($patch in $patches) {
+    $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
     & wsl.exe bash -lc (
-        "git -C $quotedSource apply --check $quotedPatch && " +
-        "git -C $quotedSource apply $quotedPatch"
+        "git -C $quotedSource apply --reverse --check $quotedPatch " +
+        ">/dev/null 2>&1"
     )
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not apply the ESP32 SDSPI patch to QEMU."
+        & wsl.exe bash -lc (
+            "git -C $quotedSource apply --check $quotedPatch && " +
+            "git -C $quotedSource apply $quotedPatch"
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not apply QEMU patch: $patch"
+        }
     }
 }
 
+$patchDigest = (
+    Get-FileHash -Algorithm SHA256 $patches |
+        ForEach-Object Hash
+) -join ":"
+$expectedMarker = "$qemuCommit`n$patchDigest"
 if (-not (Test-Path -LiteralPath (Join-Path $build "build.ninja")) -or
-    -not (Test-Path -LiteralPath $configMarker)) {
+    -not (Test-Path -LiteralPath $configMarker) -or
+    (Get-Content -Raw -LiteralPath $configMarker) -ne $expectedMarker) {
     New-Item -ItemType Directory -Force -Path $build | Out-Null
     Write-Host "Configuring the patched Xtensa QEMU with SDL"
     & wsl.exe bash -lc (
@@ -130,7 +142,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $build "build.ninja")) -or
     if ($LASTEXITCODE -ne 0) {
         throw "QEMU configuration failed."
     }
-    Set-Content -LiteralPath $configMarker -Value $qemuCommit -NoNewline
+    Set-Content -LiteralPath $configMarker -Value $expectedMarker -NoNewline
 }
 
 Write-Host "Building the patched Xtensa QEMU"

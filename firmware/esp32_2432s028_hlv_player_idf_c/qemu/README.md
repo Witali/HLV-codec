@@ -7,6 +7,7 @@ Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
 - Upstream commit:
   [`40edccac415693c5130f91c01d84176ae6008566`](https://github.com/espressif/qemu/commit/40edccac415693c5130f91c01d84176ae6008566)
 - Device patch: `patches/0001-esp32-sdspi.patch`
+- Runtime GPIO-input patch: `patches/0003-esp32-gpio-input.patch`
 - Windows build fallback: `patches/0002-windows-symlink-fallback.patch`
 - Full patched files: `modified_sources/`
 
@@ -22,7 +23,8 @@ ESP32-2432S028 board:
 The ST7789 window has a control strip below the 320x240 LCD:
 
 - `RESET` and `BOOT` are momentary buttons. Their emulated electrical level
-  follows mouse-down and mouse-up, like the physical board buttons.
+  follows mouse-down and mouse-up, like the physical board buttons. BOOT also
+  drives the emulated GPIO0 input while the application is running.
 - `HOLD` is an optional BOOT hold checkbox. It is off by default; when
   checked, GPIO0 remains asserted low after the mouse button is released.
 - To enter the ROM UART downloader with a mouse, check `HOLD`, click `RESET`,

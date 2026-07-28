@@ -1,0 +1,83 @@
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 1b8d33b..5e92bc6 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -41,6 +41,18 @@ static void esp32_gpio_set_outputs(Esp32GpioState *s,
+     }
+ }
+ 
++void esp32_gpio_set_input(Esp32GpioState *s, unsigned pin, int level)
++{
++    if (pin >= ESP32_GPIO_PIN_COUNT) {
++        return;
++    }
++    if (pin < 32) {
++        s->in = deposit32(s->in, pin, 1, level != 0);
++    } else {
++        s->in1 = deposit32(s->in1, pin - 32, 1, level != 0);
++    }
++}
++
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+@@ -55,6 +67,12 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+     case A_GPIO_STRAP:
+         r = s->strap_mode;
+         break;
++    case A_GPIO_IN:
++        r = s->in;
++        break;
++    case A_GPIO_IN1:
++        r = s->in1;
++        break;
+ 
+     default:
+         break;
+@@ -115,6 +133,8 @@ static void esp32_gpio_init(Object *obj)
+ 
+     /* Set the default value for the strap_mode property */
+     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
++    /* GPIO0 has an external pull-up and the BOOT button drives it low. */
++    s->in = 1;
+ 
+     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
+                           TYPE_ESP32_GPIO, 0x1000);
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index f62119f..4f7eef1 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -853,6 +853,7 @@ static void esp32_machine_boot_button(void *opaque, int line, int level)
+ {
+     Esp32MachineState *ms = opaque;
+ 
++    esp32_gpio_set_input(&ms->esp32.gpio, 0, !level);
+     ms->esp32.gpio.strap_mode = level ? ESP32_STRAP_MODE_UART_BOOT :
+                                         ESP32_STRAP_MODE_FLASH_BOOT;
+ }
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index 899bccf..c26cbad 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -10,6 +10,8 @@
+ #define ESP32_GPIO_CLASS(klass)     OBJECT_CLASS_CHECK(Esp32GpioClass, klass, TYPE_ESP32_GPIO)
+ 
+ REG32(GPIO_STRAP, 0x0038)
++REG32(GPIO_IN, 0x003c)
++REG32(GPIO_IN1, 0x0040)
+ 
+ #define ESP32_STRAP_MODE_FLASH_BOOT 0x12
+ #define ESP32_STRAP_MODE_UART_BOOT  0x0f
+@@ -24,8 +26,12 @@ typedef struct Esp32GpioState {
+     uint32_t out;
+     uint32_t out1;
+     uint32_t strap_mode;
++    uint32_t in;
++    uint32_t in1;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+     SysBusDeviceClass parent_class;
+ } Esp32GpioClass;
++
++void esp32_gpio_set_input(Esp32GpioState *state, unsigned pin, int level);

@@ -853,6 +853,7 @@ static void esp32_machine_boot_button(void *opaque, int line, int level)
 {
     Esp32MachineState *ms = opaque;
 
+    esp32_gpio_set_input(&ms->esp32.gpio, 0, !level);
     ms->esp32.gpio.strap_mode = level ? ESP32_STRAP_MODE_UART_BOOT :
                                         ESP32_STRAP_MODE_FLASH_BOOT;
 }

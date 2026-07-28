@@ -41,6 +41,18 @@ static void esp32_gpio_set_outputs(Esp32GpioState *s,
     }
 }
 
+void esp32_gpio_set_input(Esp32GpioState *s, unsigned pin, int level)
+{
+    if (pin >= ESP32_GPIO_PIN_COUNT) {
+        return;
+    }
+    if (pin < 32) {
+        s->in = deposit32(s->in, pin, 1, level != 0);
+    } else {
+        s->in1 = deposit32(s->in1, pin - 32, 1, level != 0);
+    }
+}
+
 static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32GpioState *s = ESP32_GPIO(opaque);
@@ -54,6 +66,12 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case A_GPIO_STRAP:
         r = s->strap_mode;
+        break;
+    case A_GPIO_IN:
+        r = s->in;
+        break;
+    case A_GPIO_IN1:
+        r = s->in1;
         break;
 
     default:
@@ -115,6 +133,8 @@ static void esp32_gpio_init(Object *obj)
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+    /* GPIO0 has an external pull-up and the BOOT button drives it low. */
+    s->in = 1;
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
                           TYPE_ESP32_GPIO, 0x1000);
