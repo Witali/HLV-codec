@@ -349,9 +349,13 @@ The repository includes the minimal patched emulator as a native, static
 Windows executable managed by Git LFS. Run it instead of the WSL build with:
 
 ```powershell
-.\run-qemu-sdspi-windows.ps1 `
-    -FlashImage .\build-qemu-sdspi-normal\qemu_production_flash_4mb.bin
+.\run-qemu-demo-windows.ps1
 ```
+
+This dedicated demo launcher builds and merges the C99 production firmware
+on its first run, then starts the visible ST7789 window with the tracked demo
+SD image. Later runs reuse `build-qemu-demo\qemu_demo_flash_4mb.bin`; pass
+`-Rebuild` to refresh it or `-Headless` to run without an SDL window.
 
 The default FAT32 image is
 `qemu\hlv-big-buck-bunny-5min-h263-avi.img`. It contains `HLV\bunny.avi`

@@ -78,9 +78,12 @@ For a native Windows build and launch (no WSL runtime), use:
 
 ```powershell
 ..\setup-qemu-sdspi-windows.ps1
-..\run-qemu-sdspi-windows.ps1 `
-    -FlashImage <flash.bin>
+..\run-qemu-demo-windows.ps1
 ```
+
+The dedicated demo launcher builds a production flash image when it is
+missing and opens the ST7789 window with the default demo card. Use
+`-Rebuild` to rebuild the flash image or `-Headless` to suppress the window.
 
 The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
 its executable managed by Git LFS. The demo SD image is also managed by Git
