@@ -343,6 +343,20 @@ static bool parse_request(uart_file_upload_t *upload,
         upload->crc_requested = true;
         return false;
     }
+    if (strncmp(line, "HLVDELETE ", 10) == 0) {
+        char filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
+        char trailing = '\0';
+        int fields =
+            sscanf(line, "HLVDELETE 1 %48s %c", filename, &trailing);
+        if (fields != 1 || !valid_filename(filename)) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        snprintf(upload->delete_filename,
+                 sizeof upload->delete_filename, "%s", filename);
+        upload->delete_requested = true;
+        return false;
+    }
     if (strncmp(line, "HLVSDBENCH ", 11) == 0) {
         char pattern[8] = {0};
         unsigned size_mib = 0;
@@ -457,6 +471,19 @@ bool uart_file_upload_take_crc_request(uart_file_upload_t *upload,
     return true;
 }
 
+bool uart_file_upload_take_delete_request(uart_file_upload_t *upload,
+                                          char *filename,
+                                          size_t filename_bytes) {
+    if (upload == NULL || !upload->delete_requested ||
+        filename == NULL || filename_bytes == 0U) {
+        return false;
+    }
+    snprintf(filename, filename_bytes, "%s", upload->delete_filename);
+    upload->delete_requested = false;
+    upload->delete_filename[0] = '\0';
+    return true;
+}
+
 bool uart_file_upload_take_sd_benchmark_request(
     uart_file_upload_t *upload,
     uart_sd_benchmark_request_t *request) {
@@ -559,6 +586,28 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
     }
     finish_response(upload, "HLVCRC 1 %u %08x %s\n",
                     (unsigned)file_size, (unsigned)file_crc, filename);
+    return true;
+}
+
+bool uart_file_upload_delete_file(uart_file_upload_t *upload,
+                                  const char *directory,
+                                  const char *filename) {
+    char path[128];
+    struct stat status = {0};
+
+    if (!build_path(path, sizeof path, directory, filename, "")) {
+        uart_file_upload_reject(upload, "BAD_PATH");
+        return false;
+    }
+    if (stat(path, &status) != 0 || !S_ISREG(status.st_mode)) {
+        uart_file_upload_reject(upload, "NOT_FOUND");
+        return false;
+    }
+    if (remove(path) != 0) {
+        uart_file_upload_reject(upload, "DELETE_FAILED");
+        return false;
+    }
+    finish_response(upload, "HLVDELETE 1 %s\n", filename);
     return true;
 }
 

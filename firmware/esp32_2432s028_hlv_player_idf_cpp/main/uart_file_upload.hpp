@@ -35,9 +35,11 @@ public:
     bool pollRequest(UartUploadRequest *request);
     bool takeListRequest();
     bool takeCrcRequest(char *filename, size_t filename_bytes);
+    bool takeDeleteRequest(char *filename, size_t filename_bytes);
     bool takeSdBenchmarkRequest(SdBenchmarkRequest *request);
     bool listDirectory(const char *directory);
     bool checksumFile(const char *directory, const char *filename);
+    bool deleteFile(const char *directory, const char *filename);
     bool benchmarkSd(const char *directory,
                      const SdBenchmarkRequest &request);
     bool receive(const UartUploadRequest &request, const char *directory,
@@ -62,6 +64,8 @@ private:
     bool list_requested_ = false;
     char crc_filename_[UartUploadRequest::kMaximumFilenameBytes + 1]{};
     bool crc_requested_ = false;
+    char delete_filename_[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+    bool delete_requested_ = false;
     SdBenchmarkRequest sd_benchmark_request_{};
     bool sd_benchmark_requested_ = false;
 };

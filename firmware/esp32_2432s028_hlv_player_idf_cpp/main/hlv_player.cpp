@@ -4175,6 +4175,20 @@ extern "C" void app_main(void) {
             }
             continue;
         }
+        char delete_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        if (uart_upload.takeDeleteRequest(
+                delete_filename, sizeof delete_filename)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                closeVideo();
+                uart_upload.deleteFile(
+                    player_settings::kVideoDirectory, delete_filename);
+                if (!openVideo()) last_retry_ms = millisNow();
+            }
+            continue;
+        }
         char crc_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
         if (uart_upload.takeCrcRequest(
                 crc_filename, sizeof crc_filename)) {

@@ -147,6 +147,19 @@ The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
 returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
 `HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
 
+Calculate the size and CRC32 of every video directly from the SD card:
+
+```powershell
+.\checksum-files.ps1 -Port COM8
+.\checksum-files.ps1 -Port COM8 -Json
+```
+
+The underlying `HLVCRC 1 <name>` request stops playback while it reads the
+selected regular file and returns `HLVCRC 1 <size> <crc32> <name>`. To remove
+one explicitly named regular file, send `HLVDELETE 1 <name>`; the firmware
+rejects paths and hidden names, closes playback before removal, returns
+`HLVDELETE 1 <name>` only after success, and then reopens `play.txt`.
+
 The autonomous SD write benchmark uses:
 
 ```text

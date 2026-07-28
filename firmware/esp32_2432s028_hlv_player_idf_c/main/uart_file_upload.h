@@ -44,6 +44,8 @@ typedef struct {
     bool list_requested;
     char crc_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
     bool crc_requested;
+    char delete_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
+    bool delete_requested;
     uart_sd_benchmark_request_t sd_benchmark_request;
     bool sd_benchmark_requested;
 } uart_file_upload_t;
@@ -56,6 +58,9 @@ bool uart_file_upload_take_list_request(uart_file_upload_t *upload);
 bool uart_file_upload_take_crc_request(uart_file_upload_t *upload,
                                        char *filename,
                                        size_t filename_bytes);
+bool uart_file_upload_take_delete_request(uart_file_upload_t *upload,
+                                          char *filename,
+                                          size_t filename_bytes);
 bool uart_file_upload_take_sd_benchmark_request(
     uart_file_upload_t *upload,
     uart_sd_benchmark_request_t *request);
@@ -64,6 +69,9 @@ bool uart_file_upload_list_directory(uart_file_upload_t *upload,
 bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
                                     const char *directory,
                                     const char *filename);
+bool uart_file_upload_delete_file(uart_file_upload_t *upload,
+                                  const char *directory,
+                                  const char *filename);
 bool uart_file_upload_benchmark_sd(
     uart_file_upload_t *upload,
     const char *directory,

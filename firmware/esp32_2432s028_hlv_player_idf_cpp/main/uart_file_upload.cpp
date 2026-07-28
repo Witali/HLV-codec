@@ -195,6 +195,20 @@ bool UartFileUpload::parseRequest(const char *line,
         crc_requested_ = true;
         return false;
     }
+    if (!std::strncmp(line, "HLVDELETE ", 10)) {
+        char filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVDELETE 1 %48s %c", filename, &trailing);
+        if (fields != 1 || !validFilename(filename)) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        std::snprintf(
+            delete_filename_, sizeof delete_filename_, "%s", filename);
+        delete_requested_ = true;
+        return false;
+    }
     if (!std::strncmp(line, "HLVSDBENCH ", 11)) {
         char pattern[8]{};
         unsigned size_mib = 0;
@@ -279,6 +293,15 @@ bool UartFileUpload::takeCrcRequest(char *filename, size_t filename_bytes) {
     std::snprintf(filename, filename_bytes, "%s", crc_filename_);
     crc_requested_ = false;
     crc_filename_[0] = '\0';
+    return true;
+}
+
+bool UartFileUpload::takeDeleteRequest(
+        char *filename, size_t filename_bytes) {
+    if (!delete_requested_ || !filename || !filename_bytes) return false;
+    std::snprintf(filename, filename_bytes, "%s", delete_filename_);
+    delete_requested_ = false;
+    delete_filename_[0] = '\0';
     return true;
 }
 
@@ -372,6 +395,27 @@ bool UartFileUpload::checksumFile(const char *directory,
     finishResponse("HLVCRC 1 %u %08x %s\n",
                    static_cast<unsigned>(file_size),
                    static_cast<unsigned>(file_crc), filename);
+    return true;
+}
+
+bool UartFileUpload::deleteFile(
+        const char *directory, const char *filename) {
+    char path[128];
+    if (!directory || !filename ||
+        !buildPath(path, sizeof path, directory, filename, "")) {
+        reject("BAD_PATH");
+        return false;
+    }
+    struct stat status {};
+    if (stat(path, &status) || !S_ISREG(status.st_mode)) {
+        reject("NOT_FOUND");
+        return false;
+    }
+    if (std::remove(path)) {
+        reject("DELETE_FAILED");
+        return false;
+    }
+    finishResponse("HLVDELETE 1 %s\n", filename);
     return true;
 }
 

@@ -4672,6 +4672,23 @@ void app_main(void) {
             }
             continue;
         }
+        char delete_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
+        if (uart_file_upload_take_delete_request(
+                &uart_upload, delete_filename,
+                sizeof delete_filename)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_file_upload_reject(&uart_upload, "NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                file_browser_active = false;
+                closeVideo();
+                uart_file_upload_delete_file(
+                    &uart_upload, PLAYER_VIDEO_DIRECTORY,
+                    delete_filename);
+                if (!openVideo()) last_retry_ms = millisNow();
+            }
+            continue;
+        }
         char crc_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
         if (uart_file_upload_take_crc_request(
                 &uart_upload, crc_filename, sizeof crc_filename)) {
