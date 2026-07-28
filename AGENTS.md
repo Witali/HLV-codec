@@ -40,6 +40,11 @@
 - Treat `firmware/esp32_2432s028_hlv_player_idf_cpp` only as the preserved C++
   reference implementation. Do not leave an active firmware feature or fix
   available only in the C++ variant; port it to the C firmware.
+- Update both ESP32 firmware variants together whenever changing player
+  behavior, codec or container support, performance or memory handling,
+  hardware integration, build/setup scripts, tests, or documentation. Treat
+  the change as incomplete until equivalent behavior is implemented and the
+  applicable builds and regression tests pass for both variants.
 - Translate required C++ code into C instead of compiling C++ sources or
   adding a C++ runtime dependency to the C firmware. Do not add `.cpp`, `.cc`,
   `.cxx` or `.hpp` files under the C firmware project.
