@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Port,
+    [switch]$All,
     [switch]$Json
 )
 
@@ -26,13 +27,16 @@ if (-not $python) {
 }
 
 $arguments = @(
-    (Join-Path $project "uart_list.py"),
+    (Join-Path $project "uart_crc.py"),
     "--port", $Port
 )
+if ($All) {
+    $arguments += "--all"
+}
 if ($Json) {
     $arguments += "--json"
 }
 & $python @arguments
 if ($LASTEXITCODE -ne 0) {
-    throw "UART file listing failed with exit code $LASTEXITCODE"
+    throw "UART file checksum failed with exit code $LASTEXITCODE"
 }

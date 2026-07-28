@@ -1,21 +1,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Port,
+    [switch]$All,
     [switch]$Json
 )
 
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
-$toolProject = (
-    Resolve-Path (
-        Join-Path $project "..\esp32_2432s028_hlv_player_idf_c"
-    )
-).Path
-$pythonEnvironments =
-    Join-Path $toolProject ".tools\espressif\python_env"
+$pythonEnvironments = Join-Path $project ".tools\espressif\python_env"
 
 if (-not (Test-Path -LiteralPath $pythonEnvironments)) {
-    & (Join-Path $toolProject "setup.ps1")
+    & (Join-Path $project "setup.ps1")
 }
 $python = Get-ChildItem -LiteralPath $pythonEnvironments -Recurse `
     -Filter python.exe |
@@ -26,13 +21,16 @@ if (-not $python) {
 }
 
 $arguments = @(
-    (Join-Path $project "uart_list.py"),
+    (Join-Path $project "uart_crc.py"),
     "--port", $Port
 )
+if ($All) {
+    $arguments += "--all"
+}
 if ($Json) {
     $arguments += "--json"
 }
 & $python @arguments
 if ($LASTEXITCODE -ne 0) {
-    throw "UART file listing failed with exit code $LASTEXITCODE"
+    throw "UART file checksum failed with exit code $LASTEXITCODE"
 }

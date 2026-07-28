@@ -9,11 +9,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
-$tools = Join-Path $project ".tools"
+$toolProject = (
+    Resolve-Path (
+        Join-Path $project "..\esp32_2432s028_hlv_player_idf_c"
+    )
+).Path
+$tools = Join-Path $toolProject ".tools"
 $pythonEnvironments = Join-Path $tools "espressif\python_env"
 
 if (-not (Test-Path -LiteralPath $pythonEnvironments)) {
-    & (Join-Path $project "setup.ps1")
+    & (Join-Path $toolProject "setup.ps1")
 }
 $python = Get-ChildItem -LiteralPath $pythonEnvironments -Recurse `
     -Filter python.exe |
