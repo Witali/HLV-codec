@@ -176,6 +176,16 @@ and are at most 48
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
+The physical BOOT button can select a video without a PC. A short press during
+normal playback stops the current file and opens the `/sdcard/HLV` browser.
+Each subsequent short press advances to the next supported video filename in
+case-insensitive lexicographic order and wraps after the last file. Holding
+BOOT for at least 800 ms writes the displayed filename to `play.txt` and
+starts it. The browser lists regular `.hlv`, `.bpv1`, `.avi`, `.mpg`,
+`.mpeg`, `.3gp` and `.3gpp` files; it rescans the directory on every press
+instead of retaining the complete list in RAM. Holding BOOT while resetting
+the board still requests the ESP32 ROM download mode.
+
 The player finishes the current decode operation, stops video and audio, and
 closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the

@@ -12,6 +12,9 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 ## What the firmware does
 
 - reads the selected filename from `/sdcard/HLV/play.txt`;
+- lets the physical BOOT button browse `/sdcard/HLV`: a short press opens the
+  browser or advances to the next video, while an 800 ms hold saves the
+  displayed filename to `play.txt` and starts playback;
 - decodes stable standalone HLV-1 v14, standard AVI/MJPEG, DivX 3
   (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
   v1 through v7 including adaptive RAW records, active per-GOP palettes and
@@ -45,6 +48,13 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 - repeats the file continuously;
 - prints decode/render timing, audio underruns and free heap to the 460800-baud
   serial console.
+
+The file browser sorts supported regular files case-insensitively and wraps
+after the last one. It recognizes `.hlv`, `.bpv1`, `.avi`, `.mpg`, `.mpeg`,
+`.3gp` and `.3gpp`. The directory is rescanned for each short press, so the
+firmware does not allocate a filename array proportional to the number of
+files on the card. BOOT remains the ESP32 strap button: holding it during a
+reset enters the ROM downloader.
 
 The test build enables packed Y7/U6/V6 4:2:0 frame storage. At 320x180 the two
 packed frames, Q4 maps and decoder macroblock-row work area consume 164,160 bytes,

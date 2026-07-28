@@ -38,6 +38,10 @@ typedef enum {
 /* Emit one compact CSV record per decoded frame. */
 #define PLAYER_LOG_FRAME_TIMINGS 1
 
+#define PLAYER_BOOT_BUTTON_POLL_MS 10U
+#define PLAYER_BOOT_BUTTON_DEBOUNCE_MS 30U
+#define PLAYER_BOOT_BUTTON_LONG_PRESS_MS 800U
+
 #define PLAYER_VIDEO_DIRECTORY "/sdcard/HLV"
 #define PLAYER_VIDEO_SELECTION_PATH "/sdcard/HLV/play.txt"
 #define PLAYER_SD_CLOCK_KHZ \

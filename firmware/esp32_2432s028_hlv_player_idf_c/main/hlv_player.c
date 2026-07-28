@@ -1,3 +1,4 @@
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -8,6 +9,7 @@
 #include <sys/stat.h>
 
 #include "driver/dac_continuous.h"
+#include "driver/gpio.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
@@ -26,6 +28,7 @@
 #include "board_config.h"
 #include "amrnb_3gp.h"
 #include "bpv_esp32_decoder.h"
+#include "boot_button.h"
 #include "cyd_display.h"
 #include "divx3.h"
 #include "divx3_avi.h"
@@ -71,6 +74,8 @@ enum {
     kAudioPrerollTimeoutMs = 3000,
     kAudioClockWaitTimeoutMs = 3000,
     kDecodeWorkerStackBytes = 4096,
+    kBootButtonTaskStackBytes = 2048,
+    kBrowserFilenameBytes = 112,
     kUploadBarX = 16,
     kUploadBarWidth = kScreenWidth - 2 * kUploadBarX,
     kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER,
@@ -224,6 +229,12 @@ typedef enum VideoOpenResult {
     VIDEO_OPEN_kIoError,
 } VideoOpenResult;
 
+typedef enum BrowserScanResult {
+    BROWSER_SCAN_kFound,
+    BROWSER_SCAN_kEmpty,
+    BROWSER_SCAN_kIoError,
+} BrowserScanResult;
+
 typedef struct DecodeRequest {
     VideoCodec codec;
     FILE *hlv_file;
@@ -269,10 +280,14 @@ AmrNb3gpDecoder *amrnb_audio_decoder = NULL;
 AmrNb3gpInfo amrnb_audio_info = {0};
 H263AviPcmReader *h263_avi_audio_reader = NULL;
 uart_file_upload_t uart_upload = {0};
+QueueHandle_t boot_button_event_queue = NULL;
+TaskHandle_t boot_button_task_handle = NULL;
 HLV1Header sequence_header = {0};
 VideoCodec video_codec = VIDEO_CODEC_kNone;
 const char *active_video_path = NULL;
 char selected_video_path[160] = {0};
+char browser_filename[kBrowserFilenameBytes] = {0};
+bool file_browser_active = false;
 int64_t frame_period_us = 0;
 uint32_t frame_period_remainder = 0;
 uint32_t frame_period_phase = 0;
@@ -396,6 +411,48 @@ uint64_t bpvProfileNowMicros(void *opaque) {
 }
 
 int64_t millisNow() { return microsNow() / 1000; }
+
+static void bootButtonTask(void *opaque) {
+    (void)opaque;
+    boot_button_state_t state = {0};
+    boot_button_state_init(
+        &state, gpio_get_level(BOARD_BOOT_BUTTON) == 0,
+        (uint32_t)millisNow(), PLAYER_BOOT_BUTTON_DEBOUNCE_MS,
+        PLAYER_BOOT_BUTTON_LONG_PRESS_MS);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(PLAYER_BOOT_BUTTON_POLL_MS));
+        const boot_button_event_t event = boot_button_state_update(
+            &state, gpio_get_level(BOARD_BOOT_BUTTON) == 0,
+            (uint32_t)millisNow());
+        if (event != BOOT_BUTTON_EVENT_NONE) {
+            (void)xQueueSend(boot_button_event_queue, &event, 0);
+        }
+    }
+}
+
+static bool initializeBootButton(void) {
+    const gpio_config_t config = {
+        .pin_bit_mask = 1ULL << BOARD_BOOT_BUTTON,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    if (gpio_config(&config) != ESP_OK) return false;
+
+    boot_button_event_queue =
+        xQueueCreate(4, sizeof(boot_button_event_t));
+    if (!boot_button_event_queue) return false;
+    if (xTaskCreatePinnedToCore(
+            bootButtonTask, "boot-button", kBootButtonTaskStackBytes,
+            NULL, tskIDLE_PRIORITY + 1, &boot_button_task_handle, 0) !=
+        pdPASS) {
+        vQueueDelete(boot_button_event_queue);
+        boot_button_event_queue = NULL;
+        return false;
+    }
+    return true;
+}
 
 void waitForH263OutputRow(void *opaque, uint16_t first_y) {
     (void)opaque;
@@ -1883,6 +1940,194 @@ SelectionReadResult readSelectedVideoPath() {
                : SELECTION_READ_kMissingOrInvalid;
 }
 
+static unsigned char asciiLower(unsigned char character) {
+    return character >= 'A' && character <= 'Z'
+               ? (unsigned char)(character + ('a' - 'A'))
+               : character;
+}
+
+static int compareFilenames(const char *left, const char *right) {
+    const unsigned char *a = (const unsigned char *)left;
+    const unsigned char *b = (const unsigned char *)right;
+    while (*a && *b) {
+        const unsigned char lower_a = asciiLower(*a);
+        const unsigned char lower_b = asciiLower(*b);
+        if (lower_a != lower_b) {
+            return lower_a < lower_b ? -1 : 1;
+        }
+        ++a;
+        ++b;
+    }
+    if (*a != *b) return *a ? 1 : -1;
+    return strcmp(left, right);
+}
+
+static bool filenameHasExtension(const char *name, const char *extension) {
+    const size_t name_length = strlen(name);
+    const size_t extension_length = strlen(extension);
+    if (name_length < extension_length) return false;
+    const char *suffix = name + name_length - extension_length;
+    for (size_t index = 0; index < extension_length; ++index) {
+        if (asciiLower((unsigned char)suffix[index]) !=
+            asciiLower((unsigned char)extension[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool isSupportedVideoFilename(const char *name) {
+    return isSafeVideoFilename(name) &&
+           (filenameHasExtension(name, ".hlv") ||
+            filenameHasExtension(name, ".bpv1") ||
+            filenameHasExtension(name, ".avi") ||
+            filenameHasExtension(name, ".mpg") ||
+            filenameHasExtension(name, ".mpeg") ||
+            filenameHasExtension(name, ".3gp") ||
+            filenameHasExtension(name, ".3gpp"));
+}
+
+static bool copyFilename(
+    char *destination, size_t destination_bytes, const char *source) {
+    const int written =
+        snprintf(destination, destination_bytes, "%s", source);
+    return written >= 0 && (size_t)written < destination_bytes;
+}
+
+static BrowserScanResult scanBrowserFile(bool advance) {
+    DIR *directory = opendir(PLAYER_VIDEO_DIRECTORY);
+    if (!directory) return BROWSER_SCAN_kIoError;
+
+    char first[kBrowserFilenameBytes] = {0};
+    char exact[kBrowserFilenameBytes] = {0};
+    char next[kBrowserFilenameBytes] = {0};
+    bool io_error = false;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno != 0) io_error = true;
+            break;
+        }
+        if (strlen(entry->d_name) >= kBrowserFilenameBytes ||
+            !isSupportedVideoFilename(entry->d_name)) {
+            continue;
+        }
+
+        char path[sizeof selected_video_path] = {0};
+        const int written = snprintf(
+            path, sizeof path, "%s/%s",
+            PLAYER_VIDEO_DIRECTORY, entry->d_name);
+        struct stat info = {0};
+        if (written < 0 || (size_t)written >= sizeof path ||
+            stat(path, &info) != 0) {
+            io_error = true;
+            break;
+        }
+        if (!S_ISREG(info.st_mode)) continue;
+
+        if (!first[0] ||
+            compareFilenames(entry->d_name, first) < 0) {
+            if (!copyFilename(first, sizeof first, entry->d_name)) {
+                io_error = true;
+                break;
+            }
+        }
+        if (browser_filename[0]) {
+            const int order =
+                compareFilenames(entry->d_name, browser_filename);
+            if (order == 0 &&
+                !copyFilename(exact, sizeof exact, entry->d_name)) {
+                io_error = true;
+                break;
+            }
+            if (order > 0 &&
+                (!next[0] ||
+                 compareFilenames(entry->d_name, next) < 0) &&
+                !copyFilename(next, sizeof next, entry->d_name)) {
+                io_error = true;
+                break;
+            }
+        }
+    }
+    if (closedir(directory) != 0) io_error = true;
+    if (io_error) return BROWSER_SCAN_kIoError;
+    if (!first[0]) {
+        browser_filename[0] = '\0';
+        return BROWSER_SCAN_kEmpty;
+    }
+
+    const char *chosen =
+        !advance && exact[0] ? exact : (advance && next[0] ? next : first);
+    return copyFilename(
+               browser_filename, sizeof browser_filename, chosen)
+               ? BROWSER_SCAN_kFound
+               : BROWSER_SCAN_kIoError;
+}
+
+static void drawFileBrowser(void) {
+    const bool has_file = browser_filename[0] != '\0';
+    esp_rom_printf(
+        "B,%s\n", has_file ? browser_filename : "NO VIDEO FILES");
+    if (cyd_display_clear(&display, 0x0000) != ESP_OK) {
+        ESP_LOGE(kTag, "Could not clear file browser");
+        return;
+    }
+    drawStatusText("SD VIDEO FILE", 48, 2);
+    drawStatusText(
+        has_file ? browser_filename : "NO VIDEO FILES", 108, 1);
+    drawStatusText(
+        has_file ? "SHORT: NEXT" : "SHORT: RESCAN", 166, 1);
+    if (has_file) drawStatusText("HOLD: PLAY", 190, 1);
+    cyd_display_flush(&display);
+}
+
+static bool writeBrowserSelection(void) {
+    if (!browser_filename[0]) return false;
+    FILE *selection = fopen(PLAYER_VIDEO_SELECTION_PATH, "wb");
+    if (!selection) return false;
+    const size_t length = strlen(browser_filename);
+    bool written =
+        fwrite(browser_filename, 1, length, selection) == length &&
+        fputc('\n', selection) != EOF && fflush(selection) == 0;
+    if (fclose(selection) != 0) written = false;
+    return written;
+}
+
+static void enterFileBrowser(void) {
+    if (!sd_mounted && !mountSdCard()) {
+        showStatus("microSD failed", "cannot browse /HLV");
+        return;
+    }
+    closeVideo();
+    file_browser_active = true;
+    (void)cyd_display_set_double_buffered(&display, false);
+
+    const char *selected_name = strrchr(selected_video_path, '/');
+    if (selected_name && selected_name[1]) {
+        (void)copyFilename(
+            browser_filename, sizeof browser_filename,
+            selected_name + 1);
+    } else {
+        browser_filename[0] = '\0';
+    }
+    const BrowserScanResult result = scanBrowserFile(false);
+    if (result == BROWSER_SCAN_kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot list /HLV");
+        return;
+    }
+    drawFileBrowser();
+}
+
+static void advanceFileBrowser(void) {
+    const BrowserScanResult result = scanBrowserFile(true);
+    if (result == BROWSER_SCAN_kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot list /HLV");
+        return;
+    }
+    drawFileBrowser();
+}
+
 static uint32_t aviFourcc(char a, char b, char c, char d) {
     return (uint32_t)(uint8_t)a |
            ((uint32_t)(uint8_t)b << 8) |
@@ -2684,6 +2929,38 @@ bool openVideo() {
             "bpv_input_calls,bpv_input_bytes]\n");
     }
     return true;
+}
+
+static void handleBootButtonEvent(boot_button_event_t event) {
+    if (event == BOOT_BUTTON_EVENT_SHORT_PRESS) {
+        if (file_browser_active) {
+            advanceFileBrowser();
+        } else {
+            enterFileBrowser();
+        }
+        return;
+    }
+    if (event != BOOT_BUTTON_EVENT_LONG_PRESS ||
+        !file_browser_active || !browser_filename[0]) {
+        return;
+    }
+    if (!writeBrowserSelection()) {
+        showStatus("SD CARD WRITE ERROR", "cannot update /HLV/play.txt");
+        return;
+    }
+
+    ESP_LOGI(kTag, "BOOT selected: %s", browser_filename);
+    file_browser_active = false;
+    showStatus("PLAYING", browser_filename);
+    if (!openVideo()) last_retry_ms = millisNow();
+}
+
+static void processBootButtonEvents(void) {
+    if (!boot_button_event_queue) return;
+    boot_button_event_t event = BOOT_BUTTON_EVENT_NONE;
+    while (xQueueReceive(boot_button_event_queue, &event, 0) == pdTRUE) {
+        handleBootButtonEvent(event);
+    }
 }
 
 void waitUntil(int64_t deadline) {
@@ -4232,6 +4509,9 @@ void app_main(void) {
                  esp_err_to_name(display_result));
         return;
     }
+    if (!initializeBootButton()) {
+        ESP_LOGE(kTag, "BOOT button initialization failed");
+    }
     const esp_err_t uart_result = uart_file_upload_begin(
         &uart_upload, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
     if (uart_result != ESP_OK) {
@@ -4248,6 +4528,7 @@ void app_main(void) {
     }
 
     for (;;) {
+        processBootButtonEvents();
         uart_upload_request_t upload_request = {0};
         if (uart_file_upload_poll_request(&uart_upload,
                                           &upload_request)) {
@@ -4256,6 +4537,7 @@ void app_main(void) {
                 last_retry_ms = millisNow();
                 continue;
             }
+            file_browser_active = false;
             closeVideo();
             beginUploadProgress(
                 upload_request.filename, upload_request.size);
@@ -4288,6 +4570,7 @@ void app_main(void) {
                 uart_file_upload_reject(&uart_upload, "NO_SD");
                 last_retry_ms = millisNow();
             } else {
+                file_browser_active = false;
                 closeVideo();
                 uart_file_upload_checksum_file(
                     &uart_upload, PLAYER_VIDEO_DIRECTORY, crc_filename);
@@ -4304,6 +4587,7 @@ void app_main(void) {
                     last_retry_ms = millisNow();
                 } else {
                     bool completed;
+                    file_browser_active = false;
                     closeVideo();
                     completed = uart_file_upload_benchmark_sd(
                         &uart_upload, PLAYER_VIDEO_DIRECTORY,
@@ -4317,6 +4601,10 @@ void app_main(void) {
                 }
                 continue;
             }
+        }
+        if (file_browser_active) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
         if (video_file && video_codec == VIDEO_CODEC_kMpeg1 &&
             mpeg_video) {
