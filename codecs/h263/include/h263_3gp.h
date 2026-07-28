@@ -118,6 +118,13 @@ H263AviPcmReader *h263_avi_pcm_reader_create(void);
 void h263_avi_pcm_reader_destroy(H263AviPcmReader *reader);
 int h263_avi_pcm_reader_open(H263AviPcmReader *reader, FILE *file,
                              H2633gpInfo *info);
+/*
+ * Reuse AVI stream metadata from an already-open video decoder. This avoids
+ * rereading the RIFF header through a second FILE cursor on slow media.
+ */
+int h263_avi_pcm_reader_open_from_decoder(
+    H263AviPcmReader *reader, const H2633gpDecoder *decoder,
+    H2633gpInfo *info);
 int h263_avi_pcm_reader_decode_next(H263AviPcmReader *reader, FILE *file,
                                     H263AviPcmFrame *frame);
 

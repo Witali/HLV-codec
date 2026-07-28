@@ -1562,8 +1562,8 @@ bool prepareAudio(HLV1Header header) {
             h263_avi_audio_reader = h263_avi_pcm_reader_create();
             const int result =
                 h263_avi_audio_reader
-                    ? h263_avi_pcm_reader_open(
-                          h263_avi_audio_reader, audio_file,
+                    ? h263_avi_pcm_reader_open_from_decoder(
+                          h263_avi_audio_reader, h263_decoder,
                           &audio_info)
                     : H263_3GP_ERR_MEMORY;
             if (result != H263_3GP_OK ||
@@ -1883,6 +1883,167 @@ SelectionReadResult readSelectedVideoPath() {
                : SELECTION_READ_kMissingOrInvalid;
 }
 
+static uint32_t aviFourcc(char a, char b, char c, char d) {
+    return (uint32_t)(uint8_t)a |
+           ((uint32_t)(uint8_t)b << 8) |
+           ((uint32_t)(uint8_t)c << 16) |
+           ((uint32_t)(uint8_t)d << 24);
+}
+
+static bool readAviU32(FILE *file, uint32_t *value) {
+    uint8_t bytes[4];
+    if (fread(bytes, 1, sizeof bytes, file) != sizeof bytes) return false;
+    *value = (uint32_t)bytes[0] |
+             ((uint32_t)bytes[1] << 8) |
+             ((uint32_t)bytes[2] << 16) |
+             ((uint32_t)bytes[3] << 24);
+    return true;
+}
+
+static bool seekPastAviChunk(FILE *file, long data_start, uint32_t size,
+                             long limit) {
+    const uint64_t next = (uint64_t)(data_start) + size + (size & 1U);
+    return data_start >= 0 && limit >= 0 &&
+           next <= (uint64_t)limit && next <= LONG_MAX &&
+           fseek(file, (long)next, SEEK_SET) == 0;
+}
+
+static VideoCodec videoCodecFromAviFourcc(uint32_t handler) {
+    if (handler == aviFourcc('H', '2', '6', '3') ||
+        handler == aviFourcc('U', '2', '6', '3') ||
+        handler == aviFourcc('I', '2', '6', '3')) {
+        return VIDEO_CODEC_kH263;
+    }
+    if (divx3_avi_is_v3_fourcc(handler)) return VIDEO_CODEC_kDivx3;
+    if (handler == aviFourcc('M', 'J', 'P', 'G') ||
+        handler == aviFourcc('m', 'j', 'p', 'g') ||
+        handler == aviFourcc('J', 'P', 'E', 'G')) {
+        return VIDEO_CODEC_kMjpeg;
+    }
+    return VIDEO_CODEC_kNone;
+}
+
+static VideoCodec probeAviStreamList(FILE *file, long end,
+                                      bool *io_error) {
+    while (ftell(file) >= 0 && ftell(file) + 8 <= end) {
+        uint32_t id = 0;
+        uint32_t size = 0;
+        if (!readAviU32(file, &id) || !readAviU32(file, &size)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+        const long data_start = ftell(file);
+        if (data_start < 0 ||
+            (uint64_t)data_start + size > (uint64_t)end) {
+            return VIDEO_CODEC_kNone;
+        }
+        if (id == aviFourcc('s', 't', 'r', 'h') && size >= 8) {
+            uint32_t type = 0;
+            uint32_t handler = 0;
+            if (!readAviU32(file, &type) ||
+                !readAviU32(file, &handler)) {
+                *io_error = true;
+                return VIDEO_CODEC_kNone;
+            }
+            if (type == aviFourcc('v', 'i', 'd', 's')) {
+                return videoCodecFromAviFourcc(handler);
+            }
+        }
+        if (!seekPastAviChunk(file, data_start, size, end)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+    }
+    return VIDEO_CODEC_kNone;
+}
+
+static VideoCodec probeAviHeaderList(FILE *file, long end,
+                                      bool *io_error) {
+    while (ftell(file) >= 0 && ftell(file) + 8 <= end) {
+        uint32_t id = 0;
+        uint32_t size = 0;
+        if (!readAviU32(file, &id) || !readAviU32(file, &size)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+        const long data_start = ftell(file);
+        if (data_start < 0 ||
+            (uint64_t)data_start + size > (uint64_t)end) {
+            return VIDEO_CODEC_kNone;
+        }
+        if (id == aviFourcc('L', 'I', 'S', 'T') && size >= 4) {
+            uint32_t type = 0;
+            if (!readAviU32(file, &type)) {
+                *io_error = true;
+                return VIDEO_CODEC_kNone;
+            }
+            if (type == aviFourcc('s', 't', 'r', 'l')) {
+                const VideoCodec codec = probeAviStreamList(
+                    file, data_start + (long)size, io_error);
+                if (codec != VIDEO_CODEC_kNone || *io_error) return codec;
+            }
+        }
+        if (!seekPastAviChunk(file, data_start, size, end)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+    }
+    return VIDEO_CODEC_kNone;
+}
+
+static VideoCodec probeAviCodec(FILE *file, bool *io_error) {
+    uint32_t riff = 0;
+    uint32_t riff_size = 0;
+    uint32_t type = 0;
+    *io_error = false;
+    if (fseek(file, 0, SEEK_SET) ||
+        !readAviU32(file, &riff) ||
+        !readAviU32(file, &riff_size) ||
+        !readAviU32(file, &type)) {
+        *io_error = true;
+        return VIDEO_CODEC_kNone;
+    }
+    const uint64_t riff_end_u64 = 8ULL + riff_size;
+    if (riff != aviFourcc('R', 'I', 'F', 'F') ||
+        type != aviFourcc('A', 'V', 'I', ' ') ||
+        riff_end_u64 > LONG_MAX) {
+        return VIDEO_CODEC_kNone;
+    }
+    const long riff_end = (long)riff_end_u64;
+    while (ftell(file) >= 0 && ftell(file) + 8 <= riff_end) {
+        uint32_t id = 0;
+        uint32_t size = 0;
+        if (!readAviU32(file, &id) || !readAviU32(file, &size)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+        const long data_start = ftell(file);
+        if (data_start < 0 ||
+            (uint64_t)data_start + size > riff_end_u64) {
+            return VIDEO_CODEC_kNone;
+        }
+        if (id == aviFourcc('L', 'I', 'S', 'T') && size >= 4) {
+            uint32_t list_type = 0;
+            if (!readAviU32(file, &list_type)) {
+                *io_error = true;
+                return VIDEO_CODEC_kNone;
+            }
+            if (list_type == aviFourcc('h', 'd', 'r', 'l')) {
+                const VideoCodec codec = probeAviHeaderList(
+                    file, data_start + (long)size, io_error);
+                if (codec != VIDEO_CODEC_kNone || *io_error) return codec;
+            } else if (list_type == aviFourcc('m', 'o', 'v', 'i')) {
+                return VIDEO_CODEC_kNone;
+            }
+        }
+        if (!seekPastAviChunk(file, data_start, size, riff_end)) {
+            *io_error = true;
+            return VIDEO_CODEC_kNone;
+        }
+    }
+    return VIDEO_CODEC_kNone;
+}
+
 VideoOpenResult openVideoCandidate(const char *path) {
     bpv_file_version = 0;
     errno = 0;
@@ -1911,30 +2072,19 @@ VideoOpenResult openVideoCandidate(const char *path) {
     } else if (signature_size == sizeof signature &&
                !memcmp(signature, "RIFF", 4) &&
                !memcmp(signature + 8, "AVI ", 4)) {
-        H2633gpInfo h263_probe = {0};
-        const int h263_result =
-            h263_avi_probe(video_file, &h263_probe);
+        bool avi_io_error = false;
+        video_codec = probeAviCodec(video_file, &avi_io_error);
         clearerr(video_file);
-        if (fseek(video_file, 0, SEEK_SET)) {
+        if (fseek(video_file, 0, SEEK_SET)) avi_io_error = true;
+        if (avi_io_error) {
             fclose(video_file);
             video_file = NULL;
             return VIDEO_OPEN_kIoError;
         }
-        Divx3AviInfo probe = {0};
-        const int divx3_result =
-            divx3_avi_read_info(video_file, &probe);
-        clearerr(video_file);
-        if (fseek(video_file, 0, SEEK_SET)) {
+        if (video_codec == VIDEO_CODEC_kNone) {
             fclose(video_file);
             video_file = NULL;
-            return VIDEO_OPEN_kIoError;
-        }
-        if (h263_result == H263_3GP_OK) {
-            video_codec = VIDEO_CODEC_kH263;
-        } else if (divx3_result == DIVX3_AVI_OK) {
-            video_codec = VIDEO_CODEC_kDivx3;
-        } else {
-            video_codec = VIDEO_CODEC_kMjpeg;
+            return VIDEO_OPEN_kMissingOrUnsupported;
         }
     } else if (signature_size >= 4 &&
                signature[0] == 0x00 && signature[1] == 0x00 &&

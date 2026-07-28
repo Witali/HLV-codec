@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <sys/types.h>
 
 #include "mp4dec_api.h"
@@ -283,17 +284,26 @@ struct H263AviPcmReader {
     bool chunk_has_padding;
 };
 
+static void clearOutputFrames(H2633gpDecoder *decoder) {
+    for (uint8_t index = 0; index < 2; ++index) {
+        free(decoder->output_y[index]);
+        free(decoder->output_u[index]);
+        free(decoder->output_v[index]);
+        decoder->output_y[index] = NULL;
+        decoder->output_u[index] = NULL;
+        decoder->output_v[index] = NULL;
+    }
+    decoder->output_bytes = 0;
+    decoder->output_count = 0;
+}
+
 static void clearDecoder(H2633gpDecoder *decoder) {
     uint8_t requested_output_count = decoder->requested_output_count;
     if (requested_output_count != 1 && requested_output_count != 2)
         requested_output_count = 1;
     if (decoder->pv_ready) PVCleanUpVideoDecoder(&decoder->controls);
     free(decoder->packet);
-    for (uint8_t index = 0; index < 2; ++index) {
-        free(decoder->output_y[index]);
-        free(decoder->output_u[index]);
-        free(decoder->output_v[index]);
-    }
+    clearOutputFrames(decoder);
     free(decoder->stsc);
     free(decoder->stts);
     free(decoder->sample_sizes);
@@ -590,8 +600,7 @@ static int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
 static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
     memset(info, 0, sizeof(*info));
     resetAviState(avi);
-    uint64_t file_size = 0;
-    if (!fileSize(file, &file_size) || !seekFile(file, 0))
+    if (!seekFile(file, 0))
         return H263_3GP_ERR_IO;
     uint32_t riff = 0;
     uint32_t riff_size = 0;
@@ -603,13 +612,14 @@ static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
     const uint64_t riff_end = 8ULL + riff_size;
     if (riff != fourccLe('R', 'I', 'F', 'F') ||
         type != fourccLe('A', 'V', 'I', ' ') ||
-        riff_end < 12 || riff_end > file_size) {
+        riff_end < 12) {
         return H263_3GP_ERR_FORMAT;
     }
 
     uint64_t cursor = 12;
     uint64_t index_start = 0;
     uint32_t index_size = 0;
+    bool header_is_complete = false;
     while (cursor + 8 <= riff_end) {
         if (!seekFile(file, cursor)) return H263_3GP_ERR_IO;
         uint32_t id = 0;
@@ -632,6 +642,19 @@ static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
             } else if (list_type == fourccLe('m', 'o', 'v', 'i')) {
                 avi->movi_start = data_start + 4;
                 avi->movi_end = data_start + size;
+                /*
+                 * A standard AVI header already supplies the frame count and
+                 * maximum packet size.  Avoid seeking across the entire movi
+                 * list merely to rescan idx1: on FAT that seek walks every
+                 * cluster in a large file and can take tens of seconds over
+                 * an emulated or slow SPI card.
+                 */
+                if (avi->video_stream != 0xff &&
+                    (avi->video_length || avi->main_frame_count) &&
+                    info->max_sample_size) {
+                    header_is_complete = true;
+                    break;
+                }
             }
         } else if (id == fourccLe('i', 'd', 'x', '1')) {
             index_start = data_start;
@@ -642,10 +665,10 @@ static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
 
     uint32_t video_frames = 0;
     int result = H263_3GP_OK;
-    if (index_start && avi->video_stream != 0xff) {
+    if (!header_is_complete && index_start && avi->video_stream != 0xff) {
         result = scanAviIndex(
             file, index_start, index_size, info, *avi, &video_frames);
-    } else if (avi->movi_start) {
+    } else if (!header_is_complete && avi->movi_start) {
         result = scanAviMovie(file, info, *avi, &video_frames);
     }
     if (result == H263_3GP_OK)
@@ -1142,6 +1165,24 @@ int h263_avi_pcm_reader_open(H263AviPcmReader *reader, FILE *file,
     return H263_3GP_OK;
 }
 
+int h263_avi_pcm_reader_open_from_decoder(
+    H263AviPcmReader *reader, const H2633gpDecoder *decoder,
+    H2633gpInfo *info) {
+    if (!reader || !decoder || !info || !decoder->pv_ready ||
+        decoder->info.container != H263_CONTAINER_AVI ||
+        decoder->avi.audio_stream == 0xff ||
+        !decoder->info.audio_sample_rate ||
+        !decoder->info.audio_channels ||
+        !decoder->info.audio_bits_per_sample) {
+        return H263_3GP_ERR_ARGUMENT;
+    }
+    resetPcmReader(reader);
+    reader->info = decoder->info;
+    reader->avi = decoder->avi;
+    *info = reader->info;
+    return H263_3GP_OK;
+}
+
 int h263_avi_pcm_reader_decode_next(H263AviPcmReader *reader, FILE *file,
                                     H263AviPcmFrame *frame) {
     if (!reader || !file || !frame ||
@@ -1220,7 +1261,21 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     }
     decoder->controls.readBitstreamData = refillPacketBuffer;
     decoder->controls.appData.object = decoder;
-    if (result == H263_3GP_OK) result = initializeDecoder(decoder);
+    if (result == H263_3GP_OK) {
+        result = initializeDecoder(decoder);
+        if (result == H263_3GP_ERR_FRAME_MEMORY &&
+            decoder->intra_only &&
+            decoder->requested_output_count == 2) {
+            /*
+             * CIF/custom-size H.263 is intra-only.  Retrying with one output
+             * frame does not require reparsing the AVI/3GP header or
+             * reallocating the compressed packet buffer.
+             */
+            clearOutputFrames(decoder);
+            decoder->requested_output_count = 1;
+            result = initializeDecoder(decoder);
+        }
+    }
     if (result != H263_3GP_OK) {
         clearDecoder(decoder);
         return result;

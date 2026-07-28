@@ -21,6 +21,12 @@ interleaved video and PCM chunks are streamed without retaining an index in
 RAM; the legacy 3GP reader's sample-size and chunk-offset tables consume memory
 proportional to the number of samples.
 
+For AVI, the player reads the first video stream's `strh.fccHandler` FourCC
+from `LIST hdrl` once. It selects H.263, DivX 3 or MJPEG from that header,
+rejects unsupported or missing handlers, and keeps the selected decoder for
+the rest of the file. It does not probe several decoders against media
+packets.
+
 The only application components are:
 
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
