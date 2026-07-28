@@ -62,8 +62,13 @@ remain subject to their upstream copyright and license terms. See the
 Run a flash image and an SPI SD-card image with a visible ST7789 window:
 
 ```powershell
-.\run-qemu-sdspi.ps1 -FlashImage <flash.bin> -SdImage <sd.img>
+.\run-qemu-sdspi.ps1 -FlashImage <flash.bin>
 ```
+
+When `-SdImage` is omitted, both launchers use the Git LFS demo image
+`qemu/hlv-big-buck-bunny-5min-h263-avi.img`. It contains the first five
+minutes of Big Buck Bunny as baseline CIF H.263/AVI at 24 FPS with PCM S16LE
+mono 8 kHz audio. Pass `-SdImage <sd.img>` to override it.
 
 Use `-Headless` to keep the LCD active without opening an SDL window.
 Automated tests can capture console zero through the QEMU monitor with
@@ -74,10 +79,10 @@ For a native Windows build and launch (no WSL runtime), use:
 ```powershell
 ..\setup-qemu-sdspi-windows.ps1
 ..\run-qemu-sdspi-windows.ps1 `
-    -FlashImage <flash.bin> `
-    -SdImage <sd.img>
+    -FlashImage <flash.bin>
 ```
 
 The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
-its executable managed by Git LFS. MSYS2, QEMU sources, build outputs and disk
-images remain ignored local artifacts.
+its executable managed by Git LFS. The demo SD image is also managed by Git
+LFS. MSYS2, QEMU sources, build outputs and other disk images remain ignored
+local artifacts.

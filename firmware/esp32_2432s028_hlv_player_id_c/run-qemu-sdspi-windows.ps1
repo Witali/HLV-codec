@@ -2,8 +2,9 @@
 param(
     [Parameter(Mandatory)]
     [string]$FlashImage,
-    [Parameter(Mandatory)]
-    [string]$SdImage,
+    [string]$SdImage = (
+        Join-Path $PSScriptRoot "qemu\hlv-big-buck-bunny-5min-h263-avi.img"
+    ),
     [switch]$SkipSetup,
     [switch]$Headless
 )

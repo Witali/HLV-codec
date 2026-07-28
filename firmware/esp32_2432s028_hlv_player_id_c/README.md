@@ -337,12 +337,12 @@ it and verifies the file contents:
 ```
 
 To boot another merged 4 MiB ESP32 flash image with an existing FAT card
-image:
+image, omit `-SdImage` to use the tracked five-minute Big Buck Bunny
+H.263/AVI demo:
 
 ```powershell
 .\run-qemu-sdspi.ps1 `
-    -FlashImage .\build\qemu_flash_4mb.bin `
-    -SdImage .\build\qemu_sdcard.img
+    -FlashImage .\build\qemu_flash_4mb.bin
 ```
 
 The repository includes the minimal patched emulator as a native, static
@@ -350,17 +350,24 @@ Windows executable managed by Git LFS. Run it instead of the WSL build with:
 
 ```powershell
 .\run-qemu-sdspi-windows.ps1 `
-    -FlashImage .\build-qemu-sdspi-normal\qemu_production_flash_4mb.bin `
-    -SdImage .\build-qemu-sdspi-normal\qemu_production_sd.img
+    -FlashImage .\build-qemu-sdspi-normal\qemu_production_flash_4mb.bin
 ```
+
+The default FAT32 image is
+`qemu\hlv-big-buck-bunny-5min-h263-avi.img`. It contains `HLV\bunny.avi`
+and a matching `HLV\play.txt`: the first 7200 frames (five minutes) of Big
+Buck Bunny as baseline intra-only CIF H.263 at 24 FPS, Q6, with PCM S16LE
+mono 8 kHz audio. Recreate it from the approved source with
+`.\prepare-qemu-demo-sd.ps1`. The image is tracked with Git LFS. Use
+`-SdImage <sd.img>` to run a different card image.
 
 To rebuild or refresh the saved runtime, run
 `.\setup-qemu-sdspi-windows.ps1`. It downloads the pinned MSYS2 `20260611`
 SFX into repository-local `local_tools/`, verifies its SHA-256 and builds only
 `xtensa-softmmu`. The tracked runtime contains the static
 `qemu-system-xtensa.exe`, upstream license texts and the two ESP32 ROM blobs.
-MSYS2, cloned QEMU sources, build outputs, UART logs and SD-card `.img` files
-remain ignored local artifacts.
+MSYS2, cloned QEMU sources, build outputs, UART logs and generated card images
+outside the tracked demo remain ignored local artifacts.
 
 The patched machine option is `-machine esp32,sdspi=on`; it leaves the
 existing SDMMC behavior unchanged when omitted. QEMU models SPI3 transfers,

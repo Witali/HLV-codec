@@ -28,9 +28,12 @@ Run it with:
 
 ```powershell
 .\firmware\esp32_2432s028_hlv_player_id_c\run-qemu-sdspi-windows.ps1 `
-    -FlashImage <flash.bin> `
-    -SdImage <sd.img>
+    -FlashImage <flash.bin>
 ```
 
-The executable is stored with Git LFS. QEMU sources, MSYS2, build outputs,
-disk images and UART logs are intentionally not tracked.
+This uses the repository's five-minute Big Buck Bunny H.263/AVI SD-card demo
+by default. Pass `-SdImage <sd.img>` to override it.
+
+The executable and default demo image are stored with Git LFS. QEMU sources,
+MSYS2, build outputs, other disk images and UART logs are intentionally not
+tracked.
