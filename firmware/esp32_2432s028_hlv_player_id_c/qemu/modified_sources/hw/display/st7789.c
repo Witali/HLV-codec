@@ -10,15 +10,28 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/irq.h"
 #include "hw/ssi/ssi.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "ui/console.h"
+#include "ui/input.h"
 #include "ui/pixel_ops.h"
 #include "qom/object.h"
 
 #define ST7789_WIDTH  320
 #define ST7789_HEIGHT 240
+#define ST7789_CONTROL_HEIGHT 44
+#define ST7789_SURFACE_HEIGHT (ST7789_HEIGHT + ST7789_CONTROL_HEIGHT)
+
+#define ST7789_BUTTON_Y      248
+#define ST7789_BUTTON_HEIGHT 28
+#define ST7789_RESET_X       16
+#define ST7789_BOOT_X        118
+#define ST7789_BUTTON_WIDTH  90
+#define ST7789_HOLD_X        222
+#define ST7789_HOLD_Y        255
+#define ST7789_CHECK_SIZE    14
 
 #define ST7789_CMD_SWRESET 0x01
 #define ST7789_CMD_SLPIN   0x10
@@ -43,6 +56,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(ST7789State, ST7789)
 struct ST7789State {
     SSIPeripheral parent_obj;
     QemuConsole *con;
+    QemuInputHandlerState *input;
+    qemu_irq reset_button;
+    qemu_irq boot_button;
 
     uint8_t command;
     uint8_t argument[4];
@@ -58,6 +74,12 @@ struct ST7789State {
     bool inverted;
     bool little_endian;
     bool redraw;
+    bool pointer_left;
+    bool reset_pressed;
+    bool boot_pressed;
+    bool emulate_boot_hold;
+    int pointer_x;
+    int pointer_y;
 
     uint16_t column;
     uint16_t row;
@@ -282,6 +304,176 @@ static void st7789_store_surface_pixel(uint8_t *dest, int bytes_per_pixel,
     }
 }
 
+static void st7789_put_surface_rgb(DisplaySurface *surface, int x, int y,
+                                    uint8_t red, uint8_t green, uint8_t blue)
+{
+    int bytes_per_pixel = (surface_bits_per_pixel(surface) + 7) >> 3;
+    uint8_t *dest = surface_data(surface) + y * surface_stride(surface) +
+                    x * bytes_per_pixel;
+    uint32_t pixel =
+        st7789_rgb_to_surface(surface, red, green, blue);
+
+    st7789_store_surface_pixel(dest, bytes_per_pixel, pixel);
+}
+
+static const uint8_t *st7789_glyph(char character)
+{
+    static const uint8_t b[7] = {
+        0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e
+    };
+    static const uint8_t e[7] = {
+        0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f
+    };
+    static const uint8_t d[7] = {
+        0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e
+    };
+    static const uint8_t h[7] = {
+        0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11
+    };
+    static const uint8_t l[7] = {
+        0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f
+    };
+    static const uint8_t o[7] = {
+        0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e
+    };
+    static const uint8_t r[7] = {
+        0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11
+    };
+    static const uint8_t s[7] = {
+        0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e
+    };
+    static const uint8_t t[7] = {
+        0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04
+    };
+
+    switch (character) {
+    case 'B':
+        return b;
+    case 'D':
+        return d;
+    case 'E':
+        return e;
+    case 'H':
+        return h;
+    case 'L':
+        return l;
+    case 'O':
+        return o;
+    case 'R':
+        return r;
+    case 'S':
+        return s;
+    case 'T':
+        return t;
+    default:
+        return NULL;
+    }
+}
+
+static void st7789_draw_text(DisplaySurface *surface, int x, int y,
+                              const char *text)
+{
+    const int scale = 2;
+
+    while (*text) {
+        const uint8_t *glyph = st7789_glyph(*text++);
+        int row;
+
+        if (glyph) {
+            for (row = 0; row < 7; row++) {
+                int column;
+
+                for (column = 0; column < 5; column++) {
+                    if (glyph[row] & (1 << (4 - column))) {
+                        int dx;
+                        int dy;
+
+                        for (dy = 0; dy < scale; dy++) {
+                            for (dx = 0; dx < scale; dx++) {
+                                st7789_put_surface_rgb(
+                                    surface, x + column * scale + dx,
+                                    y + row * scale + dy,
+                                    0xf4, 0xf4, 0xf4);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        x += 6 * scale;
+    }
+}
+
+static void st7789_draw_button(DisplaySurface *surface, int button_x,
+                                bool active, const char *label)
+{
+    int label_width = strlen(label) * 12 - 2;
+    int x;
+    int y;
+
+    for (y = ST7789_BUTTON_Y;
+         y < ST7789_BUTTON_Y + ST7789_BUTTON_HEIGHT; y++) {
+        for (x = button_x; x < button_x + ST7789_BUTTON_WIDTH; x++) {
+            bool border = x == button_x ||
+                          x == button_x + ST7789_BUTTON_WIDTH - 1 ||
+                          y == ST7789_BUTTON_Y ||
+                          y == ST7789_BUTTON_Y + ST7789_BUTTON_HEIGHT - 1;
+
+            if (border) {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x9a, 0xa0, 0xaa);
+            } else if (active) {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x9b, 0x35, 0x35);
+            } else {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x3f, 0x47, 0x53);
+            }
+        }
+    }
+
+    st7789_draw_text(surface,
+                     button_x + (ST7789_BUTTON_WIDTH - label_width) / 2,
+                     ST7789_BUTTON_Y + 7, label);
+}
+
+static void st7789_draw_controls(ST7789State *s, DisplaySurface *surface)
+{
+    int x;
+    int y;
+
+    for (y = ST7789_HEIGHT; y < ST7789_SURFACE_HEIGHT; y++) {
+        for (x = 0; x < ST7789_WIDTH; x++) {
+            st7789_put_surface_rgb(surface, x, y, 0x20, 0x24, 0x2a);
+        }
+    }
+
+    st7789_draw_button(surface, ST7789_RESET_X, s->reset_pressed, "RESET");
+    st7789_draw_button(surface, ST7789_BOOT_X, s->boot_pressed, "BOOT");
+
+    for (y = ST7789_HOLD_Y; y < ST7789_HOLD_Y + ST7789_CHECK_SIZE; y++) {
+        for (x = ST7789_HOLD_X; x < ST7789_HOLD_X + ST7789_CHECK_SIZE; x++) {
+            bool border = x == ST7789_HOLD_X ||
+                          x == ST7789_HOLD_X + ST7789_CHECK_SIZE - 1 ||
+                          y == ST7789_HOLD_Y ||
+                          y == ST7789_HOLD_Y + ST7789_CHECK_SIZE - 1;
+
+            if (border) {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x9a, 0xa0, 0xaa);
+            } else if (s->emulate_boot_hold) {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x9b, 0x35, 0x35);
+            } else {
+                st7789_put_surface_rgb(surface, x, y,
+                                       0x20, 0x24, 0x2a);
+            }
+        }
+    }
+    st7789_draw_text(surface, ST7789_HOLD_X + ST7789_CHECK_SIZE + 6,
+                     ST7789_HOLD_Y, "HOLD");
+}
+
 static void st7789_update_display(void *opaque)
 {
     ST7789State *s = opaque;
@@ -330,6 +522,7 @@ static void st7789_update_display(void *opaque)
         }
     }
 
+    st7789_draw_controls(s, surface);
     s->redraw = false;
     dpy_gfx_update_full(s->con);
 }
@@ -358,6 +551,94 @@ static void st7789_backlight(void *opaque, int line, int level)
         s->redraw = true;
     }
 }
+
+static bool st7789_button_contains(int x, int y, int button_x)
+{
+    return x >= button_x && x < button_x + ST7789_BUTTON_WIDTH &&
+           y >= ST7789_BUTTON_Y &&
+           y < ST7789_BUTTON_Y + ST7789_BUTTON_HEIGHT;
+}
+
+static bool st7789_hold_contains(int x, int y)
+{
+    return x >= ST7789_HOLD_X &&
+           x < ST7789_HOLD_X + ST7789_CHECK_SIZE + 6 + 4 * 12 &&
+           y >= ST7789_HOLD_Y && y < ST7789_HOLD_Y + ST7789_CHECK_SIZE;
+}
+
+static void st7789_input_event(DeviceState *device, QemuConsole *src,
+                                InputEvent *event)
+{
+    ST7789State *s = ST7789(device);
+
+    if (src && src != s->con) {
+        return;
+    }
+
+    switch (event->type) {
+    case INPUT_EVENT_KIND_ABS: {
+        InputMoveEvent *move = event->u.abs.data;
+
+        if (move->axis == INPUT_AXIS_X) {
+            s->pointer_x = move->value * (ST7789_WIDTH - 1) /
+                           INPUT_EVENT_ABS_MAX;
+        } else if (move->axis == INPUT_AXIS_Y) {
+            s->pointer_y = move->value * (ST7789_SURFACE_HEIGHT - 1) /
+                           INPUT_EVENT_ABS_MAX;
+        }
+        break;
+    }
+    case INPUT_EVENT_KIND_BTN: {
+        InputBtnEvent *button = event->u.btn.data;
+
+        if (button->button != INPUT_BUTTON_LEFT ||
+            button->down == s->pointer_left) {
+            break;
+        }
+
+        s->pointer_left = button->down;
+        if (button->down &&
+            st7789_button_contains(s->pointer_x, s->pointer_y,
+                                   ST7789_RESET_X)) {
+            s->reset_pressed = true;
+            s->redraw = true;
+            qemu_set_irq(s->reset_button, 1);
+        } else if (button->down &&
+                   st7789_button_contains(s->pointer_x, s->pointer_y,
+                                          ST7789_BOOT_X)) {
+            s->boot_pressed = true;
+            s->redraw = true;
+            qemu_set_irq(s->boot_button, 1);
+        } else if (button->down &&
+                   st7789_hold_contains(s->pointer_x, s->pointer_y)) {
+            s->emulate_boot_hold = !s->emulate_boot_hold;
+            s->redraw = true;
+            qemu_set_irq(s->boot_button,
+                         s->boot_pressed || s->emulate_boot_hold);
+        } else if (!button->down) {
+            if (s->reset_pressed) {
+                s->reset_pressed = false;
+                qemu_set_irq(s->reset_button, 0);
+                s->redraw = true;
+            }
+            if (s->boot_pressed) {
+                s->boot_pressed = false;
+                qemu_set_irq(s->boot_button, s->emulate_boot_hold);
+                s->redraw = true;
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static const QemuInputHandler st7789_input_handler = {
+    .name = "ESP32 ST7789 controls",
+    .mask = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
+    .event = st7789_input_event,
+};
 
 static int st7789_post_load(void *opaque, int version_id)
 {
@@ -408,10 +689,21 @@ static void st7789_realize(SSIPeripheral *dev, Error **errp)
     ST7789State *s = ST7789(dev);
 
     s->con = graphic_console_init(device, 0, &st7789_ops, s);
-    qemu_console_resize(s->con, ST7789_WIDTH, ST7789_HEIGHT);
+    qemu_console_resize(s->con, ST7789_WIDTH, ST7789_SURFACE_HEIGHT);
     qdev_init_gpio_in_named(device, st7789_dc, "dc", 1);
     qdev_init_gpio_in_named(device, st7789_backlight, "backlight", 1);
+    qdev_init_gpio_out_named(device, &s->reset_button, "reset-button", 1);
+    qdev_init_gpio_out_named(device, &s->boot_button, "boot-button", 1);
+    s->input = qemu_input_handler_register(device, &st7789_input_handler);
     st7789_reset_state(s, true);
+}
+
+static void st7789_unrealize(DeviceState *device)
+{
+    ST7789State *s = ST7789(device);
+
+    qemu_input_handler_unregister(s->input);
+    s->input = NULL;
 }
 
 static void st7789_reset(DeviceState *device)
@@ -430,6 +722,7 @@ static void st7789_class_init(ObjectClass *klass, void *data)
     ssi->transfer = st7789_transfer;
     ssi->cs_polarity = SSI_CS_LOW;
     dc->vmsd = &vmstate_st7789;
+    dc->unrealize = st7789_unrealize;
     device_class_set_legacy_reset(dc, st7789_reset);
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
 }

@@ -833,6 +833,30 @@ static void esp32_machine_init_sd(Esp32MachineState *ms)
     }
 }
 
+static void esp32_machine_reset_button(void *opaque, int line, int level)
+{
+    Esp32MachineState *ms = opaque;
+    Esp32SocState *ss = &ms->esp32;
+
+    if (!level) {
+        return;
+    }
+
+    ss->requested_reset = ESP32_SOC_RESET_ALL;
+    for (int cpu = 0; cpu < ESP32_CPU_COUNT; cpu++) {
+        ss->rtc_cntl.reset_cause[cpu] = ESP32_POWERON_RESET;
+    }
+    qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
+}
+
+static void esp32_machine_boot_button(void *opaque, int line, int level)
+{
+    Esp32MachineState *ms = opaque;
+
+    ms->esp32.gpio.strap_mode = level ? ESP32_STRAP_MODE_UART_BOOT :
+                                        ESP32_STRAP_MODE_FLASH_BOOT;
+}
+
 static void esp32_machine_init_st7789(Esp32MachineState *ms)
 {
     Esp32SocState *ss = &ms->esp32;
@@ -852,6 +876,12 @@ static void esp32_machine_init_st7789(Esp32MachineState *ms)
     qdev_connect_gpio_out_named(
         DEVICE(&ss->gpio), "gpio-out", 21,
         qdev_get_gpio_in_named(panel, "backlight", 0));
+    qdev_connect_gpio_out_named(
+        panel, "reset-button", 0,
+        qemu_allocate_irq(esp32_machine_reset_button, ms, 0));
+    qdev_connect_gpio_out_named(
+        panel, "boot-button", 0,
+        qemu_allocate_irq(esp32_machine_boot_button, ms, 0));
 }
 
 static void esp32_machine_init(MachineState *machine)

@@ -19,6 +19,15 @@ ESP32-2432S028 board:
 - backlight on GPIO21
 - 320x240 RGB565 framebuffer
 
+The ST7789 window has a control strip below the 320x240 LCD:
+
+- `RESET` and `BOOT` are momentary buttons. Their emulated electrical level
+  follows mouse-down and mouse-up, like the physical board buttons.
+- `HOLD` is an optional BOOT hold checkbox. It is off by default; when
+  checked, GPIO0 remains asserted low after the mouse button is released.
+- To enter the ROM UART downloader with a mouse, check `HOLD`, click `RESET`,
+  then clear `HOLD` when it is no longer needed.
+
 It implements the command subset used by the pinned ESP-IDF ST7789 driver,
 including its RAMCTRL little-endian pixel mode. Raw SPI behavior was
 cross-checked against the MIT-licensed
