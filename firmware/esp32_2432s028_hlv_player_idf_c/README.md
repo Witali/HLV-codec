@@ -620,16 +620,19 @@ but not physical SD or display DMA timing.
   predictive decoding still runs so subsequent P-frames remain valid.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
-H.263 CIF scaling has been removed. The player omits 16 coded columns from
-each side and 24 rows from the top and bottom of a 352x288 frame, converts the
-central 320x240 area into the DMA strips on CPU0, and copies it to the panel
-pixel-for-pixel. H.263 decompression runs concurrently on CPU1. There are no
-CIF scaling tables or scaled framebuffer. A 300-frame physical-board run of
+H.263 CIF scaling has been removed. The player starts the visible area at
+the macroblock-aligned coordinate `(16,16)` of a 352x288 frame, converts that
+320x240 area into the DMA strips on CPU0, and copies it to the panel
+pixel-for-pixel. This leaves 16 coded columns on both sides, 16 rows above,
+and 32 rows below. H.263 decompression runs concurrently on CPU1. There are no
+CIF scaling tables or scaled framebuffer. The central part is deliberately
+shown instead of scaling the whole CIF picture, avoiding extra per-frame CPU
+work and memory traffic. A 300-frame physical-board run of
 the 30 fps CIF AVI measured 29.993 fps with zero display skips or audio errors.
 The encoder scripts prepare the active area by cropping or padding the original
 large-resolution source to 4:3 and applying one anti-aliased Lanczos downscale
-to 320x240. They add the black 16/24-pixel CIF border without a SAR or DAR
-override. `kScaleVideoToDisplay` continues to control stretching for the
+to 320x240. They pad that image at `(16,16)` without a SAR or DAR override.
+`kScaleVideoToDisplay` continues to control stretching for the
 other video codecs; CIF deliberately ignores it.
 `kUseCompactHlvReference` selects the compact decoder and is `true` in the current
 test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.

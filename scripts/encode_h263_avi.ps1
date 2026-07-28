@@ -140,11 +140,11 @@ New-Item -ItemType Directory -Force -Path (
 
 # QCIF is shown as a centered 176x144 picture on the 320x240 display. CIF is
 # decoded at its mandatory 352x288 coded size, but the player displays its
-# centered 320x240 window. Prepare that exact window here and surround it with
-# the 16/24-pixel CIF guard area so no useful picture is cropped on playback.
+# macroblock-aligned 320x240 window at x=16, y=16. Prepare that exact window
+# here, leaving 16-pixel left/top/right guards and a 32-pixel bottom guard.
 $contentWidth = if ($isCif) { 320 } else { $width }
 $contentHeight = if ($isCif) { 240 } else { $height }
-$cifPadding = if ($isCif) { ",pad=${width}:${height}:16:24:black" } else { "" }
+$cifPadding = if ($isCif) { ",pad=${width}:${height}:16:16:black" } else { "" }
 $videoFilter = if ($FitMode -eq "Crop") {
     (
         "setpts=N/(${sourceRateExpression}*TB)," +

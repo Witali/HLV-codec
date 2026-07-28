@@ -85,7 +85,7 @@ foreach ($profile in @("176x144", "352x288")) {
         )
     }
     if ($profile -eq "352x288" -and
-        $check.Output -notmatch "checksum 7cd1a3db7cd8e5f2") {
+        $check.Output -notmatch "checksum 34427368141f6abf") {
         throw (
             "The CIF pixel checksum changed while decoding packets larger " +
             "than the streaming input buffer. " + $check.Output
@@ -118,26 +118,60 @@ if ($LASTEXITCODE -ne 0 -or
     )
 }
 
-# The ESP32 presents the center 320x240 pixels of CIF. Verify that the
-# transcoding profile reserves exactly the surrounding 16/24-pixel guard area.
-$centeredCif = Join-Path $work "centered-cif.avi"
+# The ESP32 presents CIF pixels (16,16)..(335,255). Verify that the useful
+# 320x240 area and all four asymmetric guard regions match that contract.
+$alignedCif = Join-Path $work "macroblock-aligned-cif.avi"
 & (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
     -InputFile $source `
-    -OutputFile $centeredCif `
+    -OutputFile $alignedCif `
     -Profile 352x288 `
     -FitMode Crop `
     -NoAudio `
     -MaxFrames 1
 if ($LASTEXITCODE -ne 0) {
-    throw "The centered CIF profile encoding failed."
+    throw "The macroblock-aligned CIF profile encoding failed."
 }
-$borderStats = (
-    & $ffmpeg -hide_banner -loglevel info -i $centeredCif `
-        -vf "crop=16:288:0:0,signalstats,metadata=print" `
-        -frames:v 1 -f null NUL 2>&1 | Out-String
-)
-if ($borderStats -notmatch "lavfi\.signalstats\.YAVG=(1[456]|1[456]\.\d+)") {
-    throw "The CIF profile no longer has a black 16-pixel left guard area."
+
+function Get-RegionLumaAverage {
+    param([Parameter(Mandatory)][string]$Crop)
+
+    $stats = (
+        & $ffmpeg -hide_banner -loglevel info -i $alignedCif `
+            -vf "crop=${Crop},signalstats,metadata=print" `
+            -frames:v 1 -f null NUL 2>&1 | Out-String
+    )
+    $match = [regex]::Match(
+        $stats, "lavfi\.signalstats\.YAVG=([0-9]+(?:\.[0-9]+)?)"
+    )
+    if (-not $match.Success) {
+        throw "Could not measure CIF region ${Crop}."
+    }
+    return [double]::Parse(
+        $match.Groups[1].Value,
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+}
+
+foreach ($guard in @(
+    @{ Name = "top"; Crop = "352:16:0:0" },
+    @{ Name = "bottom"; Crop = "352:32:0:256" },
+    @{ Name = "left"; Crop = "16:240:0:16" },
+    @{ Name = "right"; Crop = "16:240:336:16" }
+)) {
+    $average = Get-RegionLumaAverage -Crop $guard.Crop
+    if ($average -lt 14.0 -or $average -gt 18.0) {
+        throw (
+            "The CIF $($guard.Name) guard is not black: " +
+            "YAVG=$average."
+        )
+    }
+}
+$contentAverage = Get-RegionLumaAverage -Crop "320:240:16:16"
+if ($contentAverage -lt 24.0) {
+    throw (
+        "The CIF visible area does not start at (16,16): " +
+        "YAVG=$contentAverage."
+    )
 }
 
 $rejectedCustomSize = $false
@@ -194,7 +228,7 @@ if (-not $rejectedHalfRate) {
 
 Write-Host (
     "Standard Q6 H.263 QCIF/CIF AVI tests passed at the full source " +
-    "rate; frame-limited audio ends with video; CIF is centered for a " +
-    "320x240 display; custom sizes, 3GP, and half-rate fallback were " +
-    "rejected."
+    "rate; frame-limited audio ends with video; CIF uses a " +
+    "macroblock-aligned 320x240 window at (16,16); custom sizes, 3GP, " +
+    "and half-rate fallback were rejected."
 )

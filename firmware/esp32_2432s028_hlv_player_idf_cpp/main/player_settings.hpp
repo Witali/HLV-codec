@@ -21,7 +21,7 @@ enum class AvSyncMode {
 
 // false: draw at native resolution in the centre with black borders.
 // true: stretch every frame to the complete 320x240 display.
-// H.263 CIF always ignores this setting and copies its central 320x240 area
+// H.263 CIF always ignores this setting and copies the 320x240 area at (16,16)
 // pixel-for-pixel.
 constexpr bool kScaleVideoToDisplay = false;
 

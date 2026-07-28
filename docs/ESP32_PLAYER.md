@@ -22,8 +22,9 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
   H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
   mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
-  `320x240`, or `352x288` CIF; the ESP32 copies CIF's central `320x240`
-  square-pixel coded area to the panel pixel-for-pixel without scaling;
+  `320x240`, or `352x288` CIF; the ESP32 copies CIF's `320x240`
+  square-pixel coded area at `(16,16)` to the panel pixel-for-pixel without
+  scaling, for 16x16 macroblock alignment;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
@@ -182,11 +183,15 @@ video cannot strand an audio task and leak its stack.
 ## CIF pixel-exact crop
 
 H.263 CIF scaling has been removed from the ESP32 player. Every `352x288` CIF
-frame is cropped to its central `320x240` coded area: 16 columns are omitted
-from each side and 24 rows from the top and bottom. The remaining pixels are
+frame uses the `320x240` coded area starting at `(16,16)`: 16 columns are
+omitted from each side, 16 rows from the top, and 32 rows from the bottom.
+Both coordinates are aligned to H.263 macroblocks. The same crop is used for
+H.263 streams in AVI and legacy 3GP containers. The remaining pixels are
 converted to RGB565 and copied to the panel one-for-one while preparing the
 small DMA output strips. There are no nearest-neighbour or bilinear scaling
-tables and no scaled framebuffer.
+tables and no scaled framebuffer. We deliberately display only this central
+part of the CIF picture (shifted upward to the macroblock boundary) so the
+ESP32 does not spend CPU time or memory bandwidth scaling every frame.
 
 On the physical ESP32, the 30 fps CIF AVI test completed 300 frames at
 29.993 fps with zero display skips, decode gaps, audio rebuffers, underrun
