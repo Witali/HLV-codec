@@ -97,6 +97,11 @@ For a native Windows build and launch (no WSL runtime), use:
 ..\run-qemu-demo-windows.ps1
 ```
 
+The planned Windows virtual-COM integration, including a direct null-modem
+pair, driver-free CI backend and later RESET/BOOT control-line support, is
+specified in
+[`docs/QEMU_WINDOWS_VIRTUAL_COM_PLAN.md`](../../../docs/QEMU_WINDOWS_VIRTUAL_COM_PLAN.md).
+
 The dedicated demo launcher builds a production flash image when it is
 missing and opens the ST7789 window with the default demo card. Use
 `-Rebuild` to rebuild the flash image or `-Headless` to suppress the window.
