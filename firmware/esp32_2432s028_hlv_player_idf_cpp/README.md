@@ -178,6 +178,17 @@ Set-Content play.txt "clip.avi" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
+For repeatable tests, select an uploaded video without leaving a local
+`play.txt` file:
+
+```powershell
+.\select-video.ps1 -Port COM8 `
+    -Name "Danila_320x240_30fps_HLVv14_38dB.hlv"
+```
+
+The helper uploads a temporary ASCII selection through the same atomic,
+full-file CRC-verified protocol as a normal video.
+
 Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg`, `.3gp` or
 `.txt`,
 and are at most 48
