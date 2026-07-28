@@ -345,6 +345,24 @@ image:
     -SdImage .\build\qemu_sdcard.img
 ```
 
+To build and run the same patched emulator as a native, static Windows
+executable instead of through WSL:
+
+```powershell
+.\setup-qemu-sdspi-windows.ps1
+.\run-qemu-sdspi-windows.ps1 `
+    -FlashImage .\build-qemu-sdspi-normal\qemu_production_flash_4mb.bin `
+    -SdImage .\build-qemu-sdspi-normal\qemu_production_sd.img
+```
+
+The setup script downloads the pinned MSYS2 `20260611` SFX into
+repository-local `local_tools/`, verifies its SHA-256, builds only
+`xtensa-softmmu`, and creates a minimal runtime under
+`local_tools/qemu-sdspi-windows/`. The runtime contains the static
+`qemu-system-xtensa.exe` and the two upstream ESP32 ROM blobs. MSYS2, cloned
+QEMU sources, build outputs, UART logs and SD-card `.img` files are ignored
+local artifacts and are not committed.
+
 The patched machine option is `-machine esp32,sdspi=on`; it leaves the
 existing SDMMC behavior unchanged when omitted. QEMU models SPI3 transfers,
 DMA descriptor chains, the interrupt matrix, GPIO output and GPIO5 CS. It

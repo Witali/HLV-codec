@@ -6,7 +6,8 @@ Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
   [`esp-develop-9.2.2-20260417`](https://github.com/espressif/qemu/tree/esp-develop-9.2.2-20260417)
 - Upstream commit:
   [`40edccac415693c5130f91c01d84176ae6008566`](https://github.com/espressif/qemu/commit/40edccac415693c5130f91c01d84176ae6008566)
-- Local patch: `patches/0001-esp32-sdspi.patch`
+- Device patch: `patches/0001-esp32-sdspi.patch`
+- Windows build fallback: `patches/0002-windows-symlink-fallback.patch`
 - Full patched files: `modified_sources/`
 
 The local ST7789 device is an SSI peripheral connected like the physical
@@ -47,10 +48,16 @@ include/hw/xtensa/esp32.h
 include/hw/xtensa/esp32_intc.h
 ```
 
-The patch remains the canonical installation method used by
-`../setup-qemu-sdspi.ps1`; the full files are retained for inspection and
-recovery. These files remain subject to their upstream copyright and license
-terms. See the [QEMU license documentation](https://www.qemu.org/docs/master/about/license.html).
+The device patch remains the canonical installation method used by the WSL
+and native Windows setup scripts. The second patch lets a MinGW build complete
+without enabling Windows Developer Mode: when file symlink creation is denied,
+existing build-tree files are copied and not-yet-built files are skipped. The
+finished executable and required ESP32 ROM blobs are copied to a normal,
+relocatable runtime directory.
+
+The full device files are retained for inspection and recovery. These files
+remain subject to their upstream copyright and license terms. See the
+[QEMU license documentation](https://www.qemu.org/docs/master/about/license.html).
 
 Run a flash image and an SPI SD-card image with a visible ST7789 window:
 
@@ -61,3 +68,15 @@ Run a flash image and an SPI SD-card image with a visible ST7789 window:
 Use `-Headless` to keep the LCD active without opening an SDL window.
 Automated tests can capture console zero through the QEMU monitor with
 `screendump <path>.ppm`.
+
+For a native Windows build and launch (no WSL runtime), use:
+
+```powershell
+..\setup-qemu-sdspi-windows.ps1
+..\run-qemu-sdspi-windows.ps1 `
+    -FlashImage <flash.bin> `
+    -SdImage <sd.img>
+```
+
+MSYS2, QEMU sources, build outputs and disk images remain local, ignored
+artifacts under `local_tools/` or `build-*`; none is stored in Git.
