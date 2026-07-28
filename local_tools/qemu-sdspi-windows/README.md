@@ -21,13 +21,13 @@ ESP32 machine.
 Build or refresh this runtime with:
 
 ```powershell
-.\firmware\esp32_2432s028_hlv_player_id_c\setup-qemu-sdspi-windows.ps1
+.\firmware\esp32_2432s028_hlv_player_idf_c\setup-qemu-sdspi-windows.ps1
 ```
 
 Run it with:
 
 ```powershell
-.\firmware\esp32_2432s028_hlv_player_id_c\run-qemu-sdspi-windows.ps1 `
+.\firmware\esp32_2432s028_hlv_player_idf_c\run-qemu-sdspi-windows.ps1 `
     -FlashImage <flash.bin>
 ```
 

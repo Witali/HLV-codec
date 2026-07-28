@@ -35,7 +35,7 @@
 
 ## ESP32 firmware language
 
-- Treat `firmware/esp32_2432s028_hlv_player_id_c` as the primary ESP32 player
+- Treat `firmware/esp32_2432s028_hlv_player_idf_c` as the primary ESP32 player
   firmware and keep it compatible with C99.
 - Treat `firmware/esp32_2432s028_hlv_player_idf_cpp` only as the preserved C++
   reference implementation. Do not leave an active firmware feature or fix

@@ -18,7 +18,7 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1") `
     -ForceDownload:$ForceDownload
 
-$idfProject = Join-Path $repo "firmware\esp32_2432s028_hlv_player_id_c"
+$idfProject = Join-Path $repo "firmware\esp32_2432s028_hlv_player_idf_c"
 & (Join-Path $idfProject "setup.ps1")
 
 Write-Host ""

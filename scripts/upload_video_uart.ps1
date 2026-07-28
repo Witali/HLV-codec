@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
-$project = Join-Path $repo "firmware\esp32_2432s028_hlv_player_id_c"
+$project = Join-Path $repo "firmware\esp32_2432s028_hlv_player_idf_c"
 if (-not $Name) {
     $Name = [IO.Path]::GetFileName($File)
 }

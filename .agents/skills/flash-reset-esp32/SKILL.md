@@ -6,7 +6,7 @@ description: Build, flash, reset, reboot, or deliberately enter the ROM bootload
 # Flash and reset the HLV ESP32 board
 
 Work from the repository root. The firmware project is
-`firmware/esp32_2432s028_hlv_player_id_c`.
+`firmware/esp32_2432s028_hlv_player_idf_c`.
 
 ## Choose the operation
 
@@ -19,7 +19,7 @@ Work from the repository root. The firmware project is
 - For a normal build and flash, run:
 
   ```powershell
-  .\firmware\esp32_2432s028_hlv_player_id_c\flash.ps1 -Port COM8
+  .\firmware\esp32_2432s028_hlv_player_idf_c\flash.ps1 -Port COM8
   ```
 
 - Use `-SkipBuild` only when the user explicitly asks to flash the existing
@@ -49,7 +49,7 @@ of the flash operation.
    rate:
 
    ```powershell
-   .\firmware\esp32_2432s028_hlv_player_id_c\flash.ps1 -Port COM8 -Baud 115200 -SkipBuild
+   .\firmware\esp32_2432s028_hlv_player_idf_c\flash.ps1 -Port COM8 -Baud 115200 -SkipBuild
    ```
 
 Do not ask for manual BOOT/RESET unless the automatic sequence actually fails
@@ -84,7 +84,7 @@ Confirm that `build-name/flash_args` exists before running the command.
   checks on the project board.
 - Use `-WhatIf` when validating the reset script without touching the board.
 - Read `docs/board/CH340C_AUTO_BOOT_MOD.md` only when diagnosing the hardware
-  modification. Treat `firmware/esp32_2432s028_hlv_player_id_c/esptool.cfg` as
+  modification. Treat `firmware/esp32_2432s028_hlv_player_idf_c/esptool.cfg` as
   the authoritative automatic boot sequence. Do not improvise another sequence.
 
 ## Report the result

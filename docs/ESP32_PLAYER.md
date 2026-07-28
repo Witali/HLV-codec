@@ -53,7 +53,7 @@ internally to 320x192, preserves the official movie resolution and leaves 30
 black rows above and below the picture.
 
 The compile-time flag `PLAYER_USE_COMPACT_HLV_REFERENCE` in
-`firmware/esp32_2432s028_hlv_player_id_c/main/player_settings.h` is currently
+`firmware/esp32_2432s028_hlv_player_idf_c/main/player_settings.h` is currently
 `1`. Stable v14 makes Y7/U6/V6 plus a separate signed Q4 local-average
 coefficient for every 8x8 Y, U and V block normative. A `LITERAL` macroblock
 carries four Y coefficients plus one U and one V coefficient. The packed and
@@ -382,7 +382,7 @@ Foundation open movie licensed under Creative Commons Attribution 3.0:
 ## Pure ESP-IDF firmware and project-local dependencies
 
 The default strict-C99 firmware is the independent project in
-`firmware/esp32_2432s028_hlv_player_id_c`. The preserved C++ implementation
+`firmware/esp32_2432s028_hlv_player_idf_c`. The preserved C++ implementation
 is available in `firmware/esp32_2432s028_hlv_player_idf_cpp` for comparison.
 Both use ESP-IDF APIs directly:
 `esp_lcd` for the ST7789, SDSPI/FatFs for the card, and the continuous DAC

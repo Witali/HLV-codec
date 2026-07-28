@@ -1,7 +1,7 @@
 # Multi-codec player for ESP32-2432S028 — pure ESP-IDF
 
 This directory preserves the C++ implementation for comparison. The default
-strict-C99 implementation is in `../esp32_2432s028_hlv_player_id_c`.
+strict-C99 implementation is in `../esp32_2432s028_hlv_player_idf_c`.
 
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The

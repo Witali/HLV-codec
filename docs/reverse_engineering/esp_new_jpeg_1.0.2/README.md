@@ -7,7 +7,7 @@ the encoder objects.
 The input archive is:
 
 ```text
-firmware/esp32_2432s028_hlv_player_id_c/managed_components/
+firmware/esp32_2432s028_hlv_player_idf_c/managed_components/
     espressif__esp_new_jpeg/lib/esp32/libesp_new_jpeg.a
 SHA-256: 42F226866A13580988D9EED2F907DA92955EC40F107F47F64460C72310C65D6F
 ```
