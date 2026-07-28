@@ -93,6 +93,31 @@ foreach ($profile in @("176x144", "352x288")) {
     }
 }
 
+$limitedAvi = Join-Path $work "frame-limited-pcm.avi"
+& (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
+    -InputFile $source `
+    -OutputFile $limitedAvi `
+    -Profile 176x144 `
+    -FitMode Contain `
+    -MaxFrames 15
+if ($LASTEXITCODE -ne 0) {
+    throw "The frame-limited H.263/AVI encoding failed."
+}
+$limitedDurationText = & $ffprobe -v error `
+    -show_entries format=duration `
+    -of default=noprint_wrappers=1:nokey=1 $limitedAvi
+$limitedDuration = [double]::Parse(
+    $limitedDurationText,
+    [Globalization.CultureInfo]::InvariantCulture
+)
+if ($LASTEXITCODE -ne 0 -or
+    $limitedDuration -lt 0.49 -or $limitedDuration -gt 0.51) {
+    throw (
+        "The 15-frame output retained an audio-only tail: " +
+        "$limitedDurationText seconds."
+    )
+}
+
 # The ESP32 presents the center 320x240 pixels of CIF. Verify that the
 # transcoding profile reserves exactly the surrounding 16/24-pixel guard area.
 $centeredCif = Join-Path $work "centered-cif.avi"
@@ -169,6 +194,7 @@ if (-not $rejectedHalfRate) {
 
 Write-Host (
     "Standard Q6 H.263 QCIF/CIF AVI tests passed at the full source " +
-    "rate; CIF is centered for a 320x240 display; custom sizes, 3GP, " +
-    "and half-rate fallback were rejected."
+    "rate; frame-limited audio ends with video; CIF is centered for a " +
+    "320x240 display; custom sizes, 3GP, and half-rate fallback were " +
+    "rejected."
 )

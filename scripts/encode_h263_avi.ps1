@@ -214,6 +214,11 @@ else {
         "-ar", "8000",
         "-ac", "1"
     )
+    if ($MaxFrames) {
+        # End audio with a frame-limited video instead of retaining the
+        # remainder of the source as an audio-only AVI tail.
+        $arguments += "-shortest"
+    }
 }
 $arguments += @("-f", "avi", $OutputFile)
 
