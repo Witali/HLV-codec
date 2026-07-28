@@ -49,6 +49,16 @@
   adding a C++ runtime dependency to the C firmware. Do not add `.cpp`, `.cc`,
   `.cxx` or `.hpp` files under the C firmware project.
 
+## ESP32 physical SD test cleanup
+
+- Record which files are uploaded or generated specifically for each physical
+  ESP32 test run.
+- After the test run finishes, delete those test-only files from the board's
+  SD card and verify their removal with a fresh directory listing.
+- Preserve files that existed before the run, user and demo assets,
+  `play.txt`, and the persistent `crc32.txt` checksum index. Never reformat the
+  card or use a broad filename pattern as test cleanup.
+
 ## Permission review timeouts
 
 - If an automatic permission review times out before the requested command
