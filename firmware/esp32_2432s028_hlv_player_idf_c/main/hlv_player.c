@@ -500,7 +500,6 @@ void waitForH263OutputRow(void *opaque, uint16_t first_y) {
 
 void beginH263RowPipeline() {
     const int source_height = sequence_header.height;
-    const int visible_height = MIN(source_height, kScreenHeight);
     __atomic_store_n(&h263_row_guard_wait_us, 0, __ATOMIC_RELAXED);
     __atomic_store_n(
         &h263_rendered_source_rows,
