@@ -30,6 +30,8 @@
 #define SD_BENCHMARK_BLOCK_BYTES (32U * 1024U)
 #define MAXIMUM_SD_BENCHMARK_MIB 64U
 #define SD_BENCHMARK_FILENAME ".hlv-sd-benchmark.tmp"
+#define CRC_INDEX_FILENAME "crc32.txt"
+#define CRC_INDEX_LINE_BYTES 128U
 
 static const uint8_t k_block_magic[] = {'H', 'L', 'V', 'B'};
 
@@ -173,6 +175,70 @@ static bool build_path(char *destination,
     result = snprintf(destination, destination_bytes, "%s/%s%s",
                       directory, filename, suffix);
     return result >= 0 && (size_t)result < destination_bytes;
+}
+
+static bool find_cached_crc(const char *directory,
+                            const char *filename,
+                            uint32_t file_size,
+                            uint32_t *file_crc) {
+    char path[128];
+    char line[CRC_INDEX_LINE_BYTES];
+    FILE *index;
+    bool found = false;
+
+    if (file_crc == NULL ||
+        !build_path(path, sizeof path, directory, CRC_INDEX_FILENAME, "")) {
+        return false;
+    }
+    index = fopen(path, "rb");
+    if (index == NULL) {
+        return false;
+    }
+    while (fgets(line, sizeof line, index) != NULL) {
+        unsigned cached_crc;
+        unsigned long cached_size;
+        char cached_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
+        int fields = sscanf(line, "%8x,%lu,%48[^\r\n]",
+                            &cached_crc, &cached_size, cached_filename);
+        if (fields == 3 && cached_size == (unsigned long)file_size &&
+            strcmp(cached_filename, filename) == 0) {
+            *file_crc = (uint32_t)cached_crc;
+            found = true;
+        }
+    }
+    fclose(index);
+    return found;
+}
+
+static bool append_cached_crc(const char *directory,
+                              const char *filename,
+                              uint32_t file_size,
+                              uint32_t file_crc) {
+    char path[128];
+    FILE *index;
+    bool success;
+
+    if (strcmp(filename, CRC_INDEX_FILENAME) == 0 ||
+        !build_path(path, sizeof path, directory, CRC_INDEX_FILENAME, "")) {
+        return false;
+    }
+    index = fopen(path, "ab");
+    if (index == NULL) {
+        return false;
+    }
+    success = fprintf(index, "%08x,%u,%s\n",
+                      (unsigned)file_crc, (unsigned)file_size,
+                      filename) > 0;
+    if (success && fflush(index) != 0) {
+        success = false;
+    }
+    if (success && fsync(fileno(index)) != 0) {
+        success = false;
+    }
+    if (fclose(index) != 0) {
+        success = false;
+    }
+    return success;
 }
 
 static bool set_baud(uint32_t baud) {
@@ -542,15 +608,28 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
                                     const char *directory,
                                     const char *filename) {
     char path[128];
+    struct stat status = {0};
     FILE *input;
     uint8_t *buffer;
     uint32_t file_crc = 0;
-    uint32_t file_size = 0;
+    uint32_t file_size;
     bool success = true;
 
     if (!build_path(path, sizeof path, directory, filename, "")) {
         uart_file_upload_reject(upload, "BAD_PATH");
         return false;
+    }
+    if (stat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 || (uint64_t)status.st_size > UINT32_MAX) {
+        uart_file_upload_reject(upload, "NOT_FOUND");
+        return false;
+    }
+    file_size = (uint32_t)status.st_size;
+    if (strcmp(filename, CRC_INDEX_FILENAME) != 0 &&
+        find_cached_crc(directory, filename, file_size, &file_crc)) {
+        finish_response(upload, "HLVCRC 1 %u %08x %s\n",
+                        (unsigned)file_size, (unsigned)file_crc, filename);
+        return true;
     }
     input = fopen(path, "rb");
     if (input == NULL) {
@@ -569,7 +648,6 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
         size_t received = fread(buffer, 1, CRC_BUFFER_BYTES, input);
         if (received != 0U) {
             file_crc = esp_rom_crc32_le(file_crc, buffer, received);
-            file_size += (uint32_t)received;
         }
         if (received != CRC_BUFFER_BYTES) {
             success = feof(input) != 0 && ferror(input) == 0;
@@ -584,6 +662,7 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
         finish_response(upload, "HLVERR 1 READ_FAILED\n");
         return false;
     }
+    (void)append_cached_crc(directory, filename, file_size, file_crc);
     finish_response(upload, "HLVCRC 1 %u %08x %s\n",
                     (unsigned)file_size, (unsigned)file_crc, filename);
     return true;
@@ -980,6 +1059,8 @@ bool uart_file_upload_receive(
     if (stored_path != NULL && stored_path_bytes != 0U) {
         snprintf(stored_path, stored_path_bytes, "%s", target);
     }
+    (void)append_cached_crc(directory, request->filename,
+                            request->size, writer.file_crc);
     finish_response(upload, "HLVDONE 2 %u %08x %s\n",
                     (unsigned)request->size,
                     (unsigned)writer.file_crc,

@@ -33,6 +33,8 @@ constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
 constexpr size_t kSdBenchmarkBlockBytes = 32 * 1024;
 constexpr uint32_t kMaximumSdBenchmarkMiB = 64;
 constexpr char kSdBenchmarkFilename[] = ".hlv-sd-benchmark.tmp";
+constexpr char kCrcIndexFilename[] = "crc32.txt";
+constexpr size_t kCrcIndexLineBytes = 128;
 
 struct UploadBlock {
     uint8_t *data = nullptr;
@@ -145,6 +147,56 @@ bool buildPath(char *destination, size_t destination_bytes,
     const int result = std::snprintf(destination, destination_bytes,
                                      "%s/%s%s", directory, filename, suffix);
     return result >= 0 && static_cast<size_t>(result) < destination_bytes;
+}
+
+bool findCachedCrc(const char *directory, const char *filename,
+                   uint32_t file_size, uint32_t *file_crc) {
+    char path[128];
+    if (!file_crc ||
+        !buildPath(path, sizeof path, directory, kCrcIndexFilename, "")) {
+        return false;
+    }
+    FILE *index = std::fopen(path, "rb");
+    if (!index) return false;
+
+    char line[kCrcIndexLineBytes];
+    bool found = false;
+    while (std::fgets(line, sizeof line, index)) {
+        unsigned cached_crc;
+        unsigned long cached_size;
+        char cached_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        const int fields = std::sscanf(
+            line, "%8x,%lu,%48[^\r\n]",
+            &cached_crc, &cached_size, cached_filename);
+        if (fields == 3 &&
+            cached_size == static_cast<unsigned long>(file_size) &&
+            !std::strcmp(cached_filename, filename)) {
+            *file_crc = static_cast<uint32_t>(cached_crc);
+            found = true;
+        }
+    }
+    std::fclose(index);
+    return found;
+}
+
+bool appendCachedCrc(const char *directory, const char *filename,
+                     uint32_t file_size, uint32_t file_crc) {
+    char path[128];
+    if (!std::strcmp(filename, kCrcIndexFilename) ||
+        !buildPath(path, sizeof path, directory, kCrcIndexFilename, "")) {
+        return false;
+    }
+    FILE *index = std::fopen(path, "ab");
+    if (!index) return false;
+
+    bool success = std::fprintf(index, "%08x,%u,%s\n",
+                                static_cast<unsigned>(file_crc),
+                                static_cast<unsigned>(file_size),
+                                filename) > 0;
+    if (success && std::fflush(index)) success = false;
+    if (success && fsync(fileno(index))) success = false;
+    if (std::fclose(index)) success = false;
+    return success;
 }
 
 }  // namespace
@@ -357,6 +409,22 @@ bool UartFileUpload::checksumFile(const char *directory,
         reject("BAD_PATH");
         return false;
     }
+    struct stat status {};
+    if (stat(path, &status) || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 ||
+        static_cast<uint64_t>(status.st_size) > UINT32_MAX) {
+        reject("NOT_FOUND");
+        return false;
+    }
+    const uint32_t file_size = static_cast<uint32_t>(status.st_size);
+    uint32_t file_crc = 0;
+    if (std::strcmp(filename, kCrcIndexFilename) &&
+        findCachedCrc(directory, filename, file_size, &file_crc)) {
+        finishResponse("HLVCRC 1 %u %08x %s\n",
+                       static_cast<unsigned>(file_size),
+                       static_cast<unsigned>(file_crc), filename);
+        return true;
+    }
     FILE *input = std::fopen(path, "rb");
     if (!input) {
         reject("OPEN_FAILED");
@@ -371,15 +439,12 @@ bool UartFileUpload::checksumFile(const char *directory,
         return false;
     }
 
-    uint32_t file_crc = 0;
-    uint32_t file_size = 0;
     bool success = true;
     for (;;) {
         const size_t received =
             std::fread(buffer, 1, kCrcBufferBytes, input);
         if (received) {
             file_crc = esp_rom_crc32_le(file_crc, buffer, received);
-            file_size += static_cast<uint32_t>(received);
         }
         if (received != kCrcBufferBytes) {
             success = std::feof(input) != 0 && std::ferror(input) == 0;
@@ -392,6 +457,7 @@ bool UartFileUpload::checksumFile(const char *directory,
         finishResponse("HLVERR 1 READ_FAILED\n");
         return false;
     }
+    (void)appendCachedCrc(directory, filename, file_size, file_crc);
     finishResponse("HLVCRC 1 %u %08x %s\n",
                    static_cast<unsigned>(file_size),
                    static_cast<unsigned>(file_crc), filename);
@@ -836,6 +902,8 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     if (stored_path && stored_path_bytes) {
         std::snprintf(stored_path, stored_path_bytes, "%s", target);
     }
+    (void)appendCachedCrc(directory, request.filename,
+                         request.size, actual_crc);
     finishResponse("HLVDONE 2 %u %08x %s\n",
                    static_cast<unsigned>(request.size),
                    static_cast<unsigned>(actual_crc), request.filename);

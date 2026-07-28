@@ -154,9 +154,13 @@ Calculate the size and CRC32 of every video directly from the SD card:
 .\checksum-files.ps1 -Port COM8 -Json
 ```
 
-The underlying `HLVCRC 1 <name>` request stops playback while it reads the
-selected regular file and returns `HLVCRC 1 <size> <crc32> <name>`. To remove
-one explicitly named regular file, send `HLVDELETE 1 <name>`; the firmware
+The underlying `HLVCRC 1 <name>` request stops playback and returns
+`HLVCRC 1 <size> <crc32> <name>`. Results are appended to
+`/sdcard/HLV/crc32.txt` and reused when both the filename and size match, so a
+large file is read only once. A successful UART upload also records its
+verified CRC immediately. If files are changed outside the player while
+keeping the same name and size, remove `crc32.txt` to invalidate the index.
+To remove one explicitly named regular file, send `HLVDELETE 1 <name>`; the firmware
 rejects paths and hidden names, closes playback before removal, returns
 `HLVDELETE 1 <name>` only after success, and then reopens `play.txt`.
 
