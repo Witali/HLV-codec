@@ -42,6 +42,9 @@ enum {
     kScreenWidth = CYD_DISPLAY_WIDTH,
     kScreenHeight = CYD_DISPLAY_HEIGHT,
     kMaximumH263Width = 352,
+    kH263CifWidth = 352,
+    kH263CifHeight = 288,
+    kH263CifVisibleY = 16,
     kRetryDelayMs = 2000,
     kSdReadFailuresBeforeReinit = 3,
     kVideoReadAheadBytes = 16 * 1024,
@@ -397,14 +400,22 @@ uint64_t bpvProfileNowMicros(void *opaque) {
 
 int64_t millisNow() { return microsNow() / 1000; }
 
+static int h263VisibleSourceY(int source_width, int source_height) {
+    if (source_width == kH263CifWidth &&
+        source_height == kH263CifHeight) {
+        return kH263CifVisibleY;
+    }
+    return (source_height - MIN(source_height, kScreenHeight)) / 2;
+}
+
 void waitForH263OutputRow(void *opaque, uint16_t first_y) {
     (void)opaque;
     if (!__atomic_load_n(&h263_row_pipeline_active, __ATOMIC_ACQUIRE))
         return;
     const int source_height = sequence_header.height;
     const int visible_height = MIN(source_height, kScreenHeight);
-    const int first_visible_y =
-        (source_height - visible_height) / 2;
+    const int first_visible_y = h263VisibleSourceY(
+        sequence_header.width, source_height);
     const int visible_end_y = first_visible_y + visible_height;
     const int row_end_y = MIN(first_y + 16, visible_end_y);
     if (row_end_y <= first_visible_y || first_y >= visible_end_y)
@@ -428,7 +439,7 @@ void beginH263RowPipeline() {
     __atomic_store_n(&h263_row_guard_wait_us, 0, __ATOMIC_RELAXED);
     __atomic_store_n(
         &h263_rendered_source_rows,
-        (source_height - visible_height) / 2,
+        h263VisibleSourceY(sequence_header.width, source_height),
         __ATOMIC_RELEASE);
     __atomic_store_n(&h263_row_pipeline_active, 1, __ATOMIC_RELEASE);
 }
@@ -2635,7 +2646,7 @@ bool openVideo() {
                      : "3GP",
                  sequence_header.width == 352 &&
                          sequence_header.height == 288
-                     ? "pixel-exact central-320x240-crop"
+                     ? "pixel-exact x16-y16 320x240 crop"
                      : "native-centred");
     } else if (video_codec == VIDEO_CODEC_kMjpeg) {
         ESP_LOGI(kTag,
@@ -2896,7 +2907,8 @@ bool renderH263Frame(const H2633gpFrame *frame) {
     const int width = MIN(source_width, kScreenWidth);
     const int height = MIN(source_height, kScreenHeight);
     const int source_x = (source_width - width) / 2;
-    const int source_y = (source_height - height) / 2;
+    const int source_y =
+        h263VisibleSourceY(source_width, source_height);
     const int x_offset = (kScreenWidth - width) / 2;
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {

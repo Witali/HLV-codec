@@ -97,7 +97,7 @@ select the production parameters and output directory automatically:
 | --- | --- |
 | `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
 | `transcode_bpv6.ps1` | Stable BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. `-PixelMotion` opts into experimental BPV v7. |
-| `transcode_h263.ps1` | CIF/AVI only, centered visible 320x240 area, constant-quality Q6, full source FPS, intra-only. |
+| `transcode_h263.ps1` | CIF/AVI only, macroblock-aligned visible 320x240 area at `(16,16)`, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |

@@ -17,7 +17,7 @@ typedef enum {
     PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO,
 } player_av_sync_mode_t;
 
-/* H.263 CIF ignores this setting and copies its central 320x240 coded area
+/* H.263 CIF ignores this setting and copies the 320x240 coded area at (16,16)
    pixel-for-pixel. */
 #define PLAYER_SCALE_VIDEO_TO_DISPLAY 0
 
