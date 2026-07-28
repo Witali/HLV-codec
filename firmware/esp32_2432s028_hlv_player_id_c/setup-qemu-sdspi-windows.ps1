@@ -206,6 +206,11 @@ foreach ($rom in @("esp32-v3-rom.bin", "esp32-v3-rom-app.bin")) {
         Join-Path $source "pc-bios\$rom"
     ) -Destination $runtimeData -Force
 }
+foreach ($legalFile in @("LICENSE", "COPYING", "COPYING.LIB")) {
+    Copy-Item -LiteralPath (
+        Join-Path $source $legalFile
+    ) -Destination $runtime -Force
+}
 
 $qemu = Join-Path $runtimeBin "qemu-system-xtensa.exe"
 & $qemu --version

@@ -1,5 +1,5 @@
 build/
-/local_tools/
+/local_tools/*
 /out/
 firmware/esp32_2432s028_hlv_player_idf/build-qemu*/
 firmware/esp32_2432s028_hlv_player_idf/build-physical-bench/
@@ -25,3 +25,21 @@ firmware/esp32_2432s028_hlv_player_idf/build-physical-bench/
 *.o
 *.obj
 __pycache__/
+
+# Keep only the minimal native Windows QEMU runtime in Git. Its source tree,
+# MSYS2 installation and build outputs remain ignored under the same folder.
+!/local_tools/qemu-sdspi-windows/
+/local_tools/qemu-sdspi-windows/*
+!/local_tools/qemu-sdspi-windows/README.md
+!/local_tools/qemu-sdspi-windows/LICENSE
+!/local_tools/qemu-sdspi-windows/COPYING
+!/local_tools/qemu-sdspi-windows/COPYING.LIB
+!/local_tools/qemu-sdspi-windows/bin/
+/local_tools/qemu-sdspi-windows/bin/*
+!/local_tools/qemu-sdspi-windows/bin/qemu-system-xtensa.exe
+!/local_tools/qemu-sdspi-windows/share/
+/local_tools/qemu-sdspi-windows/share/*
+!/local_tools/qemu-sdspi-windows/share/qemu/
+/local_tools/qemu-sdspi-windows/share/qemu/*
+!/local_tools/qemu-sdspi-windows/share/qemu/esp32-v3-rom.bin
+!/local_tools/qemu-sdspi-windows/share/qemu/esp32-v3-rom-app.bin

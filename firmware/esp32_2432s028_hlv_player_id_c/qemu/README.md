@@ -78,5 +78,6 @@ For a native Windows build and launch (no WSL runtime), use:
     -SdImage <sd.img>
 ```
 
-MSYS2, QEMU sources, build outputs and disk images remain local, ignored
-artifacts under `local_tools/` or `build-*`; none is stored in Git.
+The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
+its executable managed by Git LFS. MSYS2, QEMU sources, build outputs and disk
+images remain ignored local artifacts.

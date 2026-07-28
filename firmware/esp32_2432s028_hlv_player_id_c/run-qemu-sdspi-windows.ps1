@@ -18,7 +18,8 @@ $qemuData = Join-Path $qemuRoot "share\qemu"
 $flash = [IO.Path]::GetFullPath($FlashImage)
 $sd = [IO.Path]::GetFullPath($SdImage)
 
-if (-not $SkipSetup) {
+if (-not $SkipSetup -and
+    -not (Test-Path -LiteralPath $qemu -PathType Leaf)) {
     & (Join-Path $project "setup-qemu-sdspi-windows.ps1")
 }
 foreach ($image in @($flash, $sd)) {
