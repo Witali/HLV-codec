@@ -30,6 +30,9 @@ The implementation itself uses QEMU's native
 by the local patch, using the same paths as the original source tree:
 
 ```text
+hw/audio/esp32_analog_i2c.c
+hw/audio/esp32_i2s_dac.c
+hw/audio/meson.build
 hw/display/Kconfig
 hw/display/esp_rgb.c
 hw/display/meson.build
@@ -41,6 +44,8 @@ hw/ssi/esp32_spi.c
 hw/xtensa/Kconfig
 hw/xtensa/esp32.c
 hw/xtensa/esp32_intc.c
+include/hw/audio/esp32_analog_i2c.h
+include/hw/audio/esp32_i2s_dac.h
 include/hw/display/esp_rgb.h
 include/hw/gpio/esp32_gpio.h
 include/hw/ssi/esp32_spi.h
@@ -84,6 +89,16 @@ For a native Windows build and launch (no WSL runtime), use:
 The dedicated demo launcher builds a production flash image when it is
 missing and opens the ST7789 window with the default demo card. Use
 `-Rebuild` to rebuild the flash image or `-Headless` to suppress the window.
+It uses DirectSound for the ESP32 GPIO26 DAC and accepts `-Volume 0..100`
+(default 70) as a QEMU-side volume control independent of the guest.
+
+The ESP32 audio model implements the I2S0 TX registers, linked DMA descriptors
+and interrupt subset exercised by ESP-IDF `dac_continuous`. Samples are the
+high byte of each 16-bit DMA slot, matching
+`CONFIG_DAC_DMA_AUTO_16BIT_ALIGN`. A small analog-I2C bridge retains APLL
+register writes and returns `APLL CAL_END`, allowing the same 8 kHz APLL
+configuration used on the physical board. `dac-rate` defaults to 8000 and
+`dac-volume` defaults to 70 when the machine is invoked directly.
 
 The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
 its executable managed by Git LFS. The demo SD image is also managed by Git

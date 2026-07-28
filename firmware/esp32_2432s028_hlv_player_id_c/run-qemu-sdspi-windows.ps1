@@ -6,7 +6,9 @@ param(
         Join-Path $PSScriptRoot "qemu\hlv-big-buck-bunny-5min-h263-avi.img"
     ),
     [switch]$SkipSetup,
-    [switch]$Headless
+    [switch]$Headless,
+    [ValidateRange(0, 100)]
+    [int]$Volume = 70
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +42,11 @@ if (-not (Test-Path -LiteralPath (
 $display = if ($Headless) { "none" } else { "sdl" }
 & $qemu @(
     "-L", $qemuData,
-    "-machine", "esp32,sdspi=on,st7789=on",
+    "-machine", (
+        "esp32,sdspi=on,st7789=on,audiodev=esp32dac," +
+        "dac-rate=8000,dac-volume=$Volume"
+    ),
+    "-audiodev", "dsound,id=esp32dac",
     "-display", $display,
     "-monitor", "none",
     "-serial", "stdio",

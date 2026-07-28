@@ -24,6 +24,8 @@
 #include "hw/net/can/esp32_twai.h"
 #include "hw/sd/dwc_sdmmc.h"
 #include "hw/display/esp_rgb.h"
+#include "hw/audio/esp32_analog_i2c.h"
+#include "hw/audio/esp32_i2s_dac.h"
 
 typedef struct Esp32SocState {
     /*< private >*/
@@ -50,6 +52,8 @@ typedef struct Esp32SocState {
     Esp32EfuseState efuse;
     Esp32FlashEncryptionState flash_enc;
     ESPRgbState rgb;
+    Esp32AnalogI2cState analog_i2c;
+    Esp32I2sDacState i2s0;
 
     DWCSDMMCState sdmmc;
     DeviceState *eth;

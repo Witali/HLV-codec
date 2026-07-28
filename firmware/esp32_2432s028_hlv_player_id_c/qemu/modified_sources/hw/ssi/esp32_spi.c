@@ -470,7 +470,13 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
         FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 0);
     esp32_spi_update_irq(s);
     esp32_spi_transaction(s, &t);
-    qemu_bh_schedule(s->done_bh);
+    /*
+     * The transfer above is synchronous.  Complete it before returning from
+     * the MMIO write: ESP-IDF polling transfers immediately spin on
+     * SPI_SLAVE.TRANS_DONE, so deferring this to a bottom half deadlocks the
+     * virtual CPU and prevents that bottom half from ever running.
+     */
+    esp32_spi_complete(s);
 }
 
 
@@ -483,7 +489,6 @@ static const MemoryRegionOps esp32_spi_ops = {
 static void esp32_spi_reset_hold(Object *obj, ResetType type)
 {
     Esp32SpiState *s = ESP32_SPI(obj);
-    qemu_bh_cancel(s->done_bh);
     s->pin_reg = 0x6;
     s->user1_reg = FIELD_DP32(0, SPI_USER1, ADDR_BITLEN, 23);
     s->user1_reg = FIELD_DP32(s->user1_reg, SPI_USER1, DUMMY_CYCLELEN, 7);
@@ -513,7 +518,6 @@ static void esp32_spi_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 
     s->spi = ssi_create_bus(DEVICE(s), "spi");
-    s->done_bh = qemu_bh_new(esp32_spi_complete, s);
     qdev_init_gpio_out_named(DEVICE(s), &s->cs_gpio[0], SSI_GPIO_CS, ESP32_SPI_CS_COUNT);
 }
 

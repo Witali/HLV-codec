@@ -18,8 +18,6 @@ typedef struct Esp32SpiState {
     qemu_irq cs_gpio[ESP32_SPI_CS_COUNT];
     int num_cs;
     SSIBus *spi;
-    QEMUBH *done_bh;
-
     uint32_t addr_reg;
     uint32_t ctrl_reg;
     uint32_t status_reg;

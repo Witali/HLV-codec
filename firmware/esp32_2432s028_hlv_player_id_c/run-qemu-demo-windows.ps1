@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [switch]$Rebuild,
-    [switch]$Headless
+    [switch]$Headless,
+    [ValidateRange(0, 100)]
+    [int]$Volume = 70
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +47,7 @@ if ($Rebuild -or
 
 $arguments = @{
     FlashImage = $flash
+    Volume = $Volume
 }
 if ($Headless) {
     $arguments.Headless = $true

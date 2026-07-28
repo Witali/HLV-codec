@@ -361,7 +361,13 @@ Windows executable managed by Git LFS. Run it instead of the WSL build with:
 This dedicated demo launcher builds and merges the C99 production firmware
 on its first run, then starts the visible ST7789 window with the tracked demo
 SD image. Later runs reuse `build-qemu-demo\qemu_demo_flash_4mb.bin`; pass
-`-Rebuild` to refresh it or `-Headless` to run without an SDL window.
+`-Rebuild` to refresh it or `-Headless` to run without an SDL window. The
+native launcher sends the emulated GPIO26 DAC to Windows DirectSound. Set its
+independent QEMU gain with `-Volume 0..100`; the default is 70:
+
+```powershell
+.\run-qemu-demo-windows.ps1 -Volume 50
+```
 
 The default FAT32 image is
 `qemu\hlv-big-buck-bunny-5min-h263-avi.img`. It contains `HLV\bunny.avi`
@@ -379,12 +385,16 @@ SFX into repository-local `local_tools/`, verifies its SHA-256 and builds only
 MSYS2, cloned QEMU sources, build outputs, UART logs and generated card images
 outside the tracked demo remain ignored local artifacts.
 
-The patched machine option is `-machine esp32,sdspi=on`; it leaves the
-existing SDMMC behavior unchanged when omitted. QEMU models SPI3 transfers,
-DMA descriptor chains, the interrupt matrix, GPIO output and GPIO5 CS. It
-does not model the electrical ESP32 IO-matrix routing of SCK/MOSI/MISO or
-physical-card timing, so it validates the real driver, mount and sector/file
-I/O paths but is not an SD throughput benchmark.
+The patched machine options include `sdspi`, `st7789`, `audiodev`,
+`dac-rate` and `dac-volume`. QEMU models SPI3 transfers, DMA descriptor
+chains, the interrupt matrix, GPIO output and GPIO5 CS. Its I2S0 model consumes
+the same linked DMA descriptors used by ESP-IDF's continuous DAC driver,
+extracts the high byte of each 16-bit slot and routes the unsigned 8-bit mono
+stream to the selected QEMU audio backend. The internal analog-I2C model also
+reports APLL calibration completion so the physical 8 kHz configuration does
+not stall. It does not model the electrical ESP32 IO-matrix routing,
+physical-card timing or analog GPIO26 circuitry, so it validates the driver
+and data paths but is not a cycle-accurate electrical simulation.
 
 ## Xtensa QEMU decoder benchmark
 

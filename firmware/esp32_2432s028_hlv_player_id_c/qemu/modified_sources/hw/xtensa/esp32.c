@@ -13,6 +13,7 @@
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -512,6 +513,16 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->sdmmc), 0,
                        qdev_get_gpio_in(intmatrix_dev, ETS_SDIO_HOST_INTR_SOURCE));
 
+    qdev_realize(DEVICE(&s->analog_i2c), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(
+        sys_mem, &s->analog_i2c, DR_REG_ANA_BASE);
+
+    qdev_realize(DEVICE(&s->i2s0), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->i2s0, DR_REG_I2S_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->i2s0), 0,
+                       qdev_get_gpio_in(intmatrix_dev,
+                                       ETS_I2S0_INTR_SOURCE));
+
     /* Provide internal RAM MemoryRegion to the virtual RGB display */
     s->rgb.intram = dram;
     qdev_prop_set_bit(DEVICE(&s->rgb), "console-enabled", s->rgb_enabled);
@@ -521,7 +532,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base,
         &s->rgb.vram, 0);
 
-    esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_SENS_BASE, 0x400);
     esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
@@ -529,7 +539,6 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rmt", DR_REG_RMT_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.pcnt", DR_REG_PCNT_BASE, 0x1000);
@@ -650,6 +659,9 @@ static void esp32_soc_init(Object *obj)
     object_initialize_child(obj, "sdmmc", &s->sdmmc, TYPE_DWC_SDMMC);
 
     object_initialize_child(obj, "rgb", &s->rgb, TYPE_ESP_RGB);
+    object_initialize_child(
+        obj, "analog-i2c", &s->analog_i2c, TYPE_ESP32_ANALOG_I2C);
+    object_initialize_child(obj, "i2s0", &s->i2s0, TYPE_ESP32_I2S_DAC);
 
     qdev_init_gpio_in_named(DEVICE(s), esp32_dig_reset, ESP32_RTC_DIG_RESET_GPIO, 1);
     qdev_init_gpio_in_named(DEVICE(s), esp32_cpu_reset, ESP32_RTC_CPU_RESET_GPIO, ESP32_CPU_COUNT);
@@ -703,6 +715,8 @@ struct Esp32MachineState {
     DeviceState *flash_dev;
     bool sdspi;
     bool st7789;
+    uint32_t dac_volume;
+    uint32_t dac_rate;
 };
 #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
 
@@ -865,6 +879,12 @@ static void esp32_machine_init(MachineState *machine)
         qdev_prop_set_bit(DEVICE(&ss->dport), "has_psram", true);
     }
     qdev_prop_set_bit(DEVICE(ss), "rgb-enabled", !ms->st7789);
+    qdev_prop_set_uint32(DEVICE(&ss->i2s0), "volume", ms->dac_volume);
+    qdev_prop_set_uint32(DEVICE(&ss->i2s0), "sample-rate", ms->dac_rate);
+    if (machine->audiodev) {
+        qdev_prop_set_string(
+            DEVICE(&ss->i2s0), "audiodev", machine->audiodev);
+    }
 
     qdev_realize(DEVICE(ss), NULL, &error_fatal);
 
@@ -993,6 +1013,60 @@ static void esp32_machine_set_st7789(Object *obj, bool value, Error **errp)
     ESP32_MACHINE(obj)->st7789 = value;
 }
 
+static void esp32_machine_get_dac_volume(
+    Object *obj, Visitor *visitor, const char *name,
+    void *opaque, Error **errp)
+{
+    uint32_t value = ESP32_MACHINE(obj)->dac_volume;
+    visit_type_uint32(visitor, name, &value, errp);
+}
+
+static void esp32_machine_set_dac_volume(
+    Object *obj, Visitor *visitor, const char *name,
+    void *opaque, Error **errp)
+{
+    uint32_t value = 0;
+    if (!visit_type_uint32(visitor, name, &value, errp)) {
+        return;
+    }
+    if (value > 100) {
+        error_setg(errp, "dac-volume must be in the range 0..100");
+        return;
+    }
+    ESP32_MACHINE(obj)->dac_volume = value;
+}
+
+static void esp32_machine_get_dac_rate(
+    Object *obj, Visitor *visitor, const char *name,
+    void *opaque, Error **errp)
+{
+    uint32_t value = ESP32_MACHINE(obj)->dac_rate;
+    visit_type_uint32(visitor, name, &value, errp);
+}
+
+static void esp32_machine_set_dac_rate(
+    Object *obj, Visitor *visitor, const char *name,
+    void *opaque, Error **errp)
+{
+    uint32_t value = 0;
+    if (!visit_type_uint32(visitor, name, &value, errp)) {
+        return;
+    }
+    if (!value || value > 96000) {
+        error_setg(errp, "dac-rate must be in the range 1..96000");
+        return;
+    }
+    ESP32_MACHINE(obj)->dac_rate = value;
+}
+
+static void esp32_machine_instance_init(Object *obj)
+{
+    Esp32MachineState *ms = ESP32_MACHINE(obj);
+
+    ms->dac_volume = 70;
+    ms->dac_rate = 8000;
+}
+
 /* Initialize machine type */
 static void esp32_machine_class_init(ObjectClass *oc, void *data)
 {
@@ -1014,12 +1088,26 @@ static void esp32_machine_class_init(ObjectClass *oc, void *data)
     object_class_property_set_description(
         oc, "st7789",
         "Attach an ST7789 LCD to ESP32 SPI2 (CS15, DC2, backlight21)");
+    object_class_property_add(
+        oc, "dac-volume", "uint32_t",
+        esp32_machine_get_dac_volume, esp32_machine_set_dac_volume,
+        NULL, NULL);
+    object_class_property_set_description(
+        oc, "dac-volume", "ESP32 GPIO26 DAC output volume (0..100)");
+    object_class_property_add(
+        oc, "dac-rate", "uint32_t",
+        esp32_machine_get_dac_rate, esp32_machine_set_dac_rate,
+        NULL, NULL);
+    object_class_property_set_description(
+        oc, "dac-rate", "ESP32 GPIO26 DAC output sample rate");
+    machine_add_audiodev_property(mc);
 }
 
 static const TypeInfo esp32_info = {
     .name = TYPE_ESP32_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(Esp32MachineState),
+    .instance_init = esp32_machine_instance_init,
     .class_init = esp32_machine_class_init,
 };
 
