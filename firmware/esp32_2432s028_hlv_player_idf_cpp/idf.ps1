@@ -10,7 +10,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $project = $PSScriptRoot
-$tools = Join-Path $project ".tools"
+$toolProject = (
+    Resolve-Path (
+        Join-Path $project "..\esp32_2432s028_hlv_player_idf_c"
+    )
+).Path
+$tools = Join-Path $toolProject ".tools"
 $idf = Join-Path $tools "esp-idf-v5.5.5"
 $idfTools = Join-Path $tools "espressif"
 $python = Join-Path $tools "python"
@@ -18,7 +23,7 @@ $marker = Join-Path $tools "ready-v5.5.5"
 
 if (-not (Test-Path -LiteralPath (Join-Path $idf "tools\idf.py")) -or
     -not (Test-Path -LiteralPath $marker)) {
-    & (Join-Path $project "setup.ps1")
+    & (Join-Path $toolProject "setup.ps1")
 }
 
 $savedPath = $env:Path

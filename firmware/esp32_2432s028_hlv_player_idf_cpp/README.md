@@ -84,7 +84,9 @@ sample payloads are still decoded through the 4 KiB refill buffer.
 
 ## Build and flash
 
-All generated dependencies are placed below this directory in `.tools`:
+The C++ reference shares the pinned ESP-IDF installation in the sibling C
+firmware project's `.tools` directory. Its wrappers still build, flash and
+monitor this C++ project:
 
 ```powershell
 .\setup.ps1
@@ -122,9 +124,9 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 .\upload-video.ps1 -Port COM8 -File play.txt
 ```
 
-The wrapper uses `pyserial` from this project's local ESP-IDF Python
-environment; `setup.ps1` installs it under this project, so no global Python
-package is required. The control handshake uses 460800 baud and block data uses
+The wrapper uses `pyserial` from the shared project-local ESP-IDF Python
+environment; `setup.ps1` prepares it through the primary C firmware project,
+so no global Python package is required. The control handshake uses 460800 baud and block data uses
 2000000 baud by default. The optional 3000000-baud mode is CRC-verified but
 does not improve end-to-end throughput on this board. The verified fallback
 values are 1500000, 921600 and 460800 baud.
@@ -449,8 +451,9 @@ ROM TJpgDec implementation and its benchmark modes were removed after the
 accelerated backend passed the A/B checks. Display SPI/DMA time is measured
 only on the physical board.
 
-The first run installs QEMU under this project's `.tools` directory. Generated
-clips and QEMU builds are excluded from Git. Guest cycle ratios are useful for
+The first run installs QEMU under the primary C firmware project's shared
+`.tools` directory. Generated clips and QEMU builds are excluded from Git.
+Guest cycle ratios are useful for
 32-bit Xtensa A/B comparisons, but absolute playback speed still requires the
 physical board because QEMU is not cycle-accurate and does not model SD or
 display DMA timing.
