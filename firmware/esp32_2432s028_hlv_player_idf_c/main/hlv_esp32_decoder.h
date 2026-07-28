@@ -19,6 +19,7 @@ typedef struct {
     uint8_t *stream_buffer;
     bool dma_buffer;
     bool compact_yuv;
+    bool single_reference;
 } hlv_esp32_decoder_t;
 
 int hlv_esp32_decoder_begin(hlv_esp32_decoder_t *decoder,
@@ -31,10 +32,16 @@ size_t hlv_esp32_decoder_stream_buffer_bytes(
 bool hlv_esp32_decoder_dma_buffer(
     const hlv_esp32_decoder_t *decoder);
 bool hlv_esp32_decoder_compact_yuv(const hlv_esp32_decoder_t *decoder);
+bool hlv_esp32_decoder_single_reference(
+    const hlv_esp32_decoder_t *decoder);
+void hlv_esp32_decoder_set_reference_row_guard(
+    hlv_esp32_decoder_t *decoder,
+    HLV1ReferenceRowGuard guard, void *opaque);
 int hlv_esp32_decoder_decode_next(hlv_esp32_decoder_t *decoder,
                                   FILE *file,
                                   const HLV1Frame **frame,
-                                  HLV1Packet *packet_info);
+                                  HLV1Packet *packet_info,
+                                  HLV1StageProfile *profile);
 
 #ifdef __cplusplus
 }

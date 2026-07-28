@@ -28,11 +28,36 @@ static uint64_t hash_frame(uint64_t hash, const HLV1Frame *frame) {
     size_t chroma_height = (size_t)frame->padded_height / 2U;
     size_t u_bytes = (size_t)frame->stride_u * chroma_height;
     size_t v_bytes = (size_t)frame->stride_v * chroma_height;
-    const uint8_t *planes[] = {frame->y, frame->u, frame->v};
-    const size_t sizes[] = {y_bytes, u_bytes, v_bytes};
+    size_t correction_y_bytes =
+        (size_t)frame->correction_stride_y *
+        ((size_t)frame->padded_height / 8U);
+    size_t correction_chroma_height =
+        (size_t)frame->padded_height / 16U;
+    size_t correction_u_bytes =
+        (size_t)frame->correction_stride_u *
+        correction_chroma_height;
+    size_t correction_v_bytes =
+        (size_t)frame->correction_stride_v *
+        correction_chroma_height;
+    const uint8_t *planes[] = {
+        frame->y,
+        frame->u,
+        frame->v,
+        (const uint8_t *)frame->correction_y,
+        (const uint8_t *)frame->correction_u,
+        (const uint8_t *)frame->correction_v,
+    };
+    const size_t sizes[] = {
+        y_bytes,
+        u_bytes,
+        v_bytes,
+        correction_y_bytes,
+        correction_u_bytes,
+        correction_v_bytes,
+    };
     size_t plane;
 
-    for (plane = 0; plane < 3U; ++plane) {
+    for (plane = 0; plane < 6U; ++plane) {
         size_t i;
         for (i = 0; i < sizes[plane]; ++i) {
             hash ^= planes[plane][i];
@@ -100,7 +125,7 @@ void app_main(void) {
 
         start = esp_cpu_get_cycle_count();
         result = hlv_esp32_decoder_decode_next(
-            &decoder, file, &frame, &packet);
+            &decoder, file, &frame, &packet, NULL);
         elapsed = esp_cpu_get_cycle_count() - start;
         if (result == HLV1_EOF) {
             break;

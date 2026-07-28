@@ -256,6 +256,10 @@ typedef struct DecodeResult {
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     uint32_t decode_us;
+#if HLV1_ENABLE_STAGE_PROFILE
+    HLV1StageProfile hlv_profile;
+    uint32_t hlv_row_guard_wait_us;
+#endif
     BPV1Packet bpv_next_packet;
     int bpv_read_result;
     uint32_t bpv_read_us;
@@ -304,6 +308,7 @@ uint16_t scaled_y_map[kScreenHeight];
 uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
+int hlv_cached_chroma_y = -1;
 int32_t mpeg_red_add[kMaximumH263Width / 2];
 int32_t mpeg_green_add[kMaximumH263Width / 2];
 int32_t mpeg_blue_add[kMaximumH263Width / 2];
@@ -389,6 +394,9 @@ bool h263_row_pipelined = false;
 int h263_rendered_source_rows = INT_MAX;
 int h263_row_pipeline_active = 0;
 uint32_t h263_row_guard_wait_us = 0;
+int hlv_rendered_source_rows = INT_MAX;
+int hlv_row_pipeline_active = 0;
+uint32_t hlv_row_guard_wait_us = 0;
 BPV1Frame pending_bpv_frame = {0};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet = {0};
@@ -510,6 +518,44 @@ static size_t readDivx3Stream(
                : 0;
 }
 
+void waitForHlvReferenceRows(void *opaque, int first_y, int rows) {
+    (void)opaque;
+    if (!__atomic_load_n(&hlv_row_pipeline_active, __ATOMIC_ACQUIRE))
+        return;
+    const int row_end_y =
+        MIN(first_y + rows, (int)(sequence_header.height));
+    if (first_y >= row_end_y)
+        return;
+    const int64_t wait_start = microsNow();
+    while (__atomic_load_n(&hlv_row_pipeline_active, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(
+               &hlv_rendered_source_rows, __ATOMIC_ACQUIRE) < row_end_y) {
+        taskYIELD();
+    }
+    __atomic_fetch_add(
+        &hlv_row_guard_wait_us,
+        (uint32_t)(microsNow() - wait_start),
+        __ATOMIC_RELAXED);
+}
+
+void beginHlvRowPipeline() {
+    __atomic_store_n(&hlv_row_guard_wait_us, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&hlv_rendered_source_rows, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&hlv_row_pipeline_active, 1, __ATOMIC_RELEASE);
+}
+
+void publishHlvRenderedRows(int source_rows) {
+    if (__atomic_load_n(&hlv_row_pipeline_active, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(
+            &hlv_rendered_source_rows, source_rows, __ATOMIC_RELEASE);
+    }
+}
+
+void endHlvRowPipeline() {
+    __atomic_store_n(&hlv_rendered_source_rows, INT_MAX, __ATOMIC_RELEASE);
+    __atomic_store_n(&hlv_row_pipeline_active, 0, __ATOMIC_RELEASE);
+}
+
 void decodeTask(void *opaque) {
     (void)opaque;
     DecodeRequest request = {0};
@@ -534,7 +580,12 @@ void decodeTask(void *opaque) {
                     : HLV1_OK;
         } else if (request.codec == VIDEO_CODEC_kHlv) {
             result.result = hlv_esp32_decoder_decode_next(
-                &decoder, request.hlv_file, &result.hlv_frame, NULL);
+                &decoder, request.hlv_file, &result.hlv_frame, NULL,
+#if HLV1_ENABLE_STAGE_PROFILE
+                &result.hlv_profile);
+#else
+                NULL);
+#endif
         } else if (request.codec == VIDEO_CODEC_kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
@@ -566,6 +617,27 @@ void decodeTask(void *opaque) {
             result.result = HLV1_ERR_ARGUMENT;
         }
         result.decode_us = (uint32_t)(microsNow() - start);
+#if HLV1_ENABLE_STAGE_PROFILE
+        if (request.codec == VIDEO_CODEC_kHlv) {
+            result.hlv_row_guard_wait_us = __atomic_load_n(
+                &hlv_row_guard_wait_us, __ATOMIC_RELAXED);
+            if (result.hlv_profile.frames) {
+                esp_rom_printf(
+                    "H,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
+                    result.hlv_profile.total_cycles,
+                    result.hlv_profile.input_cycles,
+                    result.hlv_profile.input_bytes,
+                    result.hlv_profile.input_refills,
+                    result.hlv_profile.crc_cycles,
+                    result.hlv_profile.prediction_cycles,
+                    result.hlv_profile.residual_cycles,
+                    result.hlv_profile.inverse_wht_cycles,
+                    result.hlv_profile.packing_cycles,
+                    result.hlv_profile.reference_commit_cycles,
+                    result.hlv_row_guard_wait_us);
+            }
+        }
+#endif
         if (request.codec == VIDEO_CODEC_kBpv &&
             result.result == BPV1_OK && request.bpv_prefetch &&
             request.bpv_file) {
@@ -875,14 +947,17 @@ void convertNativeRow(const HLV1Frame *frame, int source_y,
             y_row, 0, source_y, HLV1_V14_LUMA_BITS,
             frame->correction_y, frame->correction_stride_y,
             native_y_row, frame->width);
-        hlv1_frame_unpack_corrected_samples(
-            u_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
-            frame->correction_u, frame->correction_stride_u,
-            native_u_row, (frame->width + 1) / 2);
-        hlv1_frame_unpack_corrected_samples(
-            v_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
-            frame->correction_v, frame->correction_stride_v,
-            native_v_row, (frame->width + 1) / 2);
+        if (chroma_y != hlv_cached_chroma_y) {
+            hlv1_frame_unpack_corrected_samples(
+                u_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
+                frame->correction_u, frame->correction_stride_u,
+                native_u_row, (frame->width + 1) / 2);
+            hlv1_frame_unpack_corrected_samples(
+                v_row, 0, chroma_y, HLV1_V14_CHROMA_BITS,
+                frame->correction_v, frame->correction_stride_v,
+                native_v_row, (frame->width + 1) / 2);
+            hlv_cached_chroma_y = chroma_y;
+        }
         y_row = native_y_row;
         u_row = native_u_row;
         v_row = native_v_row;
@@ -1811,6 +1886,7 @@ void startAudio() {
 
 void closeVideo() {
     endH263RowPipeline();
+    endHlvRowPipeline();
     stopDecodeWorker();
     stopBpvInputPrefetch();
     pending_frame_valid = false;
@@ -2804,6 +2880,8 @@ bool openVideo() {
             closeVideo();
             return false;
         }
+        hlv_esp32_decoder_set_reference_row_guard(
+            &decoder, waitForHlvReferenceRows, NULL);
         ESP_LOGI(kTag, "Packet stream buffer: %u bytes, DMA-capable=%u",
                  (unsigned)(
                      hlv_esp32_decoder_stream_buffer_bytes(&decoder)),
@@ -2909,14 +2987,17 @@ bool openVideo() {
                      ? "previous RGB565 frame + two 8-row SPI buffers"
                      : "two 4x4-record frames");
     } else {
-        ESP_LOGI(kTag, "Playing HLV v%u in %s mode, frame storage=%s",
+        ESP_LOGI(kTag, "Playing HLV v%u in %s mode, frame storage=%s%s",
                  sequence_header.version,
                  PLAYER_SCALE_VIDEO_TO_DISPLAY
                      ? "scale-to-320x240"
                      : "native-centred",
                  hlv_esp32_decoder_compact_yuv(&decoder)
                      ? "packed Y7/U6/V6 + per-plane Q4 corrections"
-                     : "8-bit YUV 4:2:0");
+                     : "8-bit YUV 4:2:0",
+                 hlv_esp32_decoder_single_reference(&decoder)
+                     ? ", one reference + rolling rows"
+                     : "");
     }
     reportHeap("decoder ready");
     if (PLAYER_LOG_FRAME_TIMINGS) {
@@ -3001,6 +3082,8 @@ bool renderFrame(const HLV1Frame *frame) {
                     &display, 0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
                 return false;
             }
+            publishHlvRenderedRows(
+                scaled_y_map[y0 + rows - 1] + 1);
         }
         return true;
     }
@@ -3020,6 +3103,7 @@ bool renderFrame(const HLV1Frame *frame) {
                 pixels) != ESP_OK) {
             return false;
         }
+        publishHlvRenderedRows(y0 + rows);
     }
     return true;
 }
@@ -3654,7 +3738,10 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
 
 bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
                   uint32_t decode_us) {
-    return presentDecodedFrame(frame, renderHlvOpaque, read_us, decode_us);
+    const bool result =
+        presentDecodedFrame(frame, renderHlvOpaque, read_us, decode_us);
+    endHlvRowPipeline();
+    return result;
 }
 
 bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
@@ -3716,7 +3803,7 @@ void playOneFrameSequential() {
     const HLV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result = hlv_esp32_decoder_decode_next(
-        &decoder, video_file, &frame, NULL);
+        &decoder, video_file, &frame, NULL, NULL);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (decode_result == HLV1_EOF) {
@@ -4464,7 +4551,10 @@ void playOneBpvFramePipelined() {
 }
 
 void playOneFramePipelined() {
+    if (pending_frame_valid)
+        beginHlvRowPipeline();
     if (!submitDecode(video_file)) {
+        endHlvRowPipeline();
         failPlayback("Decode pipeline error", HLV1_ERR_IO);
         return;
     }
