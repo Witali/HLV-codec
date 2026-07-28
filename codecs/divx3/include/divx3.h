@@ -20,8 +20,12 @@ typedef struct Divx3Decoder Divx3Decoder;
 
 enum {
     DIVX3_FRAME_STORAGE_YUV420 = 0,
-    DIVX3_FRAME_STORAGE_Y6_U5_V5 = 1
+    DIVX3_FRAME_STORAGE_Y6_U5_V5 = 1,
+    DIVX3_STREAM_BUFFER_BYTES = 4 * 1024
 };
+
+typedef size_t (*Divx3ReadFunction)(
+    void *context, uint8_t *buffer, size_t capacity);
 
 typedef struct Divx3Frame {
     const uint8_t *y;
@@ -67,6 +71,15 @@ void divx3_decoder_destroy(Divx3Decoder *decoder);
  */
 int divx3_decoder_decode(Divx3Decoder *decoder, const uint8_t *packet,
                          size_t packet_size, Divx3Frame *frame);
+
+/*
+ * Decode one packet sequentially through the decoder-owned fixed 4 KB refill
+ * buffer. The callback may return fewer than capacity bytes, but must return
+ * zero on EOF or an input error. No complete compressed packet is retained.
+ */
+int divx3_decoder_decode_stream(
+    Divx3Decoder *decoder, size_t packet_size,
+    Divx3ReadFunction read, void *read_context, Divx3Frame *frame);
 
 size_t divx3_decoder_memory_bytes(const Divx3Decoder *decoder);
 const char *divx3_strerror(int result);

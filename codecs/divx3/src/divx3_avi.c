@@ -352,27 +352,50 @@ int divx3_avi_read_info(FILE *file, Divx3AviInfo *info) {
                : DIVX3_AVI_ERR_IO;
 }
 
-int divx3_avi_read_video_packet(FILE *file, const Divx3AviInfo *info,
-                                uint8_t *buffer, size_t capacity,
-                                size_t *packet_size) {
+int divx3_avi_begin_video_packet(
+    FILE *file, const Divx3AviInfo *info, uint32_t *packet_size,
+    long *next_offset) {
     uint32_t size;
     long payload_start;
     uint64_t next_position;
     int result;
-    if (!file || !info || !buffer || !capacity || !packet_size)
+    if (!file || !info || !packet_size || !next_offset)
         return DIVX3_AVI_ERR_ARGUMENT;
     result = next_payload(file, info, 1, &size);
     if (result != DIVX3_AVI_OK) return result;
     *packet_size = size;
     payload_start = ftell(file);
     if (payload_start < 0) return DIVX3_AVI_ERR_IO;
-    if (!size || size > capacity) return DIVX3_AVI_ERR_RANGE;
-    if (!read_exact(file, buffer, size)) return DIVX3_AVI_ERR_IO;
+    if (!size) return DIVX3_AVI_ERR_RANGE;
     next_position = (uint64_t)payload_start + size + (size & 1U);
-    if (next_position > LONG_MAX ||
-        !seek_absolute(file, (long)next_position))
-        return DIVX3_AVI_ERR_IO;
+    if (next_position > LONG_MAX)
+        return DIVX3_AVI_ERR_RANGE;
+    *next_offset = (long)next_position;
     return DIVX3_AVI_OK;
+}
+
+int divx3_avi_finish_video_packet(FILE *file, long next_offset) {
+    return seek_absolute(file, next_offset)
+               ? DIVX3_AVI_OK
+               : DIVX3_AVI_ERR_IO;
+}
+
+int divx3_avi_read_video_packet(FILE *file, const Divx3AviInfo *info,
+                                uint8_t *buffer, size_t capacity,
+                                size_t *packet_size) {
+    uint32_t size;
+    long next_offset;
+    int result;
+    if (!file || !info || !buffer || !capacity || !packet_size)
+        return DIVX3_AVI_ERR_ARGUMENT;
+    result = divx3_avi_begin_video_packet(
+        file, info, &size, &next_offset);
+    if (result != DIVX3_AVI_OK) return result;
+    *packet_size = size;
+    if (size > capacity) return DIVX3_AVI_ERR_RANGE;
+    if (!read_exact(file, buffer, size))
+        return DIVX3_AVI_ERR_IO;
+    return divx3_avi_finish_video_packet(file, next_offset);
 }
 
 int divx3_avi_next_audio_chunk(FILE *file, const Divx3AviInfo *info,

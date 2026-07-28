@@ -37,6 +37,17 @@ enum {
 int divx3_avi_read_info(FILE *file, Divx3AviInfo *info);
 
 /*
+ * Locate the next compressed video packet and leave the file at its payload.
+ * next_offset points after the packet and its optional RIFF padding byte.
+ */
+int divx3_avi_begin_video_packet(
+    FILE *file, const Divx3AviInfo *info, uint32_t *packet_size,
+    long *next_offset);
+
+/* Seek to the next chunk after a packet opened by the function above. */
+int divx3_avi_finish_video_packet(FILE *file, long next_offset);
+
+/*
  * Read the next compressed video packet. The file must initially be at
  * info.movi_start. Non-video chunks, including PCM audio, are skipped.
  */
