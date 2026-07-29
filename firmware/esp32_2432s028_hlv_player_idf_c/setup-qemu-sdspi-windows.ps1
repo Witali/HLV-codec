@@ -163,9 +163,48 @@ if (-not (
     (Test-Path -LiteralPath $patchMarker) -and
     ((Get-Content -Raw -LiteralPath $patchMarker) -eq $expectedPatchMarker)
 )) {
-    foreach ($patch in $patches) {
-        & git -C $source apply --reverse --check $patch 2>$null
+    $temporaryIndex = Join-Path ([IO.Path]::GetTempPath()) (
+        "hlv-qemu-index-" + [Guid]::NewGuid().ToString("N")
+    )
+    $savedIndex = $env:GIT_INDEX_FILE
+    try {
+        $env:GIT_INDEX_FILE = $temporaryIndex
+        & git -C $source read-tree HEAD
         if ($LASTEXITCODE -ne 0) {
+            throw "Could not create the temporary QEMU patch index."
+        }
+        foreach ($patch in $patches) {
+            & git -C $source apply --cached --check $patch
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not validate QEMU patch: $patch"
+            }
+            & git -C $source apply --cached $patch
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not stage QEMU patch in temporary index: $patch"
+            }
+        }
+        & git -C $source diff --quiet
+        $matchesPatchSet = $LASTEXITCODE -eq 0
+    } finally {
+        $env:GIT_INDEX_FILE = $savedIndex
+        if (Test-Path -LiteralPath $temporaryIndex) {
+            Remove-Item -LiteralPath $temporaryIndex -Force
+        }
+    }
+    if (-not $matchesPatchSet) {
+        $trackedChanges = @(& git -C $source status `
+            --porcelain --untracked-files=no)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect the QEMU source tree."
+        }
+        if ($trackedChanges.Count) {
+            throw (
+                "QEMU source differs from both upstream and the current " +
+                "patch set. Preserve any local edits, remove $source, and " +
+                "run setup again."
+            )
+        }
+        foreach ($patch in $patches) {
             & git -C $source apply --check $patch
             if ($LASTEXITCODE -ne 0) {
                 throw "Could not validate QEMU patch: $patch"

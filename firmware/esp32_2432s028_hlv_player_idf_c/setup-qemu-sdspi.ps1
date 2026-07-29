@@ -118,13 +118,54 @@ if (-not (
     (Test-Path -LiteralPath $patchMarker) -and
     ((Get-Content -Raw -LiteralPath $patchMarker) -eq $expectedPatchMarker)
 )) {
-    foreach ($patch in $patches) {
-        $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
+    $temporaryIndex = Join-Path ([IO.Path]::GetTempPath()) (
+        "hlv-qemu-index-" + [Guid]::NewGuid().ToString("N")
+    )
+    $quotedIndex = Quote-Bash (ConvertTo-WslPath $temporaryIndex)
+    try {
         & wsl.exe bash -lc (
-            "git -C $quotedSource apply --reverse --check $quotedPatch " +
-            ">/dev/null 2>&1"
+            "GIT_INDEX_FILE=$quotedIndex git -C $quotedSource read-tree HEAD"
         )
         if ($LASTEXITCODE -ne 0) {
+            throw "Could not create the temporary QEMU patch index."
+        }
+        foreach ($patch in $patches) {
+            $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
+            & wsl.exe bash -lc (
+                "GIT_INDEX_FILE=$quotedIndex git -C $quotedSource " +
+                "apply --cached --check $quotedPatch && " +
+                "GIT_INDEX_FILE=$quotedIndex git -C $quotedSource " +
+                "apply --cached $quotedPatch"
+            )
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not validate QEMU patch: $patch"
+            }
+        }
+        & wsl.exe bash -lc (
+            "GIT_INDEX_FILE=$quotedIndex git -C $quotedSource diff --quiet"
+        )
+        $matchesPatchSet = $LASTEXITCODE -eq 0
+    } finally {
+        if (Test-Path -LiteralPath $temporaryIndex) {
+            Remove-Item -LiteralPath $temporaryIndex -Force
+        }
+    }
+    if (-not $matchesPatchSet) {
+        $trackedChanges = @(& wsl.exe bash -lc (
+            "git -C $quotedSource status --porcelain --untracked-files=no"
+        ))
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect the QEMU source tree."
+        }
+        if ($trackedChanges.Count) {
+            throw (
+                "QEMU source differs from both upstream and the current " +
+                "patch set. Preserve any local edits, remove $source, and " +
+                "run setup again."
+            )
+        }
+        foreach ($patch in $patches) {
+            $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
             & wsl.exe bash -lc (
                 "git -C $quotedSource apply --check $quotedPatch && " +
                 "git -C $quotedSource apply $quotedPatch"
