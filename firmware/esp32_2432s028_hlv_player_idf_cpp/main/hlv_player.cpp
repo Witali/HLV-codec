@@ -1446,6 +1446,9 @@ void audioReaderTask(void *) {
     while (!audio_reader_stop_requested) {
         result = prefetchAudioPacket();
         if (result != HLV1_OK) break;
+        // This task runs above the player task's priority.  Cooperatively
+        // delay after each refill so an underflow cannot starve core 0.
+        vTaskDelay(1);
     }
     audio_reader_result = result;
     audio_prefetch_eof = result == HLV1_EOF;

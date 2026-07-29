@@ -1517,6 +1517,12 @@ void audioReaderTask(void *opaque) {
     while (!audio_reader_stop_requested) {
         result = prefetchAudioPacket();
         if (result != HLV1_OK) break;
+        /*
+         * The reader runs above the player task's priority.  A refill that
+         * remains slower than the DAC drain rate must still give the player
+         * task bounded CPU time instead of monopolizing core 0 forever.
+         */
+        vTaskDelay(1);
     }
     audio_reader_result = result;
     audio_prefetch_eof = result == HLV1_EOF;
