@@ -29,11 +29,19 @@ ESP-IDF calls `poll_busy()` before every SD command while CS is deasserted.
 The physical ESP32-2432S028 board has a pull-up on SD MISO, so the controller
 samples `0xff` and declares the bus ready after two bytes.
 
+Each of these bytes is a separate 8-clock SPI readiness probe: the host sends
+the idle MOSI value `0xff` and samples one MISO byte. ESP-IDF requires two
+consecutive nonzero samples before treating the card as ready. These
+one-byte transactions do not carry a command, CRC, audio, or video payload;
+the remaining small number of them around command boundaries is normal
+SDSPI protocol handling.
+
 The generic QEMU SSI bus previously returned zero when no peripheral was
 selected. Consequently, `poll_busy()` exhausted its timeout and issued
 roughly 1,350 to 1,530 one-byte SPI transactions before each useful sector
 transfer. This was an emulated board electrical-state error, not a firmware
-buffering problem.
+buffering problem. The timeout was tolerated at command start, so playback
+could still work but suffered a severe artificial delay.
 
 The repository QEMU now gives SSI buses a configurable idle value. Only the
 ESP32 SPI3 bus receives the board-specific `0xff` pull-up value; flash and
