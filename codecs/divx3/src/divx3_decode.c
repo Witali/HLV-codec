@@ -88,6 +88,15 @@ typedef struct {
     int last;
 } AcCoefficient;
 
+typedef struct {
+    uint8_t *y;
+    uint8_t *cb;
+    uint8_t *cr;
+    int8_t *correction_y;
+    int8_t *correction_cb;
+    int8_t *correction_cr;
+} Divx3FrameBuffer;
+
 struct Divx3Decoder {
     uint16_t width;
     uint16_t height;
@@ -107,7 +116,7 @@ struct Divx3Decoder {
     uint16_t c_stride;
     uint16_t correction_stride_y;
     uint16_t correction_stride_c;
-    uint8_t *frames[2];
+    Divx3FrameBuffer frames[2];
     int16_t *dc_luma;
     int16_t *dc_cb;
     int16_t *dc_cr;
@@ -586,60 +595,56 @@ static int predict_dc(const int16_t *grid, unsigned width,
     return *from_left ? left : top;
 }
 
-static void block_target(Divx3Decoder *decoder, uint8_t *frame,
+static void block_target(Divx3Decoder *decoder, Divx3FrameBuffer *frame,
                          unsigned block, unsigned mb_x, unsigned mb_y,
                          uint8_t **destination, unsigned *stride) {
     if (block < 4) {
         *destination =
-            frame + (mb_y * 16U + (block / 2U) * 8U) *
-                        decoder->y_stride +
-                    mb_x * 16U + (block & 1U) * 8U;
+            frame->y + (mb_y * 16U + (block / 2U) * 8U) *
+                           decoder->y_stride +
+                       mb_x * 16U + (block & 1U) * 8U;
         *stride = decoder->y_stride;
     } else {
-        size_t plane_offset =
-            decoder->y_bytes + (block == 5 ? decoder->c_bytes : 0);
+        uint8_t *plane = block == 5 ? frame->cr : frame->cb;
         *destination =
-            frame + plane_offset +
-            (mb_y * 8U) * decoder->c_stride + mb_x * 8U;
+            plane + (mb_y * 8U) * decoder->c_stride + mb_x * 8U;
         *stride = decoder->c_stride;
     }
 }
 
 static void compact_block_target(
-    Divx3Decoder *decoder, uint8_t *frame, unsigned block,
+    Divx3Decoder *decoder, Divx3FrameBuffer *frame, unsigned block,
     unsigned mb_x, unsigned mb_y, uint8_t **destination,
     unsigned *stride, int8_t **correction, unsigned *correction_stride,
     unsigned *bits, unsigned *block_x, unsigned *block_y) {
-    uint8_t *correction_base =
-        frame + decoder->y_bytes + decoder->c_bytes * 2U;
     if (block < 4) {
         *block_x = mb_x * 16U + (block & 1U) * 8U;
         *block_y = mb_y * 16U + (block / 2U) * 8U;
         *stride = decoder->y_stride;
         *bits = COMPACT_YUV420_LUMA_BITS;
         *destination =
-            frame + (size_t)*block_y * *stride +
+            frame->y + (size_t)*block_y * *stride +
             (size_t)*block_x * *bits / 8U;
-        *correction = (int8_t *)correction_base;
+        *correction = frame->correction_y;
         *correction_stride = decoder->correction_stride_y;
     } else {
-        unsigned plane = block == 5 ? 1U : 0U;
+        uint8_t *plane = block == 5 ? frame->cr : frame->cb;
         *block_x = mb_x * 8U;
         *block_y = mb_y * 8U;
         *stride = decoder->c_stride;
         *bits = COMPACT_YUV420_CHROMA_BITS;
         *destination =
-            frame + decoder->y_bytes + plane * decoder->c_bytes +
+            plane +
             (size_t)*block_y * *stride +
             (size_t)*block_x * *bits / 8U;
-        *correction =
-            (int8_t *)(correction_base + decoder->y_correction_bytes +
-                       plane * decoder->c_correction_bytes);
+        *correction = block == 5 ? frame->correction_cr
+                                 : frame->correction_cb;
         *correction_stride = decoder->correction_stride_c;
     }
 }
 
-static void write_residual_block(Divx3Decoder *decoder, uint8_t *frame,
+static void write_residual_block(Divx3Decoder *decoder,
+                                 Divx3FrameBuffer *frame,
                                  unsigned block, unsigned mb_x,
                                  unsigned mb_y, int32_t values[64],
                                  const uint8_t *prediction) {
@@ -682,7 +687,8 @@ static void write_residual_block(Divx3Decoder *decoder, uint8_t *frame,
     }
 }
 
-static void write_prediction_block(Divx3Decoder *decoder, uint8_t *frame,
+static void write_prediction_block(Divx3Decoder *decoder,
+                                   Divx3FrameBuffer *frame,
                                    unsigned block, unsigned mb_x,
                                    unsigned mb_y,
                                    const uint8_t prediction[64]) {
@@ -736,7 +742,7 @@ static int decode_coefficients(BitReader *reader,
 }
 
 static int decode_intra_block(
-    Divx3Decoder *decoder, BitReader *reader, uint8_t *frame,
+    Divx3Decoder *decoder, BitReader *reader, Divx3FrameBuffer *frame,
     unsigned block, unsigned mb_x, unsigned mb_y, int quantizer,
     int coded, int ac_prediction, const Divx3TcoefSet *luma_set,
     const Divx3TcoefSet *chroma_set, const Divx3DcVlc *dc_luma,
@@ -918,7 +924,8 @@ static void prepare_prediction_macroblock_row(Divx3Decoder *decoder,
 }
 
 static int decode_intra_picture(Divx3Decoder *decoder,
-                                BitReader *reader, uint8_t *frame,
+                                BitReader *reader,
+                                Divx3FrameBuffer *frame,
                                 int quantizer) {
     int chroma_index;
     int luma_index;
@@ -1170,8 +1177,9 @@ static int decode_inter_block(BitReader *reader,
 }
 
 static int decode_inter_picture(Divx3Decoder *decoder,
-                                BitReader *reader, uint8_t *frame,
-                                const uint8_t *reference,
+                                BitReader *reader,
+                                Divx3FrameBuffer *frame,
+                                const Divx3FrameBuffer *reference,
                                 int quantizer, int no_rounding) {
     int use_skip = bit_read(reader);
     int table_index = read_c3(reader);
@@ -1203,7 +1211,17 @@ static int decode_inter_picture(Divx3Decoder *decoder,
         dc_chroma_count = sizeof(kdcRaw0_1) / sizeof(kdcRaw0_1[0]);
         dc_chroma_nodes = kdcRaw0_1Nodes;
     }
-    memcpy(frame, reference, decoder->frame_bytes);
+    memcpy(frame->y, reference->y, decoder->y_bytes);
+    memcpy(frame->cb, reference->cb, decoder->c_bytes);
+    memcpy(frame->cr, reference->cr, decoder->c_bytes);
+    if (decoder->compact_y6_u5_v5) {
+        memcpy(frame->correction_y, reference->correction_y,
+               decoder->y_correction_bytes);
+        memcpy(frame->correction_cb, reference->correction_cb,
+               decoder->c_correction_bytes);
+        memcpy(frame->correction_cr, reference->correction_cr,
+               decoder->c_correction_bytes);
+    }
     memset(decoder->mv_x, 0, (size_t)decoder->mb_width * 2U);
     memset(decoder->mv_y, 0, (size_t)decoder->mb_width * 2U);
 
@@ -1293,7 +1311,7 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                     unsigned bits = 8;
                     uint8_t prediction[64];
                     if (block < 4) {
-                        source = reference;
+                        source = reference->y;
                         stride = decoder->y_stride;
                         plane_width = decoder->width;
                         plane_height = decoder->height;
@@ -1304,19 +1322,14 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                         block_motion_x = motion_x;
                         block_motion_y = motion_y;
                         if (decoder->compact_y6_u5_v5) {
-                            correction =
-                                (const int8_t *)(reference +
-                                    decoder->y_bytes +
-                                    decoder->c_bytes * 2U);
+                            correction = reference->correction_y;
                             correction_stride =
                                 decoder->correction_stride_y;
                             bits = COMPACT_YUV420_LUMA_BITS;
                         }
                     } else {
-                        unsigned plane = block == 5 ? 1U : 0U;
-                        source =
-                            reference + decoder->y_bytes +
-                            plane * decoder->c_bytes;
+                        source = block == 5 ? reference->cr
+                                            : reference->cb;
                         stride = decoder->c_stride;
                         plane_width = (decoder->width + 1U) / 2U;
                         plane_height = (decoder->height + 1U) / 2U;
@@ -1326,12 +1339,9 @@ static int decode_inter_picture(Divx3Decoder *decoder,
                         block_motion_y = chroma_motion(motion_y);
                         if (decoder->compact_y6_u5_v5) {
                             correction =
-                                (const int8_t *)(reference +
-                                    decoder->y_bytes +
-                                    decoder->c_bytes * 2U +
-                                    decoder->y_correction_bytes +
-                                    plane *
-                                        decoder->c_correction_bytes);
+                                block == 5
+                                    ? reference->correction_cr
+                                    : reference->correction_cb;
                             correction_stride =
                                 decoder->correction_stride_c;
                             bits = COMPACT_YUV420_CHROMA_BITS;
@@ -1373,16 +1383,37 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     size_t ac_chroma_values = chroma_blocks * 8U;
 
     /*
-     * Keep the two predictive frames independent. On ESP32 the total free
-     * heap can be sufficient while no single block is large enough for both
-     * frames. Separate allocations halve the largest contiguous request
-     * without changing the frame representation or decoder output.
+     * Allocate predictive frames by plane. The decoder retains exactly the
+     * same samples, but the largest contiguous request is one luma plane
+     * instead of a complete packed frame. This matters on ESP32 after an
+     * audio FILE has expanded libc's persistent stdio pool and split DRAM
+     * into otherwise sufficiently large free regions.
      */
-    decoder->frames[0] = (uint8_t *)malloc(decoder->frame_bytes);
-    decoder->frames[1] = (uint8_t *)malloc(decoder->frame_bytes);
-    decoder->dc_luma = (int16_t *)malloc(luma_blocks * sizeof(int16_t));
-    decoder->dc_cb = (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
-    decoder->dc_cr = (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
+    /*
+     * Reserve both largest planes first. Smaller chroma and correction
+     * allocations must not consume the only remaining luma-sized region.
+     */
+    for (unsigned index = 0; index < 2U; ++index) {
+        decoder->frames[index].y = (uint8_t *)malloc(decoder->y_bytes);
+    }
+    for (unsigned index = 0; index < 2U; ++index) {
+        decoder->frames[index].cb = (uint8_t *)malloc(decoder->c_bytes);
+        decoder->frames[index].cr = (uint8_t *)malloc(decoder->c_bytes);
+        if (decoder->compact_y6_u5_v5) {
+            decoder->frames[index].correction_y =
+                (int8_t *)malloc(decoder->y_correction_bytes);
+            decoder->frames[index].correction_cb =
+                (int8_t *)malloc(decoder->c_correction_bytes);
+            decoder->frames[index].correction_cr =
+                (int8_t *)malloc(decoder->c_correction_bytes);
+        }
+    }
+    decoder->dc_luma =
+        (int16_t *)malloc(luma_blocks * sizeof(int16_t));
+    decoder->dc_cb =
+        (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
+    decoder->dc_cr =
+        (int16_t *)malloc(chroma_blocks * sizeof(int16_t));
     decoder->ac_luma_row =
         (int16_t *)malloc(ac_luma_values * sizeof(int16_t));
     decoder->ac_luma_col =
@@ -1398,7 +1429,16 @@ static int allocate_decoder_buffers(Divx3Decoder *decoder) {
     decoder->coded_luma = (uint8_t *)malloc(luma_blocks);
     decoder->mv_x = (int8_t *)malloc(macroblock_rows);
     decoder->mv_y = (int8_t *)malloc(macroblock_rows);
-    if (!decoder->frames[0] || !decoder->frames[1] ||
+    if (!decoder->frames[0].y || !decoder->frames[0].cb ||
+        !decoder->frames[0].cr || !decoder->frames[1].y ||
+        !decoder->frames[1].cb || !decoder->frames[1].cr ||
+        (decoder->compact_y6_u5_v5 &&
+         (!decoder->frames[0].correction_y ||
+          !decoder->frames[0].correction_cb ||
+          !decoder->frames[0].correction_cr ||
+          !decoder->frames[1].correction_y ||
+          !decoder->frames[1].correction_cb ||
+          !decoder->frames[1].correction_cr)) ||
         !decoder->dc_luma ||
         !decoder->dc_cb || !decoder->dc_cr ||
         !decoder->ac_luma_row || !decoder->ac_luma_col ||
@@ -1505,8 +1545,14 @@ Divx3Decoder *divx3_decoder_create_y6_u5_v5(
 
 void divx3_decoder_destroy(Divx3Decoder *decoder) {
     if (!decoder) return;
-    free(decoder->frames[0]);
-    free(decoder->frames[1]);
+    for (unsigned index = 0; index < 2U; ++index) {
+        free(decoder->frames[index].y);
+        free(decoder->frames[index].cb);
+        free(decoder->frames[index].cr);
+        free(decoder->frames[index].correction_y);
+        free(decoder->frames[index].correction_cb);
+        free(decoder->frames[index].correction_cr);
+    }
     free(decoder->dc_luma);
     free(decoder->dc_cb);
     free(decoder->dc_cr);
@@ -1527,7 +1573,7 @@ static int decode_with_reader(
     unsigned picture_type;
     int quantizer;
     uint8_t output_index;
-    uint8_t *output;
+    Divx3FrameBuffer *output;
     int next_no_rounding;
     int result;
     if (!decoder || !frame)
@@ -1541,7 +1587,7 @@ static int decode_with_reader(
     output_index =
         decoder->has_reference ? (uint8_t)(decoder->reference_index ^ 1U)
                                : 0;
-    output = decoder->frames[output_index];
+    output = &decoder->frames[output_index];
     next_no_rounding =
         decoder->flipflop_rounding
             ? (decoder->no_rounding ^ 1)
@@ -1551,7 +1597,7 @@ static int decode_with_reader(
                        decoder, &reader, output, quantizer)
                  : decode_inter_picture(
                        decoder, &reader, output,
-                       decoder->frames[decoder->reference_index],
+                       &decoder->frames[decoder->reference_index],
                        quantizer, next_no_rounding);
     if (result != DIVX3_OK) return result;
     if (picture_type == 0) {
@@ -1572,21 +1618,20 @@ static int decode_with_reader(
     }
     decoder->reference_index = output_index;
     decoder->has_reference = 1;
-    frame->y = output;
-    frame->cb = output + decoder->y_bytes;
-    frame->cr = output + decoder->y_bytes + decoder->c_bytes;
+    frame->y = output->y;
+    frame->cb = output->cb;
+    frame->cr = output->cr;
     frame->correction_y =
         decoder->compact_y6_u5_v5
-            ? (const int8_t *)(output + decoder->y_bytes +
-                               decoder->c_bytes * 2U)
+            ? output->correction_y
             : NULL;
     frame->correction_cb =
         frame->correction_y
-            ? frame->correction_y + decoder->y_correction_bytes
+            ? output->correction_cb
             : NULL;
     frame->correction_cr =
         frame->correction_cb
-            ? frame->correction_cb + decoder->c_correction_bytes
+            ? output->correction_cr
             : NULL;
     frame->width = decoder->width;
     frame->height = decoder->height;

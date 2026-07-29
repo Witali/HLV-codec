@@ -22,9 +22,14 @@ grids.
 `divx3_decoder_create_y6_u5_v5()` enables the constrained-memory mode. It
 stores both references as packed Y6/U5/V5 planes with one signed Q4
 average-error correction per 8x8 plane block. At 320x240 the exact decoder
-owns 237,608 bytes and the compact decoder owns 174,008 bytes. The compact
-references are deliberately non-bit-exact; the Q4 correction prevents a
-coherent block-average bias while the regular I-frames bound temporal drift.
+owns 241,776 bytes and the compact decoder owns 178,176 bytes. Each reference
+plane is allocated separately, with both luma planes reserved before the
+smaller planes. This reduces the compact profile's largest contiguous request
+from 83,400 to 57,600 bytes and lets it start after another audio/video codec
+has fragmented the ESP32 heap. Pixel storage and reconstructed quality do not
+change. The compact references are deliberately non-bit-exact; the Q4
+correction prevents a coherent block-average bias while the regular I-frames
+bound temporal drift.
 
 Compare exact and compact reconstruction, including PSNR by distance from the
 preceding I-frame, with:

@@ -54,6 +54,7 @@ constexpr size_t kMpegVideoReadAheadBytes = 4 * 1024;
 constexpr size_t kDivx3VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kDivx3MaximumPacketBytes = 96 * 1024;
 constexpr uint32_t kDivx3MaximumMacroblocks = 300;
+constexpr size_t kDivx3CompactLumaPlaneBytes = 57'600;
 constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kBpvVideoReadAheadBytes = 4 * 1024;
 // This capacity is deliberately unrelated to BPV's maximum encoded frame.
@@ -2149,6 +2150,31 @@ bool openVideo() {
         showStatus("SD setup failed", "cannot configure read-ahead");
         closeVideo();
         return false;
+    }
+    /*
+     * The first simultaneous audio FILE permanently expands picolibc's
+     * stdio pool. If that happens while a decoder owns most of DRAM, the
+     * retained pool block can split the only two QVGA DivX luma-sized
+     * regions. Reserve those regions while creating the FILE slot once;
+     * releasing the reservations does not increase steady-state usage.
+     */
+    static bool audio_file_pool_primed = false;
+    if (!audio_file_pool_primed) {
+        void *luma_reservations[2] = {
+            heap_caps_malloc(
+                kDivx3CompactLumaPlaneBytes, MALLOC_CAP_8BIT),
+            heap_caps_malloc(
+                kDivx3CompactLumaPlaneBytes, MALLOC_CAP_8BIT),
+        };
+        if (luma_reservations[0] && luma_reservations[1]) {
+            FILE *audio_slot = std::fopen(active_video_path, "rb");
+            if (audio_slot) {
+                std::fclose(audio_slot);
+                audio_file_pool_primed = true;
+            }
+        }
+        heap_caps_free(luma_reservations[1]);
+        heap_caps_free(luma_reservations[0]);
     }
 
     sequence_header = {};
