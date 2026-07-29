@@ -15,7 +15,8 @@ $configMarker = Join-Path $build ".hlv-sdspi-st7789-sdl-v1"
 $patches = @(
     (Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"),
     (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch"),
-    (Join-Path $project "qemu\patches\0004-ssi-sd-bulk-read.patch")
+    (Join-Path $project "qemu\patches\0004-ssi-sd-bulk-read.patch"),
+    (Join-Path $project "qemu\patches\0005-realtime-sd-display-audio.patch")
 )
 $qemuCommit = "40edccac415693c5130f91c01d84176ae6008566"
 $qemuTag = "esp-develop-9.2.2-20260417"
@@ -107,27 +108,36 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $qemuCommit) {
     throw "Expected QEMU commit $qemuCommit, found $actualCommit."
 }
 
-foreach ($patch in $patches) {
-    $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
-    & wsl.exe bash -lc (
-        "git -C $quotedSource apply --reverse --check $quotedPatch " +
-        ">/dev/null 2>&1"
-    )
-    if ($LASTEXITCODE -ne 0) {
-        & wsl.exe bash -lc (
-            "git -C $quotedSource apply --check $quotedPatch && " +
-            "git -C $quotedSource apply $quotedPatch"
-        )
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not apply QEMU patch: $patch"
-        }
-    }
-}
-
 $patchDigest = (
     Get-FileHash -Algorithm SHA256 $patches |
         ForEach-Object Hash
 ) -join ":"
+$patchMarker = Join-Path $source ".hlv-patch-set"
+$expectedPatchMarker = "$qemuCommit`n$patchDigest"
+if (-not (
+    (Test-Path -LiteralPath $patchMarker) -and
+    ((Get-Content -Raw -LiteralPath $patchMarker) -eq $expectedPatchMarker)
+)) {
+    foreach ($patch in $patches) {
+        $quotedPatch = Quote-Bash (ConvertTo-WslPath $patch)
+        & wsl.exe bash -lc (
+            "git -C $quotedSource apply --reverse --check $quotedPatch " +
+            ">/dev/null 2>&1"
+        )
+        if ($LASTEXITCODE -ne 0) {
+            & wsl.exe bash -lc (
+                "git -C $quotedSource apply --check $quotedPatch && " +
+                "git -C $quotedSource apply $quotedPatch"
+            )
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not apply QEMU patch: $patch"
+            }
+        }
+    }
+    Set-Content -LiteralPath $patchMarker `
+        -Value $expectedPatchMarker -NoNewline
+}
+
 $expectedMarker = "$qemuCommit`n$patchDigest"
 if (-not (Test-Path -LiteralPath (Join-Path $build "build.ninja")) -or
     -not (Test-Path -LiteralPath $configMarker) -or

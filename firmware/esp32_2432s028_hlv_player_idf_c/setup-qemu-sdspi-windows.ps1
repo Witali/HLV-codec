@@ -29,6 +29,7 @@ $patches = @(
     (Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"),
     (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch"),
     (Join-Path $project "qemu\patches\0004-ssi-sd-bulk-read.patch"),
+    (Join-Path $project "qemu\patches\0005-realtime-sd-display-audio.patch"),
     (Join-Path $project "qemu\patches\0002-windows-symlink-fallback.patch")
 )
 $packages = @(
@@ -152,24 +153,33 @@ if ($LASTEXITCODE -ne 0 -or $actualCommit -ne $qemuCommit) {
     throw "Expected QEMU commit $qemuCommit, found $actualCommit."
 }
 
-foreach ($patch in $patches) {
-    & git -C $source apply --reverse --check $patch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        & git -C $source apply --check $patch
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not validate QEMU patch: $patch"
-        }
-        & git -C $source apply $patch
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not apply QEMU patch: $patch"
-        }
-    }
-}
-
 $patchDigest = (
     Get-FileHash -Algorithm SHA256 $patches |
         ForEach-Object Hash
 ) -join ":"
+$patchMarker = Join-Path $source ".hlv-patch-set"
+$expectedPatchMarker = "$qemuCommit`n$patchDigest"
+if (-not (
+    (Test-Path -LiteralPath $patchMarker) -and
+    ((Get-Content -Raw -LiteralPath $patchMarker) -eq $expectedPatchMarker)
+)) {
+    foreach ($patch in $patches) {
+        & git -C $source apply --reverse --check $patch 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            & git -C $source apply --check $patch
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not validate QEMU patch: $patch"
+            }
+            & git -C $source apply $patch
+            if ($LASTEXITCODE -ne 0) {
+                throw "Could not apply QEMU patch: $patch"
+            }
+        }
+    }
+    Set-Content -LiteralPath $patchMarker `
+        -Value $expectedPatchMarker -NoNewline
+}
+
 $configMarker = Join-Path $source "build\.hlv-windows-config"
 $expectedMarker = "$qemuCommit`n$patchDigest"
 $needsConfigure = -not (
