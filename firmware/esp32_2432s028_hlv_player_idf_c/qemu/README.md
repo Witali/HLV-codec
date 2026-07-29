@@ -9,6 +9,8 @@ Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
 - Device patch: `patches/0001-esp32-sdspi.patch`
 - Runtime GPIO-input patch: `patches/0003-esp32-gpio-input.patch`
 - Buffered SSI/SD read patch: `patches/0004-ssi-sd-bulk-read.patch`
+- Realtime SD/display/audio patch:
+  `patches/0005-realtime-sd-display-audio.patch`
 - Windows build fallback: `patches/0002-windows-symlink-fallback.patch`
 - Full patched files: `modified_sources/`
 
@@ -32,11 +34,20 @@ The ST7789 window has a control strip below the 320x240 LCD:
   then clear `HOLD` when it is no longer needed.
 
 It implements the command subset used by the pinned ESP-IDF ST7789 driver,
-including its RAMCTRL little-endian pixel mode. Raw SPI behavior was
+including its RAMCTRL little-endian pixel mode. RGB565 DMA transfers use a
+batch path so a frame does not require one QOM callback per byte. Raw SPI
+behavior was
 cross-checked against the MIT-licensed
 [Wokwi ST7789 custom-chip example](https://wokwi.com/projects/453755839909287937).
 The implementation itself uses QEMU's native
 [SSI device interface](https://www.qemu.org/docs/master/devel/ssi.html).
+
+SPI3 models the board's MISO pull-up while SD CS is deasserted. This lets
+ESP-IDF's standard SDSPI `poll_busy()` complete after two idle bytes instead
+of timing out before every command. The idle value is bus-specific; SPI flash
+and display retain the upstream SSI default. See
+[`docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md`](../../../docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md)
+for the device inventory and checksum benchmark.
 
 `modified_sources/` preserves complete copies of every upstream file changed
 by the local patch, using the same paths as the original source tree:

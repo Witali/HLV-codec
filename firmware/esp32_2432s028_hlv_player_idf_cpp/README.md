@@ -486,6 +486,11 @@ Guest cycle ratios are useful for
 physical board because QEMU is not cycle-accurate and does not model SD or
 display DMA timing.
 
+For full board-path tests, the C++ reference firmware shares the patched
+SDSPI/ST7789/I2S Windows QEMU maintained by the primary C firmware project.
+Its modeled-device inventory and known accuracy limits are recorded in
+[`docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md`](../../docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md).
+
 ## Resource choices
 
 - Display: ST7789 at configurable 80 MHz. Normal playback uses two reusable

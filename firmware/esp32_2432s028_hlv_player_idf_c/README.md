@@ -434,6 +434,13 @@ not stall. It does not model the electrical ESP32 IO-matrix routing,
 physical-card timing or analog GPIO26 circuitry, so it validates the driver
 and data paths but is not a cycle-accurate electrical simulation.
 
+The board model also supplies the physical SD MISO pull-up value (`0xff`)
+while GPIO5 deasserts CS. Without that state, ESP-IDF's unmodified SDSPI
+driver waits for a busy-poll timeout before every command. The complete
+peripheral inventory, protocol checks and measured multi-block throughput are
+recorded in
+[`docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md`](../../docs/QEMU_ESP32_PLAYER_PERIPHERAL_AUDIT.md).
+
 ## Xtensa QEMU decoder benchmark
 
 An off-board benchmark boots the real ESP-IDF decoder in Espressif QEMU and
