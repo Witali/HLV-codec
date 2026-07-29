@@ -54,6 +54,15 @@ Adding another firmware SDSPI buffer would not address this failure. QEMU's
 block backend and the host operating system already cache the image, while
 the firmware uses DMA and sequential compressed-input refill buffers.
 
+The main C firmware also had `CONFIG_FATFS_USE_FASTSEEK` disabled even though
+the C++ reference enabled it. AVI playback keeps independent audio and video
+positions in the same file, so alternating between them repeatedly walked the
+FAT cluster chain from its beginning. The firmware variants now share the
+64-entry FastSeek setting. On the same 40-second Windows QEMU run, the C
+player advanced from frame 528 without FastSeek to frame 858 with it. The
+saved setting therefore restores approximately 24 FPS after startup and is
+well above the project's 0.5% retention threshold.
+
 ## Audio-reader starvation
 
 After the SDSPI correction, a separate scheduling error could stop playback
@@ -66,8 +75,8 @@ video indefinitely.
 
 Both firmware variants now delay the reader by one 1 ms FreeRTOS tick after
 each successfully prefetched packet. This bounds its core-0 occupancy without
-changing the codec or container data path. A 50-second C-firmware regression
-continued through frame 618 instead of stopping at the old failure point. A
+changing the codec or container data path. A 40-second C-firmware regression
+continued through frame 858 instead of stopping at the old failure point. A
 40-second C++ reference run continued through frame 862; its last audio report
 showed zero rebuffers, underrun samples, and inserted-silence chunks:
 
