@@ -1421,7 +1421,7 @@ index 4fea1f5..1b8d33b 100644
  
  static Property esp32_gpio_properties[] = {
 diff --git a/hw/sd/sd.c b/hw/sd/sd.c
-index f9bd03f..75b3b00 100644
+index f9bd03f..25b9455 100644
 --- a/hw/sd/sd.c
 +++ b/hw/sd/sd.c
 @@ -1577,7 +1577,8 @@ static sd_rsp_type_t emmc_cmd_SEND_EXT_CSD(SDState *sd, SDRequest req)
@@ -1444,23 +1444,20 @@ index f9bd03f..75b3b00 100644
          return sd_invalid_state_for_cmd(sd, req);
      }
      return sd_cmd_to_sendingdata(sd, req, sd_req_get_address(sd, req),
-diff --git a/hw/sd/ssi-sd.c b/hw/sd/ssi-sd.c
-index 1594051..a9973fb 100644
---- a/hw/sd/ssi-sd.c
-+++ b/hw/sd/ssi-sd.c
-@@ -182,8 +182,10 @@ static uint32_t ssi_sd_transfer(SSIPeripheral *dev, uint32_t val)
-                 s->arglen = 5;
-                 s->response[0] = 1;
-                 memcpy(&s->response[1], longresp, 4);
--            } else if (s->arglen != 4) {
--                BADF("Unexpected response to cmd %d\n", s->cmd);
-+            } else if (s->arglen != 4 &&
-+                       !(s->cmd == 13 && s->arglen == 16)) {
-+                BADF("Unexpected response length %d to cmd %d\n",
-+                     s->arglen, s->cmd);
-                 /* Illegal command is about as near as we can get.  */
-                 s->arglen = 1;
-                 s->response[0] = 4;
+@@ -1650,7 +1652,12 @@ static sd_rsp_type_t sd_cmd_SEND_STATUS(SDState *sd, SDRequest req)
+     }
+ 
+     if (sd_is_spi(sd)) {
+-        return sd_r2_s;
++        /*
++         * The SPI transport converts the native 32-bit card status into the
++         * standard two-byte R2 response.  sd_r2_s is the 128-bit CSD
++         * response and must only be used for SEND_CSD.
++         */
++        return sd_r1;
+     }
+ 
+     return sd_req_rca_same(sd, req) ? sd_r1 : sd_r0;
 diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
 index f47bfca..57e46ad 100644
 --- a/hw/ssi/esp32_spi.c

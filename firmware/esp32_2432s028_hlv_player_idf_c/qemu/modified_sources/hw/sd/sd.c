@@ -1651,7 +1651,12 @@ static sd_rsp_type_t sd_cmd_SEND_STATUS(SDState *sd, SDRequest req)
     }
 
     if (sd_is_spi(sd)) {
-        return sd_r2_s;
+        /*
+         * The SPI transport converts the native 32-bit card status into the
+         * standard two-byte R2 response.  sd_r2_s is the 128-bit CSD
+         * response and must only be used for SEND_CSD.
+         */
+        return sd_r1;
     }
 
     return sd_req_rca_same(sd, req) ? sd_r1 : sd_r0;

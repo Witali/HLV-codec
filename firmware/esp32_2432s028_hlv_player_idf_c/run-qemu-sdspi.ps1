@@ -45,6 +45,7 @@ $wslFlash = ConvertTo-WslPath $flash
 $wslSd = ConvertTo-WslPath $sd
 $display = if ($Headless) { "none" } else { "sdl" }
 & wsl.exe $wslQemu @(
+    "-accel", "tcg,thread=multi",
     "-machine", "esp32,sdspi=on,st7789=on",
     "-display", $display,
     "-monitor", "none",

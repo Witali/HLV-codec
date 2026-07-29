@@ -50,7 +50,6 @@ hw/display/meson.build
 hw/display/st7789.c
 hw/gpio/esp32_gpio.c
 hw/sd/sd.c
-hw/sd/ssi-sd.c
 hw/ssi/esp32_spi.c
 hw/xtensa/Kconfig
 hw/xtensa/esp32.c
@@ -107,6 +106,9 @@ missing and opens the ST7789 window with the default demo card. Use
 `-Rebuild` to rebuild the flash image or `-Headless` to suppress the window.
 It uses DirectSound for the ESP32 GPIO26 DAC and accepts `-Volume 0..100`
 (default 70) as a QEMU-side volume control independent of the guest.
+Both launchers enable multi-thread TCG so the two emulated ESP32 cores can
+continue servicing timer and watchdog interrupts while the other core is in
+a long polling SDSPI transfer.
 
 The ESP32 audio model implements the I2S0 TX registers, linked DMA descriptors
 and interrupt subset exercised by ESP-IDF `dac_continuous`. Samples are the
@@ -115,6 +117,13 @@ high byte of each 16-bit DMA slot, matching
 register writes and returns `APLL CAL_END`, allowing the same 8 kHz APLL
 configuration used on the physical board. `dac-rate` defaults to 8000 and
 `dac-volume` defaults to 70 when the machine is invoked directly.
+
+The SPI SD adapter preserves the standard command responses. In particular,
+CMD13 `SEND_STATUS` is converted from QEMU's 32-bit card status to the
+two-byte SPI R2 response; it is not represented by the unrelated 128-bit CSD
+response type. The SDSPI smoke-test accepts either LF or CRLF in its marker
+file and, when `bunny.avi` is present, verifies the RIFF/AVI header while
+reading the first 65,536 bytes through an 8,192-byte reusable buffer.
 
 The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
 its executable managed by Git LFS. The demo SD image is also managed by Git

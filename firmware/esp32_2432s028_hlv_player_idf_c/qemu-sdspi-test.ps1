@@ -83,14 +83,13 @@ if ($LASTEXITCODE -ne 0) {
 
 $quotedQemu = Quote-Bash (ConvertTo-WslPath $qemu)
 $quotedFlash = Quote-Bash (ConvertTo-WslPath $flash)
-$command = @"
-timeout --foreground 10s $quotedQemu \
-    -machine esp32,sdspi=on \
-    -nographic \
-    -no-reboot \
-    -drive file=$quotedFlash,if=mtd,format=raw \
-    -drive file=$wslSd,if=sd,format=raw 2>&1
-"@
+$command =
+    "timeout --foreground 10s $quotedQemu " +
+    "-machine esp32,sdspi=on " +
+    "-nographic " +
+    "-no-reboot " +
+    "-drive file=$quotedFlash,if=mtd,format=raw " +
+    "-drive file=$wslSd,if=sd,format=raw 2>&1"
 $output = @(& wsl.exe bash -lc $command)
 $output | ForEach-Object { Write-Host $_ }
 if (-not ($output -contains "SDSPI_QEMU_STAGE,mounted")) {

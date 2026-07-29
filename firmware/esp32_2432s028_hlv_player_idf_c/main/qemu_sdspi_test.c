@@ -1,3 +1,5 @@
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -16,7 +18,9 @@
 
 static const char *const k_tag = "qemu-sdspi-test";
 static const char k_test_path[] = "/sdcard/HLV/qemu.txt";
-static const char k_expected[] = "HLV ESP32 SPI3 SD test\n";
+static const char k_video_path[] = "/sdcard/HLV/bunny.avi";
+static const char k_expected_text[] = "HLV ESP32 SPI3 SD test";
+static uint8_t s_read_buffer[8U * 1024U];
 
 static __attribute__((noreturn)) void finish(int code)
 {
@@ -50,7 +54,7 @@ void app_main(void)
         .allocation_unit_size = 16 * 1024,
     };
     sdmmc_card_t *card = NULL;
-    char contents[sizeof(k_expected)] = {0};
+    char contents[sizeof(k_expected_text) + 2U] = {0};
     FILE *file;
     size_t bytes;
     esp_err_t result;
@@ -89,12 +93,59 @@ void app_main(void)
     }
     bytes = fread(contents, 1, sizeof(contents) - 1U, file);
     fclose(file);
-    if (bytes != strlen(k_expected) ||
-        memcmp(contents, k_expected, strlen(k_expected)) != 0) {
+    const size_t text_bytes = sizeof(k_expected_text) - 1U;
+    const bool lf_ending =
+        bytes == text_bytes + 1U && contents[text_bytes] == '\n';
+    const bool crlf_ending =
+        bytes == text_bytes + 2U &&
+        contents[text_bytes] == '\r' &&
+        contents[text_bytes + 1U] == '\n';
+    if (memcmp(contents, k_expected_text, text_bytes) != 0 ||
+        (!lf_ending && !crlf_ending)) {
         ESP_LOGE(k_tag, "unexpected contents (%u bytes)", (unsigned)bytes);
         finish(4);
     }
 
     ESP_LOGI(k_tag, "read %u bytes from %s", (unsigned)bytes, k_test_path);
+    esp_rom_printf("SDSPI_QEMU_STAGE,marker-read,%u\n", (unsigned)bytes);
+    file = fopen(k_video_path, "rb");
+    if (file != NULL) {
+        const size_t target_bytes = 64U * 1024U;
+        size_t total_bytes = 0;
+        uint32_t hash = UINT32_C(2166136261);
+        bool valid_header = false;
+
+        while (total_bytes < target_bytes) {
+            size_t requested = target_bytes - total_bytes;
+            if (requested > sizeof(s_read_buffer)) {
+                requested = sizeof(s_read_buffer);
+            }
+            esp_rom_printf("SDSPI_QEMU_STAGE,video-read,%u,%u\n",
+                           (unsigned)total_bytes, (unsigned)requested);
+            bytes = fread(s_read_buffer, 1, requested, file);
+            esp_rom_printf("SDSPI_QEMU_STAGE,video-read-done,%u\n",
+                           (unsigned)bytes);
+            if (bytes == 0) {
+                break;
+            }
+            if (total_bytes == 0) {
+                valid_header =
+                    bytes >= 12U &&
+                    memcmp(s_read_buffer, "RIFF", 4U) == 0 &&
+                    memcmp(s_read_buffer + 8U, "AVI ", 4U) == 0;
+            }
+            for (size_t i = 0; i < bytes; ++i) {
+                hash ^= s_read_buffer[i];
+                hash *= UINT32_C(16777619);
+            }
+            total_bytes += bytes;
+        }
+        fclose(file);
+        esp_rom_printf("SDSPI_QEMU_VIDEO,%u,%08x\n",
+                       (unsigned)total_bytes, (unsigned)hash);
+        if (!valid_header || total_bytes != target_bytes) {
+            finish(5);
+        }
+    }
     finish(0);
 }

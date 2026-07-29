@@ -42,6 +42,7 @@ if (-not (Test-Path -LiteralPath (
 $display = if ($Headless) { "none" } else { "sdl" }
 & $qemu @(
     "-L", $qemuData,
+    "-accel", "tcg,thread=multi",
     "-machine", (
         "esp32,sdspi=on,st7789=on,audiodev=esp32dac," +
         "dac-rate=8000,dac-volume=$Volume"
