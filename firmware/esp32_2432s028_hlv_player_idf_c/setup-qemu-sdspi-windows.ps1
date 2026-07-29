@@ -28,6 +28,7 @@ $qemuTag = "esp-develop-9.2.2-20260417"
 $patches = @(
     (Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"),
     (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch"),
+    (Join-Path $project "qemu\patches\0004-ssi-sd-bulk-read.patch"),
     (Join-Path $project "qemu\patches\0002-windows-symlink-fallback.patch")
 )
 $packages = @(

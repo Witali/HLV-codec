@@ -14,7 +14,8 @@ $build = Join-Path $qemuRoot "build"
 $configMarker = Join-Path $build ".hlv-sdspi-st7789-sdl-v1"
 $patches = @(
     (Join-Path $project "qemu\patches\0001-esp32-sdspi.patch"),
-    (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch")
+    (Join-Path $project "qemu\patches\0003-esp32-gpio-input.patch"),
+    (Join-Path $project "qemu\patches\0004-ssi-sd-bulk-read.patch")
 )
 $qemuCommit = "40edccac415693c5130f91c01d84176ae6008566"
 $qemuTag = "esp-develop-9.2.2-20260417"

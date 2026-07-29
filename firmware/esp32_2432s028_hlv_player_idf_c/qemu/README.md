@@ -8,6 +8,7 @@ Original repository: [Espressif QEMU](https://github.com/espressif/qemu)
   [`40edccac415693c5130f91c01d84176ae6008566`](https://github.com/espressif/qemu/commit/40edccac415693c5130f91c01d84176ae6008566)
 - Device patch: `patches/0001-esp32-sdspi.patch`
 - Runtime GPIO-input patch: `patches/0003-esp32-gpio-input.patch`
+- Buffered SSI/SD read patch: `patches/0004-ssi-sd-bulk-read.patch`
 - Windows build fallback: `patches/0002-windows-symlink-fallback.patch`
 - Full patched files: `modified_sources/`
 
@@ -49,8 +50,11 @@ hw/display/esp_rgb.c
 hw/display/meson.build
 hw/display/st7789.c
 hw/gpio/esp32_gpio.c
+hw/sd/core.c
 hw/sd/sd.c
+hw/sd/ssi-sd.c
 hw/ssi/esp32_spi.c
+hw/ssi/ssi.c
 hw/xtensa/Kconfig
 hw/xtensa/esp32.c
 hw/xtensa/esp32_intc.c
@@ -58,7 +62,9 @@ include/hw/audio/esp32_analog_i2c.h
 include/hw/audio/esp32_i2s_dac.h
 include/hw/display/esp_rgb.h
 include/hw/gpio/esp32_gpio.h
+include/hw/sd/sd.h
 include/hw/ssi/esp32_spi.h
+include/hw/ssi/ssi.h
 include/hw/xtensa/esp32.h
 include/hw/xtensa/esp32_intc.h
 ```
@@ -121,9 +127,19 @@ configuration used on the physical board. `dac-rate` defaults to 8000 and
 The SPI SD adapter preserves the standard command responses. In particular,
 CMD13 `SEND_STATUS` is converted from QEMU's 32-bit card status to the
 two-byte SPI R2 response; it is not represented by the unrelated 128-bit CSD
-response type. The SDSPI smoke-test accepts either LF or CRLF in its marker
-file and, when `bunny.avi` is present, verifies the RIFF/AVI header while
-reading the first 65,536 bytes through an 8,192-byte reusable buffer.
+response type. Standard CMD18/CMD25 multi-block transfers use the normal
+QEMU SD protocol state machine; the regression test reads 16 x 4,096 bytes
+with CMD18, stops each request with CMD12, writes 4,096 bytes with CMD25 and
+verifies both data hashes. The SDSPI smoke-test accepts either LF or CRLF in
+its marker file and, when `bunny.avi` is present, verifies the RIFF/AVI header
+while reading the first 65,536 bytes through an 8,192-byte reusable buffer.
+
+DMA transfers now pass contiguous SPI buffers through SSI and the SD adapter.
+CMD17/CMD18 payload bytes are copied from the QEMU SD block buffer in chunks;
+commands, response tokens, CRC bytes and CMD12 retain byte-exact state-machine
+handling. A five-run Windows benchmark reading 65,536 bytes in 4,096-byte
+requests improved the guest median from 1,322,191 us to 1,310,672 us
+(0.87%). An SSI-only batching prototype improved about 0.13% and was not kept.
 
 The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
 its executable managed by Git LFS. The demo SD image is also managed by Git

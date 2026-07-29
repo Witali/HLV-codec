@@ -204,18 +204,19 @@ static void esp32_spi_txrx_buffer(Esp32SpiState *s,
                                   const void *tx_buf, int tx_bytes,
                                   void *rx_buf, int rx_bytes)
 {
-    int bytes = MAX(tx_bytes, rx_bytes);
     const uint8_t *tx = tx_buf;
     uint8_t *rx = rx_buf;
-    for (int i = 0; i < bytes; ++i) {
-        uint8_t byte = 0xff;
-        if (i < tx_bytes) {
-            byte = tx[i];
-        }
-        uint32_t res = ssi_transfer(s->spi, byte);
-        if (i < rx_bytes) {
-            rx[i] = res;
-        }
+    int common_bytes = MIN(tx_bytes, rx_bytes);
+
+    if (common_bytes) {
+        ssi_transfer_buf(s->spi, tx, rx, common_bytes);
+    }
+    if (tx_bytes > common_bytes) {
+        ssi_transfer_buf(s->spi, tx + common_bytes, NULL,
+                         tx_bytes - common_bytes);
+    } else if (rx_bytes > common_bytes) {
+        ssi_transfer_buf(s->spi, NULL, rx + common_bytes,
+                         rx_bytes - common_bytes);
     }
 }
 
