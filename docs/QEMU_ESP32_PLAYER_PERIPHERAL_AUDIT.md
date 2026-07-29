@@ -10,7 +10,7 @@ devices that are not present in that upstream revision.
 
 | Firmware path | QEMU model | Status for the player |
 | --- | --- | --- |
-| Two Xtensa LX6 cores, DPORT and cross-core interrupts | Espressif ESP32 SoC | Present; MTTCG must be selected with `-accel tcg,thread=multi` |
+| Two Xtensa LX6 cores, DPORT and cross-core interrupts | Espressif ESP32 SoC | Present; MTTCG must be selected with `-accel tcg,thread=multi`; interrupt-matrix route 6 is treated as the ESP-IDF disabled route rather than driving the internal CCOMPARE0 interrupt |
 | SPI1 flash and ROM boot | Espressif SPI flash and ESP32 ROM | Present; ROM reports a harmless inability to enable QIO for the raw DIO image |
 | Timer groups, FreeRTOS tick and `esp_timer` latch reads | `esp32.timg` and Xtensa cycle counter | Present; timer `UPDATE` correctly latches `LACT` before LO/HI reads |
 | GPIO0 BOOT, GPIO5 SD CS, display CS/DC/backlight | ESP32 GPIO plus runtime input patch | Present for the pins used by the player |
@@ -54,10 +54,31 @@ Adding another firmware SDSPI buffer would not address this failure. QEMU's
 block backend and the host operating system already cache the image, while
 the firmware uses DMA and sequential compressed-input refill buffers.
 
+## Audio-reader starvation
+
+After the SDSPI correction, a separate scheduling error could stop playback
+after roughly 240 to 307 frames. GDB showed core 1 idle after draining the
+decode queue while core 0 repeatedly refilled AVI PCM audio. The audio reader
+runs above the player task's priority and previously yielded only when its
+stream buffer became full. If refill remained below the DAC drain rate, it
+could therefore keep the lower-priority player task from submitting more
+video indefinitely.
+
+Both firmware variants now delay the reader by one 1 ms FreeRTOS tick after
+each successfully prefetched packet. This bounds its core-0 occupancy without
+changing the codec or container data path. A 50-second C-firmware regression
+continued through frame 618 instead of stopping at the old failure point. A
+40-second C++ reference run continued through frame 862; its last audio report
+showed zero rebuffers, underrun samples, and inserted-silence chunks:
+
+```text
+A,840,4080,1536,279552,0,0,0,2,10,0,0,0
+```
+
 ## Accuracy limits
 
 The emulator is functional rather than cycle-accurate. Full CIF H.263
-playback is substantially improved and no longer stalls after its first
-frame, but native Windows MTTCG throughput still depends on the host and does
-not establish a physical-board FPS result. Physical timing and quality claims
-must continue to come from tests on the ESP32.
+playback is substantially improved and no longer stalls, but native Windows
+MTTCG throughput still depends on the host and does not establish a
+physical-board FPS result. Physical timing and quality claims must continue
+to come from tests on the ESP32.
