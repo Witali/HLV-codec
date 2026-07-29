@@ -17,7 +17,7 @@ $temporary = [IO.Path]::Combine(
 )
 try {
     [IO.File]::WriteAllText(
-        $temporary, $Name, [Text.ASCIIEncoding]::new($false)
+        $temporary, $Name, [Text.Encoding]::ASCII
     )
     & (Join-Path $PSScriptRoot "upload-video.ps1") `
         -Port $Port -File $temporary -Name "play.txt" `
