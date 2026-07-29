@@ -95,6 +95,14 @@ $output | ForEach-Object { Write-Host $_ }
 if (-not ($output -contains "SDSPI_QEMU_STAGE,mounted")) {
     throw "The QEMU firmware did not mount the SPI SD card."
 }
+if (-not ($output -match
+    "^SDSPI_QEMU_MULTIBLOCK_READ,16,65536,\d+,4e1b1d51$")) {
+    throw "The QEMU firmware did not complete the CMD18 read check."
+}
+if (-not ($output -contains
+    "SDSPI_QEMU_MULTIBLOCK_WRITE,4096,edb6ddc5")) {
+    throw "The QEMU firmware did not complete the CMD25 write check."
+}
 if (-not ($output -contains "SDSPI_QEMU_DONE,0")) {
     throw "The QEMU firmware did not read the expected SD-card file."
 }

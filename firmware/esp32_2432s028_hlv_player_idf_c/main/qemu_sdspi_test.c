@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +22,73 @@ static const char k_test_path[] = "/sdcard/HLV/qemu.txt";
 static const char k_video_path[] = "/sdcard/HLV/bunny.avi";
 static const char k_expected_text[] = "HLV ESP32 SPI3 SD test";
 static uint8_t s_read_buffer[8U * 1024U];
+enum {
+    k_multiblock_sectors = 8,
+    k_multiblock_bytes = k_multiblock_sectors * 512,
+    k_multiblock_iterations = 16,
+};
+static uint8_t s_multiblock_buffer[k_multiblock_bytes]
+    __attribute__((aligned(4)));
+
+static uint32_t fnv1a(const uint8_t *data, size_t bytes)
+{
+    uint32_t hash = UINT32_C(2166136261);
+    for (size_t i = 0; i < bytes; ++i) {
+        hash ^= data[i];
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+static int benchmark_multiblock_io(sdmmc_card_t *card)
+{
+    const int64_t read_start = esp_timer_get_time();
+    for (unsigned i = 0; i < k_multiblock_iterations; ++i) {
+        const esp_err_t result = sdmmc_read_sectors(
+            card, s_multiblock_buffer, 0, k_multiblock_sectors);
+        if (result != ESP_OK) {
+            ESP_LOGE(k_tag, "multi-block read failed: %s",
+                     esp_err_to_name(result));
+            return 6;
+        }
+    }
+    const int64_t read_us = esp_timer_get_time() - read_start;
+    esp_rom_printf("SDSPI_QEMU_MULTIBLOCK_READ,%u,%u,%lld,%08x\n",
+                   (unsigned)k_multiblock_iterations,
+                   (unsigned)(k_multiblock_iterations *
+                              k_multiblock_bytes),
+                   read_us,
+                   (unsigned)fnv1a(
+                       s_multiblock_buffer, sizeof s_multiblock_buffer));
+
+    for (size_t i = 0; i < sizeof s_multiblock_buffer; ++i) {
+        s_multiblock_buffer[i] = (uint8_t)(i * 29U + 17U);
+    }
+    const uint32_t expected_hash =
+        fnv1a(s_multiblock_buffer, sizeof s_multiblock_buffer);
+    const size_t scratch_sector =
+        card->csd.capacity - k_multiblock_sectors;
+    esp_err_t result = sdmmc_write_sectors(
+        card, s_multiblock_buffer, scratch_sector, k_multiblock_sectors);
+    if (result != ESP_OK) {
+        ESP_LOGE(k_tag, "multi-block write failed: %s",
+                 esp_err_to_name(result));
+        return 7;
+    }
+    memset(s_multiblock_buffer, 0, sizeof s_multiblock_buffer);
+    result = sdmmc_read_sectors(
+        card, s_multiblock_buffer, scratch_sector, k_multiblock_sectors);
+    if (result != ESP_OK ||
+        fnv1a(s_multiblock_buffer, sizeof s_multiblock_buffer) !=
+            expected_hash) {
+        ESP_LOGE(k_tag, "multi-block write verification failed");
+        return 8;
+    }
+    esp_rom_printf("SDSPI_QEMU_MULTIBLOCK_WRITE,%u,%08x\n",
+                   (unsigned)k_multiblock_bytes,
+                   (unsigned)expected_hash);
+    return 0;
+}
 
 static __attribute__((noreturn)) void finish(int code)
 {
@@ -108,6 +176,10 @@ void app_main(void)
 
     ESP_LOGI(k_tag, "read %u bytes from %s", (unsigned)bytes, k_test_path);
     esp_rom_printf("SDSPI_QEMU_STAGE,marker-read,%u\n", (unsigned)bytes);
+    const int multiblock_result = benchmark_multiblock_io(card);
+    if (multiblock_result != 0) {
+        finish(multiblock_result);
+    }
     file = fopen(k_video_path, "rb");
     if (file != NULL) {
         const size_t target_bytes = 64U * 1024U;
