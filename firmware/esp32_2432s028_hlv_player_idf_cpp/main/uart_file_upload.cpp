@@ -135,6 +135,27 @@ bool validFilename(const char *filename) {
            endsWith(".mpeg") || endsWith(".txt");
 }
 
+bool validDeleteFilename(const char *filename) {
+    if (validFilename(filename)) return true;
+    const size_t length = std::strlen(filename);
+    constexpr char kPartSuffix[] = ".part";
+    constexpr size_t kPartSuffixLength = sizeof kPartSuffix - 1;
+    if (length <= kPartSuffixLength) return false;
+    const char *suffix = filename + length - kPartSuffixLength;
+    for (size_t index = 0; index < kPartSuffixLength; ++index) {
+        char left = suffix[index];
+        char right = kPartSuffix[index];
+        if (left >= 'A' && left <= 'Z')
+            left = static_cast<char>(left - 'A' + 'a');
+        if (left != right) return false;
+    }
+    char destination[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+    const size_t destination_length = length - kPartSuffixLength;
+    std::memcpy(destination, filename, destination_length);
+    destination[destination_length] = '\0';
+    return validFilename(destination);
+}
+
 bool supportedDataBaud(uint32_t baud) {
     return baud == kTransferBaud460k || baud == kTransferBaud921k ||
            baud == kTransferBaud1500k || baud == kTransferBaud2000k ||
@@ -252,7 +273,7 @@ bool UartFileUpload::parseRequest(const char *line,
         char trailing = '\0';
         const int fields = std::sscanf(
             line, "HLVDELETE 1 %48s %c", filename, &trailing);
-        if (fields != 1 || !validFilename(filename)) {
+        if (fields != 1 || !validDeleteFilename(filename)) {
             reject("BAD_REQUEST");
             return false;
         }
