@@ -88,7 +88,7 @@ followed by compact-row packing.
 
 ## Priority 1: specialize sparse inter IDCT
 
-- [ ] Add a direct DC-only inter residual plus prediction kernel.
+- [x] Measure a direct DC-only inter residual plus prediction kernel.
 - [ ] Measure and, when common, add exact one-row, one-column and two-column
       sparse kernels.
 - [ ] Avoid clearing untouched coefficient slots when a sparse representation
@@ -97,6 +97,12 @@ followed by compact-row packing.
       stores where that preserves exact pixels.
 - [ ] Retain each specialization independently only after QEMU hash and
       physical A/B acceptance.
+
+A direct DC-only kernel bypassed the existing `idctcol1` plus `idctrow1`
+dispatch and produced the unchanged `b826825f344bc2e3` hash. It improved the
+QEMU benchmark from 2,750,352 to 2,749,294 cycles/picture, only 0.038%.
+This is below the 0.5% acceptance threshold, so the candidate was removed
+without flashing it to the physical board.
 
 ## Priority 2: decode compact motion compensation directly
 
