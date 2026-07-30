@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "mjpeg_huffman_stream.h"
+
 enum MjpegAviResult {
     MJPEG_AVI_OK = 0,
     MJPEG_AVI_EOF = 1,
@@ -34,9 +36,13 @@ struct MjpegAviInfo {
 struct MjpegAviPacket {
     const uint8_t *jpeg = nullptr;
     size_t jpeg_size = 0;
+    FILE *file = nullptr;
+    long payload_offset = -1;
+    long next_offset = -1;
 };
 
 struct MjpegAviDecodeCycles {
+    uint32_t input = 0;
     uint32_t parse_header = 0;
     uint32_t geometry = 0;
     uint32_t process = 0;
@@ -67,6 +73,7 @@ public:
     }
     const MjpegAviInfo &info() const { return info_; }
     size_t compressedCapacity() const { return compressed_capacity_; }
+    size_t inputBufferBytes() const { return compressed_capacity_; }
     long lastPacketOffset() const { return packet_offset_; }
     const MjpegAviDecodeCycles &lastDecodeCycles() const {
         return last_decode_cycles_;
@@ -93,11 +100,17 @@ private:
     void *decoder_ = nullptr;
     uint32_t packet_index_ = 0;
     long packet_offset_ = -1;
+    FILE *stream_file_ = nullptr;
+    uint32_t stream_remaining_ = 0;
+    mjpeg_huffman_stream_t entropy_stream_{};
     uint16_t decode_height_ = 0;
+    bool stream_failed_ = false;
     bool need_strip_ = false;
     MjpegAviDecodeCycles last_decode_cycles_{};
 
     int decodeImpl(const MjpegAviPacket &packet,
                    MjpegAviStripAcquire acquire,
                    MjpegAviStripOutput output, void *output_context);
+    static size_t refillStream(
+        void *context, uint8_t *destination, size_t capacity);
 };

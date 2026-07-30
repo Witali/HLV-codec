@@ -153,6 +153,28 @@ static bool valid_filename(const char *filename) {
            ends_with_ignore_case(filename, length, ".txt");
 }
 
+static bool valid_delete_filename(const char *filename) {
+    char destination[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
+    size_t length;
+    size_t destination_length;
+
+    if (valid_filename(filename)) {
+        return true;
+    }
+    if (filename == NULL) {
+        return false;
+    }
+    length = strlen(filename);
+    if (length <= 5U ||
+        !ends_with_ignore_case(filename, length, ".part")) {
+        return false;
+    }
+    destination_length = length - 5U;
+    memcpy(destination, filename, destination_length);
+    destination[destination_length] = '\0';
+    return valid_filename(destination);
+}
+
 static bool supported_data_baud(uint32_t baud) {
     return baud == TRANSFER_BAUD_460K ||
            baud == TRANSFER_BAUD_921K ||
@@ -414,7 +436,7 @@ static bool parse_request(uart_file_upload_t *upload,
         char trailing = '\0';
         int fields =
             sscanf(line, "HLVDELETE 1 %48s %c", filename, &trailing);
-        if (fields != 1 || !valid_filename(filename)) {
+        if (fields != 1 || !valid_delete_filename(filename)) {
             uart_file_upload_reject(upload, "BAD_REQUEST");
             return false;
         }

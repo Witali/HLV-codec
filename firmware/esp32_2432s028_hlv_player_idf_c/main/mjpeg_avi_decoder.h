@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "mjpeg_huffman_stream.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,9 +41,13 @@ typedef struct {
 typedef struct {
     const uint8_t *jpeg;
     size_t jpeg_size;
+    FILE *file;
+    long payload_offset;
+    long next_offset;
 } mjpeg_avi_packet_t;
 
 typedef struct {
+    uint32_t input;
     uint32_t parse_header;
     uint32_t geometry;
     uint32_t process;
@@ -62,7 +68,11 @@ typedef struct {
     void *decoder;
     uint32_t packet_index;
     long packet_offset;
+    FILE *stream_file;
+    uint32_t stream_remaining;
+    mjpeg_huffman_stream_t entropy_stream;
     uint16_t decode_height;
+    bool stream_failed;
     bool need_strip;
     mjpeg_avi_decode_cycles_t last_decode_cycles;
 } mjpeg_avi_decoder_t;
@@ -88,6 +98,8 @@ bool mjpeg_avi_decoder_ready(const mjpeg_avi_decoder_t *decoder);
 const mjpeg_avi_info_t *mjpeg_avi_decoder_info(
     const mjpeg_avi_decoder_t *decoder);
 size_t mjpeg_avi_decoder_compressed_capacity(
+    const mjpeg_avi_decoder_t *decoder);
+size_t mjpeg_avi_decoder_input_buffer_bytes(
     const mjpeg_avi_decoder_t *decoder);
 long mjpeg_avi_decoder_last_packet_offset(
     const mjpeg_avi_decoder_t *decoder);

@@ -93,6 +93,9 @@ void app_main(void) {
     uint64_t total_geometry_cycles = 0;
     uint64_t total_process_cycles = 0;
     uint64_t total_callback_cycles = 0;
+    uint64_t total_refill_bytes = 0;
+    uint32_t total_refills = 0;
+    uint32_t maximum_packet = 0;
     uint32_t frame_cycles[MJPEG_QEMU_FRAME_LIMIT] = {0};
     uint32_t frames = 0;
 
@@ -125,6 +128,9 @@ void app_main(void) {
                 &decoder, file, &packet) != MJPEG_AVI_OK) {
             finish(6);
         }
+        if (packet.jpeg_size > maximum_packet) {
+            maximum_packet = (uint32_t)packet.jpeg_size;
+        }
         callback_before = output.callback_cycles;
         start = esp_cpu_get_cycle_count();
         decode_result = mjpeg_avi_decoder_decode_direct(
@@ -139,6 +145,8 @@ void app_main(void) {
         total_header_cycles += phases->parse_header;
         total_geometry_cycles += phases->geometry;
         total_process_cycles += phases->process;
+        total_refills += decoder.entropy_stream.refill_count;
+        total_refill_bytes += decoder.entropy_stream.refill_bytes;
         total_callback_cycles +=
             output.callback_cycles - callback_before;
     }
@@ -180,9 +188,10 @@ void app_main(void) {
         esp_rom_printf(
             "#J,frames,avg,p50,p95,max,fps_milli,hash,heap,largest,"
             "decoder_avg,header_avg,geometry_avg,process_avg,"
-            "callback_avg\n");
+            "callback_avg,input_buffer,max_packet,refills,refill_bytes\n");
         esp_rom_printf(
-            "J,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u,%u,%u,%u,%u\n",
+            "J,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u,%u,%u,%u,%u,"
+            "%u,%u,%u,%u\n",
             (unsigned)frames, (unsigned)average, (unsigned)p50,
             (unsigned)p95, (unsigned)maximum, (unsigned)fps_milli,
             (unsigned)(output.hash >> 32), (unsigned)output.hash,
@@ -191,7 +200,10 @@ void app_main(void) {
                 MALLOC_CAP_8BIT),
             (unsigned)decoder_average, (unsigned)header_average,
             (unsigned)geometry_average, (unsigned)process_average,
-            (unsigned)callback_average);
+            (unsigned)callback_average,
+            (unsigned)mjpeg_avi_decoder_input_buffer_bytes(&decoder),
+            (unsigned)maximum_packet, (unsigned)total_refills,
+            (unsigned)total_refill_bytes);
     }
     ESP_LOGI(k_tag, "esp_new_jpeg block benchmark complete");
     finish(0);
