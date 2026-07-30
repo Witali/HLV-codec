@@ -17,6 +17,17 @@ sourcePreparation:
       height: 240
       resizeMode: Crop
 
+audioPreparation:
+  channels: 1
+  normalization: primaryCompressorPeak
+  compressorThresholdDb: -20.0
+  compressorRatio: 1.6
+  compressorAttack: 0.01
+  compressorRelease: 250
+  compressorKneeDb: 8.0
+  detection: peak
+  targetPeakDb: -0.1
+
 formats:
   HLVv14:
     outputDirectory: ../HLV
@@ -147,6 +158,27 @@ formats:
         codedPaddingX: 16
         codedPaddingY: 24
         gop: 1
+
+  MPEG4SP:
+    outputDirectory: ../MPEG4SP
+    extension: avi
+    container: AVI
+    videoCodec: mpeg4
+    profile: Simple Profile
+    codecTag: M4S2
+    width: 320
+    height: 240
+    fps: source
+    maximumFps: 30
+    rateControl: constantQuality
+    videoQuality: 5
+    gop: 30
+    bFrames: 0
+    pixelFormat: yuv420p
+    threads: 6
+    audioCodec: pcm_s16le
+    audioSampleRate: 8000
+    audioChannels: 1
 
 videos:
   - name: BigBuckBunny

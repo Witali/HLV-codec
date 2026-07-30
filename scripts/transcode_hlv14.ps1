@@ -29,6 +29,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_transcode_profile_common.ps1")
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
@@ -91,6 +92,7 @@ try {
     }
 
     $haveAudio = $false
+    $audioNormalization = $null
     if (-not $NoAudio) {
         $audioIndex = & $ffprobe -v error -select_streams a:0 `
             -show_entries stream=index -of csv=p=0 $info.InputFile |
@@ -98,11 +100,16 @@ try {
         $haveAudio = $LASTEXITCODE -eq 0 -and
             -not [string]::IsNullOrWhiteSpace([string]$audioIndex)
         if ($haveAudio) {
+            $audioNormalization = Get-PeakSafeAudioFilter `
+                -Ffmpeg $ffmpeg `
+                -InputFile $info.InputFile `
+                -Rate 16000
             $audioArguments = @(
                 "-y", "-hide_banner", "-loglevel", "error",
                 "-i", $info.InputFile,
                 "-map", "0:a:0",
                 "-vn",
+                "-af", $audioNormalization.Filter,
                 "-ac", "1",
                 "-ar", "16000"
             )
@@ -119,6 +126,7 @@ try {
             if ($LASTEXITCODE -ne 0) {
                 throw "HLV source audio preparation failed."
             }
+            Write-AudioNormalizationStatus $audioNormalization
         }
     }
 
@@ -172,6 +180,16 @@ try {
         cqTrials = 5
         threads = 1
         audio = if ($haveAudio) { "PCM_U8 mono 16000 Hz" } else { $null }
+        audioNormalization = if ($haveAudio) {
+            [ordered]@{
+                curve = "primary-compressor-peak"
+                targetPeakDb = $audioNormalization.TargetPeakDb
+                curvePeakDb = $audioNormalization.CurvePeakDb
+                makeupDb = $audioNormalization.OutputGainDb
+            }
+        } else {
+            $null
+        }
         cqLog = $cqLog
     } | ConvertTo-Json |
         Set-Content -LiteralPath $reportFile -Encoding utf8

@@ -38,6 +38,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_transcode_profile_common.ps1")
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
@@ -68,6 +69,21 @@ $videoFilter = Get-Esp32PreparationFilter `
     -ResizeMode $effectiveResizeMode `
     -Fps $outputFps
 $gop = [Math]::Max(1, [Math]::Round($outputFps))
+$audioNormalization = $null
+if (-not $NoAudio) {
+    $audioIndex = & $ffprobe -v error -select_streams a:0 `
+        -show_entries stream=index -of csv=p=0 $info.InputFile |
+        Select-Object -First 1
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFprobe audio inspection failed."
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$audioIndex)) {
+        $audioNormalization = Get-PeakSafeAudioFilter `
+            -Ffmpeg $ffmpeg `
+            -InputFile $info.InputFile `
+            -Rate 16000
+    }
+}
 $arguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
     "-i", $info.InputFile,
@@ -95,6 +111,9 @@ else {
         "-ar", "16000",
         "-ac", "1"
     )
+    if ($audioNormalization) {
+        $arguments += @("-af", $audioNormalization.Filter)
+    }
 }
 $arguments += @("-f", "avi", $OutputFile)
 & $ffmpeg @arguments
@@ -160,8 +179,21 @@ $reportFile = [IO.Path]::ChangeExtension($OutputFile, ".json")
     bFrames = 0
     maximumVideoPacketBytes = [uint64]$maximumPacket
     maximumAllowedPacketBytes = 98304
-    audio = if ($NoAudio) { $null } else { "PCM_U8 mono 16000 Hz" }
+    audio = if ($audioNormalization) { "PCM_U8 mono 16000 Hz" } else { $null }
+    audioNormalization = if ($audioNormalization) {
+        [ordered]@{
+            curve = "primary-compressor-peak"
+            targetPeakDb = $audioNormalization.TargetPeakDb
+            curvePeakDb = $audioNormalization.CurvePeakDb
+            makeupDb = $audioNormalization.OutputGainDb
+        }
+    } else {
+        $null
+    }
 } | ConvertTo-Json | Set-Content -LiteralPath $reportFile -Encoding utf8
+if ($audioNormalization) {
+    Write-AudioNormalizationStatus $audioNormalization
+}
 Write-Host (
     "Ready: {0}; {1} fps (source/2), maximum packet {2:N0} bytes" -f
     $OutputFile, $outputFps, $maximumPacket

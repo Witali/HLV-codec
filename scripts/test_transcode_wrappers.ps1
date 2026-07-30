@@ -25,6 +25,59 @@ function Assert-ProbedValue {
     }
 }
 
+function Assert-NormalizedAudio {
+    param(
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$Codec,
+        [Parameter(Mandatory)][int]$Rate,
+        [double]$PeakToleranceDb = 0.25
+    )
+
+    $audioText = & $ffprobe -v error -select_streams a:0 `
+        -show_entries stream=codec_name,sample_rate,channels `
+        -of json $File
+    $audioStreams = if ($LASTEXITCODE -eq 0) {
+        @(($audioText | ConvertFrom-Json).streams)
+    }
+    else {
+        @()
+    }
+    if ($audioStreams.Count -ne 1 -or
+        $audioStreams[0].codec_name -ne $Codec -or
+        [int]$audioStreams[0].sample_rate -ne $Rate -or
+        $audioStreams[0].channels -ne 1) {
+        throw "Unexpected normalized audio profile for $File."
+    }
+
+    $peakOutput = & $ffmpeg -hide_banner -nostats -i $File `
+        -map 0:a:0 -vn -af "astats=metadata=0:reset=0" `
+        -f null NUL 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not measure normalized audio in $File."
+    }
+    $peakMatches = [regex]::Matches(
+        ($peakOutput -join "`n"),
+        "Peak level dB:\s*(-?\d+(?:\.\d+)?)"
+    )
+    if (-not $peakMatches.Count) {
+        throw "FFmpeg did not report the output audio peak for $File."
+    }
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $peakDb = (
+        $peakMatches |
+            ForEach-Object {
+                [double]::Parse($_.Groups[1].Value, $culture)
+            } |
+            Measure-Object -Maximum
+    ).Maximum
+    if ([Math]::Abs($peakDb - (-0.1)) -gt $PeakToleranceDb) {
+        throw (
+            "Audio peak in $File is ${peakDb} dBFS; expected " +
+            "-0.1 +/- ${PeakToleranceDb} dB."
+        )
+    }
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $work | Out-Null
     & $ffmpeg -y -hide_banner -loglevel error `
@@ -37,10 +90,10 @@ try {
 
     & (Join-Path $PSScriptRoot "transcode_h263.ps1") $source `
         -OutputFile (Join-Path $work "h263.avi") `
-        -MaxFrames 3 -NoAudio -Force
+        -MaxFrames 3 -Force
     & (Join-Path $PSScriptRoot "transcode_mpeg4_simple.ps1") $source `
         -OutputFile (Join-Path $work "mpeg4-simple.avi") `
-        -MaxFrames 3 -NoAudio -Force
+        -MaxFrames 3 -Force
     & (Join-Path $PSScriptRoot "transcode_mjpeg.ps1") $source `
         -OutputFile (Join-Path $work "mjpeg.avi") `
         -MaxFrames 3 -Force
@@ -49,13 +102,13 @@ try {
         -MaxFrames 3 -Force
     & (Join-Path $PSScriptRoot "transcode_divx3.ps1") $source `
         -OutputFile (Join-Path $work "divx3.avi") `
-        -MaxFrames 3 -NoAudio -Force
+        -MaxFrames 3 -Force
     & (Join-Path $PSScriptRoot "transcode_hlv14.ps1") $source `
         -OutputFile (Join-Path $work "hlv14.hlv") `
-        -MaxFrames 2 -NoAudio -Force
+        -MaxFrames 2 -Force
     & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
         -OutputDirectory (Join-Path $work "BPV") `
-        -Width 320 -Height 180 -MaxFrames 2 -NoAudio -Force
+        -Width 320 -Height 180 -MaxFrames 2 -Force
     & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
         -OutputDirectory (Join-Path $work "BPV7") `
         -Width 320 -Height 180 -MaxFrames 2 -NoAudio -PixelMotion -Force
@@ -75,6 +128,16 @@ try {
     Assert-ProbedValue -File (Join-Path $work "divx3.avi") `
         -Entries "codec_name,codec_tag_string,r_frame_rate" `
         -Expected "(?s)msmpeg4v3.*DIV3.*15/1"
+    Assert-NormalizedAudio -File (Join-Path $work "h263.avi") `
+        -Codec "pcm_s16le" -Rate 8000
+    Assert-NormalizedAudio -File (Join-Path $work "mpeg4-simple.avi") `
+        -Codec "pcm_s16le" -Rate 8000
+    Assert-NormalizedAudio -File (Join-Path $work "mjpeg.avi") `
+        -Codec "pcm_u8" -Rate 16000
+    Assert-NormalizedAudio -File (Join-Path $work "mpeg1.mpg") `
+        -Codec "mp2" -Rate 32000 -PeakToleranceDb 1.5
+    Assert-NormalizedAudio -File (Join-Path $work "divx3.avi") `
+        -Codec "pcm_u8" -Rate 16000
 
     foreach ($required in @(
         (Join-Path $work "divx3.json"),
@@ -86,6 +149,17 @@ try {
             throw "Wrapper did not create required output: $required"
         }
     }
+    $hlvReport = Get-Content -LiteralPath (
+        Join-Path $work "hlv14.json"
+    ) -Raw | ConvertFrom-Json
+    if ($hlvReport.audio -ne "PCM_U8 mono 16000 Hz" -or
+        $hlvReport.audioNormalization.curve -ne
+            "primary-compressor-peak" -or
+        [Math]::Abs(
+            $hlvReport.audioNormalization.targetPeakDb - (-0.1)
+        ) -gt 0.000001) {
+        throw "HLV wrapper did not record normalized 16 kHz audio."
+    }
     $bpvFiles = @(Get-ChildItem -LiteralPath (Join-Path $work "BPV") `
         -Filter "*.bpv1")
     if ($bpvFiles.Count -ne 1) {
@@ -95,6 +169,9 @@ try {
         $bpvFiles[0].FullName --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or
         $bpvInfo.version -ne 6 -or
+        $bpvInfo.audioSampleRate -ne 16000 -or
+        $bpvInfo.audioChannels -ne 1 -or
+        $bpvInfo.audioBytes -le 0 -or
         $bpvInfo.maxPatternDictionary -ne 0 -or
         @($bpvInfo.modeCounts.PSObject.Properties).Count -ne 4) {
         throw "BPV wrapper did not create a valid four-mode BPV v6 stream."
@@ -137,8 +214,8 @@ try {
     }
 
     Write-Host (
-        "All six production transcode wrappers and the BPV v7 " +
-        "pixel-motion variant passed."
+        "All seven production transcode formats use the normalized " +
+        "audio profile; the BPV v7 pixel-motion variant also passed."
     )
 }
 finally {

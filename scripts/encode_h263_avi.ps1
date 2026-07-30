@@ -38,6 +38,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 $repo = Split-Path $PSScriptRoot -Parent
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
@@ -170,6 +171,22 @@ else {
     )
 }
 
+$audioNormalization = $null
+if (-not $NoAudio) {
+    $audioIndex = & $ffprobe -v error -select_streams a:0 `
+        -show_entries stream=index -of csv=p=0 $InputFile |
+        Select-Object -First 1
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFprobe audio inspection failed."
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$audioIndex)) {
+        $audioNormalization = Get-PeakSafeAudioFilter `
+            -Ffmpeg $ffmpeg `
+            -InputFile $InputFile `
+            -Rate 8000
+    }
+}
+
 $arguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
     "-i", $InputFile,
@@ -214,6 +231,9 @@ else {
         "-ar", "8000",
         "-ac", "1"
     )
+    if ($audioNormalization) {
+        $arguments += @("-af", $audioNormalization.Filter)
+    }
     if ($MaxFrames) {
         # End audio with a frame-limited video instead of retaining the
         # remainder of the source as an audio-only AVI tail.
@@ -296,6 +316,9 @@ Write-Host "Decoding the complete H.263/AVI file with FFmpeg..."
     -map 0:v:0 -map 0:a:0? -f null NUL
 if ($LASTEXITCODE -ne 0) {
     throw "Full H.263/AVI validation failed."
+}
+if ($audioNormalization) {
+    Write-AudioNormalizationStatus $audioNormalization
 }
 
 $report | Set-Content -LiteralPath $ReportFile -Encoding utf8

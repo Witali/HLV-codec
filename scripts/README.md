@@ -104,6 +104,14 @@ select the production parameters and output directory automatically:
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
 
+Every audio-enabled production wrapper uses the same peak-safe normalization:
+convert to the profile's mono sample rate, apply the primary gentle compressor,
+measure the complete processed source, and set compressor makeup so the
+pre-encode peak reaches -0.1 dBFS. HLV, BPV, DivX 3 and MJPEG use 16 kHz;
+H.263 and MPEG-4 Simple Profile use 8 kHz; MPEG-1 uses 32 kHz. Inputs without
+an audio stream remain video-only, and `-NoAudio` continues to bypass audio
+processing where that option is supported.
+
 All wrappers refuse to overwrite an existing video unless `-Force` is
 specified. Width and height default to 320x240; use 320x180 for the 16:9
 variant. `ResizeMode=Auto` crops the 320x240 variant and stretches 320x180.
@@ -212,6 +220,7 @@ Examples:
 | `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
 | `test_h263_avi.ps1` | Generates a 30 fps synthetic source and verifies standard QCIF/CIF H.263 AVI encoding and decoding without frame-rate reduction. |
 | `test_mpeg4_simple.ps1` | Verifies MPEG-4 SP/M4S2 encoding and compares decoded checksums for a video packet larger than 4 KiB through fixed-refill and contiguous-input builds. |
+| `test_transcode_wrappers.ps1` | Encodes all seven production formats with audio, verifies the normalized codec/rate/channel profiles and measurable peaks for FFmpeg-readable containers, and checks HLV/BPV reports. |
 | `test_threaded_encode.py` | Verifies that parallel HLV GOP encoding is enabled by default and remains byte-exact against the serial encoder. |
 | `test_windowed_two_pass.py` | Smoke-tests bounded local two-pass HLV rate control through an FFmpeg Y4M pipe. |
 
