@@ -24,7 +24,7 @@ available in the preserved C++ firmware.
 - Commit each retained optimization separately. Revert rejected candidates
   but record their measurements and reason here.
 
-## Current baseline
+## Starting baseline
 
 The retained compact decoder stores the previous and current pictures as two
 independently allocated Y6/U5/V5 frames with signed Q4 block-average
@@ -130,11 +130,34 @@ consecutive and audio reported zero underruns, rebuffers and inserted silence.
 
 ## Priority 3: remove redundant rolling-row traffic
 
+- [x] Specialize byte-aligned eight-sample Y6/U5/V5 packing when no
+      reconstructed byte output is requested.
 - [ ] Write skipped and all-zero-residual predictions directly to the compact
       output when reference lifetime and render guards make this safe.
 - [ ] Pack coded 8x8 blocks while reconstructed pixels are still cache-hot.
 - [ ] Compute Q4 block-average corrections during the direct compact write.
 - [ ] Preserve exact compact-frame checksums and row-level renderer safety.
+
+The retained aligned packer derives the signed correction residual from the
+sum of eight source samples minus the sum of their quantized codes. The
+generic path remains active for partial blocks, other bit depths and callers
+that request reconstructed bytes.
+
+After the direct half-pel optimization, the compile-time-disabled QEMU
+benchmark improved from 3,000,045 to 2,750,352 cycles/picture (8.32%) with
+the unchanged `b826825f344bc2e3` hash. C++ QEMU produced the same hash at
+2,750,301 cycles/picture.
+
+All three profiled physical trials were identical. Compact-row packing
+improved from 3,302,835 to 2,230,095 cycles/picture (32.48%) and complete
+decode improved from 16,659,074 to 15,528,990 cycles/picture (6.78%).
+Decoder-owned memory remained 194,056 bytes.
+
+The full 3,357-picture production acceptance run improved from 12.532 to
+13.341 fps. Average decode time improved from 73,179.8 to 67,386.3 us
+(7.92%), and complete work improved from 101,793.2 to 95,920.9 us (5.77%).
+Every sequence number was consecutive and audio again reported zero
+underruns, rebuffers and inserted silence.
 
 ## Priority 4: overlap independent work
 
@@ -177,3 +200,10 @@ consecutive and audio reported zero underruns, rebuffers and inserted silence.
   ESP32.
 - Do not grow the reusable compressed-input refill buffer to the largest AVI
   packet.
+
+## Test infrastructure follow-up
+
+- [ ] Remove matching cached records from `crc32.txt` atomically when
+      `HLVDELETE` removes a test file, and avoid duplicate records on upload.
+- [ ] Make the uploader completion parser accept an exact valid response
+      before unrelated bytes emitted during the UART baud transition.

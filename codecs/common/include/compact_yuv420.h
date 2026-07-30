@@ -262,6 +262,95 @@ static inline void compact_yuv420_unpack_corrected_samples(
  * residual_sum accumulates original-minus-quantized values. reconstructed
  * may alias source when the codec needs its row workspace quantized in place.
  */
+static inline int compact_yuv420_pack_luma_8(
+    uint8_t *destination, const uint8_t *source) {
+    unsigned sample0 = source[0];
+    unsigned sample1 = source[1];
+    unsigned sample2 = source[2];
+    unsigned sample3 = source[3];
+    unsigned code0 = (sample0 + 2U) >> 2U;
+    unsigned code1 = (sample1 + 2U) >> 2U;
+    unsigned code2 = (sample2 + 2U) >> 2U;
+    unsigned code3 = (sample3 + 2U) >> 2U;
+    unsigned sample4 = source[4];
+    unsigned sample5 = source[5];
+    unsigned sample6 = source[6];
+    unsigned sample7 = source[7];
+    unsigned code4 = (sample4 + 2U) >> 2U;
+    unsigned code5 = (sample5 + 2U) >> 2U;
+    unsigned code6 = (sample6 + 2U) >> 2U;
+    unsigned code7 = (sample7 + 2U) >> 2U;
+    unsigned sample_sum;
+    unsigned code_sum;
+
+    code0 -= code0 >> 6U;
+    code1 -= code1 >> 6U;
+    code2 -= code2 >> 6U;
+    code3 -= code3 >> 6U;
+    code4 -= code4 >> 6U;
+    code5 -= code5 >> 6U;
+    code6 -= code6 >> 6U;
+    code7 -= code7 >> 6U;
+    destination[0] = (uint8_t)(code0 | code1 << 6U);
+    destination[1] = (uint8_t)(code1 >> 2U | code2 << 4U);
+    destination[2] = (uint8_t)(code2 >> 4U | code3 << 2U);
+    destination[3] = (uint8_t)(code4 | code5 << 6U);
+    destination[4] = (uint8_t)(code5 >> 2U | code6 << 4U);
+    destination[5] = (uint8_t)(code6 >> 4U | code7 << 2U);
+    sample_sum =
+        sample0 + sample1 + sample2 + sample3 +
+        sample4 + sample5 + sample6 + sample7;
+    code_sum =
+        code0 + code1 + code2 + code3 +
+        code4 + code5 + code6 + code7;
+    return (int)(sample_sum - (code_sum << 2U));
+}
+
+static inline int compact_yuv420_pack_chroma_8(
+    uint8_t *destination, const uint8_t *source) {
+    unsigned sample0 = source[0];
+    unsigned sample1 = source[1];
+    unsigned sample2 = source[2];
+    unsigned sample3 = source[3];
+    unsigned code0 = (sample0 + 4U) >> 3U;
+    unsigned code1 = (sample1 + 4U) >> 3U;
+    unsigned code2 = (sample2 + 4U) >> 3U;
+    unsigned code3 = (sample3 + 4U) >> 3U;
+    unsigned sample4 = source[4];
+    unsigned sample5 = source[5];
+    unsigned sample6 = source[6];
+    unsigned sample7 = source[7];
+    unsigned code4 = (sample4 + 4U) >> 3U;
+    unsigned code5 = (sample5 + 4U) >> 3U;
+    unsigned code6 = (sample6 + 4U) >> 3U;
+    unsigned code7 = (sample7 + 4U) >> 3U;
+    unsigned sample_sum;
+    unsigned code_sum;
+
+    code0 -= code0 >> 5U;
+    code1 -= code1 >> 5U;
+    code2 -= code2 >> 5U;
+    code3 -= code3 >> 5U;
+    code4 -= code4 >> 5U;
+    code5 -= code5 >> 5U;
+    code6 -= code6 >> 5U;
+    code7 -= code7 >> 5U;
+    destination[0] = (uint8_t)(code0 | code1 << 5U);
+    destination[1] = (uint8_t)(
+        code1 >> 3U | code2 << 2U | code3 << 7U);
+    destination[2] = (uint8_t)(code3 >> 1U | code4 << 4U);
+    destination[3] = (uint8_t)(
+        code4 >> 4U | code5 << 1U | code6 << 6U);
+    destination[4] = (uint8_t)(code6 >> 2U | code7 << 3U);
+    sample_sum =
+        sample0 + sample1 + sample2 + sample3 +
+        sample4 + sample5 + sample6 + sample7;
+    code_sum =
+        code0 + code1 + code2 + code3 +
+        code4 + code5 + code6 + code7;
+    return (int)(sample_sum - (code_sum << 3U));
+}
+
 static inline void compact_yuv420_pack_aligned_samples(
     uint8_t *destination, const uint8_t *source, int count, unsigned bits,
     int *residual_sum, uint8_t *reconstructed) {
@@ -269,6 +358,22 @@ static inline void compact_yuv420_pack_aligned_samples(
     unsigned shift;
     int i;
     if (count <= 0) return;
+    if (count == 8 && !reconstructed) {
+        int residual;
+        if (bits == COMPACT_YUV420_LUMA_BITS) {
+            residual = compact_yuv420_pack_luma_8(
+                destination, source);
+        } else if (bits == COMPACT_YUV420_CHROMA_BITS) {
+            residual = compact_yuv420_pack_chroma_8(
+                destination, source);
+        } else {
+            residual = 0;
+            goto generic_pack;
+        }
+        if (residual_sum) *residual_sum += residual;
+        return;
+    }
+generic_pack:
     if (count == 8 &&
         (bits == COMPACT_YUV420_LUMA_BITS ||
          bits == COMPACT_YUV420_CHROMA_BITS)) {
