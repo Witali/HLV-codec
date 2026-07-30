@@ -24,6 +24,12 @@ available in the preserved C++ firmware.
 - Commit each retained optimization separately. Revert rejected candidates
   but record their measurements and reason here.
 
+For the current optimization series, keep the uploaded
+`Danila_320x240_30fps_MPEG4SP_35dB.avi` on the SD card so every retained
+candidate uses the exact same bytes. Delete this one test asset only after
+all checklist work is complete, then restore `play.txt` and `crc32.txt` and
+verify their final sizes with a fresh directory listing.
+
 ## Starting baseline
 
 The retained compact decoder stores the previous and current pictures as two
@@ -125,6 +131,8 @@ transform, prediction add and output stores.
 - [x] Specialize common safe 16x16 one-vector/CBP classes while preserving the
       four-block `pred_block` layout expected by residual reconstruction.
 - [x] Split signed Q4 compact-reference corrections without signed division.
+- [x] Specialize clipping for the bounded -8..14 Q4 correction domain emitted
+      by the Y6/U5/V5 packer.
 - [x] Keep edge-clamped and uncommon cases on the verified generic path.
 
 Interior half-pel prediction now unpacks only one or two rolling compact
@@ -159,6 +167,26 @@ completed all 3,357 pictures at 13.620 fps, versus 13.341 fps before this
 change. Average decode time improved from 67,386.3 to 65,611.0 us (2.63%);
 complete work improved from 95,920.9 to 93,838.3 us (2.17%). Sequence gaps
 and every audio recovery counter remained zero.
+
+Packed corrections are limited to -8..14 Q4. In that domain, an expanded
+sample changes by only -1, 0 or 1 and the quantized maximum always has room
+for +1, so the common path needs only an underflow clamp. The generic
+`int8_t` correction path retains both clamps for external callers. Native
+tests, C QEMU and C++ QEMU retained the same decoded output. C QEMU improved
+from 2,701,213 to 2,656,549 cycles/picture (1.65%); C++ measured 2,656,554.
+
+Three physical profile trials were bit-for-bit identical. Motion
+compensation improved from 8,112,942 to 7,875,030 cycles/picture (2.93%) and
+complete decode from 15,400,164 to 15,137,528 cycles/picture (1.70%), with
+unchanged decoder memory and heap headroom. A full-file run decoded all
+3,357 pictures with no sequence gaps, rebuffers, underruns or inserted
+silence. Its wall-clock rate was 13.475 fps and average decode time was
+66,462.1 us, versus 13.620 fps and 65,611.0 us in the preceding run; unlike
+the deterministic decoder profile, this noisy end-to-end run did not improve.
+
+A four-phase unroll of the same correction loop preserved output but slowed
+QEMU from 2,656,549 to 2,676,262 cycles/picture (0.74%). It was removed
+without physical flashing.
 
 ## Priority 3: remove redundant rolling-row traffic
 

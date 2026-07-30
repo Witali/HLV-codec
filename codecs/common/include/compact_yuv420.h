@@ -249,15 +249,33 @@ static inline void compact_yuv420_unpack_corrected_samples(
         int fraction = (int)(biased & 15U);
         int span = 8 - (sample_x & 7);
         int end = i + span < count ? i + span : count;
-        for (; i < end; ++i) {
-            int current_x = x + i;
-            unsigned phase =
-                phase_row + ((unsigned)current_x & 3U);
-            int value =
-                output[i] + whole +
-                (threshold[phase] < fraction);
-            output[i] = (uint8_t)(
-                value < 0 ? 0 : (value > 255 ? 255 : value));
+        /*
+         * Corrections produced by the Y6/U5/V5 packer are bounded by
+         * -8..14 Q4. They can adjust an expanded sample only by -1, 0 or 1;
+         * quantized maxima leave room for +1, so only underflow is possible.
+         * Preserve the fully general int8_t path for external callers.
+         */
+        if (q4 >= -8 && q4 <= 14) {
+            for (; i < end; ++i) {
+                int current_x = x + i;
+                unsigned phase =
+                    phase_row + ((unsigned)current_x & 3U);
+                int value =
+                    output[i] + whole +
+                    (threshold[phase] < fraction);
+                output[i] = (uint8_t)(value < 0 ? 0 : value);
+            }
+        } else {
+            for (; i < end; ++i) {
+                int current_x = x + i;
+                unsigned phase =
+                    phase_row + ((unsigned)current_x & 3U);
+                int value =
+                    output[i] + whole +
+                    (threshold[phase] < fraction);
+                output[i] = (uint8_t)(
+                    value < 0 ? 0 : (value > 255 ? 255 : value));
+            }
         }
     }
 }
