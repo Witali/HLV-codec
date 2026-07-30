@@ -89,11 +89,13 @@ OSCL_EXPORT_REF Bool PVInitVideoDecoder(VideoDecControls *decCtrl, uint8 *volbuf
         decCtrl->outputRowGuard;
     void *outputRowGuardOpaque =
         decCtrl->outputRowGuardOpaque;
+    H263DecodeProfile *decodeProfile = decCtrl->decodeProfile;
     oscl_memset(decCtrl, 0, sizeof(VideoDecControls)); /* fix a size bug.   03/28/2001 */
     decCtrl->readBitstreamData = readBitstreamData;
     decCtrl->appData = appData;
     decCtrl->outputRowGuard = outputRowGuard;
     decCtrl->outputRowGuardOpaque = outputRowGuardOpaque;
+    decCtrl->decodeProfile = decodeProfile;
     decCtrl->nLayers = nLayers;
     for (idx = 0; idx < nLayers; idx++)
     {

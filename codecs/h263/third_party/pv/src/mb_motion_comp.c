@@ -112,6 +112,21 @@
 /* 10/30 for TPS ***/
 const static int roundtab16[] = {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2};
 
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#define COMPACT_PROFILE_PARAMETER , H263DecodeProfile *profile
+#define COMPACT_PROFILE_ARGUMENT(video) \
+    , (video)->videoDecControls->decodeProfile
+#define COMPACT_PROFILE_FORWARD , profile
+#define COMPACT_PROFILE_INCREMENT(field) do { \
+        if (profile) ++profile->field;         \
+    } while (0)
+#else
+#define COMPACT_PROFILE_PARAMETER
+#define COMPACT_PROFILE_ARGUMENT(video)
+#define COMPACT_PROFILE_FORWARD
+#define COMPACT_PROFILE_INCREMENT(field) do { } while (0)
+#endif
+
 static int compact_clamp_coordinate(int value, int extent)
 {
     if (value < 0) return 0;
@@ -134,9 +149,11 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferenceCopy(
     uint8 *destination,
     int destination_stride,
     int width,
-    int height)
+    int height
+    COMPACT_PROFILE_PARAMETER)
 {
     int row;
+    COMPACT_PROFILE_INCREMENT(compact_copy_calls);
     for (row = 0; row < height; ++row)
     {
         int y = source_y + row;
@@ -154,7 +171,8 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction(
     int ypred,
     uint8 *prediction,
     int prediction_stride,
-    int round1)
+    int round1
+    COMPACT_PROFILE_PARAMETER)
 {
     int fractional_x;
     int fractional_y;
@@ -165,6 +183,21 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction(
     uint8 patch[(B_SIZE + 1) * (B_SIZE + 1)];
     int row;
     int column;
+    int edge_prediction =
+        source_x < 0 || source_x + patch_width > plane->width ||
+        source_y < 0 || source_y + patch_height > plane->height;
+
+    COMPACT_PROFILE_INCREMENT(compact_prediction8_calls);
+    if (!fractional_x && !fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_integer_predictions);
+    else if (fractional_x && !fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_horizontal_predictions);
+    else if (!fractional_x && fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_vertical_predictions);
+    else
+        COMPACT_PROFILE_INCREMENT(compact_diagonal_predictions);
+    if (edge_prediction)
+        COMPACT_PROFILE_INCREMENT(compact_edge_predictions);
 
     if (!fractional_x && !fractional_y &&
             source_x >= 0 && source_x + B_SIZE <= plane->width &&
@@ -172,7 +205,8 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction(
     {
         CompactReferenceCopy(
             plane, source_x, source_y, prediction,
-            prediction_stride, B_SIZE, B_SIZE);
+            prediction_stride, B_SIZE, B_SIZE
+            COMPACT_PROFILE_FORWARD);
         return;
     }
 
@@ -246,7 +280,8 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction16(
     int ypred,
     uint8 *prediction,
     int prediction_stride,
-    int round1)
+    int round1
+    COMPACT_PROFILE_PARAMETER)
 {
     int fractional_x;
     int fractional_y;
@@ -257,6 +292,21 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction16(
     uint8 patch[17 * 17];
     int row;
     int column;
+    int edge_prediction =
+        source_x < 0 || source_x + patch_width > plane->width ||
+        source_y < 0 || source_y + patch_height > plane->height;
+
+    COMPACT_PROFILE_INCREMENT(compact_prediction16_calls);
+    if (!fractional_x && !fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_integer_predictions);
+    else if (fractional_x && !fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_horizontal_predictions);
+    else if (!fractional_x && fractional_y)
+        COMPACT_PROFILE_INCREMENT(compact_vertical_predictions);
+    else
+        COMPACT_PROFILE_INCREMENT(compact_diagonal_predictions);
+    if (edge_prediction)
+        COMPACT_PROFILE_INCREMENT(compact_edge_predictions);
 
     if (!fractional_x && !fractional_y &&
             source_x >= 0 && source_x + 16 <= plane->width &&
@@ -264,7 +314,8 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction16(
     {
         CompactReferenceCopy(
             plane, source_x, source_y, prediction,
-            prediction_stride, 16, 16);
+            prediction_stride, 16, 16
+            COMPACT_PROFILE_FORWARD);
         return;
     }
 
@@ -498,7 +549,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         {
             CompactReferencePrediction16(
                 &compact_reference->y, xpred, ypred,
-                c_comp, width, round1);
+                c_comp, width, round1
+                COMPACT_PROFILE_ARGUMENT(video));
             compact_luma_complete = 1;
         }
     }
@@ -521,7 +573,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         {
             CompactReferencePrediction(
                 &compact_reference->y, xpred, ypred,
-                pred, pred_width, round1);
+                pred, pred_width, round1
+                COMPACT_PROFILE_ARGUMENT(video));
         }
     }
     else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
@@ -566,7 +619,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         {
             CompactReferencePrediction(
                 &compact_reference->y, xpred, ypred,
-                pred, pred_width, round1);
+                pred, pred_width, round1
+                COMPACT_PROFILE_ARGUMENT(video));
         }
     }
     else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
@@ -611,7 +665,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         {
             CompactReferencePrediction(
                 &compact_reference->y, xpred, ypred,
-                pred, pred_width, round1);
+                pred, pred_width, round1
+                COMPACT_PROFILE_ARGUMENT(video));
         }
     }
     else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
@@ -657,7 +712,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         {
             CompactReferencePrediction(
                 &compact_reference->y, xpred, ypred,
-                pred, pred_width, round1);
+                pred, pred_width, round1
+                COMPACT_PROFILE_ARGUMENT(video));
         }
     }
     else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
@@ -729,7 +785,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         }
         CompactReferencePrediction(
             &compact_reference->u, xpred, ypred,
-            pred, pred_width, round1);
+            pred, pred_width, round1
+            COMPACT_PROFILE_ARGUMENT(video));
 
         if (CBP&1)
         {
@@ -743,7 +800,8 @@ PV_H263_MOTION_COMP_ATTR void  MBMotionComp(
         }
         CompactReferencePrediction(
             &compact_reference->v, xpred, ypred,
-            pred, pred_width, round1);
+            pred, pred_width, round1
+            COMPACT_PROFILE_ARGUMENT(video));
         return;
     }
     if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) && ypred >= 0 &&
@@ -881,13 +939,16 @@ void  SkippedMBMotionComp(
     {
         CompactReferenceCopy(
             &compact_reference->y, xpos, ypos,
-            c_comp, width, 16, 16);
+            c_comp, width, 16, 16
+            COMPACT_PROFILE_ARGUMENT(video));
         CompactReferenceCopy(
             &compact_reference->u, xpos >> 1, ypos >> 1,
-            cu_comp, width_uv, 8, 8);
+            cu_comp, width_uv, 8, 8
+            COMPACT_PROFILE_ARGUMENT(video));
         CompactReferenceCopy(
             &compact_reference->v, xpos >> 1, ypos >> 1,
-            cv_comp, width_uv, 8, 8);
+            cv_comp, width_uv, 8, 8
+            COMPACT_PROFILE_ARGUMENT(video));
         return;
     }
 

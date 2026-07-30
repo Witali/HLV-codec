@@ -21,6 +21,42 @@
 #include "mp4def.h"
 #include "mp4dec_api.h" // extra structure
 
+#ifndef PV_H263_STAGE_PROFILE
+#define PV_H263_STAGE_PROFILE 0
+#endif
+
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#include "esp_cpu.h"
+#define PV_PROFILE_NOW() esp_cpu_get_cycle_count()
+#define PV_PROFILE_START(name) uint32 name = PV_PROFILE_NOW()
+#define PV_PROFILE_ADD(video, field, start) do {                         \
+        H263DecodeProfile *pv_profile_ =                                 \
+            (video)->videoDecControls->decodeProfile;                    \
+        if (pv_profile_) {                                               \
+            pv_profile_->field +=                                       \
+                (uint32)(PV_PROFILE_NOW() - (start));                    \
+        }                                                               \
+    } while (0)
+#define PV_PROFILE_COUNT(video, field, amount) do {                      \
+        H263DecodeProfile *pv_profile_ =                                 \
+            (video)->videoDecControls->decodeProfile;                    \
+        if (pv_profile_) {                                               \
+            pv_profile_->field += (uint32)(amount);                      \
+        }                                                               \
+    } while (0)
+#else
+#define PV_PROFILE_NOW() 0U
+#define PV_PROFILE_START(name) uint32 name = 0U
+#define PV_PROFILE_ADD(video, field, start) do {                         \
+        (void)(video);                                                   \
+        (void)(start);                                                   \
+    } while (0)
+#define PV_PROFILE_COUNT(video, field, amount) do {                      \
+        (void)(video);                                                   \
+        (void)(amount);                                                  \
+    } while (0)
+#endif
+
 #undef ENABLE_LOG
 #define BITRATE_AVERAGE_WINDOW 4
 #define FRAMERATE_SCALE ((BITRATE_AVERAGE_WINDOW-1)*10000L)

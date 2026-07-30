@@ -10,6 +10,33 @@
 
 #include "mp4dec_api.h"
 
+#ifndef PV_H263_STAGE_PROFILE
+#define PV_H263_STAGE_PROFILE 0
+#endif
+
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#include "esp_cpu.h"
+#define H263_PROFILE_NOW() esp_cpu_get_cycle_count()
+#define H263_PROFILE_START(name) uint32_t name = H263_PROFILE_NOW()
+#define H263_PROFILE_ADD(decoder, field, start) do {                     \
+        (decoder)->profile.field +=                                     \
+            (uint32_t)(H263_PROFILE_NOW() - (start));                   \
+    } while (0)
+#define H263_PROFILE_COUNT(decoder, field, amount) \
+    ((decoder)->profile.field += (uint32_t)(amount))
+#else
+#define H263_PROFILE_NOW() 0U
+#define H263_PROFILE_START(name) uint32_t name = 0U
+#define H263_PROFILE_ADD(decoder, field, start) do {                     \
+        (void)(decoder);                                                \
+        (void)(start);                                                  \
+    } while (0)
+#define H263_PROFILE_COUNT(decoder, field, amount) do {                  \
+        (void)(decoder);                                                \
+        (void)(amount);                                                 \
+    } while (0)
+#endif
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -252,6 +279,7 @@ static void resetAviState(AviState *avi) {
 struct H2633gpDecoder {
     VideoDecControls controls;
     H2633gpInfo info;
+    H263DecodeProfile profile;
     uint8_t *packet;
     size_t packet_capacity;
     FILE *stream_file;
@@ -414,6 +442,7 @@ static bool initializeCompactFrames(H2633gpDecoder *decoder,
 
 static void packCompactMacroblockRow(H2633gpDecoder *decoder,
                                      uint16_t first_y) {
+    H263_PROFILE_START(pack_start);
     CompactYuv420Frame *output = &decoder->compact_output;
     const int luma_rows = MIN(
         16, decoder->buffer_height - (int)(first_y));
@@ -428,6 +457,7 @@ static void packCompactMacroblockRow(H2633gpDecoder *decoder,
     compact_yuv420_pack_plane_rows(
         &output->v, chroma_y, decoder->output_v[0],
         decoder->buffer_width / 2, chroma_rows);
+    H263_PROFILE_ADD(decoder, packing_cycles, pack_start);
 }
 
 static void compactOutputRowGuard(void *opaque, uint16 first_y) {
@@ -474,6 +504,7 @@ static void resetPcmReader(H263AviPcmReader *reader) {
 static int refillPacketBuffer(uint8 *buffer, int bytes_required,
                               void *opaque) {
     H2633gpDecoder *decoder = (H2633gpDecoder *)(opaque);
+    H263_PROFILE_START(input_start);
     if (!decoder || !decoder->stream_file || !buffer ||
         bytes_required <= 0 || !decoder->stream_remaining) {
         return 0;
@@ -491,6 +522,9 @@ static int refillPacketBuffer(uint8 *buffer, int bytes_required,
             decoder->packet_capacity + kInputPadding - bytes_read);
         memset(buffer + bytes_read, 0, padding);
     }
+    H263_PROFILE_ADD(decoder, input_cycles, input_start);
+    H263_PROFILE_COUNT(decoder, input_refills, 1);
+    H263_PROFILE_COUNT(decoder, input_bytes, bytes_read);
     return (int)(bytes_read);
 }
 
@@ -1557,6 +1591,9 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     }
     decoder->controls.readBitstreamData = refillPacketBuffer;
     decoder->controls.appData.object = decoder;
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+    decoder->controls.decodeProfile = &decoder->profile;
+#endif
     if (result == H263_3GP_OK) {
         result = initializeDecoder(decoder, file);
         if (result == H263_3GP_ERR_FRAME_MEMORY &&
@@ -1590,6 +1627,7 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         return H263_3GP_ERR_ARGUMENT;
     if (decoder->sample_index >= decoder->info.frame_count)
         return H263_3GP_EOF;
+    H263_PROFILE_START(total_start);
     uint32_t size = 0;
     if (decoder->info.container == H263_CONTAINER_AVI) {
         const int result = nextAviPayload(
@@ -1617,10 +1655,13 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     decoder->stream_io_error = false;
     const size_t initial_size = MIN(
         (size_t)(size), decoder->packet_capacity);
+    H263_PROFILE_START(initial_input_start);
     if (!readExact(file, decoder->packet, initial_size)) {
         decoder->stream_file = NULL;
         return H263_3GP_ERR_IO;
     }
+    H263_PROFILE_ADD(decoder, input_cycles, initial_input_start);
+    H263_PROFILE_COUNT(decoder, input_bytes, initial_size);
     decoder->stream_remaining -= (uint32_t)(initial_size);
     memset(decoder->packet + initial_size, 0, kInputPadding);
 
@@ -1636,9 +1677,13 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
             ? 0
             : (decoder->sample_index & 1U);
     uint8_t *output = decoder->output_y[output_index];
-    if (!PVDecodeVopHeader(&decoder->controls, &bitstream, &timestamp,
-                           &input_size, &header, &use_external_timestamp,
-                           output)) {
+    H263_PROFILE_START(header_start);
+    const Bool header_ok =
+        PVDecodeVopHeader(
+            &decoder->controls, &bitstream, &timestamp,
+            &input_size, &header, &use_external_timestamp, output);
+    H263_PROFILE_ADD(decoder, header_cycles, header_start);
+    if (!header_ok) {
         decoder->stream_file = NULL;
         if (decoder->stream_io_error)
             return H263_3GP_ERR_IO;
@@ -1667,7 +1712,11 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         decoder->stream_file = NULL;
         return H263_3GP_ERR_UNSUPPORTED;
     }
-    if (!PVDecodeVopBody(&decoder->controls, &input_size)) {
+    H263_PROFILE_START(body_start);
+    const Bool body_ok =
+        PVDecodeVopBody(&decoder->controls, &input_size);
+    H263_PROFILE_ADD(decoder, body_cycles, body_start);
+    if (!body_ok) {
         decoder->stream_file = NULL;
         if (decoder->stream_io_error)
             return H263_3GP_ERR_IO;
@@ -1681,9 +1730,12 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
             compactOutputRowGuard(
                 decoder, decoder->buffer_height);
         } else {
+            H263_PROFILE_START(compact_copy_start);
             copyCompactFrame(
                 &decoder->compact_output,
                 &decoder->compact_reference);
+            H263_PROFILE_ADD(
+                decoder, compact_copy_cycles, compact_copy_start);
         }
         {
             CompactYuv420Frame completed =
@@ -1740,6 +1792,13 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     }
     ++decoder->sample_index;
     decoder->timestamp += duration;
+    H263_PROFILE_COUNT(decoder, frames, 1);
+    if (header.frameType == MP4_I_FRAME) {
+        H263_PROFILE_COUNT(decoder, i_frames, 1);
+    } else if (header.frameType == MP4_P_FRAME) {
+        H263_PROFILE_COUNT(decoder, p_frames, 1);
+    }
+    H263_PROFILE_ADD(decoder, total_cycles, total_start);
     return H263_3GP_OK;
 }
 
@@ -1766,6 +1825,24 @@ size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {
                 ? (size_t)(PVGetDecMemoryUsage(
                       (VideoDecControls *)(&decoder->controls)))
                 : 0);
+}
+
+const H263DecodeProfile *h263_3gp_decoder_decode_profile(
+    const H2633gpDecoder *decoder) {
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+    return decoder ? &decoder->profile : NULL;
+#else
+    (void)decoder;
+    return NULL;
+#endif
+}
+
+void h263_3gp_decoder_decode_profile_reset(H2633gpDecoder *decoder) {
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+    if (decoder) memset(&decoder->profile, 0, sizeof(decoder->profile));
+#else
+    (void)decoder;
+#endif
 }
 
 const char *h263_3gp_strerror(int result) {

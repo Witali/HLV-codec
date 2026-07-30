@@ -51,17 +51,40 @@ Current physical full-file result:
 
 ## Priority 0: measure the physical hot paths
 
-- [ ] Add a compile-time-gated MPEG-4 stage profile with negligible cost when
+- [x] Add a compile-time-gated MPEG-4 stage profile with negligible cost when
       disabled.
-- [ ] Measure bitstream/VLC/dequantization, motion-vector decoding and motion
+- [x] Measure bitstream/VLC/dequantization, motion-vector decoding and motion
       compensation, inverse DCT plus prediction add, compact-row packing and
       decoder control separately.
-- [ ] Count I/P pictures, skipped macroblocks, CBP classes, one/four-vector
+- [x] Count I/P pictures, skipped macroblocks, CBP classes, one/four-vector
       macroblocks, half-pel directions, edge-clamped predictions and sparse
       coefficient patterns.
-- [ ] Print aggregate counters outside the measured decode interval.
-- [ ] Capture three physical baseline runs and use them to choose the next
+- [x] Print aggregate counters outside the measured decode interval.
+- [x] Capture three physical baseline runs and use them to choose the next
       implementation target.
+
+The deterministic 60-picture profiling corpus decodes to
+`b826825f344bc2e3`. All three physical runs produced the same cycle counts and
+class counters. The compile-time-disabled QEMU build averaged 3,037,526
+cycles/picture. The profiled QEMU build averaged 3,043,299 cycles/picture,
+including instrumentation, and retained the same hash.
+
+| Physical stage | Cycles/picture | Share of total |
+| --- | ---: | ---: |
+| Motion compensation | 8,959,529 | 51.65% |
+| Compact-row packing | 3,302,835 | 19.04% |
+| IDCT plus prediction add | 2,344,100 | 13.51% |
+| VLC/dequantization | 2,081,279 | 12.00% |
+| Motion-vector decoding | 263,466 | 1.52% |
+| Compressed-input reads | 116,874 | 0.67% |
+| Complete decode | 17,348,424 | 100% |
+
+The corpus contains 16,807 inter macroblocks and every one uses a single
+motion vector; no four-vector macroblocks occur. Compact prediction performs
+28,340 integer, 20,518 horizontal, 20,798 vertical and 29,308 diagonal calls.
+Only 6,395 predictions touch a picture edge. The next implementation target
+is therefore direct interior half-pel prediction from compact reference rows,
+followed by compact-row packing.
 
 ## Priority 1: specialize sparse inter IDCT
 

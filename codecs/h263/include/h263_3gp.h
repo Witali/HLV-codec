@@ -6,6 +6,7 @@
 #include <stdio.h>
 
 #include "compact_yuv420.h"
+#include "h263_decode_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -125,6 +126,9 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
                                  H2633gpFrame *frame);
 
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder);
+const H263DecodeProfile *h263_3gp_decoder_decode_profile(
+    const H2633gpDecoder *decoder);
+void h263_3gp_decoder_decode_profile_reset(H2633gpDecoder *decoder);
 const char *h263_3gp_strerror(int result);
 
 /*

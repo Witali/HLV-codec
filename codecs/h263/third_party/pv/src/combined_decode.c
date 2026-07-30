@@ -22,6 +22,59 @@
 #include "mbtype_mode.h"
 
 #define OSCL_DISABLE_WARNING_CONDITIONAL_IS_CONSTANT
+
+#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+static int ProfileInterBlock(
+    VideoDecData *video, int comp, uint8 *bitmapcol, uint8 *bitmaprow)
+{
+    int result;
+    PV_PROFILE_START(start);
+    result = VlcDequantH263InterBlock(
+        video, comp, bitmapcol, bitmaprow);
+    PV_PROFILE_ADD(video, vlc_dequant_cycles, start);
+    if (!VLC_ERROR_DETECTED(result))
+    {
+        PV_PROFILE_COUNT(video, coded_blocks, 1);
+        if (result == 1)
+        {
+            PV_PROFILE_COUNT(video, dc_only_blocks, 1);
+        }
+        else if (result <= 10)
+        {
+            PV_PROFILE_COUNT(video, sparse_blocks, 1);
+        }
+        else
+        {
+            PV_PROFILE_COUNT(video, dense_blocks, 1);
+        }
+    }
+    return result;
+}
+
+static void ProfileInterIdct(
+    VideoDecData *video, uint8 *dst, uint8 *pred, int16 *block,
+    int width, int ncoeffs, uint8 *bitmapcol, uint8 bitmaprow)
+{
+    PV_PROFILE_START(start);
+    BlockIDCT(
+        dst, pred, block, width, ncoeffs, bitmapcol, bitmaprow);
+    PV_PROFILE_ADD(video, idct_cycles, start);
+}
+
+#define PROFILE_INTER_BLOCK(video, comp, bitmapcol, bitmaprow) \
+    ProfileInterBlock(video, comp, bitmapcol, bitmaprow)
+#define PROFILE_INTER_IDCT(video, dst, pred, block, width, ncoeffs, \
+                           bitmapcol, bitmaprow) \
+    ProfileInterIdct(video, dst, pred, block, width, ncoeffs, \
+                     bitmapcol, bitmaprow)
+#else
+#define PROFILE_INTER_BLOCK(video, comp, bitmapcol, bitmaprow) \
+    VlcDequantH263InterBlock(video, comp, bitmapcol, bitmaprow)
+#define PROFILE_INTER_IDCT(video, dst, pred, block, width, ncoeffs, \
+                           bitmapcol, bitmaprow) \
+    BlockIDCT(dst, pred, block, width, ncoeffs, bitmapcol, bitmaprow)
+#endif
+
 /* ======================================================================== */
 /*  Function : DecodeFrameCombinedMode()                                    */
 /*  Purpose  : Decode a frame of MPEG4 bitstream in combined mode.          */
@@ -174,6 +227,30 @@ PV_STATUS DecodeFrameCombinedMode(VideoDecData *video)
 
             if (Mode[mbnum] != MODE_SKIPPED)
             {
+                PV_PROFILE_COUNT(video, macroblocks, 1);
+                if (Mode[mbnum] & INTRA_MASK)
+                {
+                    PV_PROFILE_COUNT(video, intra_macroblocks, 1);
+                }
+                else
+                {
+                    PV_PROFILE_COUNT(video, inter_macroblocks, 1);
+                    if (Mode[mbnum] & INTER_1VMASK)
+                    {
+                        PV_PROFILE_COUNT(
+                            video, one_vector_macroblocks, 1);
+                    }
+                    else
+                    {
+                        PV_PROFILE_COUNT(
+                            video, four_vector_macroblocks, 1);
+                    }
+                    if (video->headerInfo.CBP[mbnum] == 0)
+                    {
+                        PV_PROFILE_COUNT(
+                            video, cbp_zero_macroblocks, 1);
+                    }
+                }
                 /* decode the DCT coeficients for the MB */
                 status = GetMBData(video);
                 if (status != PV_SUCCESS)
@@ -186,7 +263,12 @@ PV_STATUS DecodeFrameCombinedMode(VideoDecData *video)
             }
             else /* MODE_SKIPPED */
             {
+                PV_PROFILE_START(skipped_motion_start);
+                PV_PROFILE_COUNT(video, macroblocks, 1);
+                PV_PROFILE_COUNT(video, skipped_macroblocks, 1);
                 SkippedMBMotionComp(video); /*  08/04/05 */
+                PV_PROFILE_ADD(
+                    video, motion_comp_cycles, skipped_motion_start);
             }
             // Motion compensation and put video->mblock->pred_block
             mbnum++;
@@ -563,6 +645,7 @@ PV_STATUS GetMBData(VideoDecData *video)
 
     if (mode & INTRA_MASK) /* MODE_INTRA || MODE_INTRA_Q */
     {
+        PV_PROFILE_START(intra_vlc_start);
         switched = 0;
         if (intra_dc_vlc_thr)
         {
@@ -636,19 +719,28 @@ PV_STATUS GetMBData(VideoDecData *video)
             no_coeff[comp] = ncoeffs[comp];
 
         }
+        PV_PROFILE_ADD(video, vlc_dequant_cycles, intra_vlc_start);
+        PV_PROFILE_COUNT(video, coded_blocks, 6);
+        PV_PROFILE_START(intra_idct_start);
         MBlockIDCT(video);
+        PV_PROFILE_ADD(video, idct_cycles, intra_idct_start);
     }
     else      /* INTER modes */
     {   /*  moved it here Aug 15, 2005 */
         /* decode the motion vector (if there are any) */
+        PV_PROFILE_START(motion_vector_start);
         status = PV_GetMBvectors(video, mode);
+        PV_PROFILE_ADD(
+            video, motion_vector_cycles, motion_vector_start);
         if (status != PV_SUCCESS)
         {
             return status;
         }
 
 
+        PV_PROFILE_START(motion_comp_start);
         MBMotionComp(video, CBP);
+        PV_PROFILE_ADD(video, motion_comp_cycles, motion_comp_start);
         c_comp  = video->currVop->yChan + offset;
 
 #ifdef PV_ANNEX_IJKT_SUPPORT
@@ -657,11 +749,17 @@ PV_STATUS GetMBData(VideoDecData *video)
             (*DC)[comp] = mid_gray;
             if (CBP & (1 << (5 - comp)))
             {
-                ncoeffs[comp] = VlcDequantH263InterBlock(video, comp, mblock->bitmapcol[comp], &mblock->bitmaprow[comp]);
+                ncoeffs[comp] = PROFILE_INTER_BLOCK(
+                    video, comp, mblock->bitmapcol[comp],
+                    &mblock->bitmaprow[comp]);
                 if (VLC_ERROR_DETECTED(ncoeffs[comp])) return PV_FAIL;
 
-                BlockIDCT(c_comp + (comp&2)*(width << 2) + 8*(comp&1), mblock->pred_block + (comp&2)*64 + 8*(comp&1), mblock->block[comp], width, ncoeffs[comp],
-                          mblock->bitmapcol[comp], mblock->bitmaprow[comp]);
+                PROFILE_INTER_IDCT(
+                    video,
+                    c_comp + (comp&2)*(width << 2) + 8*(comp&1),
+                    mblock->pred_block + (comp&2)*64 + 8*(comp&1),
+                    mblock->block[comp], width, ncoeffs[comp],
+                    mblock->bitmapcol[comp], mblock->bitmaprow[comp]);
 
             }
         }
@@ -673,21 +771,33 @@ PV_STATUS GetMBData(VideoDecData *video)
         (*DC)[4] = mid_gray;
         if (CBP & 2)
         {
-            ncoeffs[4] = VlcDequantH263InterBlock(video, 4, mblock->bitmapcol[4], &mblock->bitmaprow[4]);
+            ncoeffs[4] = PROFILE_INTER_BLOCK(
+                video, 4, mblock->bitmapcol[4],
+                &mblock->bitmaprow[4]);
             if (VLC_ERROR_DETECTED(ncoeffs[4])) return PV_FAIL;
 
-            BlockIDCT(video->currVop->uChan + (offset >> 2) + (x_pos << 2), mblock->pred_block + 256, mblock->block[4], width >> 1, ncoeffs[4],
-                      mblock->bitmapcol[4], mblock->bitmaprow[4]);
+            PROFILE_INTER_IDCT(
+                video,
+                video->currVop->uChan + (offset >> 2) + (x_pos << 2),
+                mblock->pred_block + 256, mblock->block[4],
+                width >> 1, ncoeffs[4], mblock->bitmapcol[4],
+                mblock->bitmaprow[4]);
 
         }
         (*DC)[5] = mid_gray;
         if (CBP & 1)
         {
-            ncoeffs[5] = VlcDequantH263InterBlock(video, 5, mblock->bitmapcol[5], &mblock->bitmaprow[5]);
+            ncoeffs[5] = PROFILE_INTER_BLOCK(
+                video, 5, mblock->bitmapcol[5],
+                &mblock->bitmaprow[5]);
             if (VLC_ERROR_DETECTED(ncoeffs[5])) return PV_FAIL;
 
-            BlockIDCT(video->currVop->vChan + (offset >> 2) + (x_pos << 2), mblock->pred_block + 264, mblock->block[5], width >> 1, ncoeffs[5],
-                      mblock->bitmapcol[5], mblock->bitmaprow[5]);
+            PROFILE_INTER_IDCT(
+                video,
+                video->currVop->vChan + (offset >> 2) + (x_pos << 2),
+                mblock->pred_block + 264, mblock->block[5],
+                width >> 1, ncoeffs[5], mblock->bitmapcol[5],
+                mblock->bitmaprow[5]);
 
         }
         video->QPMB[mbnum] = QP;  /* restore the QP values  ANNEX_T*/
@@ -697,11 +807,17 @@ PV_STATUS GetMBData(VideoDecData *video)
             (*DC)[comp] = mid_gray;
             if (CBP & (1 << (5 - comp)))
             {
-                ncoeffs[comp] = VlcDequantH263InterBlock(video, comp, mblock->bitmapcol[comp], &mblock->bitmaprow[comp]);
+                ncoeffs[comp] = PROFILE_INTER_BLOCK(
+                    video, comp, mblock->bitmapcol[comp],
+                    &mblock->bitmaprow[comp]);
                 if (VLC_ERROR_DETECTED(ncoeffs[comp])) return PV_FAIL;
 
-                BlockIDCT(c_comp + (comp&2)*(width << 2) + 8*(comp&1), mblock->pred_block + (comp&2)*64 + 8*(comp&1), mblock->block[comp], width, ncoeffs[comp],
-                          mblock->bitmapcol[comp], mblock->bitmaprow[comp]);
+                PROFILE_INTER_IDCT(
+                    video,
+                    c_comp + (comp&2)*(width << 2) + 8*(comp&1),
+                    mblock->pred_block + (comp&2)*64 + 8*(comp&1),
+                    mblock->block[comp], width, ncoeffs[comp],
+                    mblock->bitmapcol[comp], mblock->bitmaprow[comp]);
 
             }
         }
@@ -709,11 +825,17 @@ PV_STATUS GetMBData(VideoDecData *video)
         (*DC)[4] = mid_gray;
         if (CBP & 2)
         {
-            ncoeffs[4] = VlcDequantH263InterBlock(video, 4, mblock->bitmapcol[4], &mblock->bitmaprow[4]);
+            ncoeffs[4] = PROFILE_INTER_BLOCK(
+                video, 4, mblock->bitmapcol[4],
+                &mblock->bitmaprow[4]);
             if (VLC_ERROR_DETECTED(ncoeffs[4])) return PV_FAIL;
 
-            BlockIDCT(video->currVop->uChan + (offset >> 2) + (x_pos << 2), mblock->pred_block + 256, mblock->block[4], width >> 1, ncoeffs[4],
-                      mblock->bitmapcol[4], mblock->bitmaprow[4]);
+            PROFILE_INTER_IDCT(
+                video,
+                video->currVop->uChan + (offset >> 2) + (x_pos << 2),
+                mblock->pred_block + 256, mblock->block[4],
+                width >> 1, ncoeffs[4], mblock->bitmapcol[4],
+                mblock->bitmaprow[4]);
 
         }
         else
@@ -724,11 +846,17 @@ PV_STATUS GetMBData(VideoDecData *video)
         (*DC)[5] = mid_gray;
         if (CBP & 1)
         {
-            ncoeffs[5] = VlcDequantH263InterBlock(video, 5, mblock->bitmapcol[5], &mblock->bitmaprow[5]);
+            ncoeffs[5] = PROFILE_INTER_BLOCK(
+                video, 5, mblock->bitmapcol[5],
+                &mblock->bitmaprow[5]);
             if (VLC_ERROR_DETECTED(ncoeffs[5])) return PV_FAIL;
 
-            BlockIDCT(video->currVop->vChan + (offset >> 2) + (x_pos << 2), mblock->pred_block + 264, mblock->block[5], width >> 1, ncoeffs[5],
-                      mblock->bitmapcol[5], mblock->bitmaprow[5]);
+            PROFILE_INTER_IDCT(
+                video,
+                video->currVop->vChan + (offset >> 2) + (x_pos << 2),
+                mblock->pred_block + 264, mblock->block[5],
+                width >> 1, ncoeffs[5], mblock->bitmapcol[5],
+                mblock->bitmaprow[5]);
 
         }
         else

@@ -203,6 +203,57 @@ void app_main(void) {
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
             (unsigned)heap_caps_get_largest_free_block(
                 MALLOC_CAP_8BIT));
+        {
+            const H263DecodeProfile *profile =
+                h263_3gp_decoder_decode_profile(decoder);
+            if (profile) {
+                esp_rom_printf(
+                    "MPEG4_STAGE_HEADER,frames,total,header,body,input,mv,"
+                    "mc,vlc,idct,pack,copy,mb,skip,intra,inter,cbp0,"
+                    "blocks,dc1,sparse,dense,refills,bytes\n");
+                esp_rom_printf(
+                    "MPEG4_STAGE,%u,%llu,%llu,%llu,%llu,%llu,%llu,"
+                    "%llu,%llu,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,"
+                    "%u,%u,%u\n",
+                    (unsigned)profile->frames,
+                    (unsigned long long)profile->total_cycles,
+                    (unsigned long long)profile->header_cycles,
+                    (unsigned long long)profile->body_cycles,
+                    (unsigned long long)profile->input_cycles,
+                    (unsigned long long)profile->motion_vector_cycles,
+                    (unsigned long long)profile->motion_comp_cycles,
+                    (unsigned long long)profile->vlc_dequant_cycles,
+                    (unsigned long long)profile->idct_cycles,
+                    (unsigned long long)profile->packing_cycles,
+                    (unsigned long long)profile->compact_copy_cycles,
+                    (unsigned)profile->macroblocks,
+                    (unsigned)profile->skipped_macroblocks,
+                    (unsigned)profile->intra_macroblocks,
+                    (unsigned)profile->inter_macroblocks,
+                    (unsigned)profile->cbp_zero_macroblocks,
+                    (unsigned)profile->coded_blocks,
+                    (unsigned)profile->dc_only_blocks,
+                    (unsigned)profile->sparse_blocks,
+                    (unsigned)profile->dense_blocks,
+                    (unsigned)profile->input_refills,
+                    (unsigned)profile->input_bytes);
+                esp_rom_printf(
+                    "MPEG4_MC_CLASS,one_mv,four_mv,copy,pred8,pred16,"
+                    "int,h,v,d,edge\n");
+                esp_rom_printf(
+                    "MPEG4_MC_CLASS,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                    (unsigned)profile->one_vector_macroblocks,
+                    (unsigned)profile->four_vector_macroblocks,
+                    (unsigned)profile->compact_copy_calls,
+                    (unsigned)profile->compact_prediction8_calls,
+                    (unsigned)profile->compact_prediction16_calls,
+                    (unsigned)profile->compact_integer_predictions,
+                    (unsigned)profile->compact_horizontal_predictions,
+                    (unsigned)profile->compact_vertical_predictions,
+                    (unsigned)profile->compact_diagonal_predictions,
+                    (unsigned)profile->compact_edge_predictions);
+            }
+        }
     }
     finish(0);
 }

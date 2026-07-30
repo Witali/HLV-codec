@@ -20,6 +20,7 @@
 
 #include "m4vh263_decoder_pv_types.h"
 #include "compact_yuv420.h"
+#include "h263_decode_profile.h"
 
 // #define PV_TOLERATE_VOL_ERRORS
 #define PV_MEMORY_POOL
@@ -99,6 +100,7 @@ typedef struct tagvideoDecControls
      */
     void (*outputRowGuard)(void *opaque, uint16 first_y);
     void *outputRowGuardOpaque;
+    H263DecodeProfile *decodeProfile;
 
     /*
      * Optional packed predictive reference. When present, MPEG-4 motion
