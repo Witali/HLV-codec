@@ -140,6 +140,7 @@ $arguments = @(
     "-q:v", $VideoQuality,
     "-g", $Gop,
     "-bf", "0",
+    "-flags", "+global_header",
     "-mpeg_quant", "0",
     "-data_partitioning", "0",
     "-alternate_scan", "0",

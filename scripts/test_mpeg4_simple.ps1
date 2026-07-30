@@ -35,6 +35,32 @@ if ($LASTEXITCODE -ne 0) {
     -VideoQuality 3 `
     -MaxFrames 60
 
+$headerLength = [Math]::Min(
+    [int64]65536,
+    (Get-Item -LiteralPath $encoded).Length
+)
+$headerBytes = [byte[]]::new([int]$headerLength)
+$headerStream = [IO.File]::OpenRead($encoded)
+try {
+    $bytesRead = $headerStream.Read($headerBytes, 0, $headerBytes.Length)
+}
+finally {
+    $headerStream.Dispose()
+}
+$videoStrfSize = $null
+for ($i = 0; $i -le $bytesRead - 8; ++$i) {
+    if ($headerBytes[$i] -eq 0x73 -and
+        $headerBytes[$i + 1] -eq 0x74 -and
+        $headerBytes[$i + 2] -eq 0x72 -and
+        $headerBytes[$i + 3] -eq 0x66) {
+        $videoStrfSize = [BitConverter]::ToUInt32($headerBytes, $i + 4)
+        break
+    }
+}
+if ($null -eq $videoStrfSize -or $videoStrfSize -le 40) {
+    throw "MPEG-4 VOL configuration is missing from the AVI video strf."
+}
+
 $packetsText = & $ffprobe -v error -select_streams v:0 `
     -show_entries packet=size -show_packets -of json $encoded
 if ($LASTEXITCODE -ne 0) {
