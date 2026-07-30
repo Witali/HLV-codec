@@ -45,8 +45,9 @@ CIF remains intra-only for the bounded ESP32 memory profile. The ESP32 displays
 the central `320x240` portion of CIF without scaling; the Windows Player shows
 the complete `352x288` frame.
 
-The decoders retain compatibility with older H.263+ custom-size and 3GP/AMR-NB
-files, but those legacy combinations are no longer encoding targets.
+The decoders retain compatibility with older 3GP/AMR-NB files only when the
+H.263 picture uses standard QCIF or CIF geometry. H.263+ custom-size files are
+rejected, and 3GP remains a decoding-only legacy container.
 
 [`BPV1 v6`](codecs/bpv/) is also available as a BPAL-derived experimental
 codec. It uses 4x4 blocks, 64 shared 16-color palettes, a two-bit map of four

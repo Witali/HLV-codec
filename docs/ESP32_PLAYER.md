@@ -20,9 +20,9 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
   v1 through v7 including adaptive RAW records, active per-GOP palettes and
   experimental v7 pixel motion,
   the constrained MPEG-1 Video/MP2 profile up to 320x240, and baseline
-  H.263/intra-only H.263+ with optional AMR-NB mono audio in 3GP or PCM S16LE
-  mono audio in AVI at `176x144`, `256x144`, `256x192`, `320x180`,
-  `320x240`, or `352x288` CIF; the ESP32 copies CIF's `320x240`
+  H.263 with optional AMR-NB mono audio in 3GP or PCM S16LE mono audio in AVI
+  only at `176x144` QCIF or `352x288` CIF; the ESP32 copies
+  CIF's `320x240`
   square-pixel coded area at `(16,16)` to the panel pixel-for-pixel without
   scaling, for 16x16 macroblock alignment;
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
@@ -341,10 +341,10 @@ The AVI reader skips muxer timing chunks, streams video and audio through
 separate file cursors, and converts PCM16 to PCM_U8 for the DAC without
 retaining the AVI index in RAM.
 
-The decoder still accepts older 3GP/AMR-NB and custom-size H.263+ assets for
-backward compatibility. Those combinations are not valid targets for new
-encodes. The 3GP reader caches sample-size and chunk-offset tables, so its
-memory use also grows with clip length.
+The decoder still accepts older 3GP/AMR-NB assets only when their H.263
+picture is standard QCIF or CIF. All H.263+ custom-size modes are rejected.
+3GP is not a valid target for new encodes. The 3GP reader caches sample-size
+and chunk-offset tables, so its memory use also grows with clip length.
 
 The retired custom `320x240` 15 fps profile was exercised for 900 frames on
 the physical ESP32. This historical run measured 14.999 fps, 62.20 ms average

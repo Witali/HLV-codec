@@ -3,9 +3,9 @@
 `hlvplay.exe` is a dependency-free Windows desktop player for stable HLV v14,
 BPV1 v1 through v7, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
-intra-only baseline `352x288` CIF, and intra-only H.263+ profiles at
-`256x144`, `256x192`, `320x180`, and `320x240`. CIF playback retains the
-complete square-pixel `352x288` bordered frame. It uses the portable
+or intra-only baseline `352x288` CIF. All H.263+ custom-size profiles are
+rejected. CIF playback retains the complete square-pixel `352x288` bordered
+frame. It uses the portable
 codec sources in this repository, a D3D11
 video processor and a two-buffer DXGI flip swap chain for presentation, and
 the Windows `waveOut` API for unsigned 8-bit mono PCM. MPEG-1 Audio Layer II is
@@ -35,7 +35,8 @@ layout boundaries.
 New project H.263 assets are restricted to baseline H.263 in AVI at standard
 QCIF `176x144` or CIF `352x288`, preserving the full source frame rate. The
 encoder prepares a complete 4:3 QCIF/CIF frame with one Lanczos downscale.
-Legacy 3GP and custom-size H.263+ support above is playback compatibility only.
+Legacy 3GP support is playback compatibility only and still requires standard
+QCIF or CIF H.263 geometry.
 The Windows Player displays the complete CIF frame, while the ESP32 crops its
 central `320x240` area for the panel.
 

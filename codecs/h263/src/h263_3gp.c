@@ -34,8 +34,6 @@ enum {
 
 static bool isSupportedGeometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
-           (width == 256 && (height == 144 || height == 192)) ||
-           (width == 320 && (height == 180 || height == 240)) ||
            (width == 352 && height == 288);
 }
 
@@ -1042,8 +1040,8 @@ static int initializeDecoder(H2633gpDecoder *decoder) {
 
     // Reserve the frame planes before PacketVideo makes its smaller table
     // allocations. Separate Y/U/V blocks avoid requiring one contiguous
-    // 115,200-byte allocation at 320x240. H.263+ profiles are intra-only, so
-    // one set of planes can serve as current output and nominal reference.
+    // 152,064-byte allocation at CIF. H.263+ profiles are intra-only, so one
+    // set of planes can serve as current output and nominal reference.
     const size_t y_bytes =
         (size_t)(expected_width) * expected_height;
     const size_t chroma_bytes = y_bytes / 4;

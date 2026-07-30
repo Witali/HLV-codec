@@ -34,8 +34,8 @@ file reads separately, not that no SD access occurred.
 | BPV1 v7, 320x240 | `Danila_320x240_30fps_BPVv7_34dB.bpv1` | **PASS** | 30.104 / 30 | 0 / 0 | 15.427 / 17.389 | 6.179 / 7.605 | 21.606 / 23.044 | 0/120 | Audio clean. |
 | DivX 3, 320x180 | `Danila_320x180_12fps_DivX3_42dB.avi` | **PASS** | 11.807 / 12 | 9.734 / 15.038 | 71.005 / 79.755 | 29.869 / 31.620 | 110.608 / 122.974 | 2/120 | Audio clean. |
 | DivX 3, 320x240 | `Danila_320x240_12fps_DivX3_42dB.avi` | **FAIL** | 0 / 12 | n/a | n/a | n/a | n/a | n/a | `Not enough RAM, use at most the 320x240 DivX 3 profile`; the message is misleading because this file is already 320x240. |
-| H.263+, 320x180 | `Danila_320x180_15fps_H263p_37dB.avi` | **PASS** | 14.991 / 15 | 0 / 0 | 35.148 / 43.486 | 14.831 / 15.945 | 49.980 / 58.504 | 0/120 | Audio clean. |
-| H.263+, 320x240 | `Danila_320x240_15fps_H263p_36dB.avi` | **PASS** | 15.021 / 15 | 0 / 0 | 36.931 / 53.757 | 19.377 / 20.387 | 56.307 / 73.409 | 0/120 | Audio clean. |
+| H.263+, 320x180 | `Danila_320x180_15fps_H263p_37dB.avi` | **HISTORICAL PASS; PROFILE REMOVED 2026-07-30** | 14.991 / 15 | 0 / 0 | 35.148 / 43.486 | 14.831 / 15.945 | 49.980 / 58.504 | 0/120 | This measurement predates removal of the non-standard mode; current decoders reject it. |
+| H.263+, 320x240 | `Danila_320x240_15fps_H263p_36dB.avi` | **HISTORICAL PASS; PROFILE REMOVED 2026-07-30** | 15.021 / 15 | 0 / 0 | 36.931 / 53.757 | 19.377 / 20.387 | 56.307 / 73.409 | 0/120 | This measurement predates removal of the non-standard mode; current decoders reject it. |
 | Baseline H.263 CIF, 352x288 | `Danila_352x288_30fps_H263_28dB.avi` | **PASS** | 30.096 / 30 | 0 / 0 | 16.197 / 18.383 | 19.336 / 20.687 | 35.533 / 38.185 | 2/120 | Audio clean; the central 320x240 region is displayed. |
 | MJPEG/AVI, 320x180 | `Danila_320x180_30fps_MJPEG_43dB.avi` | **FAIL** | 0 / 30 | n/a | n/a | n/a | n/a | n/a | `JPEG_DEC: Resolution(180*320) is not times of 8`; `esp_new_jpeg header failed`. |
 | MJPEG/AVI, 320x240 | `Danila_320x240_30fps_MJPEG_43dB.avi` | **DEGRADED** | 29.869 / 30 | 11.590 / 18.015 | 21.107 / 40.614 | 0.882 / 2.033 | 33.578 / 55.409 | 53/120 | Audio clean, but only 67 of 120 frames were submitted to the display. |
@@ -90,8 +90,9 @@ compared the streaming and contiguous decoded-frame checksums; packets up to
 These are compatibility fixes, not claims of 30 FPS decoding:
 
 - BPV1 v5/v7 and baseline H.263 CIF are the tested real-time 30 FPS paths.
-- H.263+ and DivX 3 meet the lower source rates of the tested files, including
-  the 320x240 Big Buck Bunny DivX 3 file at 12 FPS.
+- The retired H.263+ custom-size modes and DivX 3 met the lower source rates
+  of the tested files at the time of this historical run, including the
+  320x240 Big Buck Bunny DivX 3 file at 12 FPS.
 - MJPEG now accepts the 320x180 file, but both MJPEG profiles still skip LCD
   submissions under load.
 - MPEG-1 is substantially slower than real time at both resolutions.

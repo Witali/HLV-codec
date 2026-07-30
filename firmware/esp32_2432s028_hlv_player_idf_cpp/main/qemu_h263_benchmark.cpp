@@ -78,7 +78,7 @@ extern "C" void app_main(void) {
         ESP_LOGE(kTag, "Open failed: %s", h263_3gp_strerror(result));
         finish(3);
     }
-    if (info.width != 320 || info.height != 240) finish(4);
+    if (info.width != 352 || info.height != 288) finish(4);
 
     uint64_t decode_cycles = 0;
     uint64_t frame_hash = UINT64_C(1469598103934665603);

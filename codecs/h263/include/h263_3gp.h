@@ -93,10 +93,10 @@ void h263_3gp_decoder_set_output_row_guard(
 
 /*
  * Opens the first H.263 video track in either 3GP or AVI. The embedded
- * profiles accept 176x144 QCIF, intra-only baseline H.263 at 352x288 CIF,
- * plus intra-only H.263+ custom sizes 256x144, 256x192, 320x180, and
- * 320x240. 3GP audio is handled by the companion AMR-NB decoder; AVI accepts
- * mono PCM at 8 kHz through the reader below.
+ * profiles accept only 176x144 QCIF and intra-only baseline H.263 at 352x288
+ * CIF. All H.263+ custom-size modes are rejected. 3GP audio is handled by
+ * the companion AMR-NB decoder; AVI accepts mono PCM at 8 kHz through the
+ * reader below.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);

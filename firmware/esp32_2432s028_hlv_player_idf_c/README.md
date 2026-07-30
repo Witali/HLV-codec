@@ -6,8 +6,8 @@ application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
 MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v6
 with PCM_U8 audio, active per-GOP palettes and unified RAW blocks, and the
 constrained MPEG-1 Video/MP2 profile up to 320x240. It also
-supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
-intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
+supports baseline H.263 at `176x144` QCIF or intra-only baseline `352x288`
+CIF, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 
 The strict C99 migration plan, preserved C++ baseline and physical all-codec
@@ -15,8 +15,9 @@ A/B acceptance matrix are documented in
 [`../../../docs/ESP32_C99_MIGRATION.md`](../../../docs/ESP32_C99_MIGRATION.md).
 
 New project H.263 assets use only baseline H.263 in AVI at standard QCIF
-`176x144` or CIF `352x288`, always at the full source frame rate. Custom-size
-H.263+ and 3GP/AMR-NB remain decoder-only compatibility paths. AVI's
+`176x144` or CIF `352x288`, always at the full source frame rate. Legacy
+3GP/AMR-NB remains a decoder-only compatibility path for those same standard
+geometries; all H.263+ custom-size modes are rejected. AVI's
 interleaved video and PCM chunks are streamed without retaining an index in
 RAM; the legacy 3GP reader's sample-size and chunk-offset tables consume memory
 proportional to the number of samples.
@@ -508,7 +509,7 @@ reconstructed-frame hash, free heap and largest free block. The preparation
 step copies the original MPEG-1 video packets without re-encoding and rejects
 the clip unless its dimensions and frame count match the requested profile.
 
-The H.263 benchmark embeds 60 frames of the validated intra-only 320x240 3GP
+The H.263 benchmark embeds 60 frames of the validated intra-only CIF 3GP
 and uses one output frame because no display pipeline overlaps the decode:
 
 ```powershell
@@ -519,7 +520,7 @@ and uses one output frame because no display pipeline overlaps the decode:
 It prints an `H` record containing the decode-only cycle distribution,
 reconstructed YUV420 hash, decoder allocation, free heap and largest free
 block. The preparation step copies video samples without re-encoding and
-rejects any clip that is not H.263 at 320x240 with the requested frame count.
+rejects any clip that is not H.263 at 352x288 with the requested frame count.
 
 The BPV renderer benchmark generates deterministic 320x240 block records and
 measures complete 16-row-strip RGB565 conversion without display DMA:

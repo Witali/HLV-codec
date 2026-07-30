@@ -6,9 +6,8 @@ native Windows player and the ESP32-2432S028 firmware.
 The legacy-compatible decoder profiles are intentionally bounded:
 
 - ISO Base Media/3GP with an `s263` video sample entry, or AVI with `H263`;
-- baseline H.263 at `176x144` QCIF or intra-only `352x288` CIF, plus
-  intra-only H.263+ custom picture format at `256x144`, `256x192`,
-  `320x180`, or `320x240`;
+- baseline H.263 at `176x144` QCIF or intra-only `352x288` CIF;
+- all H.263+ custom picture formats are rejected;
 - profile 0 in the `d263` sample description;
 - YUV 4:2:0 output;
 - AMR-NB mono audio at 8 kHz in 3GP, or PCM S16LE mono at 8 kHz in AVI;
@@ -28,8 +27,8 @@ Zero-sized timing chunks emitted by some AVI muxing paths are skipped.
 
 New encodes use a narrower rule than the decoder: baseline H.263 in AVI only,
 at standard QCIF `176x144` or CIF `352x288`, with the full source frame rate.
-H.263+, custom dimensions and 3GP are retained for decoding old assets but
-must not be used as new encoding targets.
+Legacy 3GP is retained only when its H.263 picture is standard QCIF or CIF.
+It must not be used as a new encoding target.
 
 Encode any source as standard CIF:
 

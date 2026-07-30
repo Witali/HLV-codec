@@ -189,6 +189,30 @@ if (-not $rejectedCustomSize) {
     throw "The H.263 encoder accepted a non-QCIF/CIF picture size."
 }
 
+$removedDecoderProfiles = @("256x144", "256x192", "320x180", "320x240")
+foreach ($removedProfile in $removedDecoderProfiles) {
+    $legacyCustomAvi = Join-Path $work (
+        "forbidden-custom-decoder-$removedProfile.avi"
+    )
+    & $ffmpeg -y -hide_banner -loglevel error -i $source `
+        -map 0:v:0 -vf "scale=${removedProfile}:flags=lanczos" -an `
+        -c:v h263p -g 1 -vtag H263 -f avi $legacyCustomAvi
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Could not generate the H.263+ $removedProfile decoder " +
+            "policy test."
+        )
+    }
+    $legacyCustomCheck = Invoke-PlayerCheck `
+        -Executable $Player -MediaFile $legacyCustomAvi
+    if ($legacyCustomCheck.ExitCode -eq 0) {
+        throw (
+            "The project decoder accepted the removed H.263+ " +
+            "$removedProfile mode."
+        )
+    }
+}
+
 $rejected3gp = $false
 try {
     & (Join-Path $PSScriptRoot "encode_h263_avi.ps1") `
@@ -229,6 +253,7 @@ if (-not $rejectedHalfRate) {
 Write-Host (
     "Standard Q6 H.263 QCIF/CIF AVI tests passed at the full source " +
     "rate; frame-limited audio ends with video; CIF uses a " +
-    "macroblock-aligned 320x240 window at (16,16); custom sizes, 3GP, " +
-    "and half-rate fallback were rejected."
+    "macroblock-aligned 320x240 window at (16,16); custom encoding, " +
+    "all H.263+ custom-size decoding, 3GP output, and half-rate " +
+    "fallback were rejected."
 )

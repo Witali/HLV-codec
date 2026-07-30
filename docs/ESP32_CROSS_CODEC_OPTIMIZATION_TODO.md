@@ -154,7 +154,8 @@ Finally, the active intra-only IDCT dispatcher, fallback and variable-
 complexity row/column kernels were tested as one isolated transform unit and
 retained. Inter prediction IDCT remains in Flash. QEMU remained bit exact at
 hash `e2f9d3b5a212be20` and 428,624 average guest cycles per frame. The final
-full host test passed all supported H.263/H.263+, 3GP/AVI and AMR/PCM profiles.
+full host test passed the H.263/H.263+, 3GP/AVI and AMR/PCM profiles supported
+at that time. Non-standard H.263+ picture sizes were removed on 2026-07-30.
 
 | H.263 variant | Decode average | P50 | P95 | Maximum | Decision |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -181,8 +182,7 @@ former two-half 320x8 layout and were retained:
 
 The retained layout reduces CIF render time by 8.46% and total frame work by
 3.27%, while preserving all 120 frame indices and producing no audio
-underruns. A separate 120-frame 320x240 H.263+ run completed at 15.023 fps
-with 17,873 us average render time, no display skips and no audio errors.
+underruns.
 
 ## BPV
 
