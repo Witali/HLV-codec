@@ -114,6 +114,7 @@ without flashing it to the physical board.
       unpack cost improve physically.
 - [x] Specialize common safe 16x16 one-vector/CBP classes while preserving the
       four-block `pred_block` layout expected by residual reconstruction.
+- [x] Split signed Q4 compact-reference corrections without signed division.
 - [x] Keep edge-clamped and uncommon cases on the verified generic path.
 
 Interior half-pel prediction now unpacks only one or two rolling compact
@@ -133,6 +134,21 @@ The retained production build completed the 3,357-picture physical file at
 from 75,425.3 to 73,179.8 us (2.98%); average complete work improved from
 104,054.0 to 101,793.2 us (2.17%). All 3,357 sequence numbers were
 consecutive and audio reported zero underruns, rebuffers and inserted silence.
+
+Biasing the complete signed Q4 correction domain by 128 permits an exact
+unsigned quotient/remainder split, avoiding signed floor division in every
+corrected compact-reference span. Native correction tests pass. QEMU improved
+from 2,750,352 to 2,701,213 cycles/picture (1.79%); C++ produced the same hash
+at 2,701,200 cycles/picture.
+
+All three physical profile trials were identical. Motion compensation
+improved from 8,268,518 to 8,112,942 cycles/picture (1.88%), and complete
+decode improved from 15,528,990 to 15,400,164 cycles/picture (0.83%).
+Decoder memory and heap headroom were unchanged. The production build
+completed all 3,357 pictures at 13.620 fps, versus 13.341 fps before this
+change. Average decode time improved from 67,386.3 to 65,611.0 us (2.63%);
+complete work improved from 95,920.9 to 93,838.3 us (2.17%). Sequence gaps
+and every audio recovery counter remained zero.
 
 ## Priority 3: remove redundant rolling-row traffic
 

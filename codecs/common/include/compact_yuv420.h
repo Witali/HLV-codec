@@ -121,8 +121,14 @@ static inline int compact_yuv420_correction(
     unsigned phase;
     if (!correction) return 0;
     q4 = correction[(y >> 3) * correction_stride + (x >> 3)];
-    whole = q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
-    fraction = q4 - whole * 16;
+    /*
+     * Bias the complete int8_t domain to unsigned before splitting it.
+     * This is exactly floor(q4 / 16) plus its non-negative remainder,
+     * without signed division or an implementation-defined negative shift.
+     */
+    phase = (unsigned)(q4 + 128);
+    whole = (int)(phase >> 4) - 8;
+    fraction = (int)(phase & 15U);
     phase = ((unsigned)y & 3U) * 4U + ((unsigned)x & 3U);
     return whole + (threshold[phase] < fraction);
 }
@@ -238,9 +244,9 @@ static inline void compact_yuv420_unpack_corrected_samples(
     while (i < count) {
         int sample_x = x + i;
         int q4 = correction_row[sample_x >> 3];
-        int whole =
-            q4 >= 0 ? q4 / 16 : -((-q4 + 15) / 16);
-        int fraction = q4 - whole * 16;
+        unsigned biased = (unsigned)(q4 + 128);
+        int whole = (int)(biased >> 4) - 8;
+        int fraction = (int)(biased & 15U);
         int span = 8 - (sample_x & 7);
         int end = i + span < count ? i + span : count;
         for (; i < end; ++i) {
