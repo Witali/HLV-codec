@@ -146,6 +146,60 @@ static inline void compact_yuv420_unpack_packed_samples(
     unsigned output_shift;
     int i;
     if (count <= 0) return;
+    /*
+     * Motion compensation and display conversion frequently request aligned
+     * groups of 8 samples. Decode their byte-aligned representation directly
+     * instead of maintaining the generic bit window for every sample.
+     */
+    if ((count & (COMPACT_YUV420_BLOCK_SIZE - 1)) == 0 &&
+        (x & (COMPACT_YUV420_BLOCK_SIZE - 1)) == 0) {
+        const uint8_t *aligned = row + ((size_t)x * bits >> 3);
+        int remaining = count;
+        while (remaining > 0) {
+            if (bits == COMPACT_YUV420_LUMA_BITS) {
+                output[0] = (uint8_t)((aligned[0] & 0x3fU) << 2);
+                output[1] = (uint8_t)(
+                    ((aligned[0] >> 6) |
+                     ((aligned[1] & 0x0fU) << 2)) << 2);
+                output[2] = (uint8_t)(
+                    ((aligned[1] >> 4) |
+                     ((aligned[2] & 0x03U) << 4)) << 2);
+                output[3] = (uint8_t)((aligned[2] >> 2) << 2);
+                output[4] = (uint8_t)((aligned[3] & 0x3fU) << 2);
+                output[5] = (uint8_t)(
+                    ((aligned[3] >> 6) |
+                     ((aligned[4] & 0x0fU) << 2)) << 2);
+                output[6] = (uint8_t)(
+                    ((aligned[4] >> 4) |
+                     ((aligned[5] & 0x03U) << 4)) << 2);
+                output[7] = (uint8_t)((aligned[5] >> 2) << 2);
+                aligned += 6;
+            } else {
+                output[0] = (uint8_t)((aligned[0] & 0x1fU) << 3);
+                output[1] = (uint8_t)(
+                    ((aligned[0] >> 5) |
+                     ((aligned[1] & 0x03U) << 3)) << 3);
+                output[2] =
+                    (uint8_t)(((aligned[1] >> 2) & 0x1fU) << 3);
+                output[3] = (uint8_t)(
+                    ((aligned[1] >> 7) |
+                     ((aligned[2] & 0x0fU) << 1)) << 3);
+                output[4] = (uint8_t)(
+                    ((aligned[2] >> 4) |
+                     ((aligned[3] & 0x01U) << 4)) << 3);
+                output[5] =
+                    (uint8_t)(((aligned[3] >> 1) & 0x1fU) << 3);
+                output[6] = (uint8_t)(
+                    ((aligned[3] >> 6) |
+                     ((aligned[4] & 0x07U) << 2)) << 3);
+                output[7] = (uint8_t)((aligned[4] >> 3) << 3);
+                aligned += 5;
+            }
+            output += COMPACT_YUV420_BLOCK_SIZE;
+            remaining -= COMPACT_YUV420_BLOCK_SIZE;
+        }
+        return;
+    }
     bit = (unsigned)x * bits;
     input = row + (bit >> 3);
     cached = 8U - (bit & 7U);

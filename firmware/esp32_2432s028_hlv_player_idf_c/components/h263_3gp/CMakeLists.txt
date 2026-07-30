@@ -55,6 +55,8 @@ set(PV_H263_IRAM_VLC_DEQUANT ON CACHE BOOL
     "Place the active H.263+ intra VLC/dequant helper in IRAM")
 set(PV_H263_IRAM_INTRA_IDCT ON CACHE BOOL
     "Place the active H.263+ intra IDCT kernel in IRAM")
+set(PV_H263_IRAM_MOTION_COMP ON CACHE BOOL
+    "Place the MPEG-4/H.263 motion-compensation hot path in IRAM")
 if(PV_H263_IRAM_BITSTREAM_FILL)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PV_H263_IRAM_BITSTREAM_FILL=1
@@ -82,6 +84,16 @@ if(PV_H263_IRAM_INTRA_IDCT)
 else()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PV_H263_IRAM_INTRA_IDCT=0
+    )
+endif()
+
+if(PV_H263_IRAM_MOTION_COMP)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_MOTION_COMP=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PV_H263_IRAM_MOTION_COMP=0
     )
 endif()
 
