@@ -29,6 +29,12 @@ enum {
     H263_CONTAINER_AVI = 2,
 };
 
+enum {
+    H263_VIDEO_CODEC_UNKNOWN = 0,
+    H263_VIDEO_CODEC_H263 = 1,
+    H263_VIDEO_CODEC_MPEG4_SIMPLE = 2,
+};
+
 #define H263_AVI_PCM_MAX_SAMPLES 256
 
 typedef struct H2633gpInfo {
@@ -46,6 +52,7 @@ typedef struct H2633gpInfo {
     uint8_t container;
     uint8_t audio_channels;
     uint8_t audio_bits_per_sample;
+    uint8_t video_codec;
 } H2633gpInfo;
 
 typedef struct H2633gpFrame {
@@ -92,10 +99,12 @@ void h263_3gp_decoder_set_output_row_guard(
     H2633gpDecoder *decoder, H263OutputRowGuard guard, void *opaque);
 
 /*
- * Opens the first H.263 video track in either 3GP or AVI. The embedded
- * profiles accept 176x144 QCIF, intra-only baseline H.263 at 352x288 CIF,
- * plus intra-only H.263+ custom sizes 256x144, 256x192, 320x180, and
- * 320x240. 3GP audio is handled by the companion AMR-NB decoder; AVI accepts
+ * Opens the first supported video track. H.263 is accepted in 3GP or AVI;
+ * MPEG-4 Part 2 Simple Profile is accepted in AVI with the M4S2 FourCC.
+ * The embedded profiles accept 176x144 QCIF, 352x288 CIF, and 256x144,
+ * 256x192, 320x180, or 320x240. Non-QCIF H.263 remains intra-only; MPEG-4
+ * Simple Profile supports I/P pictures and therefore always uses two output
+ * buffers. 3GP audio is handled by the companion AMR-NB decoder; AVI accepts
  * mono PCM at 8 kHz through the reader below.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
@@ -106,7 +115,10 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder);
 const char *h263_3gp_strerror(int result);
 
-/* Probe the bounded H.263/AVI profile without allocating video buffers. */
+/*
+ * Probe the bounded H.263 or MPEG-4 Simple Profile AVI profile without
+ * allocating video buffers.
+ */
 int h263_avi_probe(FILE *file, H2633gpInfo *info);
 
 /*

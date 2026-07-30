@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) "build\msvc"),
-    [switch]$SkipCompilerCheck
+    [switch]$SkipCompilerCheck,
+
+    [ValidateRange(64, 1048576)]
+    [int]$H263PacketBufferBytes = 4096
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,6 +110,7 @@ if ($LASTEXITCODE -ne 0) {
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ' +
+    '/DH263_PACKET_BUFFER_BYTES={18} ' +
     '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" /I"{8}" /I"{9}" ' +
     '"{10}" "{11}" "{12}" "{13}" "{14}" {15} "{16}" ' +
     '/Fe:"{17}" /link /SUBSYSTEM:WINDOWS'
@@ -114,7 +118,8 @@ $command = $commandTemplate -f $devcmd, $OutputDirectory, $include, `
     $bpvInclude, $plMpeg, $compactInclude, (Join-Path $h263 "include"), `
     (Join-Path $pv "include"), (Join-Path $pv "src"), `
     (Join-Path $amrnb "include"), $player, $common, $decoder, `
-    $bpvDecoder, $mpegDecoder, $h263SourceArguments, $amrLibrary, $output
+    $bpvDecoder, $mpegDecoder, $h263SourceArguments, $amrLibrary, $output, `
+    $H263PacketBufferBytes
 
 Write-Host "Building hlvplay..."
 & cmd.exe /d /c $command
@@ -123,6 +128,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host (
-    "Windows HLV/BPV/MPEG-1/H.263 3GP+AMR-NB/AVI+PCM player " +
+    "Windows HLV/BPV/MPEG-1/H.263/MPEG-4 SP/AMR-NB/AVI+PCM player " +
     "is ready: $output"
 )

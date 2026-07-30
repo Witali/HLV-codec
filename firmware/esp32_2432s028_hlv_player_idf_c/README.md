@@ -9,6 +9,8 @@ constrained MPEG-1 Video/MP2 profile up to 320x240. It also
 supports baseline H.263 at `176x144`, intra-only baseline `352x288` CIF, and
 intra-only H.263+ at `256x144`, `256x192`, `320x180`, or `320x240`, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
+MPEG-4 Part 2 Simple Profile is supported at `320x240` in M4S2 AVI with I/P
+pictures and the same optional AVI PCM audio.
 
 The strict C99 migration plan, preserved C++ baseline and physical all-codec
 A/B acceptance matrix are documented in
@@ -76,7 +78,7 @@ The current decoder audit is:
 | Path | Compressed input | Status |
 | --- | --- | --- |
 | HLV v14 video | One reusable 7,680-byte refill buffer used by `hlv1_decoder_decode_file()` | Compliant; packets may exceed the buffer |
-| H.263 video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer |
+| H.263/MPEG-4 SP video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer. Only MPEG-4 VOL configuration is retained contiguously, capped at 256 bytes |
 | MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
 | Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
@@ -520,6 +522,18 @@ It prints an `H` record containing the decode-only cycle distribution,
 reconstructed YUV420 hash, decoder allocation, free heap and largest free
 block. The preparation step copies video samples without re-encoding and
 rejects any clip that is not H.263 at 320x240 with the requested frame count.
+
+The MPEG-4 SP benchmark embeds 60 frames of a validated `320x240` M4S2 AVI,
+uses two output frames for I/P prediction, and requires a packet larger than
+the decoder's 4 KiB refill buffer:
+
+```powershell
+.\qemu-mpeg4-benchmark.ps1
+.\qemu-mpeg4-benchmark.ps1 -InputFile input.avi -Frames 60
+```
+
+It prints an `M` record and `MPEG4_BENCH_DONE,0`; its reconstructed YUV420
+hash can be compared directly with the C++ reference firmware.
 
 The BPV renderer benchmark generates deterministic 320x240 block records and
 measures complete 16-row-strip RGB565 conversion without display DMA:

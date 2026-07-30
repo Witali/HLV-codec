@@ -2218,22 +2218,13 @@ bool openVideo() {
                 ? h263_3gp_decoder_open(
                       h263_decoder, video_file, &h263_info)
                 : H263_3GP_ERR_MEMORY;
-        if (result == H263_3GP_ERR_FRAME_MEMORY &&
-            player_settings::kUseDualCorePipeline && h263_decoder) {
-            ESP_LOGW(kTag,
-                     "H.263 second output buffer unavailable; "
-                     "falling back to sequential decode");
-            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 1);
-            result = h263_3gp_decoder_open(
-                h263_decoder, video_file, &h263_info);
-        }
         if (result == H263_3GP_OK &&
             (h263_info.fps_num > UINT16_MAX ||
              h263_info.fps_den > UINT16_MAX)) {
             result = H263_3GP_ERR_UNSUPPORTED;
         }
         if (result != H263_3GP_OK) {
-            showStatus("Invalid H263 video", h263_3gp_strerror(result));
+            showStatus("Invalid H263/MPEG4", h263_3gp_strerror(result));
             closeVideo();
             return false;
         }
@@ -2269,9 +2260,14 @@ bool openVideo() {
             }
         }
         ESP_LOGI(kTag,
-                 "H.263/%s: %ux%u, %u/%u fps, %u frames, "
+                 "%s/%s: %ux%u, %u/%u fps, %u frames, "
                  "profile=%u level=%u, audio=%u Hz/%u-bit, "
                  "decoder=%u bytes",
+                 (h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE ||
+                  (h263_info.container == H263_CONTAINER_AVI &&
+                   h263_info.profile == 1))
+                     ? "MPEG-4 SP"
+                     : "H.263",
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",
@@ -2548,8 +2544,13 @@ bool openVideo() {
                      : "native-centred");
     } else if (video_codec == VideoCodec::kH263) {
         ESP_LOGI(kTag,
-                 "Playing H.263/%s in %s mode, "
+                 "Playing %s/%s in %s mode, "
                  "frame storage=bounded YUV420 frame buffers",
+                 (h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE ||
+                  (h263_info.container == H263_CONTAINER_AVI &&
+                   h263_info.profile == 1))
+                     ? "MPEG-4 SP"
+                     : "H.263",
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",

@@ -1,4 +1,4 @@
-# H.263 decoder and AVI encoding profile
+# H.263 and MPEG-4 Simple Profile decoder
 
 This directory contains the portable demultiplexer and decoder used by the
 native Windows player and the ESP32-2432S028 firmware.
@@ -9,6 +9,8 @@ The legacy-compatible decoder profiles are intentionally bounded:
 - baseline H.263 at `176x144` QCIF or intra-only `352x288` CIF, plus
   intra-only H.263+ custom picture format at `256x144`, `256x192`,
   `320x180`, or `320x240`;
+- MPEG-4 Part 2 Simple Profile I/P video at `320x240` in AVI with the
+  `M4S2` FourCC, no B pictures, data partitioning, reverse VLC or scalability;
 - profile 0 in the `d263` sample description;
 - YUV 4:2:0 output;
 - AMR-NB mono audio at 8 kHz in 3GP, or PCM S16LE mono at 8 kHz in AVI;
@@ -30,6 +32,18 @@ New encodes use a narrower rule than the decoder: baseline H.263 in AVI only,
 at standard QCIF `176x144` or CIF `352x288`, with the full source frame rate.
 H.263+, custom dimensions and 3GP are retained for decoding old assets but
 must not be used as new encoding targets.
+
+New MPEG-4 assets use the bounded `320x240` M4S2/AVI profile. The decoder
+keeps two YUV420 frames for predictive pictures and streams every compressed
+packet through a reusable 4 KiB refill buffer. Only the small MPEG-4 VOL
+decoder configuration may be retained contiguously, with a strict 256-byte
+limit.
+
+```powershell
+.\scripts\encode_mpeg4_simple_avi.ps1 `
+    -InputFile .\input.mp4 `
+    -OutputFile .\out\video_mpeg4_sp.avi
+```
 
 Encode any source as standard CIF:
 

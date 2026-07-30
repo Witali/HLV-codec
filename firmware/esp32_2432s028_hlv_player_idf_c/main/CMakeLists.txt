@@ -190,6 +190,24 @@ elseif(BPV_QEMU_BENCHMARK)
             heap
             log
     )
+elseif(MPEG4_QEMU_BENCHMARK)
+    idf_component_register(
+        SRCS
+            "qemu_h263_benchmark.c"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_rom
+            esp_system
+            freertos
+            h263_3gp
+            heap
+            log
+            vfs
+    )
+    target_compile_definitions(
+        ${COMPONENT_LIB} PRIVATE MPEG4_QEMU_BENCHMARK=1)
+    target_add_binary_data(
+        ${COMPONENT_LIB} "qemu_mpeg4_benchmark.avi" BINARY)
 elseif(H263_QEMU_BENCHMARK)
     idf_component_register(
         SRCS
