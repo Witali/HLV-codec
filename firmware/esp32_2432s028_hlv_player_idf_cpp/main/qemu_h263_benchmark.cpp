@@ -14,14 +14,30 @@
 
 namespace {
 
-constexpr char kTag[] = "h263-qemu-bench";
 constexpr uint32_t kFrameLimit = 90;
 constexpr uint32_t kTargetCpuHz = 240000000;
 
+#ifdef MPEG4_QEMU_BENCHMARK
+constexpr char kTag[] = "mpeg4-qemu-bench";
+constexpr uint16_t kBenchWidth = 320;
+constexpr uint16_t kBenchHeight = 240;
+constexpr uint8_t kOutputBuffers = 2;
+constexpr char kContainer[] = "AVI";
+extern const uint8_t kVideoStart[]
+    asm("_binary_qemu_mpeg4_benchmark_avi_start");
+extern const uint8_t kVideoEnd[]
+    asm("_binary_qemu_mpeg4_benchmark_avi_end");
+#else
+constexpr char kTag[] = "h263-qemu-bench";
+constexpr uint16_t kBenchWidth = 320;
+constexpr uint16_t kBenchHeight = 240;
+constexpr uint8_t kOutputBuffers = 1;
+constexpr char kContainer[] = "3GP";
 extern const uint8_t kVideoStart[]
     asm("_binary_qemu_h263_benchmark_3gp_start");
 extern const uint8_t kVideoEnd[]
     asm("_binary_qemu_h263_benchmark_3gp_end");
+#endif
 
 uint64_t hashPlane(uint64_t hash, const uint8_t *plane,
                    unsigned stride, unsigned width, unsigned height) {
@@ -48,7 +64,11 @@ uint64_t hashFrame(uint64_t hash, const H2633gpFrame &frame) {
 
 [[noreturn]] void finish(int code) {
     fflush(stdout);
+#ifdef MPEG4_QEMU_BENCHMARK
+    esp_rom_printf("MPEG4_BENCH_DONE,%d\n", code);
+#else
     esp_rom_printf("H263_BENCH_DONE,%d\n", code);
+#endif
     fflush(stdout);
     vTaskDelay(pdMS_TO_TICKS(10));
     esp_restart();
@@ -60,7 +80,8 @@ uint64_t hashFrame(uint64_t hash, const H2633gpFrame &frame) {
 extern "C" void app_main(void) {
     const size_t video_size =
         static_cast<size_t>(kVideoEnd - kVideoStart);
-    ESP_LOGI(kTag, "Xtensa decoder benchmark, 3GP=%u bytes",
+    ESP_LOGI(kTag, "Xtensa decoder benchmark, %s=%u bytes",
+             kContainer,
              static_cast<unsigned>(video_size));
     FILE *file =
         fmemopen(const_cast<uint8_t *>(kVideoStart), video_size, "rb");
@@ -68,7 +89,8 @@ extern "C" void app_main(void) {
 
     H2633gpDecoder *decoder = h263_3gp_decoder_create();
     if (!decoder ||
-        h263_3gp_decoder_set_output_buffer_count(decoder, 1) !=
+        h263_3gp_decoder_set_output_buffer_count(
+            decoder, kOutputBuffers) !=
             H263_3GP_OK) {
         finish(2);
     }
@@ -78,7 +100,13 @@ extern "C" void app_main(void) {
         ESP_LOGE(kTag, "Open failed: %s", h263_3gp_strerror(result));
         finish(3);
     }
-    if (info.width != 352 || info.height != 288) finish(4);
+    if (info.width != kBenchWidth || info.height != kBenchHeight
+#ifdef MPEG4_QEMU_BENCHMARK
+        || info.video_codec != H263_VIDEO_CODEC_MPEG4_SIMPLE
+#endif
+    ) {
+        finish(4);
+    }
 
     uint64_t decode_cycles = 0;
     uint64_t frame_hash = UINT64_C(1469598103934665603);
@@ -120,10 +148,17 @@ extern "C" void app_main(void) {
     const uint64_t fps_milli =
         static_cast<uint64_t>(kTargetCpuHz) * frames * 1000U /
         decode_cycles;
+#ifdef MPEG4_QEMU_BENCHMARK
+    esp_rom_printf(
+        "#M,frames,avg,p50,p95,max,fps_milli,hash,decoder,heap,largest\n");
+    esp_rom_printf(
+        "M,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u\n",
+#else
     esp_rom_printf(
         "#H,frames,avg,p50,p95,max,fps_milli,hash,decoder,heap,largest\n");
     esp_rom_printf(
         "H,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u\n",
+#endif
         static_cast<unsigned>(frames), static_cast<unsigned>(average),
         static_cast<unsigned>(p50), static_cast<unsigned>(p95),
         static_cast<unsigned>(maximum),

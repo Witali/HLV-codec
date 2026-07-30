@@ -49,6 +49,10 @@ The decoders retain compatibility with older 3GP/AMR-NB files only when the
 H.263 picture uses standard QCIF or CIF geometry. H.263+ custom-size files are
 rejected, and 3GP remains a decoding-only legacy container.
 
+The ESP32 and Windows players also accept bounded MPEG-4 Part 2 Simple
+Profile video in M4S2 AVI: `320x240` YUV420, I/P pictures only, at up to
+30 fps. Compressed packets use the same fixed 4 KiB refill path as H.263.
+
 [`BPV1 v6`](codecs/bpv/) is also available as a BPAL-derived experimental
 codec. It uses 4x4 blocks, 64 shared 16-color palettes, a two-bit map of four
 block modes, one-byte exact block motion, a full-block dictionary and unified
@@ -216,6 +220,12 @@ Create a baseline CIF H.263 AVI with PCM S16LE audio from any source:
 ```powershell
 .\scripts\encode_h263_avi.ps1 `
     -InputFile .\input.mp4 -Profile 352x288
+```
+
+Create a `320x240` MPEG-4 Simple Profile M4S2 AVI with PCM S16LE audio:
+
+```powershell
+.\scripts\encode_mpeg4_simple_avi.ps1 -InputFile .\input.mp4
 ```
 
 The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`

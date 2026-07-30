@@ -56,7 +56,7 @@ Generated tool installations belong under `local_tools/`, build products under
 | Script | Purpose |
 | --- | --- |
 | `build_msvc.ps1` | Builds the HLV command-line tools and tests (`hlvenc`, `hlvdec`, `hlvinfo`, decoder benchmarks, and error/round-trip tests), then builds the Windows Player. |
-| `build_windows_player.ps1` | Builds `hlvplay.exe` with the HLV, BPV, MPEG-1, H.263, DivX 3, AMR-NB, and compact-frame-buffer decoders. |
+| `build_windows_player.ps1` | Builds `hlvplay.exe` with the HLV, BPV, MPEG-1, H.263, MPEG-4 SP, DivX 3, AMR-NB, and compact-frame-buffer decoders. |
 | `build_bpv_msvc.ps1` | Builds the native BPV encoder and decoder test, runs the decoder test, and runs the JavaScript/C encoder compatibility test when Node.js is available. |
 | `build_esp32.ps1` | Builds `firmware/esp32_2432s028_hlv_player_idf_c` with the pinned pure ESP-IDF environment. Pass `-Clean` for a clean build. |
 | `build_littlefs.ps1` | Creates the legacy ESP32 LittleFS image from one HLV file. The current SD-card Player normally uses `copy_video_to_sd.ps1` instead. |
@@ -72,6 +72,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
 | `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Constant-quality Q6 is the default; use `VideoQuality=1..31` to override it or pass zero for bitrate control. |
+| `encode_mpeg4_simple_avi.ps1` | Encodes bounded MPEG-4 Part 2 Simple Profile at `320x240` in M4S2 AVI, with I/P pictures only, full source rate up to 30 fps, and optional PCM S16LE mono 8 kHz audio. |
 | `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. CUDA is the default backend; use `-Device Auto` or `-Device Cpu` for fallback. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, frame limit, and opt-in BPV v7 `-PixelMotion`. |
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v6 with CUDA by default and searches lambda independently for the requested RGB PSNR. `-PixelMotion` emits v7. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v6/v7 profile with its own source, resolution, FPS, format and target quality. Select v7 with `codec: BPVv7` or `pixelMotion: true`. It inherits the default CUDA backend. |
@@ -85,7 +86,7 @@ always uses half of the source frame rate (12 fps for Bunny, 15 fps for
 Danila).
 
 Generated videos and their sidecar reports are grouped under `out` by codec:
-`HLV`, `BPV`, `H263`, `DivX3`, `MJPEG`, and `MPEG1`. Input media and
+`HLV`, `BPV`, `H263`, `MPEG4SP`, `DivX3`, `MJPEG`, and `MPEG1`. Input media and
 transcoding configuration remain in `out/sources` and `out/source`.
 
 ## Production profile wrappers
@@ -98,6 +99,7 @@ select the production parameters and output directory automatically:
 | `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
 | `transcode_bpv6.ps1` | Stable BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. `-PixelMotion` opts into experimental BPV v7. |
 | `transcode_h263.ps1` | CIF/AVI only, macroblock-aligned visible 320x240 area at `(16,16)`, constant-quality Q6, full source FPS, intra-only. |
+| `transcode_mpeg4_simple.ps1` | `320x240` M4S2 AVI, MPEG-4 Simple Profile, constant-quality Q5, GOP 30, I/P pictures only, full source FPS up to 30. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
 | `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
@@ -111,6 +113,7 @@ Examples:
 
 ```powershell
 .\scripts\transcode_h263.ps1 .\out\sources\input.mp4
+.\scripts\transcode_mpeg4_simple.ps1 .\out\sources\input.mp4
 .\scripts\transcode_divx3.ps1 .\out\sources\input.mp4 -Height 180
 .\scripts\transcode_hlv14.ps1 .\out\sources\input.mp4 -Height 180
 .\scripts\transcode_bpv6.ps1 .\out\sources\input.mp4 `
@@ -208,6 +211,7 @@ Examples:
 | `compare_divx3_compact.ps1` | Builds and runs a frame-by-frame comparison of exact and compact DivX 3 decoder storage for a supplied AVI. |
 | `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
 | `test_h263_avi.ps1` | Generates a 30 fps synthetic source and verifies standard QCIF/CIF H.263 AVI encoding and decoding without frame-rate reduction. |
+| `test_mpeg4_simple.ps1` | Verifies MPEG-4 SP/M4S2 encoding and compares decoded checksums for a video packet larger than 4 KiB through fixed-refill and contiguous-input builds. |
 | `test_threaded_encode.py` | Verifies that parallel HLV GOP encoding is enabled by default and remains byte-exact against the serial encoder. |
 | `test_windowed_two_pass.py` | Smoke-tests bounded local two-pass HLV rate control through an FFmpeg Y4M pipe. |
 

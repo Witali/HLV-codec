@@ -15,12 +15,33 @@
 #define FRAME_LIMIT 90U
 #define TARGET_CPU_HZ 240000000U
 
+#ifdef MPEG4_QEMU_BENCHMARK
+static const char *const k_tag = "mpeg4-qemu-bench";
+extern const uint8_t k_video_start[]
+    asm("_binary_qemu_mpeg4_benchmark_avi_start");
+extern const uint8_t k_video_end[]
+    asm("_binary_qemu_mpeg4_benchmark_avi_end");
+#define BENCH_DONE "MPEG4_BENCH_DONE"
+#define BENCH_HEADER "#M"
+#define BENCH_ROW "M"
+#define BENCH_CONTAINER "AVI"
+#define BENCH_WIDTH 320U
+#define BENCH_HEIGHT 240U
+#define BENCH_OUTPUT_BUFFERS 2U
+#else
 static const char *const k_tag = "h263-qemu-bench";
-
 extern const uint8_t k_video_start[]
     asm("_binary_qemu_h263_benchmark_3gp_start");
 extern const uint8_t k_video_end[]
     asm("_binary_qemu_h263_benchmark_3gp_end");
+#define BENCH_DONE "H263_BENCH_DONE"
+#define BENCH_HEADER "#H"
+#define BENCH_ROW "H"
+#define BENCH_CONTAINER "3GP"
+#define BENCH_WIDTH 352U
+#define BENCH_HEIGHT 288U
+#define BENCH_OUTPUT_BUFFERS 1U
+#endif
 
 static uint64_t hash_plane(uint64_t hash,
                            const uint8_t *plane,
@@ -53,7 +74,7 @@ static uint64_t hash_frame(uint64_t hash,
 
 static __attribute__((noreturn)) void finish(int code) {
     fflush(stdout);
-    esp_rom_printf("H263_BENCH_DONE,%d\n", code);
+    esp_rom_printf(BENCH_DONE ",%d\n", code);
     fflush(stdout);
     vTaskDelay(pdMS_TO_TICKS(10));
     esp_restart();
@@ -71,7 +92,8 @@ void app_main(void) {
     uint32_t frame_cycles[FRAME_LIMIT] = {0};
     uint32_t frames = 0;
 
-    ESP_LOGI(k_tag, "Xtensa decoder benchmark, 3GP=%u bytes",
+    ESP_LOGI(k_tag, "Xtensa decoder benchmark, " BENCH_CONTAINER
+             "=%u bytes",
              (unsigned)video_size);
     file = fmemopen((void *)k_video_start, video_size, "rb");
     if (file == NULL) {
@@ -79,7 +101,8 @@ void app_main(void) {
     }
     decoder = h263_3gp_decoder_create();
     if (decoder == NULL ||
-        h263_3gp_decoder_set_output_buffer_count(decoder, 1) !=
+        h263_3gp_decoder_set_output_buffer_count(
+            decoder, BENCH_OUTPUT_BUFFERS) !=
             H263_3GP_OK) {
         finish(2);
     }
@@ -89,7 +112,11 @@ void app_main(void) {
                  h263_3gp_strerror(result));
         finish(3);
     }
-    if (info.width != 352U || info.height != 288U) {
+    if (info.width != BENCH_WIDTH || info.height != BENCH_HEIGHT
+#ifdef MPEG4_QEMU_BENCHMARK
+        || info.video_codec != H263_VIDEO_CODEC_MPEG4_SIMPLE
+#endif
+    ) {
         finish(4);
     }
 
@@ -139,10 +166,10 @@ void app_main(void) {
             (uint64_t)TARGET_CPU_HZ * frames * 1000U /
             decode_cycles;
         esp_rom_printf(
-            "#H,frames,avg,p50,p95,max,fps_milli,hash,decoder,"
+            BENCH_HEADER ",frames,avg,p50,p95,max,fps_milli,hash,decoder,"
             "heap,largest\n");
         esp_rom_printf(
-            "H,%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u\n",
+            BENCH_ROW ",%u,%u,%u,%u,%u,%u,%08x%08x,%u,%u,%u\n",
             (unsigned)frames, (unsigned)average,
             (unsigned)p50, (unsigned)p95, (unsigned)maximum,
             (unsigned)fps_milli,

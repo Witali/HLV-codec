@@ -879,12 +879,12 @@ public:
                           h263_decoder_, file_, &h263_info_)
                     : H263_3GP_ERR_MEMORY;
             if (result != H263_3GP_OK) {
-                return fail(L"Invalid H.263 video: " +
+                return fail(L"Invalid H.263/MPEG-4 video: " +
                             widen_ascii(h263_3gp_strerror(result)));
             }
             if (h263_info_.fps_num > UINT16_MAX ||
                 h263_info_.fps_den > UINT16_MAX) {
-                return fail(L"The H.263 frame rate is unsupported");
+                return fail(L"The H.263/MPEG-4 frame rate is unsupported");
             }
             header_ = {};
             header_.width = h263_info_.width;
@@ -2324,7 +2324,7 @@ int check_file(const wchar_t *path) {
                 ? h263_3gp_decoder_open(decoder, file, &info)
                 : H263_3GP_ERR_MEMORY;
         label = !std::memcmp(signature, "RIFF", 4)
-                    ? "H.263/AVI"
+                    ? "H.263/MPEG-4 SP/AVI"
                     : "H.263/3GP";
         if (result != H263_3GP_OK)
             failure_detail = h263_3gp_strerror(result);
@@ -2407,8 +2407,12 @@ int check_file(const wchar_t *path) {
                 fclose(audio_file);
             }
         }
-        if (info.container == H263_CONTAINER_AVI)
-            label = "H.263/AVI";
+        if (info.container == H263_CONTAINER_AVI) {
+            label =
+                info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                    ? "MPEG-4 SP/AVI"
+                    : "H.263/AVI";
+        }
         h263_3gp_decoder_destroy(decoder);
     } else if (signature[0] == 0x00 && signature[1] == 0x00 &&
                signature[2] == 0x01 && signature[3] == 0xba) {

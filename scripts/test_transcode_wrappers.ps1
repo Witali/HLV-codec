@@ -38,6 +38,9 @@ try {
     & (Join-Path $PSScriptRoot "transcode_h263.ps1") $source `
         -OutputFile (Join-Path $work "h263.avi") `
         -MaxFrames 3 -NoAudio -Force
+    & (Join-Path $PSScriptRoot "transcode_mpeg4_simple.ps1") $source `
+        -OutputFile (Join-Path $work "mpeg4-simple.avi") `
+        -MaxFrames 3 -NoAudio -Force
     & (Join-Path $PSScriptRoot "transcode_mjpeg.ps1") $source `
         -OutputFile (Join-Path $work "mjpeg.avi") `
         -MaxFrames 3 -Force
@@ -60,6 +63,9 @@ try {
     Assert-ProbedValue -File (Join-Path $work "h263.avi") `
         -Entries "codec_name,width,height" `
         -Expected "(?s)h263.*352.*288"
+    Assert-ProbedValue -File (Join-Path $work "mpeg4-simple.avi") `
+        -Entries "codec_name,profile,codec_tag_string,width,height,has_b_frames" `
+        -Expected "(?s)mpeg4.*Simple Profile.*M4S2.*320.*240.*0"
     Assert-ProbedValue -File (Join-Path $work "mjpeg.avi") `
         -Entries "codec_name,width,height" `
         -Expected "(?s)mjpeg.*320.*240"

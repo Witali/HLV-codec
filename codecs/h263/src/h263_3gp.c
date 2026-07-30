@@ -29,12 +29,24 @@ static uint32_t fourccLe(char a, char b, char c, char d) {
 
 enum {
     kInputPadding = 8,
-    kPacketBufferBytes = 4096
+    kMpeg4VolHeaderBytes = 256
 };
 
-static bool isSupportedGeometry(uint16_t width, uint16_t height) {
+#ifndef H263_PACKET_BUFFER_BYTES
+#define H263_PACKET_BUFFER_BYTES 4096
+#endif
+
+static bool isSupportedH263Geometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
            (width == 352 && height == 288);
+}
+
+static bool isSupportedVideoGeometry(uint8_t video_codec,
+                                     uint16_t width,
+                                     uint16_t height) {
+    return video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+               ? width == 320 && height == 240
+               : isSupportedH263Geometry(width, height);
 }
 
 typedef struct Box {
@@ -224,8 +236,10 @@ typedef struct AviState {
     uint32_t main_frame_count;
     uint32_t microseconds_per_frame;
     uint32_t audio_format;
+    uint16_t mpeg4_vol_size;
     uint8_t video_stream;
     uint8_t audio_stream;
+    uint8_t mpeg4_vol[kMpeg4VolHeaderBytes];
 } AviState;
 
 static void resetAviState(AviState *avi) {
@@ -363,8 +377,9 @@ typedef struct AviStreamHeader {
 static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
                        H2633gpInfo *info, AviState *avi) {
     AviStreamHeader stream = {0};
-    uint8_t format[40] = {0};
+    uint8_t format[40 + kMpeg4VolHeaderBytes] = {0};
     size_t format_size = 0;
+    uint32_t format_chunk_size = 0;
 
     uint64_t cursor = 0;
     while (tellFile(file, &cursor) && cursor + 8 <= end) {
@@ -390,6 +405,7 @@ static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
             stream.length = readLe32Value(bytes + 32);
             stream.suggested_buffer = readLe32Value(bytes + 36);
         } else if (id == fourccLe('s', 't', 'r', 'f')) {
+            format_chunk_size = size;
             format_size = MIN(size, sizeof format);
             if (!readExact(file, format, format_size))
                 return H263_3GP_ERR_IO;
@@ -398,16 +414,25 @@ static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
             return H263_3GP_ERR_IO;
     }
 
+    const bool is_h263 =
+        stream.handler == fourccLe('H', '2', '6', '3') ||
+        stream.handler == fourccLe('U', '2', '6', '3') ||
+        stream.handler == fourccLe('I', '2', '6', '3');
+    const bool is_mpeg4_simple =
+        stream.handler == fourccLe('M', '4', 'S', '2');
     if (stream.type == fourccLe('v', 'i', 'd', 's') &&
-        (stream.handler == fourccLe('H', '2', '6', '3') ||
-         stream.handler == fourccLe('U', '2', '6', '3') ||
-         stream.handler == fourccLe('I', '2', '6', '3'))) {
+        (is_h263 || is_mpeg4_simple)) {
         if (!stream.scale || !stream.rate || format_size < 20)
             return H263_3GP_ERR_FORMAT;
         const uint32_t compression = readLe32Value(format + 16);
-        if (compression != fourccLe('H', '2', '6', '3') &&
-            compression != fourccLe('U', '2', '6', '3') &&
-            compression != fourccLe('I', '2', '6', '3')) {
+        const bool compression_is_h263 =
+            compression == fourccLe('H', '2', '6', '3') ||
+            compression == fourccLe('U', '2', '6', '3') ||
+            compression == fourccLe('I', '2', '6', '3');
+        const bool compression_is_mpeg4_simple =
+            compression == fourccLe('M', '4', 'S', '2');
+        if ((is_h263 && !compression_is_h263) ||
+            (is_mpeg4_simple && !compression_is_mpeg4_simple)) {
             return H263_3GP_ERR_UNSUPPORTED;
         }
         const uint32_t width = readLe32Value(format + 4);
@@ -429,6 +454,28 @@ static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
         info->width = (uint16_t)(width);
         info->height = (uint16_t)(height);
         info->max_sample_size = stream.suggested_buffer;
+        info->video_codec =
+            is_mpeg4_simple
+                ? H263_VIDEO_CODEC_MPEG4_SIMPLE
+                : H263_VIDEO_CODEC_H263;
+        if (is_mpeg4_simple) {
+            /*
+             * PacketVideo requires the complete VOL configuration as one
+             * contiguous input during initialization. AVI stores that small
+             * decoder configuration after BITMAPINFOHEADER, not in a video
+             * packet. Retain only this bounded header; frame packets remain
+             * sequential through the fixed-size refill buffer below.
+             */
+            if (format_chunk_size > sizeof format) {
+                return H263_3GP_ERR_UNSUPPORTED;
+            }
+            if (format_size > 40) {
+                avi->mpeg4_vol_size =
+                    (uint16_t)(format_size - 40);
+                memcpy(avi->mpeg4_vol, format + 40,
+                       avi->mpeg4_vol_size);
+            }
+        }
     } else if (stream.type == fourccLe('a', 'u', 'd', 's')) {
         if (format_size < 16) return H263_3GP_ERR_FORMAT;
         avi->audio_stream = stream_index;
@@ -545,7 +592,8 @@ static int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
                     uint32_t indexed_frames) {
     if (avi->video_stream == 0xff || !avi->movi_start ||
         avi->movi_end <= avi->movi_start ||
-        !isSupportedGeometry(info->width, info->height)) {
+        !isSupportedVideoGeometry(
+            info->video_codec, info->width, info->height)) {
         return H263_3GP_ERR_UNSUPPORTED;
     }
     info->frame_count =
@@ -754,6 +802,7 @@ static int parseSampleDescription(FILE *file, Box stsd, H2633gpInfo *info) {
             }
             info->profile = 0;
             info->level = 0;
+            info->video_codec = H263_VIDEO_CODEC_H263;
             Box d263;
             if (findChildFrom(file, entry, fourcc('d', '2', '6', '3'),
                               &d263, entry.data + 78) &&
@@ -989,7 +1038,8 @@ static int parseContainer(FILE *file, H2633gpDecoder *decoder) {
         cursor = child.end;
     }
     if (!saw_video) return H263_3GP_ERR_UNSUPPORTED;
-    if (!isSupportedGeometry(decoder->info.width, decoder->info.height) ||
+    if (!isSupportedH263Geometry(
+            decoder->info.width, decoder->info.height) ||
         decoder->info.profile != 0) {
         return H263_3GP_ERR_UNSUPPORTED;
     }
@@ -1025,7 +1075,7 @@ static int beginChunk(H2633gpDecoder *decoder) {
     return H263_3GP_OK;
 }
 
-static int initializeDecoder(H2633gpDecoder *decoder) {
+static int initializeDecoder(H2633gpDecoder *decoder, FILE *file) {
     const int32 expected_width =
         ((int32)(decoder->info.width) + 15) & -16;
     const int32 expected_height =
@@ -1034,14 +1084,20 @@ static int initializeDecoder(H2633gpDecoder *decoder) {
     decoder->buffer_height = (uint16_t)(expected_height);
     decoder->output_bytes =
         (size_t)(expected_width) * expected_height * 3 / 2;
-    decoder->intra_only = decoder->info.width != 176;
+    decoder->intra_only =
+        decoder->info.video_codec == H263_VIDEO_CODEC_H263 &&
+        decoder->info.width != 176;
     decoder->output_count =
-        decoder->intra_only ? decoder->requested_output_count : 2;
+        decoder->info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+            ? 2
+            : (decoder->intra_only
+                   ? decoder->requested_output_count
+                   : 2);
 
     // Reserve the frame planes before PacketVideo makes its smaller table
     // allocations. Separate Y/U/V blocks avoid requiring one contiguous
-    // 152,064-byte allocation at CIF. H.263+ profiles are intra-only, so one
-    // set of planes can serve as current output and nominal reference.
+    // 152,064-byte allocation at CIF. CIF H.263 is intra-only, so one set of
+    // planes can serve as current output and nominal reference.
     const size_t y_bytes =
         (size_t)(expected_width) * expected_height;
     const size_t chroma_bytes = y_bytes / 4;
@@ -1063,12 +1119,79 @@ static int initializeDecoder(H2633gpDecoder *decoder) {
 
     uint8 *vol_data[1] = {NULL};
     int32 vol_size[1] = {0};
+    if (decoder->info.video_codec ==
+        H263_VIDEO_CODEC_MPEG4_SIMPLE) {
+        if (decoder->avi.mpeg4_vol_size) {
+            vol_data[0] = decoder->avi.mpeg4_vol;
+            vol_size[0] = decoder->avi.mpeg4_vol_size;
+        } else {
+            /*
+             * FFmpeg's AVI muxer writes the VOL at the start of the first
+             * video packet instead of BITMAPINFOHEADER extradata. Feed that
+             * packet through the same fixed-size refill path used for every
+             * frame; next_video_offset is deliberately left unchanged so the
+             * first VOP is decoded normally after initialization.
+             */
+            uint64_t first_offset = decoder->avi.next_video_offset;
+            uint32_t first_size = 0;
+            const int payload_result = nextAviPayload(
+                file, decoder->avi, true, &first_offset, &first_size);
+            if (payload_result != H263_3GP_OK || !first_size ||
+                first_size > decoder->info.max_sample_size) {
+                return payload_result == H263_3GP_ERR_IO
+                           ? H263_3GP_ERR_IO
+                           : H263_3GP_ERR_FORMAT;
+            }
+            const size_t initial_size = MIN(
+                (size_t)(first_size), decoder->packet_capacity);
+            if (!readExact(file, decoder->packet, initial_size)) {
+                return H263_3GP_ERR_IO;
+            }
+            decoder->stream_file = file;
+            decoder->stream_remaining =
+                first_size - (uint32_t)(initial_size);
+            decoder->stream_io_error = false;
+            memset(decoder->packet + initial_size, 0, kInputPadding);
+            vol_data[0] = decoder->packet;
+            vol_size[0] = (int32)(initial_size);
+        }
+    }
     if (!PVInitVideoDecoder(&decoder->controls, vol_data, vol_size, 1,
                             decoder->info.width, decoder->info.height,
-                            H263_MODE)) {
-        return H263_3GP_ERR_DECODER_MEMORY;
+                            decoder->info.video_codec ==
+                                    H263_VIDEO_CODEC_MPEG4_SIMPLE
+                                ? MPEG4_MODE
+                                : H263_MODE)) {
+        const int result = decoder->stream_io_error
+                               ? H263_3GP_ERR_IO
+                               : H263_3GP_ERR_DECODER_MEMORY;
+        decoder->stream_file = NULL;
+        return result;
+    }
+    decoder->stream_file = NULL;
+    if (decoder->stream_io_error) {
+        PVCleanUpVideoDecoder(&decoder->controls);
+        return H263_3GP_ERR_IO;
     }
     decoder->pv_ready = true;
+    if (decoder->info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE) {
+        VolInfo vol = {0};
+        const bool vol_ok =
+            PVGetVolInfo(&decoder->controls, &vol) != 0;
+        if (!vol_ok ||
+            vol.shortVideoHeader ||
+            vol.dataPartitioning ||
+            vol.useReverseVLC ||
+            vol.scalability ||
+            !((vol.profile_level_id >= 0x01 &&
+               vol.profile_level_id <= 0x06) ||
+              vol.profile_level_id == 0x08 ||
+              vol.profile_level_id == 0x09)) {
+            return H263_3GP_ERR_UNSUPPORTED;
+        }
+        decoder->info.profile = 1;
+        decoder->info.level = (uint8_t)(vol.profile_level_id);
+    }
     PVSetPostProcType(&decoder->controls, PV_NO_POST_PROC);
     int32 buffer_width = 0;
     int32 buffer_height = 0;
@@ -1252,7 +1375,7 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     if (result == H263_3GP_OK) {
         decoder->packet_capacity = MIN(
             (size_t)(decoder->info.max_sample_size),
-            (size_t)(kPacketBufferBytes));
+            (size_t)(H263_PACKET_BUFFER_BYTES));
         decoder->packet = (uint8_t *)(
             malloc(decoder->packet_capacity + kInputPadding));
         if (!decoder->packet) result = H263_3GP_ERR_PACKET_MEMORY;
@@ -1260,18 +1383,18 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     decoder->controls.readBitstreamData = refillPacketBuffer;
     decoder->controls.appData.object = decoder;
     if (result == H263_3GP_OK) {
-        result = initializeDecoder(decoder);
+        result = initializeDecoder(decoder, file);
         if (result == H263_3GP_ERR_FRAME_MEMORY &&
             decoder->intra_only &&
             decoder->requested_output_count == 2) {
             /*
-             * CIF/custom-size H.263 is intra-only.  Retrying with one output
-             * frame does not require reparsing the AVI/3GP header or
-             * reallocating the compressed packet buffer.
+             * CIF H.263 is intra-only. Retrying with one output frame does
+             * not require reparsing the AVI/3GP header or reallocating the
+             * compressed packet buffer.
              */
             clearOutputFrames(decoder);
             decoder->requested_output_count = 1;
-            result = initializeDecoder(decoder);
+            result = initializeDecoder(decoder, file);
         }
     }
     if (result != H263_3GP_OK) {
@@ -1342,6 +1465,12 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         return H263_3GP_ERR_DECODE;
     }
     if (decoder->intra_only && header.frameType != MP4_I_FRAME) {
+        decoder->stream_file = NULL;
+        return H263_3GP_ERR_UNSUPPORTED;
+    }
+    if (decoder->info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE &&
+        header.frameType != MP4_I_FRAME &&
+        header.frameType != MP4_P_FRAME) {
         decoder->stream_file = NULL;
         return H263_3GP_ERR_UNSUPPORTED;
     }
@@ -1432,9 +1561,9 @@ const char *h263_3gp_strerror(int result) {
         case H263_3GP_ERR_IO:
             return "I/O error";
         case H263_3GP_ERR_FORMAT:
-            return "invalid H.263 container";
+            return "invalid H.263/MPEG-4 container";
         case H263_3GP_ERR_UNSUPPORTED:
-            return "unsupported 3GP/AVI H.263 profile";
+            return "unsupported H.263/MPEG-4 profile";
         case H263_3GP_ERR_MEMORY:
             return "out of memory";
         case H263_3GP_ERR_FRAME_MEMORY:
@@ -1444,9 +1573,9 @@ const char *h263_3gp_strerror(int result) {
         case H263_3GP_ERR_PACKET_MEMORY:
             return "compressed packet memory";
         case H263_3GP_ERR_DECODE:
-            return "H.263 decode error";
+            return "H.263/MPEG-4 decode error";
         default:
-            return "unknown H.263 container error";
+            return "unknown H.263/MPEG-4 container error";
     }
 }
 
