@@ -89,8 +89,8 @@ followed by compact-row packing.
 ## Priority 1: specialize sparse inter IDCT
 
 - [x] Measure a direct DC-only inter residual plus prediction kernel.
-- [ ] Measure and, when common, add exact one-row, one-column and two-column
-      sparse kernels.
+- [x] Measure exact one-row, one-column and two-column coefficient patterns.
+- [ ] Add exact one-row, one-column and two-column sparse kernels independently.
 - [ ] Avoid clearing untouched coefficient slots when a sparse representation
       is faster.
 - [ ] Fuse inverse transform, prediction addition, clipping and rolling-row
@@ -103,6 +103,16 @@ dispatch and produced the unchanged `b826825f344bc2e3` hash. It improved the
 QEMU benchmark from 2,750,352 to 2,749,294 cycles/picture, only 0.038%.
 This is below the 0.5% acceptance threshold, so the candidate was removed
 without flashing it to the physical board.
+
+Of the profiled inter residuals, 12,665 blocks occupy one coefficient row,
+11,235 occupy one coefficient column and 7,203 occupy exactly two columns.
+The shape counters use actual coefficient bitmaps and overlap where
+applicable. A narrow candidate reused `idctrow1` after the existing column
+transform when an early-zigzag block occupied only the DC column. It retained
+the decoded hash but improved QEMU from 2,701,213 to 2,698,905
+cycles/picture, only 0.085%. The dispatch-only candidate was removed without
+physical flashing; a useful specialization must instead fuse more of the
+transform, prediction add and output stores.
 
 ## Priority 2: decode compact motion compensation directly
 

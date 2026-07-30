@@ -30,6 +30,9 @@ typedef struct H263DecodeProfile {
     uint32_t dc_only_blocks;
     uint32_t sparse_blocks;
     uint32_t dense_blocks;
+    uint32_t one_row_blocks;
+    uint32_t one_column_blocks;
+    uint32_t two_column_blocks;
     uint32_t compact_copy_calls;
     uint32_t compact_prediction8_calls;
     uint32_t compact_prediction16_calls;

@@ -34,6 +34,9 @@ static int ProfileInterBlock(
     PV_PROFILE_ADD(video, vlc_dequant_cycles, start);
     if (!VLC_ERROR_DETECTED(result))
     {
+        unsigned row_bitmap = 0;
+        unsigned active_columns = 0;
+        int i;
         PV_PROFILE_COUNT(video, coded_blocks, 1);
         if (result == 1)
         {
@@ -46,6 +49,24 @@ static int ProfileInterBlock(
         else
         {
             PV_PROFILE_COUNT(video, dense_blocks, 1);
+        }
+        for (i = 0; i < 8; ++i)
+        {
+            unsigned rows = bitmapcol[i];
+            active_columns += rows != 0;
+            row_bitmap |= rows;
+        }
+        if (row_bitmap != 0 && (row_bitmap & (row_bitmap - 1U)) == 0)
+        {
+            PV_PROFILE_COUNT(video, one_row_blocks, 1);
+        }
+        if (active_columns == 1)
+        {
+            PV_PROFILE_COUNT(video, one_column_blocks, 1);
+        }
+        else if (active_columns == 2)
+        {
+            PV_PROFILE_COUNT(video, two_column_blocks, 1);
         }
     }
     return result;

@@ -210,11 +210,11 @@ void app_main(void) {
                 esp_rom_printf(
                     "MPEG4_STAGE_HEADER,frames,total,header,body,input,mv,"
                     "mc,vlc,idct,pack,copy,mb,skip,intra,inter,cbp0,"
-                    "blocks,dc1,sparse,dense,refills,bytes\n");
+                    "blocks,dc1,sparse,dense,row1,col1,col2,refills,bytes\n");
                 esp_rom_printf(
                     "MPEG4_STAGE,%u,%llu,%llu,%llu,%llu,%llu,%llu,"
                     "%llu,%llu,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,"
-                    "%u,%u,%u\n",
+                    "%u,%u,%u,%u,%u,%u\n",
                     (unsigned)profile->frames,
                     (unsigned long long)profile->total_cycles,
                     (unsigned long long)profile->header_cycles,
@@ -235,6 +235,9 @@ void app_main(void) {
                     (unsigned)profile->dc_only_blocks,
                     (unsigned)profile->sparse_blocks,
                     (unsigned)profile->dense_blocks,
+                    (unsigned)profile->one_row_blocks,
+                    (unsigned)profile->one_column_blocks,
+                    (unsigned)profile->two_column_blocks,
                     (unsigned)profile->input_refills,
                     (unsigned)profile->input_bytes);
                 esp_rom_printf(

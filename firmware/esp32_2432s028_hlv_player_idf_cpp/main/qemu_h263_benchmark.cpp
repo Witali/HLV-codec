@@ -198,10 +198,10 @@ extern "C" void app_main(void) {
         esp_rom_printf(
             "MPEG4_STAGE_HEADER,frames,total,header,body,input,mv,mc,vlc,"
             "idct,pack,copy,mb,skip,intra,inter,cbp0,blocks,dc1,sparse,"
-            "dense,refills,bytes\n");
+            "dense,row1,col1,col2,refills,bytes\n");
         esp_rom_printf(
             "MPEG4_STAGE,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-            "%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+            "%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
             static_cast<unsigned>(profile->frames),
             static_cast<unsigned long long>(profile->total_cycles),
             static_cast<unsigned long long>(profile->header_cycles),
@@ -226,6 +226,9 @@ extern "C" void app_main(void) {
             static_cast<unsigned>(profile->dc_only_blocks),
             static_cast<unsigned>(profile->sparse_blocks),
             static_cast<unsigned>(profile->dense_blocks),
+            static_cast<unsigned>(profile->one_row_blocks),
+            static_cast<unsigned>(profile->one_column_blocks),
+            static_cast<unsigned>(profile->two_column_blocks),
             static_cast<unsigned>(profile->input_refills),
             static_cast<unsigned>(profile->input_bytes));
         esp_rom_printf(
