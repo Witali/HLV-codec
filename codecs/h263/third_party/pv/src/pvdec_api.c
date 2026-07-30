@@ -1532,6 +1532,22 @@ OSCL_EXPORT_REF void PVSetReferenceYUVPlanes(
     decCtrl->outputFrame = video->prevVop->yChan;              /*  06/19/2002 */
 }
 
+OSCL_EXPORT_REF int PVIsMacroblockSkipped(
+    VideoDecControls *decCtrl, int macroblock)
+{
+    VideoDecData *video;
+    if (decCtrl == NULL || decCtrl->videoDecoderData == NULL)
+    {
+        return 0;
+    }
+    video = (VideoDecData *)decCtrl->videoDecoderData;
+    if (macroblock < 0 || macroblock >= video->nTotalMB)
+    {
+        return 0;
+    }
+    return video->headerInfo.Mode[macroblock] == MODE_SKIPPED;
+}
+
 OSCL_EXPORT_REF void PVSetCompactReferenceYUV420(
     VideoDecControls *decCtrl, const CompactYuv420Frame *reference)
 {

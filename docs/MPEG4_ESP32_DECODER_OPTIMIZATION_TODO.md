@@ -192,8 +192,9 @@ without physical flashing.
 
 - [x] Specialize byte-aligned eight-sample Y6/U5/V5 packing when no
       reconstructed byte output is requested.
-- [ ] Write skipped and all-zero-residual predictions directly to the compact
-      output when reference lifetime and render guards make this safe.
+- [x] Copy skipped macroblocks directly between compact pictures when
+      reference lifetime and render guards make this safe.
+- [ ] Write all-zero-residual predictions directly to the compact output.
 - [ ] Pack coded 8x8 blocks while reconstructed pixels are still cache-hot.
 - [ ] Compute Q4 block-average corrections during the direct compact write.
 - [ ] Preserve exact compact-frame checksums and row-level renderer safety.
@@ -218,6 +219,26 @@ The full 3,357-picture production acceptance run improved from 12.532 to
 (7.92%), and complete work improved from 101,793.2 to 95,920.9 us (5.77%).
 Every sequence number was consecutive and audio again reported zero
 underruns, rebuffers and inserted silence.
+
+Skipped macroblocks have zero motion and no residual, so their six compact
+8x8 blocks and Q4 corrections are copied directly from the previous compact
+picture instead of rereading and repacking the rolling byte rows. Non-skipped
+blocks retain the verified aligned packer.
+
+C QEMU improved from 2,656,549 to 2,629,072 cycles/picture (1.03%) and C++
+measured 2,629,036, both with the unchanged `b826825f344bc2e3` hash. The
+profile corpus contains 40 skipped macroblocks.
+
+Two of three physical profile trials measured exactly 14,956,841
+cycles/picture; the third measured 14,956,957. The median complete decode
+improved from 15,137,528 cycles/picture by 1.19%, while compact packing
+improved from 2,214,495 to 2,176,201 cycles/picture (1.73%). Decoder memory,
+free heap and largest free block remained unchanged.
+
+The production acceptance run decoded all 3,357 pictures with no sequence
+gaps or audio recovery events. Average decode improved from 66,462.1 to
+66,014.3 us (0.67%), complete work from 95,111.5 to 94,585.2 us (0.55%) and
+observed rate from 13.475 to 13.535 fps.
 
 ## Priority 4: overlap independent work
 

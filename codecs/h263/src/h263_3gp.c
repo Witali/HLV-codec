@@ -440,23 +440,99 @@ static bool initializeCompactFrames(H2633gpDecoder *decoder,
     return true;
 }
 
+static void copyCompactBlock8(CompactYuv420Plane *destination,
+                              const CompactYuv420Plane *source,
+                              int x, int y) {
+    const size_t row_bytes = (size_t)(8 * destination->bits) >> 3;
+    const size_t row_offset = ((size_t)x * destination->bits) >> 3;
+    for (int row = 0; row < 8; ++row) {
+        memcpy(destination->data +
+                   (size_t)(y + row) * destination->stride + row_offset,
+               source->data +
+                   (size_t)(y + row) * source->stride + row_offset,
+               row_bytes);
+    }
+    destination->correction[
+        (y / 8) * destination->correction_stride + x / 8] =
+        source->correction[
+            (y / 8) * source->correction_stride + x / 8];
+}
+
+static void packCompactBlock8(CompactYuv420Plane *destination,
+                              int destination_x, int destination_y,
+                              const uint8_t *source, int source_stride,
+                              int source_x, int source_y) {
+    int residual_sum = 0;
+    const size_t packed_x =
+        ((size_t)destination_x * destination->bits) >> 3;
+    for (int row = 0; row < 8; ++row) {
+        compact_yuv420_pack_aligned_samples(
+            destination->data +
+                (size_t)(destination_y + row) * destination->stride +
+                packed_x,
+            source + (size_t)(source_y + row) * source_stride + source_x,
+            8, destination->bits, &residual_sum, NULL);
+    }
+    destination->correction[
+        (destination_y / 8) * destination->correction_stride +
+        destination_x / 8] =
+        compact_yuv420_error_q4(residual_sum);
+}
+
 static void packCompactMacroblockRow(H2633gpDecoder *decoder,
                                      uint16_t first_y) {
     H263_PROFILE_START(pack_start);
     CompactYuv420Frame *output = &decoder->compact_output;
-    const int luma_rows = MIN(
-        16, decoder->buffer_height - (int)(first_y));
-    const int chroma_y = first_y / 2;
-    const int chroma_rows = luma_rows / 2;
-    compact_yuv420_pack_plane_rows(
-        &output->y, first_y, decoder->output_y[0],
-        decoder->buffer_width, luma_rows);
-    compact_yuv420_pack_plane_rows(
-        &output->u, chroma_y, decoder->output_u[0],
-        decoder->buffer_width / 2, chroma_rows);
-    compact_yuv420_pack_plane_rows(
-        &output->v, chroma_y, decoder->output_v[0],
-        decoder->buffer_width / 2, chroma_rows);
+    const CompactYuv420Frame *reference = &decoder->compact_reference;
+    const int macroblock_row = first_y / 16;
+    const int macroblocks = decoder->buffer_width / 16;
+    const int chroma_stride = decoder->buffer_width / 2;
+    for (int macroblock_x = 0;
+         macroblock_x < macroblocks; ++macroblock_x) {
+        const int luma_x = macroblock_x * 16;
+        const int chroma_x = macroblock_x * 8;
+        if (PVIsMacroblockSkipped(
+                &decoder->controls,
+                macroblock_row * macroblocks + macroblock_x)) {
+            copyCompactBlock8(
+                &output->y, &reference->y, luma_x, first_y);
+            copyCompactBlock8(
+                &output->y, &reference->y, luma_x + 8, first_y);
+            copyCompactBlock8(
+                &output->y, &reference->y, luma_x, first_y + 8);
+            copyCompactBlock8(
+                &output->y, &reference->y, luma_x + 8, first_y + 8);
+            copyCompactBlock8(
+                &output->u, &reference->u, chroma_x, first_y / 2);
+            copyCompactBlock8(
+                &output->v, &reference->v, chroma_x, first_y / 2);
+        } else {
+            packCompactBlock8(
+                &output->y, luma_x, first_y,
+                decoder->output_y[0], decoder->buffer_width,
+                luma_x, 0);
+            packCompactBlock8(
+                &output->y, luma_x + 8, first_y,
+                decoder->output_y[0], decoder->buffer_width,
+                luma_x + 8, 0);
+            packCompactBlock8(
+                &output->y, luma_x, first_y + 8,
+                decoder->output_y[0], decoder->buffer_width,
+                luma_x, 8);
+            packCompactBlock8(
+                &output->y, luma_x + 8, first_y + 8,
+                decoder->output_y[0], decoder->buffer_width,
+                luma_x + 8, 8);
+            packCompactBlock8(
+                &output->u, chroma_x, first_y / 2,
+                decoder->output_u[0], chroma_stride,
+                chroma_x, 0);
+            packCompactBlock8(
+                &output->v, chroma_x, first_y / 2,
+                decoder->output_v[0], chroma_stride,
+                chroma_x, 0);
+        }
+    }
     H263_PROFILE_ADD(decoder, packing_cycles, pack_start);
 }
 

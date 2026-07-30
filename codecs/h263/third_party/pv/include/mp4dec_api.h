@@ -198,6 +198,8 @@ extern "C"
     int     PVGetLayerID(VideoDecControls *decCtrl);
     int32   PVGetDecMemoryUsage(VideoDecControls *decCtrl);
     OSCL_IMPORT_REF MP4DecodingMode PVGetDecBitstreamMode(VideoDecControls *decCtrl);
+    OSCL_IMPORT_REF int PVIsMacroblockSkipped(
+        VideoDecControls *decCtrl, int macroblock);
     Bool    PVExtractVolHeader(uint8 *video_buffer, uint8 *vol_header, int32 *vol_header_size);
     int32   PVLocateFrameHeader(uint8 *video_buffer, int32 vop_size);
     int32   PVLocateH263FrameHeader(uint8 *video_buffer, int32 vop_size);
