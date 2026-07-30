@@ -77,7 +77,7 @@ The current decoder audit is:
 | BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
 | BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
 | DivX 3 video | One reusable 4 KiB decoder refill buffer over a bounded AVI packet span | Compliant; packets may exceed the refill buffer, the player caps their span at 96 KiB, and no packet payload is copied between tasks |
-| MJPEG video | One complete indexed JPEG chunk | Documented library exception: `esp_new_jpeg` accepts one contiguous `inbuf` and has no refill callback; the AVI reader enforces the indexed maximum and the decoder writes output in strips |
+| MJPEG video | One reusable configurable refill buffer, 8,192 bytes by default | Compliant; the project replaces only `esp_new_jpeg` entropy input, so packets may exceed the buffer while the existing IDCT, RGB565 and block-output paths remain active |
 
 AVI container traversal itself is sequential and retains no chunk index.
 Legacy 3GP retains compact sample-size and chunk-offset metadata, but H.263
@@ -436,6 +436,20 @@ RGB565 block decoder and direct output:
 .\qemu-mjpeg-benchmark.ps1
 ```
 
+The production default is `MJPEG_STREAMING_INPUT=ON` with an 8,192-byte
+buffer. `MJPEG_INPUT_BUFFER_BYTES` can be set from 1,024 through 65,536 bytes;
+QEMU measurements with 16,384 bytes improved decode time by only about 0.1%,
+so the larger allocation is not the default. Compare a smaller refill buffer
+with the legacy contiguous control:
+
+```powershell
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -StreamingInput ON -InputBufferBytes 4096
+.\qemu-mjpeg-benchmark.ps1 -Frames 60 -StreamingInput OFF
+```
+
+Use an input whose maximum JPEG packet is greater than the configured buffer;
+the complete RGB565 hash must equal the contiguous control.
+
 The production build selectively places the active Huffman, YUV420 process and
 RGB565 packing kernels from the prebuilt `esp_new_jpeg` archive in IRAM. It
 also links bit-exact Xtensa DC-only and one-/two-column reduced-row shortcuts
@@ -503,10 +517,13 @@ Its modeled-device inventory and known accuracy limits are recorded in
   (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). DivX 3 adds
   one reusable 4 KiB decoder refill buffer rather than retaining an AVI
   packet. HLV streams
-  each packet through one reusable 7,680-byte refill buffer; MJPEG uses the maximum indexed
-  JPEG chunk size and writes `esp_new_jpeg` RGB565 blocks directly into the
-  two display DMA strips, without a separate 320x16 strip or the 4 KiB ROM
-  TJpgDec work area. BPV uses one bounded maximum-size packet buffer.
+  each packet through one reusable 7,680-byte refill buffer; MJPEG uses one
+  configurable 8,192-byte `esp_new_jpeg` refill buffer and writes RGB565
+  blocks directly into the two display DMA strips, without a separate
+  320x16 strip or the 4 KiB ROM TJpgDec work area. The buffer is allocated
+  once when playback begins, reused for every frame without resizing or
+  per-frame allocation, and freed when playback ends. BPV uses one bounded
+  maximum-size packet buffer.
 - HLV video: packed Y7/U6/V6 4:2:0 references, one signed Q4 local correction
   per 8x8 plane block and a macroblock-row work area. Profiles up to 320x192
   keep two pointer-swapped references; that uses 164,160 bytes at 320x180

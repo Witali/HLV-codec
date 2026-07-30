@@ -1,3 +1,7 @@
+set(MJPEG_STREAMING_INPUT ON CACHE BOOL
+    "Decode MJPEG through a bounded refill buffer in esp_new_jpeg")
+set(MJPEG_INPUT_BUFFER_BYTES 8192 CACHE STRING
+    "MJPEG compressed-input refill buffer size in bytes")
 set(MJPEG_HOT_IRAM ON CACHE BOOL
     "Place the hottest esp_new_jpeg decode kernels in IRAM")
 set(MJPEG_OPTIMIZED_IDCT ON CACHE BOOL
@@ -10,6 +14,8 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
+set(mjpeg_stream_dir
+    "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
 if(MJPEG_OPTIMIZED_IDCT AND MJPEG_HOT_IRAM)
     list(APPEND mjpeg_idct_sources "mjpeg_idct_optimized.S")
@@ -24,6 +30,11 @@ endif()
 set(mjpeg_color_sources)
 if(MJPEG_FIXED_RGB565 AND MJPEG_HOT_IRAM)
     list(APPEND mjpeg_color_sources "mjpeg_color_optimized.cpp")
+endif()
+set(mjpeg_stream_sources)
+if(MJPEG_STREAMING_INPUT)
+    list(APPEND mjpeg_stream_sources
+        "${mjpeg_stream_dir}/mjpeg_huffman_stream.c")
 endif()
 
 function(enable_mjpeg_hot_iram component_target)
@@ -108,6 +119,15 @@ function(enable_mjpeg_fast_clear_link)
     endif()
 endfunction()
 
+function(enable_mjpeg_streaming_huffman_link)
+    if(MJPEG_STREAMING_INPUT)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,--wrap=jpeg_dec_huffman" APPEND)
+        idf_build_set_property(
+            LINK_OPTIONS "-Wl,-u,__wrap_jpeg_dec_huffman" APPEND)
+    endif()
+endfunction()
+
 function(schedule_mjpeg_hot_iram component_target)
     if(MJPEG_HOT_IRAM)
         cmake_language(DEFER DIRECTORY "${PROJECT_DIR}"
@@ -131,7 +151,8 @@ if(MJPEG_QEMU_BENCHMARK)
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
-        INCLUDE_DIRS "."
+            ${mjpeg_stream_sources}
+        INCLUDE_DIRS "." "${mjpeg_stream_dir}"
         REQUIRES
             esp_rom
             esp_system
@@ -144,6 +165,12 @@ if(MJPEG_QEMU_BENCHMARK)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT}
         MJPEG_PHASE_TIMING=1)
+    if(MJPEG_STREAMING_INPUT)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            MJPEG_STREAMING_INPUT=1
+            MJPEG_INPUT_BUFFER_BYTES=${MJPEG_INPUT_BUFFER_BYTES})
+        enable_mjpeg_streaming_huffman_link()
+    endif()
     if(MJPEG_IDCT_REDUCED_ROWS)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE
             MJPEG_IDCT_REDUCED_ROWS=1)
@@ -251,7 +278,8 @@ else()
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
-        INCLUDE_DIRS "."
+            ${mjpeg_stream_sources}
+        INCLUDE_DIRS "." "${mjpeg_stream_dir}"
         REQUIRES
             amrnb_3gp
             bpv1
@@ -277,7 +305,13 @@ else()
     )
     enable_mjpeg_optimized_idct_link()
     enable_mjpeg_fast_clear_link()
+    enable_mjpeg_streaming_huffman_link()
     schedule_mjpeg_hot_iram(${COMPONENT_LIB})
+    if(MJPEG_STREAMING_INPUT)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            MJPEG_STREAMING_INPUT=1
+            MJPEG_INPUT_BUFFER_BYTES=${MJPEG_INPUT_BUFFER_BYTES})
+    endif()
     if(MJPEG_IDCT_REDUCED_ROWS)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE
             MJPEG_IDCT_REDUCED_ROWS=1)

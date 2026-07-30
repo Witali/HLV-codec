@@ -29,7 +29,7 @@ function Find-WorktreeFile {
 
 if (-not $InputFile) {
     $InputFile = Find-WorktreeFile (
-        "out\VID_20260522_181611_center-crop_320x240_mjpeg_q5_native-fps.avi"
+        "out\MJPEG\Danila_320x240_30fps_MJPEG_40dB.avi"
     )
 }
 if (-not $InputFile -or -not (Test-Path -LiteralPath $InputFile)) {

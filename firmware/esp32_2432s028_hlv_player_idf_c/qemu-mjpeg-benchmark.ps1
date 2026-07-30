@@ -4,6 +4,10 @@ param(
     [ValidateRange(1, 60)]
     [int]$Frames = 12,
     [ValidateSet("ON", "OFF")]
+    [string]$StreamingInput = "ON",
+    [ValidateRange(1024, 65536)]
+    [int]$InputBufferBytes = 8192,
+    [ValidateSet("ON", "OFF")]
     [string]$HotIram = "ON",
     [ValidateSet("ON", "OFF")]
     [string]$OptimizedIdct = "ON",
@@ -35,6 +39,8 @@ $project = $PSScriptRoot
     "-B", "build-qemu-mjpeg",
     "-D", "MJPEG_QEMU_BENCHMARK=ON",
     "-D", "MJPEG_QEMU_FRAME_LIMIT=$Frames",
+    "-D", "MJPEG_STREAMING_INPUT=$StreamingInput",
+    "-D", "MJPEG_INPUT_BUFFER_BYTES=$InputBufferBytes",
     "-D", "MJPEG_HOT_IRAM=$HotIram",
     "-D", "MJPEG_OPTIMIZED_IDCT=$OptimizedIdct",
     "-D", "MJPEG_IDCT_REDUCED_ROWS=$ReducedIdct",

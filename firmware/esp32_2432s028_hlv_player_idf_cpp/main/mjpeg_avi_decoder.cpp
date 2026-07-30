@@ -17,8 +17,14 @@ namespace {
 constexpr char kTag[] = "mjpeg-avi";
 constexpr uint32_t kFallbackFrameBytes = 128 * 1024;
 constexpr uint32_t kMaximumFrameBytes = 1024 * 1024;
+constexpr size_t kMinimumInputBufferBytes = 1024;
+constexpr size_t kMaximumInputBufferBytes = 64 * 1024;
 constexpr unsigned kIoAttempts = 3;
 constexpr uint32_t kIoRetryDelayUs = 2000;
+
+#ifndef MJPEG_INPUT_BUFFER_BYTES
+#define MJPEG_INPUT_BUFFER_BYTES (8U * 1024U)
+#endif
 
 bool isJpegSofMarker(uint8_t marker) {
     return marker >= 0xc0U && marker <= 0xcfU &&
@@ -447,12 +453,22 @@ int mjpeg_avi_next_audio_chunk(FILE *file, const MjpegAviInfo &info,
 
 int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info,
                            bool need_strip) {
+#ifdef MJPEG_STREAMING_INPUT
+    if (MJPEG_INPUT_BUFFER_BYTES < kMinimumInputBufferBytes ||
+        MJPEG_INPUT_BUFFER_BYTES > kMaximumInputBufferBytes) {
+        return MJPEG_AVI_ERR_RANGE;
+    }
+#endif
     end();
     int result = mjpeg_avi_read_info(file, &info_);
     if (result != MJPEG_AVI_OK) return result;
     if (info) *info = info_;
 
+#ifdef MJPEG_STREAMING_INPUT
+    compressed_capacity_ = MJPEG_INPUT_BUFFER_BYTES;
+#else
     compressed_capacity_ = info_.max_video_frame_size;
+#endif
     packet_index_ = 0;
     packet_offset_ = -1;
     decode_height_ = info_.height;
@@ -478,7 +494,8 @@ int MjpegAviDecoder::begin(FILE *file, MjpegAviInfo *info,
         end();
         return MJPEG_AVI_ERR_MEMORY;
     }
-    ESP_LOGI(kTag, "MJPEG buffers: compressed=%u, RGB565 strip=%u bytes",
+    ESP_LOGI(kTag,
+             "MJPEG buffers: compressed input=%u, RGB565 strip=%u bytes",
              static_cast<unsigned>(compressed_capacity_),
              static_cast<unsigned>(
                  strip_ ? stripBufferBytes() : 0));
@@ -496,7 +513,11 @@ void MjpegAviDecoder::end() {
     compressed_capacity_ = 0;
     packet_index_ = 0;
     packet_offset_ = -1;
+    stream_file_ = nullptr;
+    stream_remaining_ = 0;
+    entropy_stream_ = {};
     decode_height_ = 0;
+    stream_failed_ = false;
     need_strip_ = false;
     info_ = {};
 }
@@ -523,15 +544,37 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
                  static_cast<unsigned>(packet_index_));
         return MJPEG_AVI_ERR_IO;
     }
-    if (size < 4 || size > compressed_capacity_) {
+    if (size < 4 ||
+#ifdef MJPEG_STREAMING_INPUT
+        size > kMaximumFrameBytes
+#else
+        size > compressed_capacity_
+#endif
+    ) {
         ESP_LOGE(kTag,
                  "Packet %u size %u exceeds range 4..%u at %ld",
                  static_cast<unsigned>(packet_index_),
                  static_cast<unsigned>(size),
+#ifdef MJPEG_STREAMING_INPUT
+                 static_cast<unsigned>(kMaximumFrameBytes),
+#else
                  static_cast<unsigned>(compressed_capacity_),
+#endif
                  payload_start);
         return MJPEG_AVI_ERR_RANGE;
     }
+#ifdef MJPEG_STREAMING_INPUT
+    const uint64_t next_position =
+        static_cast<uint64_t>(payload_start) + size + (size & 1U);
+    if (next_position > LONG_MAX ||
+        !seekAbsolute(file, static_cast<long>(next_position))) {
+        return MJPEG_AVI_ERR_IO;
+    }
+    packet->file = file;
+    packet->payload_offset = payload_start;
+    packet->next_offset = static_cast<long>(next_position);
+    packet->jpeg_size = size;
+#else
     if (!readExact(file, compressed_, size)) {
         ESP_LOGE(kTag, "Packet %u payload read failed at %ld (%u bytes)",
                  static_cast<unsigned>(packet_index_), payload_start,
@@ -567,6 +610,7 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
     }
     packet->jpeg = compressed_;
     packet->jpeg_size = size;
+#endif
     ++packet_index_;
     return MJPEG_AVI_OK;
 }
@@ -585,19 +629,82 @@ int MjpegAviDecoder::decodeDirect(const MjpegAviPacket &packet,
     return decodeImpl(packet, acquire, output, output_context);
 }
 
+size_t MjpegAviDecoder::refillStream(
+    void *context, uint8_t *destination, size_t capacity) {
+    auto *decoder = static_cast<MjpegAviDecoder *>(context);
+    if (!decoder || !decoder->stream_file_ || !destination ||
+        !capacity || !decoder->stream_remaining_) {
+        return 0;
+    }
+    const size_t bytes = std::min<size_t>(
+        capacity, decoder->stream_remaining_);
+#ifdef MJPEG_PHASE_TIMING
+    const uint32_t start = esp_cpu_get_cycle_count();
+#endif
+    if (!readExact(decoder->stream_file_, destination, bytes)) {
+#ifdef MJPEG_PHASE_TIMING
+        decoder->last_decode_cycles_.input +=
+            esp_cpu_get_cycle_count() - start;
+#endif
+        decoder->stream_failed_ = true;
+        return 0;
+    }
+#ifdef MJPEG_PHASE_TIMING
+    decoder->last_decode_cycles_.input +=
+        esp_cpu_get_cycle_count() - start;
+#endif
+    decoder->stream_remaining_ -= static_cast<uint32_t>(bytes);
+    return bytes;
+}
+
 int MjpegAviDecoder::decodeImpl(
     const MjpegAviPacket &packet, MjpegAviStripAcquire acquire,
     MjpegAviStripOutput output, void *output_context) {
 #ifdef MJPEG_PHASE_TIMING
     last_decode_cycles_ = {};
 #endif
-    if (!ready() || !packet.jpeg || !packet.jpeg_size || !output)
+    if (!ready() ||
+#ifdef MJPEG_STREAMING_INPUT
+        !packet.file || packet.payload_offset < 0 ||
+        packet.next_offset < 0 ||
+#else
+        !packet.jpeg ||
+#endif
+        !packet.jpeg_size || !output)
         return MJPEG_AVI_ERR_ARGUMENT;
     if (!acquire && !strip_) return MJPEG_AVI_ERR_ARGUMENT;
     jpeg_dec_io_t io{};
     jpeg_dec_header_info_t header{};
+#ifdef MJPEG_STREAMING_INPUT
+    if (!seekAbsolute(packet.file, packet.payload_offset))
+        return MJPEG_AVI_ERR_IO;
+    const size_t initial_bytes =
+        std::min(compressed_capacity_, packet.jpeg_size);
+#ifdef MJPEG_PHASE_TIMING
+    uint32_t input_start = esp_cpu_get_cycle_count();
+#endif
+    if (!readExact(packet.file, compressed_, initial_bytes))
+        return MJPEG_AVI_ERR_IO;
+#ifdef MJPEG_PHASE_TIMING
+    last_decode_cycles_.input +=
+        esp_cpu_get_cycle_count() - input_start;
+#endif
+    if (!prepareJpegDecodeHeight(
+            compressed_, initial_bytes, info_.width, info_.height,
+            &decode_height_)) {
+        seekAbsolute(packet.file, packet.next_offset);
+        return MJPEG_AVI_ERR_FORMAT;
+    }
+    stream_file_ = packet.file;
+    stream_remaining_ =
+        static_cast<uint32_t>(packet.jpeg_size - initial_bytes);
+    stream_failed_ = false;
+    io.inbuf = compressed_;
+    io.inbuf_len = static_cast<int>(initial_bytes);
+#else
     io.inbuf = const_cast<uint8_t *>(packet.jpeg);
     io.inbuf_len = static_cast<int>(packet.jpeg_size);
+#endif
     auto decoder = static_cast<jpeg_dec_handle_t>(decoder_);
 #ifdef MJPEG_PHASE_TIMING
     uint32_t phase_start = esp_cpu_get_cycle_count();
@@ -612,6 +719,9 @@ int MjpegAviDecoder::decodeImpl(
         header.width != info_.width || header.height != decode_height_) {
         ESP_LOGE(kTag, "esp_new_jpeg header failed (%ux%u)",
                  header.width, header.height);
+#ifdef MJPEG_STREAMING_INPUT
+        seekAbsolute(packet.file, packet.next_offset);
+#endif
         return MJPEG_AVI_ERR_DECODE;
     }
 
@@ -638,11 +748,22 @@ int MjpegAviDecoder::decodeImpl(
             (info_.width * static_cast<int>(sizeof(uint16_t))) ||
         process_count <= 0) {
         ESP_LOGE(kTag, "esp_new_jpeg block geometry failed");
+#ifdef MJPEG_STREAMING_INPUT
+        seekAbsolute(packet.file, packet.next_offset);
+#endif
         return MJPEG_AVI_ERR_DECODE;
     }
 
     const uint16_t block_rows = static_cast<uint16_t>(
         output_bytes / (info_.width * sizeof(uint16_t)));
+#ifdef MJPEG_STREAMING_INPUT
+    if (!mjpeg_huffman_stream_attach(
+            &entropy_stream_, decoder, compressed_,
+            compressed_capacity_, refillStream, this)) {
+        seekAbsolute(packet.file, packet.next_offset);
+        return MJPEG_AVI_ERR_DECODE;
+    }
+#endif
     uint16_t decoded_y = 0;
     for (int block = 0; block < process_count; ++block) {
         const uint16_t expected_rows = std::min<uint16_t>(
@@ -655,7 +776,13 @@ int MjpegAviDecoder::decodeImpl(
         uint16_t *destination =
             acquire ? acquire(output_context, decoded_y, visible_rows)
                     : strip_;
-        if (!destination) return MJPEG_AVI_ERR_IO;
+        if (!destination) {
+#ifdef MJPEG_STREAMING_INPUT
+            mjpeg_huffman_stream_detach(&entropy_stream_);
+            seekAbsolute(packet.file, packet.next_offset);
+#endif
+            return MJPEG_AVI_ERR_IO;
+        }
         io.outbuf = reinterpret_cast<uint8_t *>(destination);
 #ifdef MJPEG_PHASE_TIMING
         phase_start = esp_cpu_get_cycle_count();
@@ -671,6 +798,10 @@ int MjpegAviDecoder::decodeImpl(
             io.out_size %
                 (info_.width * static_cast<int>(sizeof(uint16_t)))) {
             ESP_LOGE(kTag, "esp_new_jpeg block %d failed", block);
+#ifdef MJPEG_STREAMING_INPUT
+            mjpeg_huffman_stream_detach(&entropy_stream_);
+            seekAbsolute(packet.file, packet.next_offset);
+#endif
             return MJPEG_AVI_ERR_DECODE;
         }
         const uint16_t rows = static_cast<uint16_t>(
@@ -679,10 +810,19 @@ int MjpegAviDecoder::decodeImpl(
             visible_rows == 0 ||
             !output(
                 output_context, destination, decoded_y, visible_rows)) {
+#ifdef MJPEG_STREAMING_INPUT
+            mjpeg_huffman_stream_detach(&entropy_stream_);
+            seekAbsolute(packet.file, packet.next_offset);
+#endif
             return MJPEG_AVI_ERR_IO;
         }
         decoded_y = static_cast<uint16_t>(decoded_y + rows);
     }
+#ifdef MJPEG_STREAMING_INPUT
+    mjpeg_huffman_stream_detach(&entropy_stream_);
+    if (!seekAbsolute(packet.file, packet.next_offset) || stream_failed_)
+        return MJPEG_AVI_ERR_IO;
+#endif
     return decoded_y == decode_height_ ? MJPEG_AVI_OK
                                        : MJPEG_AVI_ERR_DECODE;
 }
