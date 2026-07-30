@@ -178,11 +178,22 @@ underruns, rebuffers and inserted silence.
 
 - [ ] Capture exact physical A/B results for DIO 80 MHz and QIO 80 MHz on the
       installed flash before changing the default.
-- [ ] Measure motion compensation IRAM placement independently.
-- [ ] Place only stage-profiled hot code in IRAM and keep byte-addressed
+- [x] Measure motion compensation IRAM placement independently.
+- [x] Place stage-profiled hot motion-compensation code in IRAM and keep byte-addressed
       working data in DRAM.
-- [ ] Track IRAM use, free heap and largest free block for every retained
+- [x] Track IRAM use, free heap and largest free block for every retained
       placement.
+
+Disabling IRAM placement for motion compensation preserved the decoded hash
+but increased complete decode from 15,528,990 to 18,256,396 cycles/picture
+(17.56%) in two identical physical trials; the third differed by only 38
+cycles. Motion compensation itself increased from 8,268,518 to 9,746,560
+cycles/picture (17.88%), while flash-cache contention also slowed VLC and
+IDCT. The retained IRAM placement costs 26,208 bytes: IRAM grows from 45,195
+to 71,403 bytes (34.48% to 54.48%) and flash code shrinks by the same amount.
+Runtime decoder memory (194,056 bytes), free heap (104,112 bytes) and largest
+free block (102,400 bytes) are unchanged. The existing enabled default is
+therefore a large confirmed win with 59,669 bytes of IRAM still free.
 
 ## Priority 6: speed-oriented encoding profile
 
