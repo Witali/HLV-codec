@@ -142,6 +142,89 @@ static int compact_half_pixel_integer(int value, int *fraction)
     return (value - remainder) / 2;
 }
 
+static PV_H263_MOTION_COMP_ATTR void
+CompactReferenceInteriorHalfPixel(
+    const CompactYuv420Plane *plane,
+    int source_x,
+    int source_y,
+    int fractional_x,
+    int fractional_y,
+    uint8 *prediction,
+    int prediction_stride,
+    int round1,
+    int block_size)
+{
+    uint8 samples_a[17];
+    uint8 samples_b[17];
+    uint8 *current = samples_a;
+    uint8 *next = samples_b;
+    const int sample_width = block_size + fractional_x;
+    int row;
+    int column;
+
+    compact_yuv420_unpack_corrected_samples(
+        plane->data + (size_t)source_y * plane->stride,
+        source_x, source_y, plane->bits, plane->correction,
+        plane->correction_stride, current, sample_width);
+
+    for (row = 0; row < block_size; ++row)
+    {
+        uint8 *output = prediction + row * prediction_stride;
+        if (fractional_y)
+        {
+            const int next_y = source_y + row + 1;
+            compact_yuv420_unpack_corrected_samples(
+                plane->data + (size_t)next_y * plane->stride,
+                source_x, next_y, plane->bits, plane->correction,
+                plane->correction_stride, next, sample_width);
+        }
+
+        if (fractional_x && !fractional_y)
+        {
+            for (column = 0; column < block_size; ++column)
+            {
+                output[column] = (uint8)(
+                    (current[column] + current[column + 1] +
+                     round1) >> 1);
+            }
+            if (row + 1 < block_size)
+            {
+                const int next_y = source_y + row + 1;
+                compact_yuv420_unpack_corrected_samples(
+                    plane->data + (size_t)next_y * plane->stride,
+                    source_x, next_y, plane->bits, plane->correction,
+                    plane->correction_stride, current, sample_width);
+            }
+        }
+        else if (!fractional_x)
+        {
+            for (column = 0; column < block_size; ++column)
+            {
+                output[column] = (uint8)(
+                    (current[column] + next[column] +
+                     round1) >> 1);
+            }
+        }
+        else
+        {
+            for (column = 0; column < block_size; ++column)
+            {
+                output[column] = (uint8)(
+                    (current[column] + current[column + 1] +
+                     next[column] + next[column + 1] +
+                     round1 + 1) >> 2);
+            }
+        }
+
+        if (fractional_y)
+        {
+            uint8 *swap = current;
+            current = next;
+            next = swap;
+        }
+    }
+}
+
 static PV_H263_MOTION_COMP_ATTR void CompactReferenceCopy(
     const CompactYuv420Plane *plane,
     int source_x,
@@ -207,6 +290,14 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction(
             plane, source_x, source_y, prediction,
             prediction_stride, B_SIZE, B_SIZE
             COMPACT_PROFILE_FORWARD);
+        return;
+    }
+
+    if (!edge_prediction)
+    {
+        CompactReferenceInteriorHalfPixel(
+            plane, source_x, source_y, fractional_x, fractional_y,
+            prediction, prediction_stride, round1, B_SIZE);
         return;
     }
 
@@ -316,6 +407,14 @@ static PV_H263_MOTION_COMP_ATTR void CompactReferencePrediction16(
             plane, source_x, source_y, prediction,
             prediction_stride, 16, 16
             COMPACT_PROFILE_FORWARD);
+        return;
+    }
+
+    if (!edge_prediction)
+    {
+        CompactReferenceInteriorHalfPixel(
+            plane, source_x, source_y, fractional_x, fractional_y,
+            prediction, prediction_stride, round1, 16);
         return;
     }
 

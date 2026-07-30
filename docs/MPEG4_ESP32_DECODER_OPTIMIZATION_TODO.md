@@ -100,15 +100,33 @@ followed by compact-row packing.
 
 ## Priority 2: decode compact motion compensation directly
 
-- [ ] Measure integer, horizontal, vertical and diagonal half-pel frequency
+- [x] Measure integer, horizontal, vertical and diagonal half-pel frequency
       and patch-construction cost.
-- [ ] Add direct Y6/U5/V5 horizontal and vertical half-pel kernels without a
+- [x] Add direct Y6/U5/V5 horizontal and vertical half-pel kernels without a
       9x9 or 17x17 temporary patch.
-- [ ] Add a direct diagonal kernel only if its interpolation and compact
+- [x] Add a direct diagonal kernel only if its interpolation and compact
       unpack cost improve physically.
-- [ ] Specialize common safe 16x16 one-vector/CBP classes while preserving the
+- [x] Specialize common safe 16x16 one-vector/CBP classes while preserving the
       four-block `pred_block` layout expected by residual reconstruction.
-- [ ] Keep edge-clamped and uncommon cases on the verified generic path.
+- [x] Keep edge-clamped and uncommon cases on the verified generic path.
+
+Interior half-pel prediction now unpacks only one or two rolling compact
+sample rows (at most 17 bytes each) instead of constructing a complete 9x9 or
+17x17 byte-planar patch. Integer predictions keep the direct-copy path and
+edge-clamped predictions keep the verified generic patch path.
+
+The compile-time-disabled QEMU benchmark improved from 3,037,526 to
+3,000,045 cycles/picture (1.23%) with the unchanged
+`b826825f344bc2e3` hash. In three identical profiled physical trials, motion
+compensation improved from 8,959,529 to 8,269,539 cycles/picture (7.70%) and
+complete decode improved from 17,348,424 to 16,659,074 cycles/picture
+(3.97%).
+
+The retained production build completed the 3,357-picture physical file at
+12.532 fps, versus 12.236 fps before this change. Average decode time improved
+from 75,425.3 to 73,179.8 us (2.98%); average complete work improved from
+104,054.0 to 101,793.2 us (2.17%). All 3,357 sequence numbers were
+consecutive and audio reported zero underruns, rebuffers and inserted silence.
 
 ## Priority 3: remove redundant rolling-row traffic
 
