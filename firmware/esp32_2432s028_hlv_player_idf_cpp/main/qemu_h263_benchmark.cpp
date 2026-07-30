@@ -21,7 +21,7 @@ constexpr uint32_t kTargetCpuHz = 240000000;
 constexpr char kTag[] = "mpeg4-qemu-bench";
 constexpr uint16_t kBenchWidth = 320;
 constexpr uint16_t kBenchHeight = 240;
-constexpr uint8_t kOutputBuffers = 2;
+constexpr uint8_t kOutputBuffers = 1;
 constexpr char kContainer[] = "AVI";
 extern const uint8_t kVideoStart[]
     asm("_binary_qemu_mpeg4_benchmark_avi_start");
@@ -51,9 +51,32 @@ uint64_t hashPlane(uint64_t hash, const uint8_t *plane,
     return hash;
 }
 
+uint64_t hashCompactPlane(
+    uint64_t hash, const CompactYuv420Plane &plane) {
+    uint8_t unpacked[352];
+    if (plane.width > static_cast<int>(sizeof(unpacked))) return 0;
+    for (int y = 0; y < plane.height; ++y) {
+        const uint8_t *row =
+            plane.data + static_cast<size_t>(y) * plane.stride;
+        compact_yuv420_unpack_corrected_samples(
+            row, 0, y, plane.bits, plane.correction,
+            plane.correction_stride, unpacked, plane.width);
+        for (int x = 0; x < plane.width; ++x) {
+            hash ^= unpacked[x];
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    return hash;
+}
+
 uint64_t hashFrame(uint64_t hash, const H2633gpFrame &frame) {
     const unsigned chroma_width = (frame.width + 1U) / 2U;
     const unsigned chroma_height = (frame.height + 1U) / 2U;
+    if (frame.storage_mode == H263_FRAME_STORAGE_Y6_U5_V5) {
+        hash = hashCompactPlane(hash, frame.compact.y);
+        hash = hashCompactPlane(hash, frame.compact.u);
+        return hashCompactPlane(hash, frame.compact.v);
+    }
     hash = hashPlane(
         hash, frame.y, frame.y_stride, frame.width, frame.height);
     hash = hashPlane(

@@ -94,12 +94,43 @@ static int test_corrected_unpack(void) {
     return 0;
 }
 
+static int test_row_packing(void) {
+    uint8_t source[16 * 24];
+    uint8_t whole_data[12 * 24];
+    uint8_t rows_data[12 * 24];
+    int8_t whole_correction[2 * 3];
+    int8_t rows_correction[2 * 3];
+    CompactYuv420Plane whole = {
+        whole_data, 16, 24, 12, whole_correction, 2, 6};
+    CompactYuv420Plane rows = {
+        rows_data, 16, 24, 12, rows_correction, 2, 6};
+    int i;
+    for (i = 0; i < (int)(sizeof source); ++i) {
+        source[i] = (uint8_t)(i * 29 + i / 7);
+    }
+    memset(whole_data, 0, sizeof whole_data);
+    memset(rows_data, 0, sizeof rows_data);
+    memset(whole_correction, 0, sizeof whole_correction);
+    memset(rows_correction, 0, sizeof rows_correction);
+    compact_yuv420_pack_plane(&whole, source, 16);
+    compact_yuv420_pack_plane_rows(&rows, 0, source, 16, 16);
+    compact_yuv420_pack_plane_rows(
+        &rows, 16, source + 16 * 16, 16, 8);
+    CHECK(memcmp(whole_data, rows_data, sizeof whole_data) == 0,
+          "row packing matches whole-plane data");
+    CHECK(memcmp(whole_correction, rows_correction,
+                 sizeof whole_correction) == 0,
+          "row packing matches whole-plane corrections");
+    return 0;
+}
+
 int main(void) {
     if (test_layout()) return 1;
     if (test_round_trip(6)) return 1;
     if (test_round_trip(5)) return 1;
     if (test_correction()) return 1;
     if (test_corrected_unpack()) return 1;
+    if (test_row_packing()) return 1;
     puts("compact_yuv420 tests passed");
     return 0;
 }

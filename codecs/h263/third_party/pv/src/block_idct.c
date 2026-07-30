@@ -253,7 +253,8 @@ PV_H263_INTRA_IDCT_ATTR void MBlockIDCT(VideoDecData *video)
     int32 offset;
     width = video->width;
     width_uv = width >> 1;
-    offset = (int32)(y_pos << 4) * width + (x_pos << 4);
+    offset = PVCurrentOutputOffset(
+        video, x_pos << 4, y_pos << 4);
 
     c_comp  = currVop->yChan + offset;
     cu_comp = currVop->uChan + (offset >> 2) + (x_pos << 2);

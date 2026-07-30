@@ -101,6 +101,124 @@
 /* 10/30 for TPS ***/
 const static int roundtab16[] = {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2};
 
+static int compact_clamp_coordinate(int value, int extent)
+{
+    if (value < 0) return 0;
+    if (value >= extent) return extent - 1;
+    return value;
+}
+
+static int compact_half_pixel_integer(int value, int *fraction)
+{
+    int remainder = value % 2;
+    if (remainder < 0) remainder += 2;
+    *fraction = remainder;
+    return (value - remainder) / 2;
+}
+
+static void CompactReferencePrediction(
+    const CompactYuv420Plane *plane,
+    int xpred,
+    int ypred,
+    uint8 *prediction,
+    int prediction_stride,
+    int round1)
+{
+    int fractional_x;
+    int fractional_y;
+    int source_x = compact_half_pixel_integer(xpred, &fractional_x);
+    int source_y = compact_half_pixel_integer(ypred, &fractional_y);
+    int patch_width = B_SIZE + fractional_x;
+    int patch_height = B_SIZE + fractional_y;
+    uint8 patch[(B_SIZE + 1) * (B_SIZE + 1)];
+    int row;
+    int column;
+
+    for (row = 0; row < patch_height; ++row)
+    {
+        int y = compact_clamp_coordinate(
+            source_y + row, plane->height);
+        uint8 *patch_row = patch + row * patch_width;
+        const uint8 *packed_row =
+            plane->data + (size_t)y * plane->stride;
+        if (source_x >= 0 &&
+                source_x + patch_width <= plane->width)
+        {
+            compact_yuv420_unpack_corrected_samples(
+                packed_row, source_x, y, plane->bits,
+                plane->correction, plane->correction_stride,
+                patch_row, patch_width);
+        }
+        else
+        {
+            for (column = 0; column < patch_width; ++column)
+            {
+                int x = compact_clamp_coordinate(
+                    source_x + column, plane->width);
+                patch_row[column] =
+                    compact_yuv420_corrected_sample(
+                        packed_row, x, y, plane->bits,
+                        plane->correction,
+                        plane->correction_stride);
+            }
+        }
+    }
+
+    for (row = 0; row < B_SIZE; ++row)
+    {
+        const uint8 *patch_row = patch + row * patch_width;
+        const uint8 *next_row = patch_row + patch_width;
+        uint8 *output = prediction + row * prediction_stride;
+        for (column = 0; column < B_SIZE; ++column)
+        {
+            if (!fractional_x && !fractional_y)
+            {
+                output[column] = patch_row[column];
+            }
+            else if (fractional_x && !fractional_y)
+            {
+                output[column] = (uint8)(
+                    (patch_row[column] + patch_row[column + 1] +
+                     round1) >> 1);
+            }
+            else if (!fractional_x && fractional_y)
+            {
+                output[column] = (uint8)(
+                    (patch_row[column] + next_row[column] +
+                     round1) >> 1);
+            }
+            else
+            {
+                output[column] = (uint8)(
+                    (patch_row[column] + patch_row[column + 1] +
+                     next_row[column] + next_row[column + 1] +
+                     round1 + 1) >> 2);
+            }
+        }
+    }
+}
+
+static void CompactReferenceCopy(
+    const CompactYuv420Plane *plane,
+    int source_x,
+    int source_y,
+    uint8 *destination,
+    int destination_stride,
+    int width,
+    int height)
+{
+    int row;
+    for (row = 0; row < height; ++row)
+    {
+        int y = source_y + row;
+        compact_yuv420_unpack_corrected_samples(
+            plane->data + (size_t)y * plane->stride,
+            source_x, y, plane->bits, plane->correction,
+            plane->correction_stride,
+            destination + row * destination_stride, width);
+    }
+}
+
 
 /*----------------------------------------------------------------------------
 ; EXTERNAL FUNCTION REFERENCES
@@ -143,7 +261,7 @@ void  MBMotionComp(
     PIXEL *cv_comp, *cv_prev;
     int height, width, pred_width;
     int imv, mvwidth;
-    int32 offset;
+    int32 offset, output_offset;
     uint8 mode;
     uint8 *pred_block, *pred;
 
@@ -154,6 +272,8 @@ void  MBMotionComp(
     int xpred, ypred;
     int xsum;
     int round1;
+    const CompactYuv420Frame *compact_reference =
+        video->videoDecControls->compactReference;
     /*----------------------------------------------------------------------------
     ; Function body here
     ----------------------------------------------------------------------------*/
@@ -179,6 +299,7 @@ void  MBMotionComp(
     /* in pixel resolution                              */
     /* ypos*width -> row, +x -> column */
     offset = (int32)ypos * width + xpos;
+    output_offset = PVCurrentOutputOffset(video, xpos, ypos);
 
     /* get mode for current MB */
     mode = video->headerInfo.Mode[mbnum];
@@ -232,7 +353,7 @@ void  MBMotionComp(
 
     /* Pointer to previous luminance frame */
     c_prev  = prev->yChan;
-    if (!c_prev) {
+    if (!c_prev && !compact_reference) {
         ALOGE("b/35269635");
         android_errorWriteLog(0x534e4554, "35269635");
         return;
@@ -251,7 +372,7 @@ void  MBMotionComp(
     /*      luminance_pred_mode_inter4v(xpos, ypos, px, py, c_prev,
                     video->mblock->pred_block, width, height,
                     round1, mvwidth, &xsum, &ysum);*/
-    c_comp = video->currVop->yChan + offset;
+    c_comp = video->currVop->yChan + output_offset;
 
 
     xpred = (int)((xpos << 1) + px[0]);
@@ -269,7 +390,13 @@ void  MBMotionComp(
     }
 
     /* check whether the MV points outside the frame */
-    if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
+    if (compact_reference)
+    {
+        CompactReferencePrediction(
+            &compact_reference->y, xpred, ypred,
+            pred, pred_width, round1);
+    }
+    else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
             ypred >= 0 && ypred <= ((height << 1) - (2*B_SIZE)))
     {   /*****************************/
         /* (x,y) is inside the frame */
@@ -305,7 +432,13 @@ void  MBMotionComp(
     }
 
     /* check whether the MV points outside the frame */
-    if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
+    if (compact_reference)
+    {
+        CompactReferencePrediction(
+            &compact_reference->y, xpred, ypred,
+            pred, pred_width, round1);
+    }
+    else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
             ypred >= 0 && ypred <= ((height << 1) - (2*B_SIZE)))
     {   /*****************************/
         /* (x,y) is inside the frame */
@@ -341,7 +474,13 @@ void  MBMotionComp(
     }
 
     /* check whether the MV points outside the frame */
-    if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
+    if (compact_reference)
+    {
+        CompactReferencePrediction(
+            &compact_reference->y, xpred, ypred,
+            pred, pred_width, round1);
+    }
+    else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
             ypred >= 0 && ypred <= ((height << 1) - (2*B_SIZE)))
     {   /*****************************/
         /* (x,y) is inside the frame */
@@ -378,7 +517,13 @@ void  MBMotionComp(
     }
 
     /* check whether the MV points outside the frame */
-    if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
+    if (compact_reference)
+    {
+        CompactReferencePrediction(
+            &compact_reference->y, xpred, ypred,
+            pred, pred_width, round1);
+    }
+    else if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) &&
             ypred >= 0 && ypred <= ((height << 1) - (2*B_SIZE)))
     {   /*****************************/
         /* (x,y) is inside the frame */
@@ -424,13 +569,46 @@ void  MBMotionComp(
     /* resolution.                                           */
     ypred = ypos + dy;
 
-    cu_comp = video->currVop->uChan + (offset >> 2) + (xpos >> 2);
-    cv_comp = video->currVop->vChan + (offset >> 2) + (xpos >> 2);
+    cu_comp = video->currVop->uChan +
+              (output_offset >> 2) + (xpos >> 2);
+    cv_comp = video->currVop->vChan +
+              (output_offset >> 2) + (xpos >> 2);
 
     /* Call function that performs chrominance prediction */
     /*      chrominance_pred(xpred, ypred, cu_prev, cv_prev,
             pred_block, width_uv, height_uv,
             round1);*/
+    if (compact_reference)
+    {
+        if ((CBP >> 1)&1)
+        {
+            pred = pred_block + 256;
+            pred_width = 16;
+        }
+        else
+        {
+            pred = cu_comp;
+            pred_width = width;
+        }
+        CompactReferencePrediction(
+            &compact_reference->u, xpred, ypred,
+            pred, pred_width, round1);
+
+        if (CBP&1)
+        {
+            pred = pred_block + 264;
+            pred_width = 16;
+        }
+        else
+        {
+            pred = cv_comp;
+            pred_width = width;
+        }
+        CompactReferencePrediction(
+            &compact_reference->v, xpred, ypred,
+            pred, pred_width, round1);
+        return;
+    }
     if (xpred >= 0 && xpred <= ((width << 1) - (2*B_SIZE)) && ypred >= 0 &&
             ypred <= ((height << 1) - (2*B_SIZE)))
     {
@@ -520,36 +698,61 @@ void  SkippedMBMotionComp(
     PIXEL *cu_comp, *cu_prev;
     PIXEL *cv_comp, *cv_prev;
     int width, width_uv;
-    int32 offset;
+    int32 offset, output_offset;
+    const CompactYuv420Frame *compact_reference =
+        video->videoDecControls->compactReference;
 
     width = video->width;
     width_uv  = width >> 1;
     ypos = video->mbnum_row << 4 ;
     xpos = video->mbnum_col << 4 ;
     offset = (int32)ypos * width + xpos;
+    output_offset = PVCurrentOutputOffset(video, xpos, ypos);
 
 
     /* zero motion compensation for previous frame */
     /*mby*width + mbx;*/
     c_prev  = prev->yChan;
-    if (!c_prev) {
+    if (!c_prev && !compact_reference) {
         ALOGE("b/35269635");
         android_errorWriteLog(0x534e4554, "35269635");
         return;
     }
-    c_prev += offset;
-
-    /*by*width_uv + bx;*/
-    cu_prev = prev->uChan + (offset >> 2) + (xpos >> 2);
-    /*by*width_uv + bx;*/
-    cv_prev = prev->vChan + (offset >> 2) + (xpos >> 2);
+    if (compact_reference)
+    {
+        cu_prev = NULL;
+        cv_prev = NULL;
+    }
+    else
+    {
+        c_prev += offset;
+        /*by*width_uv + bx;*/
+        cu_prev = prev->uChan + (offset >> 2) + (xpos >> 2);
+        /*by*width_uv + bx;*/
+        cv_prev = prev->vChan + (offset >> 2) + (xpos >> 2);
+    }
 
     comp = video->currVop;
 
-    c_comp  = comp->yChan + offset;
-    cu_comp = comp->uChan + (offset >> 2) + (xpos >> 2);
-    cv_comp = comp->vChan + (offset >> 2) + (xpos >> 2);
+    c_comp  = comp->yChan + output_offset;
+    cu_comp =
+        comp->uChan + (output_offset >> 2) + (xpos >> 2);
+    cv_comp =
+        comp->vChan + (output_offset >> 2) + (xpos >> 2);
 
+    if (compact_reference)
+    {
+        CompactReferenceCopy(
+            &compact_reference->y, xpos, ypos,
+            c_comp, width, 16, 16);
+        CompactReferenceCopy(
+            &compact_reference->u, xpos >> 1, ypos >> 1,
+            cu_comp, width_uv, 8, 8);
+        CompactReferenceCopy(
+            &compact_reference->v, xpos >> 1, ypos >> 1,
+            cv_comp, width_uv, 8, 8);
+        return;
+    }
 
     /* Copy previous reconstructed frame into the current frame */
     PutSKIPPED_MB(c_comp,  c_prev, width);

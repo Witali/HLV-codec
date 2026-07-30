@@ -274,6 +274,91 @@ static inline void compact_yuv420_pack_aligned_samples(
     }
 }
 
+static inline void compact_yuv420_pack_plane_rows(
+    CompactYuv420Plane *destination, int destination_y,
+    const uint8_t *source, int source_stride, int row_count) {
+    int block_y;
+    if (!destination || !destination->data || !destination->correction ||
+        !source || destination->width <= 0 || destination->height <= 0 ||
+        destination->stride <= 0 ||
+        destination->correction_stride <= 0 ||
+        source_stride < destination->width || destination_y < 0 ||
+        destination_y >= destination->height || row_count <= 0 ||
+        destination_y % COMPACT_YUV420_BLOCK_SIZE != 0 ||
+        destination_y + row_count > destination->height ||
+        (row_count % COMPACT_YUV420_BLOCK_SIZE != 0 &&
+         destination_y + row_count != destination->height)) {
+        return;
+    }
+    for (block_y = destination_y;
+         block_y < destination_y + row_count;
+         block_y += COMPACT_YUV420_BLOCK_SIZE) {
+        int block_x;
+        int block_height =
+            destination_y + row_count - block_y <
+                    COMPACT_YUV420_BLOCK_SIZE
+                ? destination_y + row_count - block_y
+                : COMPACT_YUV420_BLOCK_SIZE;
+        for (block_x = 0; block_x < destination->width;
+             block_x += COMPACT_YUV420_BLOCK_SIZE) {
+            int residual_sum = 0;
+            int block_width =
+                destination->width - block_x <
+                        COMPACT_YUV420_BLOCK_SIZE
+                    ? destination->width - block_x
+                    : COMPACT_YUV420_BLOCK_SIZE;
+            int row;
+            for (row = 0; row < block_height; ++row) {
+                uint8_t *packed_row =
+                    destination->data +
+                    (size_t)(block_y + row) * destination->stride +
+                    ((size_t)block_x * destination->bits >> 3);
+                const uint8_t *source_row =
+                    source +
+                    (size_t)(block_y - destination_y + row) *
+                        source_stride +
+                    block_x;
+                compact_yuv420_pack_aligned_samples(
+                    packed_row, source_row, block_width,
+                    destination->bits, &residual_sum, NULL);
+            }
+            destination->correction[
+                (block_y / COMPACT_YUV420_BLOCK_SIZE) *
+                    destination->correction_stride +
+                block_x / COMPACT_YUV420_BLOCK_SIZE] =
+                compact_yuv420_error_q4(residual_sum);
+        }
+    }
+}
+
+static inline void compact_yuv420_pack_plane(
+    CompactYuv420Plane *destination, const uint8_t *source,
+    int source_stride) {
+    if (!destination) return;
+    compact_yuv420_pack_plane_rows(
+        destination, 0, source, source_stride, destination->height);
+}
+
+static inline void compact_yuv420_unpack_plane(
+    const CompactYuv420Plane *source, uint8_t *destination,
+    int destination_stride) {
+    int y;
+    if (!source || !source->data || !destination ||
+        source->width <= 0 || source->height <= 0 ||
+        source->stride <= 0 ||
+        destination_stride < source->width) {
+        return;
+    }
+    for (y = 0; y < source->height; ++y) {
+        compact_yuv420_unpack_corrected_samples(
+            source->data + (size_t)y * source->stride,
+            0, y, source->bits, source->correction,
+            source->correction_stride,
+            destination + (size_t)y * destination_stride,
+            source->width);
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif

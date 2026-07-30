@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "compact_yuv420.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,6 +37,11 @@ enum {
     H263_VIDEO_CODEC_MPEG4_SIMPLE = 2,
 };
 
+enum {
+    H263_FRAME_STORAGE_YUV420 = 0,
+    H263_FRAME_STORAGE_Y6_U5_V5 = 1,
+};
+
 #define H263_AVI_PCM_MAX_SAMPLES 256
 
 typedef struct H2633gpInfo {
@@ -63,6 +70,8 @@ typedef struct H2633gpFrame {
     uint16_t height;
     uint16_t y_stride;
     uint16_t chroma_stride;
+    uint8_t storage_mode;
+    CompactYuv420Frame compact;
     uint64_t timestamp_ticks;
     uint32_t duration_ticks;
     uint32_t index;
@@ -81,9 +90,11 @@ H2633gpDecoder *h263_3gp_decoder_create(void);
 void h263_3gp_decoder_destroy(H2633gpDecoder *decoder);
 
 /*
- * Requests one or two output frame buffers for intra-only streams. Two
- * buffers allow a caller to render frame N while frame N+1 is decoded.
- * Predictive QCIF streams always use two buffers. Call before open().
+ * Requests one or two ordinary output frame buffers. Two buffers allow a
+ * caller to render frame N while frame N+1 is decoded. Predictive QCIF H.263
+ * always uses two byte-planar buffers. MPEG-4 with a request of one instead
+ * returns two pointer-swapped compact Y6/U5/V5 frames and reconstructs
+ * through one 16-luma-row workspace. Call before open().
  */
 int h263_3gp_decoder_set_output_buffer_count(H2633gpDecoder *decoder,
                                               uint8_t count);
@@ -103,9 +114,10 @@ void h263_3gp_decoder_set_output_row_guard(
  * MPEG-4 Part 2 Simple Profile is accepted in AVI with the M4S2 FourCC.
  * The embedded H.263 profiles accept only 176x144 QCIF and intra-only
  * baseline 352x288 CIF; all H.263+ custom-size modes are rejected. MPEG-4
- * Simple Profile uses 320x240 I/P pictures and therefore always requires two
- * output buffers. 3GP audio is handled by the companion AMR-NB decoder; AVI
- * accepts mono PCM at 8 kHz through the reader below.
+ * Simple Profile uses 320x240 I/P pictures; its embedded path retains two
+ * compact predictive/display frames rather than two full byte-planar
+ * buffers. 3GP audio is handled by the companion AMR-NB decoder; AVI accepts
+ * mono PCM at 8 kHz through the reader below.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);

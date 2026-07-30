@@ -19,6 +19,7 @@
 #define _MP4DEC_API_H_
 
 #include "m4vh263_decoder_pv_types.h"
+#include "compact_yuv420.h"
 
 // #define PV_TOLERATE_VOL_ERRORS
 #define PV_MEMORY_POOL
@@ -99,6 +100,21 @@ typedef struct tagvideoDecControls
     void (*outputRowGuard)(void *opaque, uint16 first_y);
     void *outputRowGuardOpaque;
 
+    /*
+     * Optional packed predictive reference. When present, MPEG-4 motion
+     * compensation reads this Y6/U5/V5 frame instead of prevVop's byte
+     * planes. The current output remains ordinary byte-planar YUV420.
+     */
+    const CompactYuv420Frame *compactReference;
+
+    /*
+     * When non-zero, current YUV planes contain only this many luma rows.
+     * Macroblock reconstruction wraps its destination Y coordinate into the
+     * rolling buffer while prediction continues to use full-frame
+     * coordinates in compactReference.
+     */
+    uint16 currentOutputRows;
+
 } VideoDecControls;
 
 typedef enum
@@ -118,6 +134,7 @@ typedef struct tagVopHeaderInfo
     MP4FrameType    frameType;
     int     refSelCode;
     int16       quantizer;
+    int         vopCoded;
 } VopHeaderInfo;
 
 /*--------------------------------------------------------------------------*
@@ -161,6 +178,7 @@ extern "C"
     Bool    PVResetVideoDecoder(VideoDecControls *decCtrl);
     OSCL_IMPORT_REF void    PVSetReferenceYUV(VideoDecControls *decCtrl, uint8 *refYUV);
     OSCL_IMPORT_REF void    PVSetReferenceYUVPlanes(VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v);
+    OSCL_IMPORT_REF void    PVSetCompactReferenceYUV420(VideoDecControls *decCtrl, const CompactYuv420Frame *reference);
     OSCL_IMPORT_REF void    PVSetCurrentYUVPlanes(VideoDecControls *decCtrl, uint8 *y, uint8 *u, uint8 *v);
     Bool    PVDecSetReference(VideoDecControls *decCtrl, uint8 *refYUV, uint32 timestamp);
     Bool    PVDecSetEnhReference(VideoDecControls *decCtrl, uint8 *refYUV, uint32 timestamp);

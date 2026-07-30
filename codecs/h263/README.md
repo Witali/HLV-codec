@@ -32,11 +32,14 @@ at standard QCIF `176x144` or CIF `352x288`, with the full source frame rate.
 Legacy 3GP is retained only when its H.263 picture is standard QCIF or CIF.
 It must not be used as a new encoding target.
 
-New MPEG-4 assets use the bounded `320x240` M4S2/AVI profile. The decoder
-keeps two YUV420 frames for predictive pictures and streams every compressed
-packet through a reusable 4 KiB refill buffer. Only the small MPEG-4 VOL
-decoder configuration may be retained contiguously, with a strict 256-byte
-limit.
+New MPEG-4 assets use the bounded `320x240` M4S2/AVI profile. The embedded
+decoder keeps the previous and current pictures as two independently
+allocated Y6/U5/V5 frames with signed Q4 block-average corrections. It
+reconstructs one 16-line macroblock row in byte-planar YUV420 and packs that
+row before reusing the workspace, so no full byte-planar MPEG-4 frame is
+allocated. Every compressed packet streams through a reusable 4 KiB refill
+buffer. Only the small MPEG-4 VOL decoder configuration may be retained
+contiguously, with a strict 256-byte limit.
 
 ```powershell
 .\scripts\encode_mpeg4_simple_avi.ps1 `

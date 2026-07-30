@@ -1250,6 +1250,7 @@ Bool PVDecodeVopHeader(VideoDecControls *decCtrl, uint8 *buffer[],
     header_info->frameType = (MP4FrameType)currVop->predictionType;
     header_info->refSelCode = vopHeader[target_layer]->refSelectCode;
     header_info->quantizer = currVop->quantizer;
+    header_info->vopCoded = currVop->vopCoded;
     /***************************************/
 
     return PV_TRUE;
@@ -1312,12 +1313,35 @@ Bool PVDecodeVopBody(VideoDecControls *decCtrl, int32 buffer_size[])
             }
         }
 
-        if (!video->prevVop->yChan) {
+        if (!video->prevVop->yChan && !decCtrl->compactReference) {
             ALOGE("b/35269635");
             android_errorWriteLog(0x534e4554, "35269635");
             return PV_FALSE;
         }
-        oscl_memcpy(currVop->yChan, video->prevVop->yChan, (decCtrl->size*3) / 2);
+        if (decCtrl->compactReference)
+        {
+            const CompactYuv420Frame *reference =
+                decCtrl->compactReference;
+            if (reference->width != video->width ||
+                    reference->height != video->height)
+            {
+                return PV_FALSE;
+            }
+            if (!decCtrl->currentOutputRows)
+            {
+                compact_yuv420_unpack_plane(
+                    &reference->y, currVop->yChan, video->width);
+                compact_yuv420_unpack_plane(
+                    &reference->u, currVop->uChan, video->width >> 1);
+                compact_yuv420_unpack_plane(
+                    &reference->v, currVop->vChan, video->width >> 1);
+            }
+        }
+        else
+        {
+            oscl_memcpy(currVop->yChan, video->prevVop->yChan,
+                        (decCtrl->size*3) / 2);
+        }
 
         video->prevVop = prevVop;
 
@@ -1504,6 +1528,15 @@ OSCL_EXPORT_REF void PVSetReferenceYUVPlanes(
     oscl_memset(video->prevVop->vChan, 128, sizeof(uint8)*decCtrl->size / 4);
     video->concealFrame = video->prevVop->yChan;               /*  07/07/2001 */
     decCtrl->outputFrame = video->prevVop->yChan;              /*  06/19/2002 */
+}
+
+OSCL_EXPORT_REF void PVSetCompactReferenceYUV420(
+    VideoDecControls *decCtrl, const CompactYuv420Frame *reference)
+{
+    if (decCtrl)
+    {
+        decCtrl->compactReference = reference;
+    }
 }
 
 OSCL_EXPORT_REF void PVSetCurrentYUVPlanes(

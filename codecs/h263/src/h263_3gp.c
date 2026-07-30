@@ -261,11 +261,18 @@ struct H2633gpDecoder {
     uint8_t *output_u[2];
     uint8_t *output_v[2];
     size_t output_bytes;
+    uint8_t allocated_output_count;
     uint8_t output_count;
     uint8_t requested_output_count;
     uint16_t buffer_width;
     uint16_t buffer_height;
     bool intra_only;
+    bool compact_reference_enabled;
+    CompactYuv420Frame compact_reference;
+    CompactYuv420Frame compact_output;
+    uint16_t next_compact_row;
+    H263OutputRowGuard output_row_guard;
+    void *output_row_guard_opaque;
     bool pv_ready;
 
     uint32_t fixed_sample_size;
@@ -306,7 +313,26 @@ static void clearOutputFrames(H2633gpDecoder *decoder) {
         decoder->output_v[index] = NULL;
     }
     decoder->output_bytes = 0;
+    decoder->allocated_output_count = 0;
     decoder->output_count = 0;
+}
+
+static void clearCompactFrame(CompactYuv420Frame *frame) {
+    if (!frame) return;
+    free(frame->y.data);
+    free(frame->y.correction);
+    free(frame->u.data);
+    free(frame->u.correction);
+    free(frame->v.data);
+    free(frame->v.correction);
+    memset(frame, 0, sizeof(*frame));
+}
+
+static void clearCompactReference(H2633gpDecoder *decoder) {
+    clearCompactFrame(&decoder->compact_reference);
+    clearCompactFrame(&decoder->compact_output);
+    decoder->compact_reference_enabled = false;
+    decoder->next_compact_row = 0;
 }
 
 static void clearDecoder(H2633gpDecoder *decoder) {
@@ -316,6 +342,7 @@ static void clearDecoder(H2633gpDecoder *decoder) {
     if (decoder->pv_ready) PVCleanUpVideoDecoder(&decoder->controls);
     free(decoder->packet);
     clearOutputFrames(decoder);
+    clearCompactReference(decoder);
     free(decoder->stsc);
     free(decoder->stts);
     free(decoder->sample_sizes);
@@ -323,6 +350,120 @@ static void clearDecoder(H2633gpDecoder *decoder) {
     memset(decoder, 0, sizeof(*decoder));
     decoder->requested_output_count = requested_output_count;
     resetAviState(&decoder->avi);
+}
+
+static bool initializeCompactPlane(CompactYuv420Plane *plane,
+                                   int width, int height,
+                                   uint8_t bits) {
+    const size_t stride =
+        compact_yuv420_packed_stride(width, bits);
+    const size_t correction_stride =
+        compact_yuv420_correction_stride(width);
+    const size_t data_bytes =
+        compact_yuv420_plane_storage_bytes(width, height, bits);
+    const size_t correction_bytes =
+        compact_yuv420_plane_correction_bytes(width, height);
+    if (!plane || !stride || !correction_stride ||
+        stride > INT_MAX || correction_stride > INT_MAX) {
+        return false;
+    }
+    plane->data = (uint8_t *)(malloc(data_bytes));
+    plane->correction = (int8_t *)(malloc(correction_bytes));
+    if (!plane->data || !plane->correction) return false;
+    plane->width = width;
+    plane->height = height;
+    plane->stride = (int)(stride);
+    plane->correction_stride = (int)(correction_stride);
+    plane->bits = bits;
+    return true;
+}
+
+static bool initializeCompactFrame(CompactYuv420Frame *reference,
+                                   int width, int height) {
+    const int chroma_width = (width + 1) / 2;
+    const int chroma_height = (height + 1) / 2;
+    reference->width = width;
+    reference->height = height;
+    if (!initializeCompactPlane(
+            &reference->y, width, height,
+            COMPACT_YUV420_LUMA_BITS) ||
+        !initializeCompactPlane(
+            &reference->u, chroma_width, chroma_height,
+            COMPACT_YUV420_CHROMA_BITS) ||
+        !initializeCompactPlane(
+            &reference->v, chroma_width, chroma_height,
+            COMPACT_YUV420_CHROMA_BITS)) {
+        clearCompactFrame(reference);
+        return false;
+    }
+    return true;
+}
+
+static bool initializeCompactFrames(H2633gpDecoder *decoder,
+                                    int width, int height) {
+    if (!initializeCompactFrame(
+            &decoder->compact_reference, width, height) ||
+        !initializeCompactFrame(
+            &decoder->compact_output, width, height)) {
+        clearCompactReference(decoder);
+        return false;
+    }
+    decoder->compact_reference_enabled = true;
+    return true;
+}
+
+static void packCompactMacroblockRow(H2633gpDecoder *decoder,
+                                     uint16_t first_y) {
+    CompactYuv420Frame *output = &decoder->compact_output;
+    const int luma_rows = MIN(
+        16, decoder->buffer_height - (int)(first_y));
+    const int chroma_y = first_y / 2;
+    const int chroma_rows = luma_rows / 2;
+    compact_yuv420_pack_plane_rows(
+        &output->y, first_y, decoder->output_y[0],
+        decoder->buffer_width, luma_rows);
+    compact_yuv420_pack_plane_rows(
+        &output->u, chroma_y, decoder->output_u[0],
+        decoder->buffer_width / 2, chroma_rows);
+    compact_yuv420_pack_plane_rows(
+        &output->v, chroma_y, decoder->output_v[0],
+        decoder->buffer_width / 2, chroma_rows);
+}
+
+static void compactOutputRowGuard(void *opaque, uint16 first_y) {
+    H2633gpDecoder *decoder = (H2633gpDecoder *)(opaque);
+    if (!decoder) return;
+    while (decoder->next_compact_row < first_y &&
+           decoder->next_compact_row < decoder->buffer_height) {
+        packCompactMacroblockRow(
+            decoder, decoder->next_compact_row);
+        decoder->next_compact_row += 16;
+    }
+    if (decoder->output_row_guard) {
+        decoder->output_row_guard(
+            decoder->output_row_guard_opaque, first_y);
+    }
+}
+
+static void copyCompactFrame(CompactYuv420Frame *destination,
+                             const CompactYuv420Frame *source) {
+    CompactYuv420Plane *destination_planes[3] = {
+        &destination->y, &destination->u, &destination->v};
+    const CompactYuv420Plane *source_planes[3] = {
+        &source->y, &source->u, &source->v};
+    for (int plane = 0; plane < 3; ++plane) {
+        const size_t data_bytes =
+            (size_t)(source_planes[plane]->stride) *
+            source_planes[plane]->height;
+        const size_t correction_bytes =
+            (size_t)(source_planes[plane]->correction_stride) *
+            ((source_planes[plane]->height + 7) / 8);
+        memcpy(destination_planes[plane]->data,
+               source_planes[plane]->data, data_bytes);
+        memcpy(destination_planes[plane]->correction,
+               source_planes[plane]->correction,
+               correction_bytes);
+    }
 }
 
 static void resetPcmReader(H263AviPcmReader *reader) {
@@ -1082,26 +1223,45 @@ static int initializeDecoder(H2633gpDecoder *decoder, FILE *file) {
         ((int32)(decoder->info.height) + 15) & -16;
     decoder->buffer_width = (uint16_t)(expected_width);
     decoder->buffer_height = (uint16_t)(expected_height);
-    decoder->output_bytes =
-        (size_t)(expected_width) * expected_height * 3 / 2;
     decoder->intra_only =
         decoder->info.video_codec == H263_VIDEO_CODEC_H263 &&
         decoder->info.width != 176;
+    decoder->compact_reference_enabled =
+        decoder->info.video_codec ==
+            H263_VIDEO_CODEC_MPEG4_SIMPLE &&
+        decoder->requested_output_count == 1;
     decoder->output_count =
-        decoder->info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+        decoder->compact_reference_enabled
             ? 2
+            : decoder->info.video_codec ==
+                      H263_VIDEO_CODEC_MPEG4_SIMPLE
+                  ? decoder->requested_output_count
             : (decoder->intra_only
                    ? decoder->requested_output_count
                    : 2);
+    decoder->allocated_output_count =
+        decoder->compact_reference_enabled ? 1 : decoder->output_count;
 
-    // Reserve the frame planes before PacketVideo makes its smaller table
-    // allocations. Separate Y/U/V blocks avoid requiring one contiguous
-    // 152,064-byte allocation at CIF. CIF H.263 is intra-only, so one set of
-    // planes can serve as current output and nominal reference.
-    const size_t y_bytes =
-        (size_t)(expected_width) * expected_height;
+    /*
+     * MPEG-4 reconstructs one 16-line macroblock row at a time and commits
+     * it to compact_output before the rolling planes are reused. The two
+     * compact frames are the predictive reference and the displayable
+     * current frame; no full byte-planar MPEG-4 frame is retained.
+     *
+     * Other modes reserve ordinary frame planes before PacketVideo makes
+     * its smaller table allocations. Separate Y/U/V blocks avoid requiring
+     * one contiguous 152,064-byte allocation at CIF.
+     */
+    const size_t y_bytes = (size_t)(expected_width) *
+        (decoder->compact_reference_enabled ? 16 : expected_height);
     const size_t chroma_bytes = y_bytes / 4;
-    for (uint8_t i = 0; i < decoder->output_count; ++i) {
+    decoder->output_bytes = y_bytes + 2 * chroma_bytes;
+    if (decoder->compact_reference_enabled &&
+        !initializeCompactFrames(
+            decoder, expected_width, expected_height)) {
+        return H263_3GP_ERR_FRAME_MEMORY;
+    }
+    for (uint8_t i = 0; i < decoder->allocated_output_count; ++i) {
         decoder->output_y[i] =
             (uint8_t *)(malloc(y_bytes));
         decoder->output_u[i] =
@@ -1202,12 +1362,20 @@ static int initializeDecoder(H2633gpDecoder *decoder, FILE *file) {
         buffer_width > UINT16_MAX || buffer_height > UINT16_MAX) {
         return H263_3GP_ERR_UNSUPPORTED;
     }
-    const uint8_t reference = decoder->output_count - 1;
-    PVSetReferenceYUVPlanes(
-        &decoder->controls,
-        decoder->output_y[reference],
-        decoder->output_u[reference],
-        decoder->output_v[reference]);
+    if (decoder->compact_reference_enabled) {
+        decoder->controls.currentOutputRows = 16;
+        decoder->controls.outputRowGuard = compactOutputRowGuard;
+        decoder->controls.outputRowGuardOpaque = decoder;
+        PVSetCompactReferenceYUV420(
+            &decoder->controls, &decoder->compact_reference);
+    } else {
+        const uint8_t reference = decoder->output_count - 1;
+        PVSetReferenceYUVPlanes(
+            &decoder->controls,
+            decoder->output_y[reference],
+            decoder->output_u[reference],
+            decoder->output_v[reference]);
+    }
     return H263_3GP_OK;
 }
 
@@ -1244,8 +1412,15 @@ uint8_t h263_3gp_decoder_output_buffer_count(
 void h263_3gp_decoder_set_output_row_guard(
     H2633gpDecoder *decoder, H263OutputRowGuard guard, void *opaque) {
     if (!decoder) return;
-    decoder->controls.outputRowGuard = guard;
-    decoder->controls.outputRowGuardOpaque = opaque;
+    decoder->output_row_guard = guard;
+    decoder->output_row_guard_opaque = opaque;
+    if (decoder->compact_reference_enabled) {
+        decoder->controls.outputRowGuard = compactOutputRowGuard;
+        decoder->controls.outputRowGuardOpaque = decoder;
+    } else {
+        decoder->controls.outputRowGuard = guard;
+        decoder->controls.outputRowGuardOpaque = opaque;
+    }
 }
 
 int h263_avi_probe(FILE *file, H2633gpInfo *info) {
@@ -1385,14 +1560,18 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     if (result == H263_3GP_OK) {
         result = initializeDecoder(decoder, file);
         if (result == H263_3GP_ERR_FRAME_MEMORY &&
-            decoder->intra_only &&
-            decoder->requested_output_count == 2) {
+            decoder->requested_output_count == 2 &&
+            (decoder->intra_only ||
+             decoder->info.video_codec ==
+                 H263_VIDEO_CODEC_MPEG4_SIMPLE)) {
             /*
-             * CIF H.263 is intra-only. Retrying with one output frame does
-             * not require reparsing the AVI/3GP header or reallocating the
+             * CIF H.263 is intra-only. MPEG-4 can retry with two packed
+             * Y6/U5/V5 pictures plus the rolling row workspace. Neither
+             * fallback requires reparsing the container or reallocating the
              * compressed packet buffer.
              */
             clearOutputFrames(decoder);
+            clearCompactReference(decoder);
             decoder->requested_output_count = 1;
             result = initializeDecoder(decoder, file);
         }
@@ -1452,7 +1631,8 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     uint use_external_timestamp = 1;
     VopHeaderInfo header = {0};
     const uint8_t output_index =
-        decoder->output_count == 1
+        decoder->compact_reference_enabled ||
+                decoder->output_count == 1
             ? 0
             : (decoder->sample_index & 1U);
     uint8_t *output = decoder->output_y[output_index];
@@ -1479,6 +1659,7 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         decoder->output_y[output_index],
         decoder->output_u[output_index],
         decoder->output_v[output_index]);
+    decoder->next_compact_row = 0;
     int32 width = 0;
     int32 height = 0;
     PVGetVideoDimensions(&decoder->controls, &width, &height);
@@ -1495,14 +1676,46 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     decoder->stream_file = NULL;
     if (decoder->stream_io_error)
         return H263_3GP_ERR_IO;
+    if (decoder->compact_reference_enabled) {
+        if (header.vopCoded) {
+            compactOutputRowGuard(
+                decoder, decoder->buffer_height);
+        } else {
+            copyCompactFrame(
+                &decoder->compact_output,
+                &decoder->compact_reference);
+        }
+        {
+            CompactYuv420Frame completed =
+                decoder->compact_reference;
+            decoder->compact_reference =
+                decoder->compact_output;
+            decoder->compact_output = completed;
+        }
+        PVSetCompactReferenceYUV420(
+            &decoder->controls, &decoder->compact_reference);
+    }
 
     const uint32_t duration =
         decoder->info.container == H263_CONTAINER_AVI
             ? decoder->info.fps_den
             : decoder->stts[decoder->stts_index].sample_delta;
-    frame->y = decoder->output_y[output_index];
-    frame->u = decoder->output_u[output_index];
-    frame->v = decoder->output_v[output_index];
+    frame->storage_mode =
+        decoder->compact_reference_enabled
+            ? H263_FRAME_STORAGE_Y6_U5_V5
+            : H263_FRAME_STORAGE_YUV420;
+    frame->compact = decoder->compact_reference_enabled
+                         ? decoder->compact_reference
+                         : (CompactYuv420Frame){0};
+    frame->y = decoder->compact_reference_enabled
+                   ? NULL
+                   : decoder->output_y[output_index];
+    frame->u = decoder->compact_reference_enabled
+                   ? NULL
+                   : decoder->output_u[output_index];
+    frame->v = decoder->compact_reference_enabled
+                   ? NULL
+                   : decoder->output_v[output_index];
     frame->width = decoder->info.width;
     frame->height = decoder->info.height;
     frame->y_stride = decoder->buffer_width;
@@ -1533,7 +1746,12 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {
     if (!decoder) return 0;
     return sizeof(*decoder) + decoder->packet_capacity + kInputPadding +
-           decoder->output_bytes * decoder->output_count +
+           decoder->output_bytes * decoder->allocated_output_count +
+           (decoder->compact_reference_enabled
+                ? 2 * compact_yuv420_frame_storage_bytes(
+                          decoder->buffer_width,
+                          decoder->buffer_height)
+                : 0) +
            (decoder->sample_sizes
                 ? (size_t)(decoder->info.frame_count) *
                       sizeof(uint32_t)

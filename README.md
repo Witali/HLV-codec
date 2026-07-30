@@ -51,7 +51,10 @@ rejected, and 3GP remains a decoding-only legacy container.
 
 The ESP32 and Windows players also accept bounded MPEG-4 Part 2 Simple
 Profile video in M4S2 AVI: `320x240` YUV420, I/P pictures only, at up to
-30 fps. Compressed packets use the same fixed 4 KiB refill path as H.263.
+30 fps. The ESP32 retains the previous and current pictures as two compact
+Y6/U5/V5 frames with Q4 block-average corrections and reconstructs through a
+single 16-row byte-planar workspace. Compressed packets use the same fixed
+4 KiB refill path as H.263.
 
 [`BPV1 v6`](codecs/bpv/) is also available as a BPAL-derived experimental
 codec. It uses 4x4 blocks, 64 shared 16-color palettes, a two-bit map of four

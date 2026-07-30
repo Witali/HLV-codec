@@ -33,6 +33,8 @@ idf_component_register(
         "${PV_ROOT}/include"
     PRIV_INCLUDE_DIRS
         "${PV_ROOT}/src"
+    REQUIRES
+        compact_yuv420
 )
 
 set(PV_H263_XTENSA_IDCT_DC_INTRA ON CACHE BOOL

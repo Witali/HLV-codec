@@ -187,12 +187,37 @@ void convert_h263_frame(const H2633gpFrame *source,
     HLV1Frame adapted = {};
     adapted.width = source->width;
     adapted.height = source->height;
-    adapted.stride_y = source->y_stride;
-    adapted.stride_u = source->chroma_stride;
-    adapted.stride_v = source->chroma_stride;
-    adapted.y = const_cast<uint8_t *>(source->y);
-    adapted.u = const_cast<uint8_t *>(source->u);
-    adapted.v = const_cast<uint8_t *>(source->v);
+    std::vector<uint8_t> unpacked;
+    if (source->storage_mode == H263_FRAME_STORAGE_Y6_U5_V5) {
+        const int padded_width = source->compact.width;
+        const int padded_height = source->compact.height;
+        const size_t y_bytes =
+            static_cast<size_t>(padded_width) * padded_height;
+        unpacked.resize(y_bytes + y_bytes / 2U);
+        adapted.padded_width = padded_width;
+        adapted.padded_height = padded_height;
+        adapted.stride_y = padded_width;
+        adapted.stride_u = padded_width / 2;
+        adapted.stride_v = padded_width / 2;
+        adapted.y = unpacked.data();
+        adapted.u = adapted.y + y_bytes;
+        adapted.v = adapted.u + y_bytes / 4U;
+        compact_yuv420_unpack_plane(
+            &source->compact.y, adapted.y, adapted.stride_y);
+        compact_yuv420_unpack_plane(
+            &source->compact.u, adapted.u, adapted.stride_u);
+        compact_yuv420_unpack_plane(
+            &source->compact.v, adapted.v, adapted.stride_v);
+    } else {
+        adapted.padded_width = source->y_stride;
+        adapted.padded_height = source->height;
+        adapted.stride_y = source->y_stride;
+        adapted.stride_u = source->chroma_stride;
+        adapted.stride_v = source->chroma_stride;
+        adapted.y = const_cast<uint8_t *>(source->y);
+        adapted.u = const_cast<uint8_t *>(source->u);
+        adapted.v = const_cast<uint8_t *>(source->v);
+    }
     convert_frame(&adapted, destination);
 }
 

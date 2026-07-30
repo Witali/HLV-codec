@@ -525,8 +525,9 @@ block. The preparation step copies video samples without re-encoding and
 rejects any clip that is not H.263 at 352x288 with the requested frame count.
 
 The MPEG-4 SP benchmark embeds 60 frames of a validated `320x240` M4S2 AVI,
-uses two output frames for I/P prediction, and requires a packet larger than
-the decoder's 4 KiB refill buffer:
+uses two compact Y6/U5/V5 I/P pictures plus one 16-row reconstruction
+workspace, and requires a packet larger than the decoder's 4 KiB refill
+buffer:
 
 ```powershell
 .\qemu-mpeg4-benchmark.ps1
@@ -664,6 +665,12 @@ but not physical SD or display DMA timing.
   second custom-profile output cannot be allocated, playback automatically
   uses the one-buffer sequential path. 3GP also retains compact sample-size
   and 64-bit chunk-offset caches to avoid per-frame metadata seeks.
+- MPEG-4 Simple Profile: two independently allocated Y6/U5/V5 frames with
+  signed Q4 block-average corrections plus one 16-luma-row byte-planar
+  reconstruction workspace. A completed macroblock row is packed before the
+  workspace is reused, so no full byte-planar MPEG-4 frame is allocated.
+  At 320x240 the QEMU decoder reports 193,880 bytes including PacketVideo
+  tables, the 4 KiB refill buffer and container state.
 - Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
   reader and two one-entry decode queues for HLV, BPV, MPEG-1, H.263 or DivX
   3. MJPEG uses the sequential CPU0 path. Only frame descriptors cross cores

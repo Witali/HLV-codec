@@ -553,7 +553,8 @@ PV_STATUS GetMBData(VideoDecData *video)
 
     int y_pos = video->mbnum_row;
     int x_pos = video->mbnum_col;
-    int32 offset = (int32)(y_pos << 4) * width + (x_pos << 4);
+    int32 offset = PVCurrentOutputOffset(
+        video, x_pos << 4, y_pos << 4);
 
     /* Decode each 8-by-8 blocks. comp 0 ~ 3 are luminance blocks, 4 ~ 5 */
     /*  are chrominance blocks.   04/03/2000.                          */

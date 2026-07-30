@@ -27,7 +27,7 @@ extern const uint8_t k_video_end[]
 #define BENCH_CONTAINER "AVI"
 #define BENCH_WIDTH 320U
 #define BENCH_HEIGHT 240U
-#define BENCH_OUTPUT_BUFFERS 2U
+#define BENCH_OUTPUT_BUFFERS 1U
 #else
 static const char *const k_tag = "h263-qemu-bench";
 extern const uint8_t k_video_start[]
@@ -60,10 +60,35 @@ static uint64_t hash_plane(uint64_t hash,
     return hash;
 }
 
+static uint64_t hash_compact_plane(
+    uint64_t hash, const CompactYuv420Plane *plane) {
+    uint8_t unpacked[352];
+    int y;
+    if (plane->width > (int)(sizeof(unpacked))) return 0;
+    for (y = 0; y < plane->height; ++y) {
+        const uint8_t *row =
+            plane->data + (size_t)y * plane->stride;
+        compact_yuv420_unpack_corrected_samples(
+            row, 0, y, plane->bits, plane->correction,
+            plane->correction_stride, unpacked, plane->width);
+        int x;
+        for (x = 0; x < plane->width; ++x) {
+            hash ^= unpacked[x];
+            hash *= UINT64_C(1099511628211);
+        }
+    }
+    return hash;
+}
+
 static uint64_t hash_frame(uint64_t hash,
                            const H2633gpFrame *frame) {
     unsigned chroma_width = (frame->width + 1U) / 2U;
     unsigned chroma_height = (frame->height + 1U) / 2U;
+    if (frame->storage_mode == H263_FRAME_STORAGE_Y6_U5_V5) {
+        hash = hash_compact_plane(hash, &frame->compact.y);
+        hash = hash_compact_plane(hash, &frame->compact.u);
+        return hash_compact_plane(hash, &frame->compact.v);
+    }
     hash = hash_plane(hash, frame->y, frame->y_stride,
                       frame->width, frame->height);
     hash = hash_plane(hash, frame->u, frame->chroma_stride,

@@ -2649,8 +2649,13 @@ bool openVideo() {
         }
     } else if (video_codec == VIDEO_CODEC_kH263) {
         h263_decoder = h263_3gp_decoder_create();
-        if (h263_decoder && PLAYER_USE_DUAL_CORE_PIPELINE) {
-            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 2);
+        if (h263_decoder) {
+            /*
+             * MPEG-4 keeps two packed Y6/U5/V5 pictures and reconstructs
+             * through one 16-row byte-planar workspace. Predictive QCIF
+             * H.263 still promotes this request to two full frames.
+             */
+            h263_3gp_decoder_set_output_buffer_count(h263_decoder, 1);
         }
         int result =
             h263_decoder
@@ -2993,7 +2998,7 @@ bool openVideo() {
     } else if (video_codec == VIDEO_CODEC_kH263) {
         ESP_LOGI(kTag,
                  "Playing %s/%s in %s mode, "
-                 "frame storage=bounded YUV420 frame buffers",
+                 "frame storage=%s",
                  (h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE ||
                   (h263_info.container == H263_CONTAINER_AVI &&
                    h263_info.profile == 1))
@@ -3005,7 +3010,11 @@ bool openVideo() {
                  sequence_header.width == 352 &&
                          sequence_header.height == 288
                      ? "pixel-exact x16-y16 320x240 crop"
-                     : "native-centred");
+                     : "native-centred",
+                 h263_info.video_codec ==
+                         H263_VIDEO_CODEC_MPEG4_SIMPLE
+                     ? "two Y6/U5/V5 frames + 16-row workspace"
+                     : "bounded YUV420 frame buffers");
     } else if (video_codec == VIDEO_CODEC_kMjpeg) {
         ESP_LOGI(kTag,
                  "Playing MJPEG in %s mode, frame storage=RGB565 strip",
@@ -3283,18 +3292,40 @@ bool renderH263Frame(const H2633gpFrame *frame) {
     plm_frame_t adapted = {0};
     adapted.width = frame->width;
     adapted.height = frame->height;
-    adapted.storage_mode = PLM_FRAME_STORAGE_YUV420;
-    adapted.y = (plm_plane_t){
-        frame->width, frame->height, frame->y_stride,
-        (uint8_t *)(frame->y), 0, NULL};
-    adapted.cb = (plm_plane_t){
-        (unsigned)(frame->width / 2),
-        (unsigned)(frame->height / 2),
-        frame->chroma_stride, (uint8_t *)(frame->u), 0, NULL};
-    adapted.cr = (plm_plane_t){
-        (unsigned)(frame->width / 2),
-        (unsigned)(frame->height / 2),
-        frame->chroma_stride, (uint8_t *)(frame->v), 0, NULL};
+    if (frame->storage_mode == H263_FRAME_STORAGE_Y6_U5_V5) {
+        adapted.storage_mode = PLM_FRAME_STORAGE_Y6_U5_V5;
+        adapted.y = (plm_plane_t){
+            frame->compact.y.width, frame->compact.y.height,
+            (unsigned)(frame->compact.y.stride),
+            frame->compact.y.data,
+            (unsigned)(frame->compact.y.correction_stride),
+            frame->compact.y.correction};
+        adapted.cb = (plm_plane_t){
+            frame->compact.u.width, frame->compact.u.height,
+            (unsigned)(frame->compact.u.stride),
+            frame->compact.u.data,
+            (unsigned)(frame->compact.u.correction_stride),
+            frame->compact.u.correction};
+        adapted.cr = (plm_plane_t){
+            frame->compact.v.width, frame->compact.v.height,
+            (unsigned)(frame->compact.v.stride),
+            frame->compact.v.data,
+            (unsigned)(frame->compact.v.correction_stride),
+            frame->compact.v.correction};
+    } else {
+        adapted.storage_mode = PLM_FRAME_STORAGE_YUV420;
+        adapted.y = (plm_plane_t){
+            frame->width, frame->height, frame->y_stride,
+            (uint8_t *)(frame->y), 0, NULL};
+        adapted.cb = (plm_plane_t){
+            (unsigned)(frame->width / 2),
+            (unsigned)(frame->height / 2),
+            frame->chroma_stride, (uint8_t *)(frame->u), 0, NULL};
+        adapted.cr = (plm_plane_t){
+            (unsigned)(frame->width / 2),
+            (unsigned)(frame->height / 2),
+            frame->chroma_stride, (uint8_t *)(frame->v), 0, NULL};
+    }
     const int rows_per_transfer =
         cyd_display_rows_per_transfer(&display);
     mpeg_cached_chroma_y = -1;

@@ -289,6 +289,17 @@ typedef struct tagVideoDecData
     int16 QP_CHR;  /* ANNEX_T */
 } VideoDecData;
 
+static inline int32 PVCurrentOutputOffset(
+    const VideoDecData *video, int x, int y)
+{
+    int output_y = y;
+    if (video->videoDecControls->currentOutputRows)
+    {
+        output_y %= video->videoDecControls->currentOutputRows;
+    }
+    return (int32)output_y * video->width + x;
+}
+
 /* for fast VLC+Dequant  10/12/2000*/
 typedef int (*VlcDequantBlockFuncP)(void *video, int comp, int switched,
                                     uint8 *bitmaprow, uint8 *bitmapcol);
