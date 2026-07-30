@@ -276,5 +276,11 @@ therefore a large confirmed win with 59,669 bytes of IRAM still free.
 
 - [ ] Remove matching cached records from `crc32.txt` atomically when
       `HLVDELETE` removes a test file, and avoid duplicate records on upload.
-- [ ] Make the uploader completion parser accept an exact valid response
+- [x] Make the uploader completion parser accept an exact valid response
       before unrelated bytes emitted during the UART baud transition.
+
+The parser now accumulates raw UART bytes and accepts only the complete
+expected protocol/version/size/CRC/name record. Bytes after that exact record
+are ignored, so transition noise cannot extend the filename. A regression
+test reproduces the observed invalid-byte suffix; all four uploader tests
+pass, and the C and C++ uploader implementations remain identical.

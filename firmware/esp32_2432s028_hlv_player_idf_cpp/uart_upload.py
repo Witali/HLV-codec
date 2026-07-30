@@ -79,6 +79,29 @@ def wait_for_response(port: serial.Serial, prefixes: tuple[str, ...],
             return line
 
 
+def wait_for_completion(port: serial.Serial, size: int, checksum: int,
+                        remote_name: str, timeout: float) -> None:
+    expected = (
+        f"HLVDONE {UPLOAD_PROTOCOL_VERSION} {size} "
+        f"{checksum:08x} {remote_name}"
+    ).encode("ascii")
+    deadline = time.monotonic() + timeout
+    received = bytearray()
+    while time.monotonic() < deadline:
+        raw = port.readline()
+        if not raw:
+            continue
+        received.extend(raw)
+        if expected in received:
+            return
+        if b"HLVERR " in received:
+            line = bytes(received).decode("ascii", errors="replace").strip()
+            raise UploadError(f"ESP32 rejected the transfer: {line}")
+        if len(received) > 1024:
+            del received[:-512]
+    raise ResponseTimeout("timeout waiting for the ESP32 completion response")
+
+
 def open_port(name: str, baud: int) -> serial.Serial:
     port = serial.Serial()
     port.port = name
@@ -308,18 +331,13 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
                     print_progress(acknowledged, size, started)
                     next_report = now + 0.5
 
-        done = wait_for_response(port, ("HLVDONE ",), response_timeout)
-        fields = done.split()
-        if (
-                len(fields) != 5
-                or fields[:2]
-                != ["HLVDONE", str(UPLOAD_PROTOCOL_VERSION)]
-                or
-                int(fields[2]) != size or
-                int(fields[3], 16) != file_crc or
-                fields[4] != remote_name
-        ):
-            raise UploadError(f"malformed completion response: {done}")
+        # The player emits HLVDONE before changing back to the control baud.
+        # A byte at that transition can be received as unrelated trailing
+        # noise instead of the line terminator. Match the complete expected
+        # record byte-for-byte and ignore only bytes that follow it.
+        wait_for_completion(
+            port, size, file_crc, remote_name, response_timeout
+        )
         print_progress(acknowledged, size, started, force=True)
         print(f"Stored as /HLV/{remote_name}; CRC32 {file_crc:08x}")
 

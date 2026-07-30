@@ -19,7 +19,7 @@ SPEC.loader.exec_module(uart_upload)
 
 
 class FakeEsp32Port:
-    def __init__(self, nak_once_sequence=None):
+    def __init__(self, nak_once_sequence=None, completion_suffix=b"\n"):
         self.responses = []
         self.data = bytearray()
         self.sequence = 0
@@ -28,6 +28,7 @@ class FakeEsp32Port:
         self.remote_name = ""
         self.baudrate = uart_upload.CONTROL_BAUD
         self.nak_once_sequence = nak_once_sequence
+        self.completion_suffix = completion_suffix
         self.nak_sent = False
         self.recovering = False
         self.unread_acks = 0
@@ -92,8 +93,8 @@ class FakeEsp32Port:
                 (
                     f"HLVDONE {uart_upload.UPLOAD_PROTOCOL_VERSION} "
                     f"{len(self.data)} {self.expected_crc:08x} "
-                    f"{self.remote_name}\n"
-                ).encode("ascii")
+                    f"{self.remote_name}"
+                ).encode("ascii") + self.completion_suffix
             )
         return len(packet)
 
@@ -171,6 +172,28 @@ class UartUploadTest(unittest.TestCase):
             self.assertTrue(fake.nak_sent)
             self.assertEqual(bytes(fake.data), content)
             self.assertEqual(fake.sequence, 3)
+
+    def test_completion_ignores_trailing_baud_transition_noise(self):
+        content = b"HLV1" + bytes(range(64))
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "sample.hlv"
+            source.write_bytes(content)
+            fake = FakeEsp32Port(completion_suffix=b"\xffx\x00\n")
+            original_open_port = uart_upload.open_port
+            original_sleep = uart_upload.time.sleep
+            original_progress = uart_upload.print_progress
+            try:
+                uart_upload.open_port = lambda *_: fake
+                uart_upload.time.sleep = lambda *_: None
+                uart_upload.print_progress = lambda *_args, **_kwargs: None
+                uart_upload.upload(
+                    source, "FAKE", "video.hlv", 921600, 1.0
+                )
+            finally:
+                uart_upload.open_port = original_open_port
+                uart_upload.time.sleep = original_sleep
+                uart_upload.print_progress = original_progress
+            self.assertEqual(bytes(fake.data), content)
 
 
 if __name__ == "__main__":
