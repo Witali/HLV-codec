@@ -168,6 +168,22 @@ bytes to the image. Across all three H.263 changes, the cost is 4,880 IRAM
 bytes and 108 image bytes; 64,661 IRAM bytes remain free. Every physical run
 decoded 300 consecutive frames with no playback or audio errors.
 
+The H.263 display path was also tested with different strip-buffer layouts on
+the physical board. A single 320x16 strip removed CPU/SPI overlap and was
+rejected. Two independent 320x16 DMA strips cost 10,240 bytes more than the
+former two-half 320x8 layout and were retained:
+
+| CIF H.263 layout | Decode average | Render average | Work average | Observed |
+| --- | ---: | ---: | ---: | ---: |
+| two 320x8 halves | 31,829 us | 19,045 us | 50,873 us | 26.820 fps |
+| one 320x16 strip | 31,770 us | 33,969 us | 65,746 us | 19.184 fps |
+| two 320x16 strips | 31,778 us | 17,433 us | 49,211 us | 26.814 fps |
+
+The retained layout reduces CIF render time by 8.46% and total frame work by
+3.27%, while preserving all 120 frame indices and producing no audio
+underruns. A separate 120-frame 320x240 H.263+ run completed at 15.023 fps
+with 17,873 us average render time, no display skips and no audio errors.
+
 ## BPV
 
 - [x] Establish a fresh QEMU and physical-board decode/render baseline.

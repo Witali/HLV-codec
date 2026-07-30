@@ -493,9 +493,10 @@ Its modeled-device inventory and known accuracy limits are recorded in
 
 ## Resource choices
 
-- Display: ST7789 at configurable 80 MHz. Normal playback uses two reusable
-  320x16 RGB565 DMA strips; H.263 reuses one allocation as two 320x8 strips
-  and releases the second allocation before creating the decoder.
+- Display: ST7789 at configurable 80 MHz. Normal playback, including H.263,
+  uses two reusable 320x16 RGB565 DMA strips. DivX 3 and BPV v7 reuse one
+  allocation as two 320x8 strips and release the second allocation before
+  creating the decoder.
 - Storage: the file named by `/sdcard/HLV/play.txt`, read over SDSPI DMA at
   configurable 40 MHz with a dynamically allocated aligned read-ahead buffer
   (4 KiB for MPEG-1/DivX 3/H.263, 16 KiB for the other formats). DivX 3 adds

@@ -2528,7 +2528,6 @@ bool openVideo() {
         return false;
     }
     const bool use_double_display_buffer =
-        video_codec != VIDEO_CODEC_kH263 &&
         video_codec != VIDEO_CODEC_kDivx3 &&
         !(video_codec == VIDEO_CODEC_kBpv &&
           bpv_file_version >= BPV1_PIXEL_MOTION_VERSION);

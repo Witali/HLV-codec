@@ -28,8 +28,9 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 - shows `NO SELECTED FILE.` on the display instead of guessing a fallback
   when `play.txt` is absent;
 - plays 320x180 Big Buck Bunny centred on the 320x240 panel without scaling;
-- converts HLV/MPEG YUV420, MJPEG MCU rows or BPV palette blocks to RGB565 in
-  bounded strips (16 rows normally, 8 rows for compact H.263 playback),
+- converts HLV/MPEG/H.263 YUV420, MJPEG MCU rows or BPV palette blocks to
+  RGB565 in bounded 16-row strips (8 rows only for the low-memory DivX 3 and
+  BPV v7 paths),
   without a full RGB framebuffer;
 - reads SPI3/VSPI at 40 MHz with DMA into a dynamically allocated aligned
   stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263/BPV v7 and 16 KiB otherwise); HLV then
@@ -38,8 +39,8 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
   a fixed 16 KiB CPU1 producer ring, a 4 KiB decoder refill buffer and its
   mode map;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
-  DivX 3 uses one 320x16 allocation; H.263 divides one such allocation into
-  two 320x8 strips. Other codecs use two 320x16 allocations;
+  H.263 and the normal-memory codecs use two 320x16 allocations. DivX 3 and
+  BPV v7 divide one 320x16 allocation into two 320x8 strips;
 - decodes HLV, BPV v1-v6 or MPEG-1 frame N on CPU1 while CPU0 converts and queues
   frame N-1 for the display, without copying compressed packets or frame
   payloads;
