@@ -195,6 +195,12 @@ def main() -> int:
             port.rts = True
             time.sleep(0.2)
             port.rts = False
+            # Bytes already queued in the CH340/driver can arrive after the
+            # pre-reset flush while EN is still asserted. The ESP32 boot and
+            # SD mount take much longer than this settling interval, so a
+            # second flush removes only stale pre-reset telemetry.
+            time.sleep(0.05)
+            port.reset_input_buffer()
         while len(frames) < args.frames and time.monotonic() < deadline:
             raw = port.readline()
             if not raw:
