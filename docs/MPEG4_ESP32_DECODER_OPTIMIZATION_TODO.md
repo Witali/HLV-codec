@@ -232,7 +232,8 @@ without physical flashing.
       reconstructed byte output is requested.
 - [x] Copy skipped macroblocks directly between compact pictures when
       reference lifetime and render guards make this safe.
-- [ ] Write all-zero-residual predictions directly to the compact output.
+- [x] Evaluate writing all-zero-residual predictions directly to the compact
+      output; reject the measured implementations when they do not improve.
 - [ ] Pack coded 8x8 blocks while reconstructed pixels are still cache-hot.
 - [ ] Compute Q4 block-average corrections during the direct compact write.
 - [ ] Preserve exact compact-frame checksums and row-level renderer safety.
@@ -295,6 +296,21 @@ this run: observed rate was 13.522 fps, average decode 66,137.4 us and complete
 work 94,655.1 us, versus 13.535 fps, 66,014.3 us and 94,585.2 us in the
 preceding run. The change is retained on the three deterministic physical
 decoder profiles rather than the noisier renderer/audio wall-clock result.
+
+The profile corpus contains 614 all-zero-residual inter macroblocks out of
+16,807 inter macroblocks. A direct candidate predicted into the macroblock
+workspace, immediately packed all six blocks into `compact_output`, and made
+the later row commit skip those macroblocks. It retained the exact
+`b826825f344bc2e3` output hash, but slowed C QEMU from 2,617,673 to 2,641,316
+cycles/picture (0.90%).
+
+A narrower cache-hot candidate retained prediction in the rolling byte row,
+packed only `CBP=0` macroblocks immediately after motion compensation, and
+skipped their later row packing. It also retained the exact hash, but measured
+2,619,933 cycles/picture, 0.086% slower than baseline and below the 0.5%
+retention threshold. Both candidates were removed without physical flashing.
+No PSNR comparison was needed because their full decoded-sequence hashes
+matched.
 
 ## Priority 4: overlap independent work
 
