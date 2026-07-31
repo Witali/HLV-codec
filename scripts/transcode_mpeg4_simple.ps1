@@ -31,17 +31,17 @@ $info = Get-TranscodeVideoInfo -InputFile $InputFile
 $fpsText = Format-TranscodeNumber -Value $info.Fps
 $defaultQuality = if ($Preset -eq "Esp32Speed") { 7 } else { 5 }
 $profileLabel = if ($Preset -eq "Esp32Speed") {
-    "MPEG4SP_SPEED"
+    "MPEG4SP_SPEED_q${defaultQuality}"
 }
 else {
-    "MPEG4SP_M4S2"
+    "MPEG4SP_35dB"
 }
 $OutputFile = Get-TranscodeOutputFile `
     -OutputFile $OutputFile `
     -CodecDirectory "MPEG4SP" `
     -FileName (
         "$($info.BaseName)_320x240_${fpsText}fps_" +
-        "${profileLabel}_q${defaultQuality}.avi"
+        "${profileLabel}.avi"
     )
 Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 

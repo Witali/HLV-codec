@@ -232,9 +232,10 @@ Create a `320x240` MPEG-4 Simple Profile M4S2 AVI with PCM S16LE audio:
 ```
 
 For an explicit ESP32 decoder-speed trade-off, use
-`-Preset Esp32Speed`. The standard Q5 profile remains unchanged; the
-production wrapper selects Q7 and adds `_MPEG4SP_SPEED_q7` to the normal
-converted-video filename:
+`-Preset Esp32Speed`. The default Q5 profile is calibrated to the accepted
+`Danila_320x240_30fps_MPEG4SP_35dB.avi` reference and uses
+`_MPEG4SP_35dB` in converted-video filenames. The speed wrapper selects Q7
+and uses `_MPEG4SP_SPEED_q7` instead:
 
 ```powershell
 .\scripts\transcode_mpeg4_simple.ps1 .\input.mp4 -Preset Esp32Speed

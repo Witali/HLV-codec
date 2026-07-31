@@ -171,6 +171,7 @@ formats:
     fps: source
     maximumFps: 30
     rateControl: constantQuality
+    qualityLabel: 35dB
     videoQuality: 5
     gop: 30
     bFrames: 0

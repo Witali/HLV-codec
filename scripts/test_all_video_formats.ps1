@@ -165,7 +165,7 @@ $h263 = Join-Path $corpus (
 )
 $mpeg4 = Join-Path $corpus (
     "VideoFormatRegression_320x240_${rate}fps_" +
-    "MPEG4SP_M4S2_q5.avi"
+    "MPEG4SP_35dB.avi"
 )
 
 if (-not $SkipEncode) {

@@ -11,6 +11,7 @@ param(
     [ValidateSet("Crop", "Contain")]
     [string]$FitMode = "Crop",
 
+    # Q5 is the calibrated 35 dB quality default accepted for production.
     [ValidateRange(1, 31)]
     [int]$VideoQuality = 5,
 
@@ -93,12 +94,17 @@ if (-not $OutputFile) {
     $profileLabel = if ($Preset -eq "Esp32Speed") {
         "MPEG4SP_SPEED"
     }
+    elseif ($VideoQuality -eq 5) {
+        "MPEG4SP_35dB"
+    }
     else {
         "MPEG4SP_M4S2"
     }
+    $qualitySuffix = if ($Preset -eq "Standard" -and
+        $VideoQuality -eq 5) { "" } else { "_q${VideoQuality}" }
     $OutputFile = Join-Path $repo (
         "out\MPEG4SP\${baseName}_320x240_${fpsLabel}fps_" +
-        "${profileLabel}_q${VideoQuality}.avi"
+        "${profileLabel}${qualitySuffix}.avi"
     )
 }
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
