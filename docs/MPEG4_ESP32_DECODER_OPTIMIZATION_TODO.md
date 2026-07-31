@@ -9,6 +9,9 @@ available in the preserved C++ firmware.
 
 - Measure decoder candidates in QEMU first and require an unchanged decoded
   frame hash.
+- If a candidate changes that hash, dump both complete decoded sequences as
+  NV12 and report aggregate plus per-plane PSNR before rejecting or considering
+  an explicit quality trade-off. A matching hash remains the lossless gate.
 - Measure promising candidates on the physical ESP32 at 240 MHz with the same
   AVI file and flash configuration.
 - Run at least three reset-to-reset short trials and compare median decode,
@@ -97,7 +100,8 @@ followed by compact-row packing.
 - [x] Measure a direct DC-only inter residual plus prediction kernel.
 - [x] Measure exact one-row, one-column and two-column coefficient patterns.
 - [x] Add an exact frequency-row-zero sparse kernel.
-- [ ] Add exact one-column and two-column sparse kernels independently.
+- [x] Evaluate an exact one-column sparse kernel independently.
+- [ ] Evaluate an exact two-column sparse kernel independently.
 - [x] Avoid clearing untouched coefficient slots when a sparse representation
       is faster.
 - [x] Fuse inverse transform, prediction addition, clipping and rolling-row
@@ -141,6 +145,18 @@ gaps, rebuffers, underruns or inserted silence. Observed rate improved from
 13.522 to 13.679 fps, average decode from 66,137.4 to 65,188.0 us (1.44%),
 and complete work from 94,655.1 to 93,687.2 us (1.02%). MPEG-4 streaming,
 audio-normalization and baseline H.263 QCIF/CIF regressions also passed.
+
+A fused one-column experiment transformed the sole active vertical column and
+added its horizontal basis directly to the prediction. Restricting it to the
+early-zigzag cases preserved `b826825f344bc2e3`, but QEMU improved only from
+2,617,673 to 2,614,597 cycles/picture (0.12%), below the 0.5% gate. Extending
+the shortcut to later one-column blocks improved QEMU to 2,583,160
+cycles/picture (1.32%) but changed the hash to `f711898192c9ae80`.
+Complete 60-frame NV12 comparison showed PSNR Y 28.65 dB, U 41.99 dB,
+V 44.71 dB and 30.34 dB overall. Even the isolated late frequency-column-one
+case measured only 32.77 dB overall. These are real propagating picture errors,
+not harmless last-bit rounding, so both candidates were removed without
+physical flashing.
 
 ## Priority 2: decode compact motion compensation directly
 
