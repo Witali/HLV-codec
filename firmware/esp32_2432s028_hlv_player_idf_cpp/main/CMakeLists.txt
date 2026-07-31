@@ -288,6 +288,7 @@ else()
     idf_component_register(
         SRCS
             "hlv_player.cpp"
+            "boot_button.c"
             "cyd_display.cpp"
             "bpv_esp32_decoder.cpp"
             "hlv_esp32_decoder.cpp"

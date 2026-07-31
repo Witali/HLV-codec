@@ -80,6 +80,7 @@ enum {
     kDecodeWorkerStackBytes = 4096,
     kBootButtonTaskStackBytes = 2048,
     kBrowserFilenameBytes = 112,
+    kBrowserVisibleFiles = 5,
     kUploadBarX = 16,
     kUploadBarWidth = kScreenWidth - 2 * kUploadBarX,
     kUploadBarHeight = CYD_DISPLAY_ROWS_PER_TRANSFER,
@@ -329,6 +330,10 @@ VideoCodec video_codec = VIDEO_CODEC_kNone;
 const char *active_video_path = NULL;
 char selected_video_path[160] = {0};
 char browser_filename[kBrowserFilenameBytes] = {0};
+char browser_visible_filenames[kBrowserVisibleFiles]
+                              [kBrowserFilenameBytes] = {{0}};
+size_t browser_visible_count = 0;
+size_t browser_selected_visible_index = 0;
 bool file_browser_active = false;
 int64_t frame_period_us = 0;
 uint32_t frame_period_remainder = 0;
@@ -1050,7 +1055,8 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
     }
 }
 
-bool drawStatusText(const char *text, int y, int scale) {
+static bool drawStatusTextAt(
+    const char *text, int x, int y, int scale, bool centered) {
     size_t maximum_length;
     size_t length;
     const int glyph_advance = 6 * scale;
@@ -1060,8 +1066,10 @@ bool drawStatusText(const char *text, int y, int scale) {
     int text_x;
 
     if (!text || !*text || scale < 1) return false;
+    if (x < 0 || x >= kScreenWidth) return false;
+    const int available_width = centered ? kScreenWidth : kScreenWidth - x;
     maximum_length =
-        (size_t)((kScreenWidth + scale) / (6 * scale));
+        (size_t)((available_width + scale) / (6 * scale));
     length = MIN(strlen(text), maximum_length);
     width = (int)(length) * glyph_advance - scale;
     height = 7 * scale;
@@ -1073,7 +1081,7 @@ bool drawStatusText(const char *text, int y, int scale) {
     }
     fillU16(pixels, kScreenWidth * height, 0x0000);
 
-    text_x = (kScreenWidth - width) / 2;
+    text_x = centered ? (kScreenWidth - width) / 2 : x;
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
             (unsigned char)(text[index]);
@@ -1096,6 +1104,14 @@ bool drawStatusText(const char *text, int y, int scale) {
     }
     return cyd_display_draw_bitmap(
                &display, 0, y, kScreenWidth, height, pixels) == ESP_OK;
+}
+
+bool drawStatusText(const char *text, int y, int scale) {
+    return drawStatusTextAt(text, 0, y, scale, true);
+}
+
+static bool drawStatusTextLeft(const char *text, int y, int scale) {
+    return drawStatusTextAt(text, 6, y, scale, false);
 }
 
 static void format_upload_value(
@@ -2138,13 +2154,81 @@ static bool copyFilename(
     return written >= 0 && (size_t)written < destination_bytes;
 }
 
+static bool insertSortedFilename(
+    char filenames[][kBrowserFilenameBytes], size_t *count,
+    size_t capacity, const char *filename) {
+    size_t position = 0;
+    while (position < *count &&
+           compareFilenames(filenames[position], filename) < 0) {
+        ++position;
+    }
+    if (position < *count &&
+        compareFilenames(filenames[position], filename) == 0) {
+        return true;
+    }
+    if (position >= capacity) return true;
+
+    const size_t old_count = *count;
+    const size_t new_count =
+        old_count < capacity ? old_count + 1 : old_count;
+    for (size_t index = new_count - 1; index > position; --index) {
+        memcpy(filenames[index], filenames[index - 1],
+               kBrowserFilenameBytes);
+    }
+    if (!copyFilename(filenames[position], kBrowserFilenameBytes,
+                      filename)) {
+        return false;
+    }
+    *count = new_count;
+    return true;
+}
+
+static bool insertSortedFilenameTail(
+    char filenames[][kBrowserFilenameBytes], size_t *count,
+    size_t capacity, const char *filename) {
+    for (size_t index = 0; index < *count; ++index) {
+        if (compareFilenames(filenames[index], filename) == 0) return true;
+    }
+    if (*count == capacity) {
+        if (compareFilenames(filename, filenames[0]) <= 0) return true;
+        for (size_t index = 1; index < *count; ++index) {
+            memcpy(filenames[index - 1], filenames[index],
+                   kBrowserFilenameBytes);
+        }
+        --*count;
+    }
+    return insertSortedFilename(
+        filenames, count, capacity, filename);
+}
+
+static bool appendBrowserVisible(const char *filename) {
+    for (size_t index = 0; index < browser_visible_count; ++index) {
+        if (compareFilenames(
+                browser_visible_filenames[index], filename) == 0) {
+            return true;
+        }
+    }
+    if (browser_visible_count >= kBrowserVisibleFiles) return true;
+    if (!copyFilename(
+            browser_visible_filenames[browser_visible_count],
+            kBrowserFilenameBytes, filename)) {
+        return false;
+    }
+    ++browser_visible_count;
+    return true;
+}
+
 static BrowserScanResult scanBrowserFile(bool advance) {
     DIR *directory = opendir(PLAYER_VIDEO_DIRECTORY);
     if (!directory) return BROWSER_SCAN_kIoError;
 
-    char first[kBrowserFilenameBytes] = {0};
+    char first[kBrowserVisibleFiles][kBrowserFilenameBytes] = {{0}};
+    size_t first_count = 0;
+    char preceding[kBrowserVisibleFiles - 1][kBrowserFilenameBytes] = {{0}};
+    size_t preceding_count = 0;
     char exact[kBrowserFilenameBytes] = {0};
-    char next[kBrowserFilenameBytes] = {0};
+    char following[kBrowserVisibleFiles][kBrowserFilenameBytes] = {{0}};
+    size_t following_count = 0;
     bool io_error = false;
     for (;;) {
         errno = 0;
@@ -2170,12 +2254,11 @@ static BrowserScanResult scanBrowserFile(bool advance) {
         }
         if (!S_ISREG(info.st_mode)) continue;
 
-        if (!first[0] ||
-            compareFilenames(entry->d_name, first) < 0) {
-            if (!copyFilename(first, sizeof first, entry->d_name)) {
-                io_error = true;
-                break;
-            }
+        if (!insertSortedFilename(
+                first, &first_count, kBrowserVisibleFiles,
+                entry->d_name)) {
+            io_error = true;
+            break;
         }
         if (browser_filename[0]) {
             const int order =
@@ -2185,10 +2268,17 @@ static BrowserScanResult scanBrowserFile(bool advance) {
                 io_error = true;
                 break;
             }
-            if (order > 0 &&
-                (!next[0] ||
-                 compareFilenames(entry->d_name, next) < 0) &&
-                !copyFilename(next, sizeof next, entry->d_name)) {
+            if (order < 0 && !insertSortedFilenameTail(
+                                 preceding, &preceding_count,
+                                 kBrowserVisibleFiles - 1,
+                                 entry->d_name)) {
+                io_error = true;
+                break;
+            }
+            if (order > 0 && !insertSortedFilename(
+                                 following, &following_count,
+                                 kBrowserVisibleFiles,
+                                 entry->d_name)) {
                 io_error = true;
                 break;
             }
@@ -2196,17 +2286,73 @@ static BrowserScanResult scanBrowserFile(bool advance) {
     }
     if (closedir(directory) != 0) io_error = true;
     if (io_error) return BROWSER_SCAN_kIoError;
-    if (!first[0]) {
+    if (!first_count) {
         browser_filename[0] = '\0';
+        browser_visible_count = 0;
         return BROWSER_SCAN_kEmpty;
     }
 
-    const char *chosen =
-        !advance && exact[0] ? exact : (advance && next[0] ? next : first);
-    return copyFilename(
-               browser_filename, sizeof browser_filename, chosen)
-               ? BROWSER_SCAN_kFound
-               : BROWSER_SCAN_kIoError;
+    const bool chose_exact = !advance && exact[0];
+    const bool chose_following = !chose_exact && following_count;
+    const bool chose_first = !chose_exact && !chose_following;
+    const char *chosen = chose_exact
+                             ? exact
+                             : (chose_following ? following[0] : first[0]);
+    if (!copyFilename(
+            browser_filename, sizeof browser_filename, chosen)) {
+        return BROWSER_SCAN_kIoError;
+    }
+
+    browser_visible_count = 0;
+    browser_selected_visible_index = 0;
+    if (chose_first) {
+        for (size_t index = 0; index < first_count; ++index) {
+            if (!appendBrowserVisible(first[index])) {
+                return BROWSER_SCAN_kIoError;
+            }
+        }
+        return BROWSER_SCAN_kFound;
+    }
+
+    char before[kBrowserVisibleFiles - 1][kBrowserFilenameBytes] = {{0}};
+    size_t before_count = 0;
+    for (size_t index = 0; index < preceding_count; ++index) {
+        if (!copyFilename(before[before_count], kBrowserFilenameBytes,
+                          preceding[index])) {
+            return BROWSER_SCAN_kIoError;
+        }
+        ++before_count;
+    }
+    if (chose_following && exact[0] && !insertSortedFilenameTail(
+                                            before, &before_count,
+                                            kBrowserVisibleFiles - 1,
+                                            exact)) {
+        return BROWSER_SCAN_kIoError;
+    }
+
+    const size_t after_start = chose_following ? 1 : 0;
+    const size_t after_count = following_count - after_start;
+    size_t after_to_show = MIN((size_t)2, after_count);
+    size_t before_to_show = MIN(
+        kBrowserVisibleFiles - 1 - after_to_show, before_count);
+    if (before_to_show < 2) {
+        after_to_show = MIN(
+            kBrowserVisibleFiles - 1 - before_to_show, after_count);
+    }
+    const size_t before_start = before_count - before_to_show;
+    for (size_t index = before_start; index < before_count; ++index) {
+        if (!appendBrowserVisible(before[index])) {
+            return BROWSER_SCAN_kIoError;
+        }
+    }
+    browser_selected_visible_index = browser_visible_count;
+    if (!appendBrowserVisible(chosen)) return BROWSER_SCAN_kIoError;
+    for (size_t index = 0; index < after_to_show; ++index) {
+        if (!appendBrowserVisible(following[after_start + index])) {
+            return BROWSER_SCAN_kIoError;
+        }
+    }
+    return BROWSER_SCAN_kFound;
 }
 
 static void drawFileBrowser(void) {
@@ -2217,12 +2363,22 @@ static void drawFileBrowser(void) {
         ESP_LOGE(kTag, "Could not clear file browser");
         return;
     }
-    drawStatusText("SD VIDEO FILE", 48, 2);
-    drawStatusText(
-        has_file ? browser_filename : "NO VIDEO FILES", 108, 1);
-    drawStatusText(
-        has_file ? "SHORT: NEXT" : "SHORT: RESCAN", 166, 1);
-    if (has_file) drawStatusText("HOLD: PLAY", 190, 1);
+    drawStatusText("SD VIDEO FILES", 14, 2);
+    if (has_file) {
+        for (size_t index = 0; index < browser_visible_count; ++index) {
+            char line[kBrowserFilenameBytes + 3] = {0};
+            snprintf(line, sizeof line, "%s%.111s",
+                     index == browser_selected_visible_index ? "> " : "  ",
+                     browser_visible_filenames[index]);
+            esp_rom_printf("BF,%u,%s\n", (unsigned)index,
+                           browser_visible_filenames[index]);
+            drawStatusTextLeft(line, 48 + (int)index * 28, 1);
+        }
+        drawStatusText("SHORT: NEXT   HOLD: PLAY", 211, 1);
+    } else {
+        drawStatusText("NO VIDEO FILES", 104, 1);
+        drawStatusText("SHORT: RESCAN", 211, 1);
+    }
     cyd_display_flush(&display);
 }
 

@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include "driver/dac_continuous.h"
+#include "driver/gpio.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
@@ -27,6 +29,7 @@
 #include "board_config.hpp"
 #include "amrnb_3gp.h"
 #include "bpv_esp32_decoder.hpp"
+#include "boot_button.h"
 #include "cyd_display.hpp"
 #include "divx3.h"
 #include "divx3_avi.h"
@@ -78,6 +81,9 @@ constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
+constexpr uint32_t kBootButtonTaskStackBytes = 2048;
+constexpr size_t kBrowserFilenameBytes = 112;
+constexpr size_t kBrowserVisibleFiles = 5;
 constexpr int kUploadBarX = 16;
 constexpr int kUploadBarWidth = kScreenWidth - 2 * kUploadBarX;
 constexpr int kUploadBarHeight = CydDisplay::kRowsPerTransfer;
@@ -251,6 +257,12 @@ enum class SelectionReadResult {
     kIoError,
 };
 
+enum class BrowserScanResult {
+    kFound,
+    kEmpty,
+    kIoError,
+};
+
 enum class VideoOpenResult {
     kReady,
     kMissingOrUnsupported,
@@ -310,6 +322,14 @@ HLV1Header sequence_header{};
 VideoCodec video_codec = VideoCodec::kNone;
 const char *active_video_path = nullptr;
 char selected_video_path[160]{};
+char browser_filename[kBrowserFilenameBytes]{};
+char browser_visible_filenames[kBrowserVisibleFiles]
+                              [kBrowserFilenameBytes]{};
+size_t browser_visible_count = 0;
+size_t browser_selected_visible_index = 0;
+bool file_browser_active = false;
+QueueHandle_t boot_button_event_queue = nullptr;
+TaskHandle_t boot_button_task_handle = nullptr;
 int64_t frame_period_us = 0;
 uint32_t frame_period_remainder = 0;
 uint32_t frame_period_phase = 0;
@@ -441,6 +461,47 @@ uint64_t bpvProfileNowMicros(void *) {
 }
 
 int64_t millisNow() { return microsNow() / 1000; }
+
+void bootButtonTask(void *) {
+    boot_button_state_t state{};
+    boot_button_state_init(
+        &state, gpio_get_level(board::kBootButton) == 0,
+        static_cast<uint32_t>(millisNow()),
+        player_settings::kBootButtonDebounceMs,
+        player_settings::kBootButtonLongPressMs);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(player_settings::kBootButtonPollMs));
+        const boot_button_event_t event = boot_button_state_update(
+            &state, gpio_get_level(board::kBootButton) == 0,
+            static_cast<uint32_t>(millisNow()));
+        if (event != BOOT_BUTTON_EVENT_NONE) {
+            (void)xQueueSend(boot_button_event_queue, &event, 0);
+        }
+    }
+}
+
+bool initializeBootButton() {
+    gpio_config_t config{};
+    config.pin_bit_mask = 1ULL << board::kBootButton;
+    config.mode = GPIO_MODE_INPUT;
+    config.pull_up_en = GPIO_PULLUP_ENABLE;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&config) != ESP_OK) return false;
+
+    boot_button_event_queue =
+        xQueueCreate(4, sizeof(boot_button_event_t));
+    if (!boot_button_event_queue) return false;
+    if (xTaskCreatePinnedToCore(
+            bootButtonTask, "boot-button", kBootButtonTaskStackBytes,
+            nullptr, tskIDLE_PRIORITY + 1, &boot_button_task_handle, 0) !=
+        pdPASS) {
+        vQueueDelete(boot_button_event_queue);
+        boot_button_event_queue = nullptr;
+        return false;
+    }
+    return true;
+}
 
 int h263VisibleSourceY(int source_width, int source_height) {
     if (source_width == kH263CifWidth &&
@@ -986,10 +1047,14 @@ void convertScaledRow(const HLV1Frame *frame, int source_y,
     }
 }
 
-bool drawStatusText(const char *text, int y, int scale) {
+bool drawStatusTextAt(
+    const char *text, int x, int y, int scale, bool centered
+) {
     if (!text || !*text || scale < 1) return false;
+    if (x < 0 || x >= kScreenWidth) return false;
+    const int available_width = centered ? kScreenWidth : kScreenWidth - x;
     const size_t maximum_length =
-        static_cast<size_t>((kScreenWidth + scale) / (6 * scale));
+        static_cast<size_t>((available_width + scale) / (6 * scale));
     const size_t length =
         std::min(std::strlen(text), maximum_length);
     const int glyph_advance = 6 * scale;
@@ -1003,7 +1068,7 @@ bool drawStatusText(const char *text, int y, int scale) {
         return false;
     std::fill_n(pixels, kScreenWidth * height, 0x0000);
 
-    const int text_x = (kScreenWidth - width) / 2;
+    const int text_x = centered ? (kScreenWidth - width) / 2 : x;
     for (size_t index = 0; index < length; ++index) {
         unsigned char character =
             static_cast<unsigned char>(text[index]);
@@ -1026,6 +1091,14 @@ bool drawStatusText(const char *text, int y, int scale) {
     }
     return display.drawBitmap(
                0, y, kScreenWidth, height, pixels) == ESP_OK;
+}
+
+bool drawStatusText(const char *text, int y, int scale) {
+    return drawStatusTextAt(text, 0, y, scale, true);
+}
+
+bool drawStatusTextLeft(const char *text, int y, int scale) {
+    return drawStatusTextAt(text, 6, y, scale, false);
 }
 
 void formatUploadProgress(
@@ -2010,6 +2083,337 @@ SelectionReadResult readSelectedVideoPath() {
                : SelectionReadResult::kMissingOrInvalid;
 }
 
+unsigned char asciiLower(unsigned char character) {
+    return character >= 'A' && character <= 'Z'
+               ? static_cast<unsigned char>(character + ('a' - 'A'))
+               : character;
+}
+
+int compareFilenames(const char *left, const char *right) {
+    const auto *a = reinterpret_cast<const unsigned char *>(left);
+    const auto *b = reinterpret_cast<const unsigned char *>(right);
+    while (*a && *b) {
+        const unsigned char lower_a = asciiLower(*a);
+        const unsigned char lower_b = asciiLower(*b);
+        if (lower_a != lower_b) return lower_a < lower_b ? -1 : 1;
+        ++a;
+        ++b;
+    }
+    if (*a != *b) return *a ? 1 : -1;
+    return std::strcmp(left, right);
+}
+
+bool filenameHasExtension(const char *name, const char *extension) {
+    const size_t name_length = std::strlen(name);
+    const size_t extension_length = std::strlen(extension);
+    if (name_length < extension_length) return false;
+    const char *suffix = name + name_length - extension_length;
+    for (size_t index = 0; index < extension_length; ++index) {
+        if (asciiLower(static_cast<unsigned char>(suffix[index])) !=
+            asciiLower(static_cast<unsigned char>(extension[index]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isSupportedVideoFilename(const char *name) {
+    return isSafeVideoFilename(name) &&
+           (filenameHasExtension(name, ".hlv") ||
+            filenameHasExtension(name, ".bpv1") ||
+            filenameHasExtension(name, ".avi") ||
+            filenameHasExtension(name, ".mpg") ||
+            filenameHasExtension(name, ".mpeg") ||
+            filenameHasExtension(name, ".3gp") ||
+            filenameHasExtension(name, ".3gpp"));
+}
+
+bool copyFilename(
+    char *destination, size_t destination_bytes, const char *source) {
+    const int written =
+        std::snprintf(destination, destination_bytes, "%s", source);
+    return written >= 0 &&
+           static_cast<size_t>(written) < destination_bytes;
+}
+
+bool insertSortedFilename(
+    char filenames[][kBrowserFilenameBytes], size_t *count,
+    size_t capacity, const char *filename) {
+    size_t position = 0;
+    while (position < *count &&
+           compareFilenames(filenames[position], filename) < 0) {
+        ++position;
+    }
+    if (position < *count &&
+        compareFilenames(filenames[position], filename) == 0) {
+        return true;
+    }
+    if (position >= capacity) return true;
+
+    const size_t old_count = *count;
+    const size_t new_count =
+        old_count < capacity ? old_count + 1 : old_count;
+    for (size_t index = new_count - 1; index > position; --index) {
+        std::memcpy(filenames[index], filenames[index - 1],
+                    kBrowserFilenameBytes);
+    }
+    if (!copyFilename(filenames[position], kBrowserFilenameBytes,
+                      filename)) {
+        return false;
+    }
+    *count = new_count;
+    return true;
+}
+
+bool insertSortedFilenameTail(
+    char filenames[][kBrowserFilenameBytes], size_t *count,
+    size_t capacity, const char *filename) {
+    for (size_t index = 0; index < *count; ++index) {
+        if (compareFilenames(filenames[index], filename) == 0) return true;
+    }
+    if (*count == capacity) {
+        if (compareFilenames(filename, filenames[0]) <= 0) return true;
+        for (size_t index = 1; index < *count; ++index) {
+            std::memcpy(filenames[index - 1], filenames[index],
+                        kBrowserFilenameBytes);
+        }
+        --*count;
+    }
+    return insertSortedFilename(
+        filenames, count, capacity, filename);
+}
+
+bool appendBrowserVisible(const char *filename) {
+    for (size_t index = 0; index < browser_visible_count; ++index) {
+        if (compareFilenames(
+                browser_visible_filenames[index], filename) == 0) {
+            return true;
+        }
+    }
+    if (browser_visible_count >= kBrowserVisibleFiles) return true;
+    if (!copyFilename(
+            browser_visible_filenames[browser_visible_count],
+            kBrowserFilenameBytes, filename)) {
+        return false;
+    }
+    ++browser_visible_count;
+    return true;
+}
+
+BrowserScanResult scanBrowserFile(bool advance) {
+    DIR *directory = opendir(player_settings::kVideoDirectory);
+    if (!directory) return BrowserScanResult::kIoError;
+
+    char first[kBrowserVisibleFiles][kBrowserFilenameBytes]{};
+    size_t first_count = 0;
+    char preceding[kBrowserVisibleFiles - 1][kBrowserFilenameBytes]{};
+    size_t preceding_count = 0;
+    char exact[kBrowserFilenameBytes]{};
+    char following[kBrowserVisibleFiles][kBrowserFilenameBytes]{};
+    size_t following_count = 0;
+    bool io_error = false;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (!entry) {
+            if (errno != 0) io_error = true;
+            break;
+        }
+        if (std::strlen(entry->d_name) >= kBrowserFilenameBytes ||
+            !isSupportedVideoFilename(entry->d_name)) {
+            continue;
+        }
+
+        char path[sizeof selected_video_path]{};
+        const int written = std::snprintf(
+            path, sizeof path, "%s/%s",
+            player_settings::kVideoDirectory, entry->d_name);
+        struct stat info{};
+        if (written < 0 ||
+            static_cast<size_t>(written) >= sizeof path ||
+            stat(path, &info) != 0) {
+            io_error = true;
+            break;
+        }
+        if (!S_ISREG(info.st_mode)) continue;
+
+        if (!insertSortedFilename(
+                first, &first_count, kBrowserVisibleFiles,
+                entry->d_name)) {
+            io_error = true;
+            break;
+        }
+        if (browser_filename[0]) {
+            const int order =
+                compareFilenames(entry->d_name, browser_filename);
+            if (order == 0 &&
+                !copyFilename(exact, sizeof exact, entry->d_name)) {
+                io_error = true;
+                break;
+            }
+            if (order < 0 && !insertSortedFilenameTail(
+                                 preceding, &preceding_count,
+                                 kBrowserVisibleFiles - 1,
+                                 entry->d_name)) {
+                io_error = true;
+                break;
+            }
+            if (order > 0 && !insertSortedFilename(
+                                 following, &following_count,
+                                 kBrowserVisibleFiles,
+                                 entry->d_name)) {
+                io_error = true;
+                break;
+            }
+        }
+    }
+    if (closedir(directory) != 0) io_error = true;
+    if (io_error) return BrowserScanResult::kIoError;
+    if (!first_count) {
+        browser_filename[0] = '\0';
+        browser_visible_count = 0;
+        return BrowserScanResult::kEmpty;
+    }
+
+    const bool chose_exact = !advance && exact[0];
+    const bool chose_following = !chose_exact && following_count;
+    const bool chose_first = !chose_exact && !chose_following;
+    const char *chosen = chose_exact
+                             ? exact
+                             : (chose_following ? following[0] : first[0]);
+    if (!copyFilename(
+            browser_filename, sizeof browser_filename, chosen)) {
+        return BrowserScanResult::kIoError;
+    }
+
+    browser_visible_count = 0;
+    browser_selected_visible_index = 0;
+    if (chose_first) {
+        for (size_t index = 0; index < first_count; ++index) {
+            if (!appendBrowserVisible(first[index])) {
+                return BrowserScanResult::kIoError;
+            }
+        }
+        return BrowserScanResult::kFound;
+    }
+
+    char before[kBrowserVisibleFiles - 1][kBrowserFilenameBytes]{};
+    size_t before_count = 0;
+    for (size_t index = 0; index < preceding_count; ++index) {
+        if (!copyFilename(before[before_count], kBrowserFilenameBytes,
+                          preceding[index])) {
+            return BrowserScanResult::kIoError;
+        }
+        ++before_count;
+    }
+    if (chose_following && exact[0] && !insertSortedFilenameTail(
+                                            before, &before_count,
+                                            kBrowserVisibleFiles - 1,
+                                            exact)) {
+        return BrowserScanResult::kIoError;
+    }
+
+    const size_t after_start = chose_following ? 1 : 0;
+    const size_t after_count = following_count - after_start;
+    size_t after_to_show = std::min<size_t>(2, after_count);
+    size_t before_to_show = std::min(
+        kBrowserVisibleFiles - 1 - after_to_show, before_count);
+    if (before_to_show < 2) {
+        after_to_show = std::min(
+            kBrowserVisibleFiles - 1 - before_to_show, after_count);
+    }
+    const size_t before_start = before_count - before_to_show;
+    for (size_t index = before_start; index < before_count; ++index) {
+        if (!appendBrowserVisible(before[index])) {
+            return BrowserScanResult::kIoError;
+        }
+    }
+    browser_selected_visible_index = browser_visible_count;
+    if (!appendBrowserVisible(chosen)) return BrowserScanResult::kIoError;
+    for (size_t index = 0; index < after_to_show; ++index) {
+        if (!appendBrowserVisible(following[after_start + index])) {
+            return BrowserScanResult::kIoError;
+        }
+    }
+    return BrowserScanResult::kFound;
+}
+
+void drawFileBrowser() {
+    const bool has_file = browser_filename[0] != '\0';
+    esp_rom_printf(
+        "B,%s\n", has_file ? browser_filename : "NO VIDEO FILES");
+    if (display.clear(0x0000) != ESP_OK) {
+        ESP_LOGE(kTag, "Could not clear file browser");
+        return;
+    }
+    drawStatusText("SD VIDEO FILES", 14, 2);
+    if (has_file) {
+        for (size_t index = 0; index < browser_visible_count; ++index) {
+            char line[kBrowserFilenameBytes + 3]{};
+            std::snprintf(line, sizeof line, "%s%.111s",
+                          index == browser_selected_visible_index
+                              ? "> " : "  ",
+                          browser_visible_filenames[index]);
+            esp_rom_printf("BF,%u,%s\n", static_cast<unsigned>(index),
+                           browser_visible_filenames[index]);
+            drawStatusTextLeft(
+                line, 48 + static_cast<int>(index) * 28, 1);
+        }
+        drawStatusText("SHORT: NEXT   HOLD: PLAY", 211, 1);
+    } else {
+        drawStatusText("NO VIDEO FILES", 104, 1);
+        drawStatusText("SHORT: RESCAN", 211, 1);
+    }
+    display.flush();
+}
+
+bool writeBrowserSelection() {
+    if (!browser_filename[0]) return false;
+    FILE *selection =
+        std::fopen(player_settings::kVideoSelectionPath, "wb");
+    if (!selection) return false;
+    const size_t length = std::strlen(browser_filename);
+    bool written =
+        std::fwrite(browser_filename, 1, length, selection) == length &&
+        std::fputc('\n', selection) != EOF && std::fflush(selection) == 0;
+    if (std::fclose(selection) != 0) written = false;
+    return written;
+}
+
+void enterFileBrowser() {
+    if (!sd_mounted && !mountSdCard()) {
+        showStatus("microSD failed", "cannot browse /HLV");
+        return;
+    }
+    closeVideo();
+    file_browser_active = true;
+    (void)display.setDoubleBuffered(false);
+
+    const char *selected_name = std::strrchr(selected_video_path, '/');
+    if (selected_name && selected_name[1]) {
+        (void)copyFilename(
+            browser_filename, sizeof browser_filename,
+            selected_name + 1);
+    } else {
+        browser_filename[0] = '\0';
+    }
+    const BrowserScanResult result = scanBrowserFile(false);
+    if (result == BrowserScanResult::kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot list /HLV");
+        return;
+    }
+    drawFileBrowser();
+}
+
+void advanceFileBrowser() {
+    const BrowserScanResult result = scanBrowserFile(true);
+    if (result == BrowserScanResult::kIoError) {
+        showStatus("SD CARD READ ERROR", "cannot list /HLV");
+        return;
+    }
+    drawFileBrowser();
+}
+
 VideoOpenResult openVideoCandidate(const char *path) {
     bpv_file_version = 0;
     errno = 0;
@@ -2680,6 +3084,38 @@ bool openVideo() {
             "bpv_input_calls,bpv_input_bytes]\n");
     }
     return true;
+}
+
+void handleBootButtonEvent(boot_button_event_t event) {
+    if (event == BOOT_BUTTON_EVENT_SHORT_PRESS) {
+        if (file_browser_active) {
+            advanceFileBrowser();
+        } else {
+            enterFileBrowser();
+        }
+        return;
+    }
+    if (event != BOOT_BUTTON_EVENT_LONG_PRESS ||
+        !file_browser_active || !browser_filename[0]) {
+        return;
+    }
+    if (!writeBrowserSelection()) {
+        showStatus("SD CARD WRITE ERROR", "cannot update /HLV/play.txt");
+        return;
+    }
+
+    ESP_LOGI(kTag, "BOOT selected: %s", browser_filename);
+    file_browser_active = false;
+    showStatus("PLAYING", browser_filename);
+    if (!openVideo()) last_retry_ms = millisNow();
+}
+
+void processBootButtonEvents() {
+    if (!boot_button_event_queue) return;
+    boot_button_event_t event = BOOT_BUTTON_EVENT_NONE;
+    while (xQueueReceive(boot_button_event_queue, &event, 0) == pdTRUE) {
+        handleBootButtonEvent(event);
+    }
 }
 
 void waitUntil(int64_t deadline) {
@@ -4234,6 +4670,9 @@ extern "C" void app_main(void) {
                  esp_err_to_name(display_result));
         return;
     }
+    if (!initializeBootButton()) {
+        ESP_LOGE(kTag, "BOOT button initialization failed");
+    }
     const esp_err_t uart_result =
         uart_upload.begin(CONFIG_ESP_CONSOLE_UART_BAUDRATE);
     if (uart_result != ESP_OK) {
@@ -4250,6 +4689,7 @@ extern "C" void app_main(void) {
     }
 
     for (;;) {
+        processBootButtonEvents();
         UartUploadRequest upload_request{};
         if (uart_upload.pollRequest(&upload_request)) {
             if (!sd_mounted && !mountSdCard()) {
@@ -4257,6 +4697,7 @@ extern "C" void app_main(void) {
                 last_retry_ms = millisNow();
                 continue;
             }
+            file_browser_active = false;
             closeVideo();
             beginUploadProgress(
                 upload_request.filename, upload_request.size);
@@ -4289,6 +4730,7 @@ extern "C" void app_main(void) {
                 uart_upload.reject("NO_SD");
                 last_retry_ms = millisNow();
             } else {
+                file_browser_active = false;
                 closeVideo();
                 uart_upload.deleteFile(
                     player_settings::kVideoDirectory, delete_filename);
@@ -4303,6 +4745,7 @@ extern "C" void app_main(void) {
                 uart_upload.reject("NO_SD");
                 last_retry_ms = millisNow();
             } else {
+                file_browser_active = false;
                 closeVideo();
                 uart_upload.checksumFile(
                     player_settings::kVideoDirectory, crc_filename);
@@ -4317,6 +4760,7 @@ extern "C" void app_main(void) {
                 uart_upload.reject("NO_SD");
                 last_retry_ms = millisNow();
             } else {
+                file_browser_active = false;
                 closeVideo();
                 const bool completed = uart_upload.benchmarkSd(
                     player_settings::kVideoDirectory,
@@ -4327,6 +4771,10 @@ extern "C" void app_main(void) {
                                      : "see UART error");
                 if (!openVideo()) last_retry_ms = millisNow();
             }
+            continue;
+        }
+        if (file_browser_active) {
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
         if (video_file && video_codec == VideoCodec::kMpeg1 &&

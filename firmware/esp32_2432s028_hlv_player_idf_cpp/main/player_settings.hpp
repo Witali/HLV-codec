@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "sdkconfig.h"
 
 namespace player_settings {
@@ -58,6 +60,10 @@ constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropThenLoopAudio;
 // values. Normal ESP-IDF logs are restricted to errors in sdkconfig.defaults
 // while this measurement mode is enabled.
 constexpr bool kLogFrameTimings = true;
+
+constexpr uint32_t kBootButtonPollMs = 10;
+constexpr uint32_t kBootButtonDebounceMs = 30;
+constexpr uint32_t kBootButtonLongPressMs = 800;
 
 constexpr char kVideoDirectory[] = "/sdcard/HLV";
 // play.txt contains one base filename from the same directory. Playback never

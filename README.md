@@ -201,6 +201,11 @@ MPEG-1/3GP file must be in the same directory. With the firmware running
 normally, the video and selection file can be copied over the CH340C UART
 without removing the card:
 
+A short BOOT press opens an alphabetically sorted on-device browser showing
+five left-aligned filenames at once. The selected row stays in the middle when
+there are at least two filenames on either side. Further short presses advance
+the selection; holding BOOT for 800 ms saves it to `play.txt` and starts it.
+
 ```powershell
 .\scripts\upload_video_uart.ps1 -Port COM8 `
     -File .\out\BigBuckBunny_1080p_mjpeg_q5_native-fps_320x180.avi
