@@ -21,6 +21,7 @@
 #define TRANSFER_BAUD_460K 460800U
 #define TRANSFER_BAUD_921K 921600U
 #define TRANSFER_BAUD_1000K 1000000U
+#define CALIBRATED_BAUD_1000K 978593U
 #define TRANSFER_BAUD_1500K 1500000U
 #define TRANSFER_BAUD_2000K 2000000U
 #define TRANSFER_BAUD_3000K 3000000U
@@ -370,8 +371,19 @@ static void write_le32(uint8_t *bytes, uint32_t value) {
     bytes[3] = (uint8_t)(value >> 24);
 }
 
+static uint32_t calibrated_baud(uint32_t baud) {
+    /*
+     * The onboard crystal-less CH340C is most reliable at a nominal 1 Mbaud
+     * when the ESP32 uses APB divider 81.75 (978593 baud).  Keep this one
+     * boot-time calibration common to both receive and transmit directions.
+     */
+    return baud == TRANSFER_BAUD_1000K
+               ? CALIBRATED_BAUD_1000K
+               : baud;
+}
+
 static bool set_baud(uint32_t baud) {
-    return uart_set_baudrate(UPLOAD_UART, baud) == ESP_OK;
+    return uart_set_baudrate(UPLOAD_UART, calibrated_baud(baud)) == ESP_OK;
 }
 
 static bool read_exact(uint8_t *destination,
@@ -567,7 +579,7 @@ esp_err_t uart_file_upload_begin(uart_file_upload_t *upload,
         return ESP_ERR_INVALID_ARG;
     }
     upload->control_baud = control_baud;
-    config.baud_rate = (int)control_baud;
+    config.baud_rate = (int)calibrated_baud(control_baud);
     config.data_bits = UART_DATA_8_BITS;
     config.parity = UART_PARITY_DISABLE;
     config.stop_bits = UART_STOP_BITS_2;

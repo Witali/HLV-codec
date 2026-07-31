@@ -24,6 +24,7 @@ constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;
 constexpr uint32_t kTransferBaud1000k = 1000000;
+constexpr uint32_t kCalibratedBaud1000k = 978593;
 constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint32_t kTransferBaud3000k = 3000000;
@@ -307,12 +308,17 @@ void writeLe32(uint8_t *bytes, uint32_t value) {
     bytes[3] = static_cast<uint8_t>(value >> 24);
 }
 
+uint32_t calibratedBaud(uint32_t baud) {
+    // One boot-time calibration is shared by the ESP32 RX and TX paths.
+    return baud == kTransferBaud1000k ? kCalibratedBaud1000k : baud;
+}
+
 }  // namespace
 
 esp_err_t UartFileUpload::begin(uint32_t control_baud) {
     control_baud_ = control_baud;
     uart_config_t config{};
-    config.baud_rate = static_cast<int>(control_baud);
+    config.baud_rate = static_cast<int>(calibratedBaud(control_baud));
     config.data_bits = UART_DATA_8_BITS;
     config.parity = UART_PARITY_DISABLE;
     config.stop_bits = UART_STOP_BITS_2;
@@ -1011,7 +1017,7 @@ bool UartFileUpload::benchmarkSd(
 }
 
 bool UartFileUpload::setBaud(uint32_t baud) {
-    return uart_set_baudrate(kUploadUart, baud) == ESP_OK;
+    return uart_set_baudrate(kUploadUart, calibratedBaud(baud)) == ESP_OK;
 }
 
 bool UartFileUpload::readExact(uint8_t *destination, size_t bytes,
