@@ -143,7 +143,7 @@ def parse_video(line: str) -> VideoRecord | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
-    parser.add_argument("--baud", type=int, default=460800)
+    parser.add_argument("--baud", type=int, default=1000000)
     parser.add_argument("--frames", type=int, default=900)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(

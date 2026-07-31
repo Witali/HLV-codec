@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 
+from uart_baud import BaudError, begin_session, enable_monitoring
 from uart_list import list_files, open_port
 
 
@@ -91,6 +92,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"[{index}/{len(selected)}] {record.name}",
                 file=sys.stderr, flush=True
             )
+            try:
+                begin_session(port, "CRC32", min(args.timeout, 30.0))
+            except BaudError as error:
+                raise CrcError(str(error)) from error
             result = checksum_file(port, record.name, args.timeout)
             if result.size != record.size:
                 raise CrcError(
@@ -98,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"{record.size} -> {result.size} bytes"
                 )
             results.append(result)
+        try:
+            enable_monitoring(port, min(args.timeout, 30.0))
+        except BaudError as error:
+            raise CrcError(str(error)) from error
     if args.json:
         print(json.dumps([asdict(record) for record in results],
                          ensure_ascii=False, indent=2))

@@ -23,11 +23,25 @@ constexpr int kUartRxBufferBytes = 2048;
 constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;
+constexpr uint32_t kTransferBaud1000k = 1000000;
 constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint32_t kTransferBaud3000k = 3000000;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr size_t kBlockHeaderBytes = 14;
+constexpr uint8_t kReadBlockMagic[] = {'H', 'L', 'V', 'X'};
+constexpr uint8_t kListPacketMagic[] = {'H', 'L', 'V', 'L'};
+constexpr size_t kReadBlockBytes = 64;
+constexpr size_t kReadBlockHeaderBytes = 14;
+constexpr size_t kReadAckBytes = 13;
+constexpr size_t kReadReadyBytes = 24;
+constexpr size_t kReadDoneBytes = 16;
+constexpr unsigned kReadBlockAttempts = 5;
+constexpr unsigned kReadDataAttempts = 20;
+constexpr uint32_t kReadAckTimeoutMs = 500;
+constexpr size_t kListPacketHeaderBytes = 17;
+constexpr unsigned kListPacketAttempts = 20;
+constexpr unsigned kListAckTimeoutMs = 500;
 constexpr uint32_t kWriterStackBytes = 4096;
 constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
 constexpr size_t kSdBenchmarkBlockBytes = 32 * 1024;
@@ -158,7 +172,8 @@ bool validDeleteFilename(const char *filename) {
 
 bool supportedDataBaud(uint32_t baud) {
     return baud == kTransferBaud460k || baud == kTransferBaud921k ||
-           baud == kTransferBaud1500k || baud == kTransferBaud2000k ||
+           baud == kTransferBaud1000k || baud == kTransferBaud1500k ||
+           baud == kTransferBaud2000k ||
            baud == kTransferBaud3000k;
 }
 
@@ -280,6 +295,18 @@ bool rewriteCachedCrc(const char *directory, const char *filename,
     return true;
 }
 
+void writeLe16(uint8_t *bytes, uint16_t value) {
+    bytes[0] = static_cast<uint8_t>(value);
+    bytes[1] = static_cast<uint8_t>(value >> 8);
+}
+
+void writeLe32(uint8_t *bytes, uint32_t value) {
+    bytes[0] = static_cast<uint8_t>(value);
+    bytes[1] = static_cast<uint8_t>(value >> 8);
+    bytes[2] = static_cast<uint8_t>(value >> 16);
+    bytes[3] = static_cast<uint8_t>(value >> 24);
+}
+
 }  // namespace
 
 esp_err_t UartFileUpload::begin(uint32_t control_baud) {
@@ -288,7 +315,7 @@ esp_err_t UartFileUpload::begin(uint32_t control_baud) {
     config.baud_rate = static_cast<int>(control_baud);
     config.data_bits = UART_DATA_8_BITS;
     config.parity = UART_PARITY_DISABLE;
-    config.stop_bits = UART_STOP_BITS_1;
+    config.stop_bits = UART_STOP_BITS_2;
     config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     config.source_clk = UART_SCLK_DEFAULT;
 
@@ -309,10 +336,66 @@ esp_err_t UartFileUpload::begin(uint32_t control_baud) {
     return uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
 }
 
+bool UartFileUpload::requireSession(const char *command) {
+    if (!session_active_) {
+        reject("SESSION_REQUIRED");
+        return false;
+    }
+    if (std::strcmp(active_session_command_, command)) {
+        reject("SESSION_MISMATCH");
+        return false;
+    }
+    return true;
+}
+
 bool UartFileUpload::parseRequest(const char *line,
                                   UartUploadRequest *request) {
-    if (!std::strcmp(line, "HLVLIST 1")) {
+    if (!std::strncmp(line, "HLVSESSION ", 11)) {
+        char command[sizeof session_command_]{};
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVSESSION 1 %15s %c", command, &trailing);
+        if (fields != 1 ||
+            (std::strcmp(command, "UPLOAD") &&
+             std::strcmp(command, "LIST") &&
+             std::strcmp(command, "READ") &&
+             std::strcmp(command, "CRC32") &&
+             std::strcmp(command, "BAUD") &&
+             std::strcmp(command, "DELETE") &&
+             std::strcmp(command, "SDBENCH"))) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        std::snprintf(session_command_, sizeof session_command_, "%s",
+                      command);
+        session_requested_ = true;
+        return false;
+    }
+    if (!std::strncmp(line, "HLVMONITOR ", 11)) {
+        if (std::strcmp(line, "HLVMONITOR 1 ON")) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        monitoring_requested_ = true;
+        return false;
+    }
+    if (!std::strcmp(line, "HLVLIST 2")) {
+        if (!requireSession("LIST")) return false;
         list_requested_ = true;
+        return false;
+    }
+    if (!std::strncmp(line, "HLVBAUD ", 8)) {
+        unsigned baud = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVBAUD 1 %u %c", &baud, &trailing);
+        if (fields != 1 || !supportedDataBaud(baud)) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        if (!requireSession("BAUD")) return false;
+        requested_control_baud_ = baud;
+        control_baud_requested_ = true;
         return false;
     }
     if (!std::strncmp(line, "HLVCRC ", 7)) {
@@ -324,8 +407,32 @@ bool UartFileUpload::parseRequest(const char *line,
             reject("BAD_REQUEST");
             return false;
         }
+        if (!requireSession("CRC32")) return false;
         std::snprintf(crc_filename_, sizeof crc_filename_, "%s", filename);
         crc_requested_ = true;
+        return false;
+    }
+    if (!std::strncmp(line, "HLVREAD ", 8)) {
+        UartReadRequest parsed{};
+        unsigned long offset = 0;
+        unsigned long size = 0;
+        unsigned baud = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVREAD 2 %48s %lu %lu %u %c", parsed.filename,
+            &offset, &size, &baud, &trailing);
+        if (fields != 4 || offset > UINT32_MAX || !size ||
+            size > UINT32_MAX || !validFilename(parsed.filename) ||
+            !supportedDataBaud(baud)) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        if (!requireSession("READ")) return false;
+        parsed.offset = static_cast<uint32_t>(offset);
+        parsed.size = static_cast<uint32_t>(size);
+        parsed.data_baud = baud;
+        read_request_ = parsed;
+        read_requested_ = true;
         return false;
     }
     if (!std::strncmp(line, "HLVDELETE ", 10)) {
@@ -337,6 +444,7 @@ bool UartFileUpload::parseRequest(const char *line,
             reject("BAD_REQUEST");
             return false;
         }
+        if (!requireSession("DELETE")) return false;
         std::snprintf(
             delete_filename_, sizeof delete_filename_, "%s", filename);
         delete_requested_ = true;
@@ -356,6 +464,7 @@ bool UartFileUpload::parseRequest(const char *line,
             reject("BAD_REQUEST");
             return false;
         }
+        if (!requireSession("SDBENCH")) return false;
         sd_benchmark_request_.pattern =
             !std::strcmp(pattern, "zero")
                 ? SdBenchmarkPattern::kZeros
@@ -379,6 +488,7 @@ bool UartFileUpload::parseRequest(const char *line,
         reject("BAD_REQUEST");
         return false;
     }
+    if (!requireSession("UPLOAD")) return false;
     parsed.size = static_cast<uint32_t>(size);
     parsed.crc32 = static_cast<uint32_t>(crc);
     parsed.data_baud = baud;
@@ -429,6 +539,55 @@ bool UartFileUpload::takeCrcRequest(char *filename, size_t filename_bytes) {
     return true;
 }
 
+bool UartFileUpload::takeSessionRequest(char *command,
+                                        size_t command_bytes) {
+    if (!session_requested_ || !command || !command_bytes) return false;
+    std::snprintf(command, command_bytes, "%s", session_command_);
+    session_command_[0] = '\0';
+    session_requested_ = false;
+    return true;
+}
+
+void UartFileUpload::sessionReady(const char *command) {
+    std::snprintf(active_session_command_,
+                  sizeof active_session_command_, "%s",
+                  command ? command : "TRANSFER");
+    session_active_ = true;
+    monitoring_requested_ = false;
+    writeResponse("HLVSESSIONREADY 1 %s\n",
+                  command ? command : "TRANSFER");
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+}
+
+bool UartFileUpload::takeMonitoringRequest() {
+    const bool requested = monitoring_requested_;
+    monitoring_requested_ = false;
+    return requested;
+}
+
+void UartFileUpload::monitoringReady() {
+    writeResponse("HLVMONITORREADY 1 ON\n");
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    session_active_ = false;
+    active_session_command_[0] = '\0';
+}
+
+bool UartFileUpload::takeReadRequest(UartReadRequest *request) {
+    if (!request || !read_requested_) return false;
+    *request = read_request_;
+    read_request_ = {};
+    read_requested_ = false;
+    return true;
+}
+
+bool UartFileUpload::takeBaudRequest(uint32_t *baud) {
+    if (!baud || !control_baud_requested_) return false;
+    *baud = requested_control_baud_;
+    requested_control_baud_ = 0;
+    control_baud_requested_ = false;
+    return true;
+}
+
 bool UartFileUpload::takeDeleteRequest(
         char *filename, size_t filename_bytes) {
     if (!delete_requested_ || !filename || !filename_bytes) return false;
@@ -447,6 +606,44 @@ bool UartFileUpload::takeSdBenchmarkRequest(
     return true;
 }
 
+bool UartFileUpload::sendListPacket(uint32_t sequence, uint32_t file_size,
+                                    const char *name) {
+    uint8_t packet[kListPacketHeaderBytes + 255]{};
+    const size_t name_bytes = name ? std::strlen(name) : 0;
+    if (name_bytes > 255) return false;
+    std::memcpy(packet, kListPacketMagic, sizeof kListPacketMagic);
+    writeLe32(packet + 4, sequence);
+    writeLe32(packet + 8, file_size);
+    packet[12] = static_cast<uint8_t>(name_bytes);
+    if (name_bytes) {
+        std::memcpy(packet + kListPacketHeaderBytes, name, name_bytes);
+    }
+    uint32_t checksum = esp_rom_crc32_le(0, packet, 13);
+    if (name_bytes) {
+        checksum = esp_rom_crc32_le(
+            checksum, packet + kListPacketHeaderBytes, name_bytes);
+    }
+    writeLe32(packet + 13, checksum);
+    for (unsigned attempt = 0; attempt < kListPacketAttempts; ++attempt) {
+        uint8_t acknowledgment[kReadAckBytes]{};
+        const int written = uart_write_bytes(
+            kUploadUart, packet, kListPacketHeaderBytes + name_bytes);
+        if (written != static_cast<int>(
+                           kListPacketHeaderBytes + name_bytes)) {
+            continue;
+        }
+        if (!readExact(acknowledgment, sizeof acknowledgment,
+                       kListAckTimeoutMs) ||
+            std::memcmp(acknowledgment, "HLVA", 4) ||
+            readLe32(acknowledgment + 4) != sequence ||
+            readLe32(acknowledgment + 9) != crc32(acknowledgment, 9)) {
+            continue;
+        }
+        if (acknowledgment[8] == 1) return true;
+    }
+    return false;
+}
+
 bool UartFileUpload::listDirectory(const char *directory) {
     if (!directory) {
         reject("BAD_DIRECTORY");
@@ -458,7 +655,6 @@ bool UartFileUpload::listDirectory(const char *directory) {
         return false;
     }
 
-    writeResponse("HLVLISTBEGIN 1\n");
     uint32_t count = 0;
     while (const dirent *entry = readdir(handle)) {
         if (!std::strcmp(entry->d_name, ".") ||
@@ -471,14 +667,20 @@ bool UartFileUpload::listDirectory(const char *directory) {
         }
         struct stat status {};
         if (stat(path, &status) || !S_ISREG(status.st_mode)) continue;
-        writeResponse("HLVFILE 1 %u %s\n",
-                      static_cast<unsigned>(status.st_size),
-                      entry->d_name);
+        if (!sendListPacket(count, static_cast<uint32_t>(status.st_size),
+                            entry->d_name)) {
+            closedir(handle);
+            finishResponse("HLVERR 2 LIST_FAILED\n");
+            return false;
+        }
         ++count;
     }
     closedir(handle);
-    finishResponse("HLVLISTEND 1 %u\n",
-                   static_cast<unsigned>(count));
+    if (!sendListPacket(count, count, nullptr)) {
+        finishResponse("HLVERR 2 LIST_FAILED\n");
+        return false;
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
     return true;
 }
 
@@ -543,6 +745,155 @@ bool UartFileUpload::checksumFile(const char *directory,
     finishResponse("HLVCRC 1 %u %08x %s\n",
                    static_cast<unsigned>(file_size),
                    static_cast<unsigned>(file_crc), filename);
+    return true;
+}
+
+bool UartFileUpload::readFile(const char *directory,
+                              const UartReadRequest &request) {
+    char path[128];
+    if (!directory ||
+        !buildPath(path, sizeof path, directory, request.filename, "")) {
+        reject("BAD_PATH");
+        return false;
+    }
+    struct stat status {};
+    if (stat(path, &status) || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 ||
+        static_cast<uint64_t>(status.st_size) > UINT32_MAX) {
+        reject("NOT_FOUND");
+        return false;
+    }
+    const uint32_t file_size = static_cast<uint32_t>(status.st_size);
+    if (request.offset > file_size) {
+        reject("BAD_RANGE");
+        return false;
+    }
+    uint32_t remaining = file_size - request.offset;
+    remaining = std::min(remaining, request.size);
+    FILE *input = std::fopen(path, "rb");
+    if (!input) {
+        reject("OPEN_FAILED");
+        return false;
+    }
+    if (std::fseek(input, static_cast<long>(request.offset), SEEK_SET)) {
+        std::fclose(input);
+        reject("SEEK_FAILED");
+        return false;
+    }
+    auto *packet = static_cast<uint8_t *>(heap_caps_malloc(
+        kReadBlockHeaderBytes + kReadBlockBytes, MALLOC_CAP_8BIT));
+    if (!packet) {
+        std::fclose(input);
+        reject("NO_MEMORY");
+        return false;
+    }
+
+    uart_flush_input(kUploadUart);
+    uint8_t ready[kReadReadyBytes];
+    std::memcpy(ready, "HLVR", 4);
+    writeLe32(ready + 4, file_size);
+    writeLe32(ready + 8, request.offset);
+    writeLe32(ready + 12, remaining);
+    writeLe32(ready + 16, request.data_baud);
+    writeLe32(ready + 20, crc32(ready, 20));
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        uart_write_bytes(kUploadUart, ready, sizeof ready);
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    if (request.data_baud != control_baud_) {
+        uint8_t go[8];
+        constexpr uint8_t kGo[8] = {
+            'H', 'L', 'V', 'G', 'O', ' ', '2', '\n'};
+        if (!setBaud(request.data_baud)) {
+            heap_caps_free(packet);
+            std::fclose(input);
+            finishResponse("HLVERR 2 BAUD_FAILED\n");
+            return false;
+        }
+        if (!readExact(go, sizeof go, kChunkTimeoutMs) ||
+            std::memcmp(go, kGo, sizeof kGo)) {
+            heap_caps_free(packet);
+            std::fclose(input);
+            setBaud(control_baud_);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            finishResponse("HLVERR 2 HANDSHAKE_FAILED\n");
+            return false;
+        }
+    }
+
+    std::memcpy(packet, kReadBlockMagic, sizeof kReadBlockMagic);
+    uint32_t sent = 0;
+    uint32_t sequence = 0;
+    uint32_t range_crc = 0;
+    bool success = true;
+    while (sent < remaining) {
+        const uint32_t bytes = std::min<uint32_t>(
+            remaining - sent, kReadBlockBytes);
+        if (std::fread(packet + kReadBlockHeaderBytes, 1, bytes, input) !=
+            bytes) {
+            success = false;
+            break;
+        }
+        const uint32_t block_crc = crc32(
+            packet + kReadBlockHeaderBytes, bytes);
+        range_crc = esp_rom_crc32_le(
+            range_crc, packet + kReadBlockHeaderBytes, bytes);
+        writeLe32(packet + 4, sequence);
+        writeLe16(packet + 8, static_cast<uint16_t>(bytes));
+        writeLe32(packet + 10, block_crc);
+        bool acknowledged = false;
+        for (unsigned attempt = 0; attempt < kReadDataAttempts; ++attempt) {
+            uint8_t acknowledgment[kReadAckBytes];
+            const int written = uart_write_bytes(
+                kUploadUart, packet, kReadBlockHeaderBytes + bytes);
+            if (written !=
+                static_cast<int>(kReadBlockHeaderBytes + bytes)) {
+                continue;
+            }
+            if (uart_wait_tx_done(
+                    kUploadUart, pdMS_TO_TICKS(kChunkTimeoutMs)) != ESP_OK) {
+                continue;
+            }
+            if (!readExact(acknowledgment, sizeof acknowledgment,
+                           kReadAckTimeoutMs) ||
+                std::memcmp(acknowledgment, "HLVA", 4) ||
+                readLe32(acknowledgment + 4) != sequence ||
+                readLe32(acknowledgment + 9) !=
+                    crc32(acknowledgment, 9)) {
+                continue;
+            }
+            if (acknowledgment[8] == 1) {
+                acknowledged = true;
+                break;
+            }
+        }
+        if (!acknowledged) {
+            success = false;
+            break;
+        }
+        sent += bytes;
+        ++sequence;
+    }
+    if (std::fclose(input)) success = false;
+    heap_caps_free(packet);
+    if (!success || sent != remaining) {
+        setBaud(control_baud_);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finishResponse("HLVERR 2 READ_FAILED\n");
+        return false;
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    setBaud(control_baud_);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    uint8_t done[kReadDoneBytes];
+    std::memcpy(done, "HLVE", 4);
+    writeLe32(done + 4, sent);
+    writeLe32(done + 8, range_crc);
+    writeLe32(done + 12, crc32(done, 12));
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        uart_write_bytes(kUploadUart, done, sizeof done);
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
     return true;
 }
 
@@ -714,6 +1065,85 @@ void UartFileUpload::reject(const char *reason) {
     writeResponse("HLVERR 1 %s\n", reason ? reason : "FAILED");
 }
 
+bool UartFileUpload::changeBaud(uint32_t baud) {
+    constexpr uint8_t kSwitch[16] = {
+        'H', 'L', 'V', 'B', 'A', 'U', 'D', 'S',
+        'W', 'I', 'T', 'C', 'H', ' ', '1', '\n'};
+    uint8_t request[sizeof kSwitch];
+    const uint32_t previous_baud = control_baud_;
+
+    if (!supportedDataBaud(baud)) {
+        reject("BAD_REQUEST");
+        return false;
+    }
+    uart_flush_input(kUploadUart);
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        writeResponse("HLVBAUDREADY 1 %u\n",
+                      static_cast<unsigned>(baud));
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    if (!readExact(request, sizeof kSwitch, kChunkTimeoutMs) ||
+        std::memcmp(request, kSwitch, sizeof kSwitch)) {
+        finishResponse("HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (!setBaud(baud)) {
+        finishResponse("HLVERR 1 BAUD_FAILED\n");
+        return false;
+    }
+    bool valid_frame = false;
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        if (readExact(request, 12, 2000) &&
+            !std::memcmp(request, "HLVG", 4) &&
+            readLe32(request + 4) == baud &&
+            readLe32(request + 8) == crc32(request, 8)) {
+            valid_frame = true;
+            break;
+        }
+    }
+    if (!valid_frame) {
+        setBaud(previous_baud);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finishResponse("HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    std::memcpy(request, "HLVA", 4);
+    writeLe32(request + 4, baud);
+    writeLe32(request + 8, crc32(request, 8));
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        uart_write_bytes(kUploadUart, request, 12);
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+
+    valid_frame = false;
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        if (readExact(request, 12, 2000) &&
+            !std::memcmp(request, "HLVD", 4) &&
+            readLe32(request + 4) == baud &&
+            readLe32(request + 8) == crc32(request, 8)) {
+            valid_frame = true;
+            break;
+        }
+    }
+    if (!valid_frame) {
+        setBaud(previous_baud);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finishResponse("HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    uart_flush_input(kUploadUart);
+    control_baud_ = baud;
+    std::memcpy(request, "HLVF", 4);
+    writeLe32(request + 4, baud);
+    writeLe32(request + 8, crc32(request, 8));
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        uart_write_bytes(kUploadUart, request, 12);
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    return true;
+}
+
 bool UartFileUpload::receive(const UartUploadRequest &request,
                              const char *directory, char *stored_path,
                              size_t stored_path_bytes,
@@ -789,13 +1219,18 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     };
 
     uart_flush_input(kUploadUart);
-    writeResponse("HLVREADY 2 %u %u %u\n",
-                  static_cast<unsigned>(kChunkBytes),
-                  static_cast<unsigned>(request.data_baud),
-                  static_cast<unsigned>(kBufferCount));
+    for (size_t attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        writeResponse("HLVREADY 2 %u %u %u\n",
+                      static_cast<unsigned>(kChunkBytes),
+                      static_cast<unsigned>(request.data_baud),
+                      static_cast<unsigned>(kBufferCount));
+    }
     uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
-    vTaskDelay(pdMS_TO_TICKS(20));
-    if (!setBaud(request.data_baud)) {
+    if (request.data_baud != control_baud_) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (request.data_baud != control_baud_ &&
+        !setBaud(request.data_baud)) {
         stop_writer();
         std::fclose(output);
         unlink(temporary);
@@ -988,6 +1423,11 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     (void)rewriteCachedCrc(
         directory, request.filename, true,
         request.size, actual_crc);
+    for (size_t attempt = 1; attempt < kReadBlockAttempts; ++attempt) {
+        writeResponse("HLVDONE 2 %u %08x %s\n",
+                      static_cast<unsigned>(request.size),
+                      static_cast<unsigned>(actual_crc), request.filename);
+    }
     finishResponse("HLVDONE 2 %u %08x %s\n",
                    static_cast<unsigned>(request.size),
                    static_cast<unsigned>(actual_crc), request.filename);

@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import struct
+import sys
 import tempfile
 import unittest
 import zlib
@@ -12,6 +13,7 @@ SCRIPT = (
     / "esp32_2432s028_hlv_player_idf_c"
     / "uart_upload.py"
 )
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("uart_upload", SCRIPT)
 uart_upload = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -27,12 +29,14 @@ class FakeEsp32Port:
         self.expected_crc = 0
         self.remote_name = ""
         self.baudrate = uart_upload.CONTROL_BAUD
+        self.baud_changes = []
         self.nak_once_sequence = nak_once_sequence
         self.completion_suffix = completion_suffix
         self.nak_sent = False
         self.recovering = False
         self.unread_acks = 0
         self.maximum_unread_acks = 0
+        self.monitoring_calls = 0
 
     def __enter__(self):
         return self
@@ -41,6 +45,16 @@ class FakeEsp32Port:
         return False
 
     def write(self, packet):
+        if packet.startswith(b"\nHLVSESSION "):
+            command = packet.decode("ascii").strip().split()[2]
+            self.responses.append(
+                f"HLVSESSIONREADY 1 {command}\n".encode("ascii")
+            )
+            return len(packet)
+        if packet == b"\nHLVMONITOR 1 ON\n":
+            self.monitoring_calls += 1
+            self.responses.append(b"HLVMONITORREADY 1 ON\n")
+            return len(packet)
         if packet.startswith(b"\nHLVPUT "):
             fields = packet.decode("ascii").strip().split()
             self.remote_name = fields[2]
@@ -50,7 +64,7 @@ class FakeEsp32Port:
             self.responses.append(
                 (
                     f"HLVREADY {uart_upload.UPLOAD_PROTOCOL_VERSION} "
-                    f"{32 * 1024} {data_baud} 2\n"
+                    f"64 {data_baud} 2\n"
                 ).encode("ascii")
             )
             return len(packet)
@@ -109,6 +123,14 @@ class FakeEsp32Port:
     def flush(self):
         pass
 
+    def reset_input_buffer(self):
+        pass
+
+    def change_baud(self, port, baud, _timeout):
+        self.assert_equal(port, self)
+        self.baudrate = baud
+        self.baud_changes.append(baud)
+
     @staticmethod
     def assert_equal(actual, expected):
         if actual != expected:
@@ -131,10 +153,12 @@ class UartUploadTest(unittest.TestCase):
             source.write_bytes(content)
             fake = FakeEsp32Port()
             original_open_port = uart_upload.open_port
+            original_change_baud = uart_upload.change_baud
             original_sleep = uart_upload.time.sleep
             original_progress = uart_upload.print_progress
             try:
                 uart_upload.open_port = lambda *_: fake
+                uart_upload.change_baud = fake.change_baud
                 uart_upload.time.sleep = lambda *_: None
                 uart_upload.print_progress = lambda *_args, **_kwargs: None
                 uart_upload.upload(
@@ -142,12 +166,15 @@ class UartUploadTest(unittest.TestCase):
                 )
             finally:
                 uart_upload.open_port = original_open_port
+                uart_upload.change_baud = original_change_baud
                 uart_upload.time.sleep = original_sleep
                 uart_upload.print_progress = original_progress
             self.assertEqual(bytes(fake.data), content)
-            self.assertEqual(fake.sequence, 3)
-            self.assertEqual(fake.baudrate, 921600)
+            self.assertEqual(fake.sequence, (len(content) + 63) // 64)
+            self.assertEqual(fake.baudrate, uart_upload.CONTROL_BAUD)
+            self.assertEqual(fake.baud_changes, [921600, 1000000])
             self.assertEqual(fake.maximum_unread_acks, 2)
+            self.assertEqual(fake.monitoring_calls, 1)
 
     def test_go_back_n_after_rejected_block(self):
         content = b"HLV1" + bytes(range(256)) * 300
@@ -156,10 +183,12 @@ class UartUploadTest(unittest.TestCase):
             source.write_bytes(content)
             fake = FakeEsp32Port(nak_once_sequence=0)
             original_open_port = uart_upload.open_port
+            original_change_baud = uart_upload.change_baud
             original_sleep = uart_upload.time.sleep
             original_progress = uart_upload.print_progress
             try:
                 uart_upload.open_port = lambda *_: fake
+                uart_upload.change_baud = fake.change_baud
                 uart_upload.time.sleep = lambda *_: None
                 uart_upload.print_progress = lambda *_args, **_kwargs: None
                 uart_upload.upload(
@@ -167,11 +196,13 @@ class UartUploadTest(unittest.TestCase):
                 )
             finally:
                 uart_upload.open_port = original_open_port
+                uart_upload.change_baud = original_change_baud
                 uart_upload.time.sleep = original_sleep
                 uart_upload.print_progress = original_progress
             self.assertTrue(fake.nak_sent)
             self.assertEqual(bytes(fake.data), content)
-            self.assertEqual(fake.sequence, 3)
+            self.assertEqual(fake.sequence, (len(content) + 63) // 64)
+            self.assertEqual(fake.monitoring_calls, 1)
 
     def test_completion_ignores_trailing_baud_transition_noise(self):
         content = b"HLV1" + bytes(range(64))
@@ -180,10 +211,12 @@ class UartUploadTest(unittest.TestCase):
             source.write_bytes(content)
             fake = FakeEsp32Port(completion_suffix=b"\xffx\x00\n")
             original_open_port = uart_upload.open_port
+            original_change_baud = uart_upload.change_baud
             original_sleep = uart_upload.time.sleep
             original_progress = uart_upload.print_progress
             try:
                 uart_upload.open_port = lambda *_: fake
+                uart_upload.change_baud = fake.change_baud
                 uart_upload.time.sleep = lambda *_: None
                 uart_upload.print_progress = lambda *_args, **_kwargs: None
                 uart_upload.upload(
@@ -191,9 +224,11 @@ class UartUploadTest(unittest.TestCase):
                 )
             finally:
                 uart_upload.open_port = original_open_port
+                uart_upload.change_baud = original_change_baud
                 uart_upload.time.sleep = original_sleep
                 uart_upload.print_progress = original_progress
             self.assertEqual(bytes(fake.data), content)
+            self.assertEqual(fake.monitoring_calls, 1)
 
 
 if __name__ == "__main__":

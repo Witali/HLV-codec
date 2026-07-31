@@ -20,10 +20,22 @@
 #define CHUNK_TIMEOUT_MS 10000U
 #define TRANSFER_BAUD_460K 460800U
 #define TRANSFER_BAUD_921K 921600U
+#define TRANSFER_BAUD_1000K 1000000U
 #define TRANSFER_BAUD_1500K 1500000U
 #define TRANSFER_BAUD_2000K 2000000U
 #define TRANSFER_BAUD_3000K 3000000U
 #define BLOCK_HEADER_BYTES 14U
+#define READ_BLOCK_BYTES 64U
+#define READ_BLOCK_HEADER_BYTES 14U
+#define READ_ACK_BYTES 13U
+#define READ_READY_BYTES 24U
+#define READ_DONE_BYTES 16U
+#define READ_BLOCK_ATTEMPTS 5U
+#define READ_DATA_ATTEMPTS 20U
+#define READ_ACK_TIMEOUT_MS 500U
+#define LIST_PACKET_HEADER_BYTES 17U
+#define LIST_PACKET_ATTEMPTS 20U
+#define LIST_ACK_TIMEOUT_MS 500U
 #define CRC_BUFFER_BYTES 4096U
 #define WRITER_STACK_BYTES 4096U
 #define WRITER_PRIORITY (tskIDLE_PRIORITY + 2U)
@@ -34,6 +46,8 @@
 #define CRC_INDEX_LINE_BYTES 128U
 
 static const uint8_t k_block_magic[] = {'H', 'L', 'V', 'B'};
+static const uint8_t k_read_block_magic[] = {'H', 'L', 'V', 'X'};
+static const uint8_t k_list_packet_magic[] = {'H', 'L', 'V', 'L'};
 
 typedef struct {
     uint8_t *data;
@@ -178,9 +192,23 @@ static bool valid_delete_filename(const char *filename) {
 static bool supported_data_baud(uint32_t baud) {
     return baud == TRANSFER_BAUD_460K ||
            baud == TRANSFER_BAUD_921K ||
+           baud == TRANSFER_BAUD_1000K ||
            baud == TRANSFER_BAUD_1500K ||
            baud == TRANSFER_BAUD_2000K ||
            baud == TRANSFER_BAUD_3000K;
+}
+
+static bool require_session(uart_file_upload_t *upload,
+                            const char *command) {
+    if (!upload->session_active) {
+        uart_file_upload_reject(upload, "SESSION_REQUIRED");
+        return false;
+    }
+    if (strcmp(upload->active_session_command, command) != 0) {
+        uart_file_upload_reject(upload, "SESSION_MISMATCH");
+        return false;
+    }
+    return true;
 }
 
 static bool build_path(char *destination,
@@ -330,6 +358,18 @@ static bool rewrite_cached_crc(const char *directory,
     return true;
 }
 
+static void write_le16(uint8_t *bytes, uint16_t value) {
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8);
+}
+
+static void write_le32(uint8_t *bytes, uint32_t value) {
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8);
+    bytes[2] = (uint8_t)(value >> 16);
+    bytes[3] = (uint8_t)(value >> 24);
+}
+
 static bool set_baud(uint32_t baud) {
     return uart_set_baudrate(UPLOAD_UART, baud) == ESP_OK;
 }
@@ -437,6 +477,87 @@ void uart_file_upload_reject(uart_file_upload_t *upload,
     write_response("HLVERR 1 %s\n", reason != NULL ? reason : "FAILED");
 }
 
+bool uart_file_upload_change_baud(uart_file_upload_t *upload,
+                                  uint32_t baud) {
+    static const uint8_t k_switch[16] = {
+        'H', 'L', 'V', 'B', 'A', 'U', 'D', 'S',
+        'W', 'I', 'T', 'C', 'H', ' ', '1', '\n'};
+    uint8_t request[sizeof k_switch];
+    uint32_t previous_baud;
+    uint32_t attempt;
+    bool valid_frame = false;
+
+    if (upload == NULL || !supported_data_baud(baud)) {
+        uart_file_upload_reject(upload, "BAD_REQUEST");
+        return false;
+    }
+    previous_baud = upload->control_baud;
+    uart_flush_input(UPLOAD_UART);
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        write_response("HLVBAUDREADY 1 %u\n", (unsigned)baud);
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    if (!read_exact(request, sizeof k_switch, CHUNK_TIMEOUT_MS) ||
+        memcmp(request, k_switch, sizeof k_switch) != 0) {
+        finish_response(upload, "HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+    if (!set_baud(baud)) {
+        finish_response(upload, "HLVERR 1 BAUD_FAILED\n");
+        return false;
+    }
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        if (read_exact(request, 12, 2000U) &&
+            memcmp(request, "HLVG", 4) == 0 &&
+            read_le32(request + 4) == baud &&
+            read_le32(request + 8) == crc32(request, 8)) {
+            valid_frame = true;
+            break;
+        }
+    }
+    if (!valid_frame) {
+        set_baud(previous_baud);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finish_response(upload, "HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    memcpy(request, "HLVA", 4);
+    write_le32(request + 4, baud);
+    write_le32(request + 8, crc32(request, 8));
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        uart_write_bytes(UPLOAD_UART, request, 12);
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+
+    valid_frame = false;
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        if (read_exact(request, 12, 2000U) &&
+            memcmp(request, "HLVD", 4) == 0 &&
+            read_le32(request + 4) == baud &&
+            read_le32(request + 8) == crc32(request, 8)) {
+            valid_frame = true;
+            break;
+        }
+    }
+    if (!valid_frame) {
+        set_baud(previous_baud);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finish_response(upload, "HLVERR 1 BAUD_HANDSHAKE\n");
+        return false;
+    }
+    uart_flush_input(UPLOAD_UART);
+    upload->control_baud = baud;
+    memcpy(request, "HLVF", 4);
+    write_le32(request + 4, baud);
+    write_le32(request + 8, crc32(request, 8));
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        uart_write_bytes(UPLOAD_UART, request, 12);
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    return true;
+}
+
 esp_err_t uart_file_upload_begin(uart_file_upload_t *upload,
                                  uint32_t control_baud) {
     uart_config_t config = {0};
@@ -449,7 +570,7 @@ esp_err_t uart_file_upload_begin(uart_file_upload_t *upload,
     config.baud_rate = (int)control_baud;
     config.data_bits = UART_DATA_8_BITS;
     config.parity = UART_PARITY_DISABLE;
-    config.stop_bits = UART_STOP_BITS_1;
+    config.stop_bits = UART_STOP_BITS_2;
     config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     config.source_clk = UART_SCLK_DEFAULT;
 
@@ -480,8 +601,55 @@ esp_err_t uart_file_upload_begin(uart_file_upload_t *upload,
 static bool parse_request(uart_file_upload_t *upload,
                           const char *line,
                           uart_upload_request_t *request) {
-    if (strcmp(line, "HLVLIST 1") == 0) {
+    if (strncmp(line, "HLVSESSION ", 11) == 0) {
+        char command[UART_SESSION_COMMAND_BYTES] = {0};
+        char trailing = '\0';
+        int fields = sscanf(
+            line, "HLVSESSION 1 %15s %c", command, &trailing);
+        if (fields != 1 ||
+            (strcmp(command, "UPLOAD") != 0 &&
+             strcmp(command, "LIST") != 0 &&
+             strcmp(command, "READ") != 0 &&
+             strcmp(command, "CRC32") != 0 &&
+             strcmp(command, "BAUD") != 0 &&
+             strcmp(command, "DELETE") != 0 &&
+             strcmp(command, "SDBENCH") != 0)) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        snprintf(upload->session_command,
+                 sizeof upload->session_command, "%s", command);
+        upload->session_requested = true;
+        return false;
+    }
+    if (strncmp(line, "HLVMONITOR ", 11) == 0) {
+        if (strcmp(line, "HLVMONITOR 1 ON") != 0) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        upload->monitoring_requested = true;
+        return false;
+    }
+    if (strcmp(line, "HLVLIST 2") == 0) {
+        if (!require_session(upload, "LIST")) {
+            return false;
+        }
         upload->list_requested = true;
+        return false;
+    }
+    if (strncmp(line, "HLVBAUD ", 8) == 0) {
+        unsigned baud = 0;
+        char trailing = '\0';
+        int fields = sscanf(line, "HLVBAUD 1 %u %c", &baud, &trailing);
+        if (fields != 1 || !supported_data_baud(baud)) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "BAUD")) {
+            return false;
+        }
+        upload->requested_control_baud = baud;
+        upload->control_baud_requested = true;
         return false;
     }
     if (strncmp(line, "HLVCRC ", 7) == 0) {
@@ -493,9 +661,37 @@ static bool parse_request(uart_file_upload_t *upload,
             uart_file_upload_reject(upload, "BAD_REQUEST");
             return false;
         }
+        if (!require_session(upload, "CRC32")) {
+            return false;
+        }
         snprintf(upload->crc_filename, sizeof upload->crc_filename,
                  "%s", filename);
         upload->crc_requested = true;
+        return false;
+    }
+    if (strncmp(line, "HLVREAD ", 8) == 0) {
+        uart_read_request_t parsed = {0};
+        unsigned long offset = 0;
+        unsigned long size = 0;
+        unsigned baud = 0;
+        char trailing = '\0';
+        int fields = sscanf(
+            line, "HLVREAD 2 %48s %lu %lu %u %c", parsed.filename,
+            &offset, &size, &baud, &trailing);
+        if (fields != 4 || offset > UINT32_MAX || size == 0U ||
+            size > UINT32_MAX || !valid_filename(parsed.filename) ||
+            !supported_data_baud(baud)) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "READ")) {
+            return false;
+        }
+        parsed.offset = (uint32_t)offset;
+        parsed.size = (uint32_t)size;
+        parsed.data_baud = baud;
+        upload->read_request = parsed;
+        upload->read_requested = true;
         return false;
     }
     if (strncmp(line, "HLVDELETE ", 10) == 0) {
@@ -505,6 +701,9 @@ static bool parse_request(uart_file_upload_t *upload,
             sscanf(line, "HLVDELETE 1 %48s %c", filename, &trailing);
         if (fields != 1 || !valid_delete_filename(filename)) {
             uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "DELETE")) {
             return false;
         }
         snprintf(upload->delete_filename,
@@ -524,6 +723,9 @@ static bool parse_request(uart_file_upload_t *upload,
             (strcmp(pattern, "zero") != 0 &&
              strcmp(pattern, "random") != 0)) {
             uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "SDBENCH")) {
             return false;
         }
         upload->sd_benchmark_request.pattern =
@@ -551,6 +753,9 @@ static bool parse_request(uart_file_upload_t *upload,
             !valid_filename(parsed.filename) ||
             !supported_data_baud(baud)) {
             uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "UPLOAD")) {
             return false;
         }
         parsed.size = (uint32_t)size;
@@ -626,6 +831,79 @@ bool uart_file_upload_take_crc_request(uart_file_upload_t *upload,
     return true;
 }
 
+bool uart_file_upload_take_session_request(uart_file_upload_t *upload,
+                                           char *command,
+                                           size_t command_bytes) {
+    if (upload == NULL || command == NULL || command_bytes == 0U ||
+        !upload->session_requested) {
+        return false;
+    }
+    snprintf(command, command_bytes, "%s", upload->session_command);
+    upload->session_command[0] = '\0';
+    upload->session_requested = false;
+    return true;
+}
+
+void uart_file_upload_session_ready(uart_file_upload_t *upload,
+                                    const char *command) {
+    if (upload == NULL) {
+        return;
+    }
+    snprintf(upload->active_session_command,
+             sizeof upload->active_session_command, "%s",
+             command != NULL ? command : "TRANSFER");
+    upload->session_active = true;
+    upload->monitoring_requested = false;
+    write_response("HLVSESSIONREADY 1 %s\n",
+                   command != NULL ? command : "TRANSFER");
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+}
+
+bool uart_file_upload_take_monitoring_request(
+    uart_file_upload_t *upload) {
+    bool requested;
+
+    if (upload == NULL) {
+        return false;
+    }
+    requested = upload->monitoring_requested;
+    upload->monitoring_requested = false;
+    return requested;
+}
+
+void uart_file_upload_monitoring_ready(uart_file_upload_t *upload) {
+    if (upload == NULL) {
+        return;
+    }
+    write_response("HLVMONITORREADY 1 ON\n");
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    upload->session_active = false;
+    upload->active_session_command[0] = '\0';
+}
+
+bool uart_file_upload_take_read_request(uart_file_upload_t *upload,
+                                        uart_read_request_t *request) {
+    if (upload == NULL || request == NULL || !upload->read_requested) {
+        return false;
+    }
+    *request = upload->read_request;
+    memset(&upload->read_request, 0, sizeof upload->read_request);
+    upload->read_requested = false;
+    return true;
+}
+
+bool uart_file_upload_take_baud_request(uart_file_upload_t *upload,
+                                        uint32_t *baud) {
+    if (upload == NULL || baud == NULL ||
+        !upload->control_baud_requested) {
+        return false;
+    }
+    *baud = upload->requested_control_baud;
+    upload->requested_control_baud = 0;
+    upload->control_baud_requested = false;
+    return true;
+}
+
 bool uart_file_upload_take_delete_request(uart_file_upload_t *upload,
                                           char *filename,
                                           size_t filename_bytes) {
@@ -653,6 +931,46 @@ bool uart_file_upload_take_sd_benchmark_request(
     return true;
 }
 
+static bool send_list_packet(uint32_t sequence, uint32_t file_size,
+                             const char *name) {
+    uint8_t packet[LIST_PACKET_HEADER_BYTES + 255U];
+    size_t name_bytes = name != NULL ? strlen(name) : 0U;
+    uint32_t checksum;
+    uint32_t attempt;
+    if (name_bytes > 255U) return false;
+    memcpy(packet, k_list_packet_magic, sizeof k_list_packet_magic);
+    write_le32(packet + 4, sequence);
+    write_le32(packet + 8, file_size);
+    packet[12] = (uint8_t)name_bytes;
+    if (name_bytes != 0U) {
+        memcpy(packet + LIST_PACKET_HEADER_BYTES, name, name_bytes);
+    }
+    checksum = esp_rom_crc32_le(0, packet, 13U);
+    if (name_bytes != 0U) {
+        checksum = esp_rom_crc32_le(
+            checksum, packet + LIST_PACKET_HEADER_BYTES, name_bytes);
+    }
+    write_le32(packet + 13, checksum);
+    for (attempt = 0; attempt < LIST_PACKET_ATTEMPTS; ++attempt) {
+        uint8_t acknowledgment[READ_ACK_BYTES];
+        int written = uart_write_bytes(
+            UPLOAD_UART, packet, LIST_PACKET_HEADER_BYTES + name_bytes);
+        if (written != (int)(LIST_PACKET_HEADER_BYTES + name_bytes)) {
+            continue;
+        }
+        if (!read_exact(acknowledgment, sizeof acknowledgment,
+                        LIST_ACK_TIMEOUT_MS) ||
+            memcmp(acknowledgment, "HLVA", 4) != 0 ||
+            read_le32(acknowledgment + 4) != sequence ||
+            read_le32(acknowledgment + 9) !=
+                crc32(acknowledgment, 9)) {
+            continue;
+        }
+        if (acknowledgment[8] == 1U) return true;
+    }
+    return false;
+}
+
 bool uart_file_upload_list_directory(uart_file_upload_t *upload,
                                      const char *directory) {
     DIR *handle;
@@ -669,7 +987,6 @@ bool uart_file_upload_list_directory(uart_file_upload_t *upload,
         return false;
     }
 
-    write_response("HLVLISTBEGIN 1\n");
     while ((entry = readdir(handle)) != NULL) {
         char path[384];
         struct stat status = {0};
@@ -684,12 +1001,20 @@ bool uart_file_upload_list_directory(uart_file_upload_t *upload,
         if (stat(path, &status) != 0 || !S_ISREG(status.st_mode)) {
             continue;
         }
-        write_response("HLVFILE 1 %u %s\n",
-                       (unsigned)status.st_size, entry->d_name);
+        if (!send_list_packet(count, (uint32_t)status.st_size,
+                              entry->d_name)) {
+            closedir(handle);
+            finish_response(upload, "HLVERR 2 LIST_FAILED\n");
+            return false;
+        }
         ++count;
     }
     closedir(handle);
-    finish_response(upload, "HLVLISTEND 1 %u\n", (unsigned)count);
+    if (!send_list_packet(count, count, NULL)) {
+        finish_response(upload, "HLVERR 2 LIST_FAILED\n");
+        return false;
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
     return true;
 }
 
@@ -755,6 +1080,173 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
         directory, filename, true, file_size, file_crc);
     finish_response(upload, "HLVCRC 1 %u %08x %s\n",
                     (unsigned)file_size, (unsigned)file_crc, filename);
+    return true;
+}
+
+bool uart_file_upload_read_file(uart_file_upload_t *upload,
+                                const char *directory,
+                                const uart_read_request_t *request) {
+    char path[128];
+    struct stat status = {0};
+    FILE *input;
+    uint8_t *packet;
+    uint32_t file_size;
+    uint32_t remaining;
+    uint32_t sent = 0;
+    uint32_t sequence = 0;
+    uint32_t range_crc = 0;
+    bool success = true;
+
+    if (request == NULL ||
+        !build_path(path, sizeof path, directory, request->filename, "")) {
+        uart_file_upload_reject(upload, "BAD_PATH");
+        return false;
+    }
+    if (stat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 || (uint64_t)status.st_size > UINT32_MAX) {
+        uart_file_upload_reject(upload, "NOT_FOUND");
+        return false;
+    }
+    file_size = (uint32_t)status.st_size;
+    if (request->offset > file_size) {
+        uart_file_upload_reject(upload, "BAD_RANGE");
+        return false;
+    }
+    remaining = file_size - request->offset;
+    if (remaining > request->size) {
+        remaining = request->size;
+    }
+    input = fopen(path, "rb");
+    if (input == NULL) {
+        uart_file_upload_reject(upload, "OPEN_FAILED");
+        return false;
+    }
+    if (fseek(input, (long)request->offset, SEEK_SET) != 0) {
+        fclose(input);
+        uart_file_upload_reject(upload, "SEEK_FAILED");
+        return false;
+    }
+    packet = (uint8_t *)heap_caps_malloc(
+        READ_BLOCK_HEADER_BYTES + READ_BLOCK_BYTES, MALLOC_CAP_8BIT);
+    if (packet == NULL) {
+        fclose(input);
+        uart_file_upload_reject(upload, "NO_MEMORY");
+        return false;
+    }
+
+    uart_flush_input(UPLOAD_UART);
+    {
+        uint8_t ready[READ_READY_BYTES];
+        uint32_t ready_attempt;
+        memcpy(ready, "HLVR", 4);
+        write_le32(ready + 4, file_size);
+        write_le32(ready + 8, request->offset);
+        write_le32(ready + 12, remaining);
+        write_le32(ready + 16, request->data_baud);
+        write_le32(ready + 20, crc32(ready, 20));
+        for (ready_attempt = 0; ready_attempt < READ_BLOCK_ATTEMPTS;
+             ++ready_attempt) {
+            uart_write_bytes(UPLOAD_UART, ready, sizeof ready);
+        }
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    if (request->data_baud != upload->control_baud) {
+        uint8_t go[8];
+        static const uint8_t k_go[8] = {
+            'H', 'L', 'V', 'G', 'O', ' ', '2', '\n'};
+        if (!set_baud(request->data_baud)) {
+            heap_caps_free(packet);
+            fclose(input);
+            finish_response(upload, "HLVERR 2 BAUD_FAILED\n");
+            return false;
+        }
+        if (!read_exact(go, sizeof go, CHUNK_TIMEOUT_MS) ||
+            memcmp(go, k_go, sizeof k_go) != 0) {
+            heap_caps_free(packet);
+            fclose(input);
+            set_baud(upload->control_baud);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            finish_response(upload, "HLVERR 2 HANDSHAKE_FAILED\n");
+            return false;
+        }
+    }
+
+    memcpy(packet, k_read_block_magic, sizeof k_read_block_magic);
+    while (sent < remaining) {
+        uint32_t bytes = remaining - sent;
+        uint32_t block_crc;
+        bool acknowledged = false;
+        uint32_t attempt;
+        if (bytes > READ_BLOCK_BYTES) {
+            bytes = READ_BLOCK_BYTES;
+        }
+        if (fread(packet + READ_BLOCK_HEADER_BYTES, 1, bytes, input) !=
+            bytes) {
+            success = false;
+            break;
+        }
+        block_crc = crc32(packet + READ_BLOCK_HEADER_BYTES, bytes);
+        range_crc = esp_rom_crc32_le(
+            range_crc, packet + READ_BLOCK_HEADER_BYTES, bytes);
+        write_le32(packet + 4, sequence);
+        write_le16(packet + 8, (uint16_t)bytes);
+        write_le32(packet + 10, block_crc);
+        for (attempt = 0; attempt < READ_DATA_ATTEMPTS; ++attempt) {
+            uint8_t acknowledgment[READ_ACK_BYTES];
+            int written = uart_write_bytes(
+                UPLOAD_UART, packet, READ_BLOCK_HEADER_BYTES + bytes);
+            if (written != (int)(READ_BLOCK_HEADER_BYTES + bytes)) {
+                continue;
+            }
+            if (uart_wait_tx_done(UPLOAD_UART,
+                                  pdMS_TO_TICKS(CHUNK_TIMEOUT_MS)) !=
+                ESP_OK) {
+                continue;
+            }
+            if (!read_exact(acknowledgment, sizeof acknowledgment,
+                            READ_ACK_TIMEOUT_MS) ||
+                memcmp(acknowledgment, "HLVA", 4) != 0 ||
+                read_le32(acknowledgment + 4) != sequence ||
+                read_le32(acknowledgment + 9) !=
+                    crc32(acknowledgment, 9)) {
+                continue;
+            }
+            if (acknowledgment[8] == 1U) {
+                acknowledged = true;
+                break;
+            }
+        }
+        if (!acknowledged) {
+            success = false;
+            break;
+        }
+        sent += bytes;
+        ++sequence;
+    }
+    if (fclose(input) != 0) {
+        success = false;
+    }
+    heap_caps_free(packet);
+    if (!success || sent != remaining) {
+        set_baud(upload->control_baud);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        finish_response(upload, "HLVERR 2 READ_FAILED\n");
+        return false;
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    set_baud(upload->control_baud);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    {
+        uint8_t done[READ_DONE_BYTES];
+        memcpy(done, "HLVE", 4);
+        write_le32(done + 4, sent);
+        write_le32(done + 8, range_crc);
+        write_le32(done + 12, crc32(done, 12));
+        for (sequence = 0; sequence < READ_BLOCK_ATTEMPTS; ++sequence) {
+            uart_write_bytes(UPLOAD_UART, done, sizeof done);
+        }
+        uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    }
     return true;
 }
 
@@ -973,13 +1465,18 @@ bool uart_file_upload_receive(
     }
 
     uart_flush_input(UPLOAD_UART);
-    write_response("HLVREADY 2 %u %u %u\n",
-                   (unsigned)UART_UPLOAD_CHUNK_BYTES,
-                   (unsigned)request->data_baud,
-                   (unsigned)UART_UPLOAD_BUFFER_COUNT);
+    for (index = 0; index < READ_BLOCK_ATTEMPTS; ++index) {
+        write_response("HLVREADY 2 %u %u %u\n",
+                       (unsigned)UART_UPLOAD_CHUNK_BYTES,
+                       (unsigned)request->data_baud,
+                       (unsigned)UART_UPLOAD_BUFFER_COUNT);
+    }
     uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
-    vTaskDelay(pdMS_TO_TICKS(20));
-    if (!set_baud(request->data_baud)) {
+    if (request->data_baud != upload->control_baud) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (request->data_baud != upload->control_baud &&
+        !set_baud(request->data_baud)) {
         stop_upload_writer(&writer);
         fclose(output);
         unlink(temporary);
@@ -1153,6 +1650,12 @@ bool uart_file_upload_receive(
     (void)rewrite_cached_crc(
         directory, request->filename, true,
         request->size, writer.file_crc);
+    for (index = 1; index < READ_BLOCK_ATTEMPTS; ++index) {
+        write_response("HLVDONE 2 %u %08x %s\n",
+                       (unsigned)request->size,
+                       (unsigned)writer.file_crc,
+                       request->filename);
+    }
     finish_response(upload, "HLVDONE 2 %u %08x %s\n",
                     (unsigned)request->size,
                     (unsigned)writer.file_crc,

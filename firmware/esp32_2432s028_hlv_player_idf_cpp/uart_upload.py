@@ -13,9 +13,14 @@ import zlib
 
 import serial
 
+from uart_baud import (
+    BaudError, HANDSHAKE_ATTEMPTS, begin_session, change_baud,
+    enable_monitoring,
+)
 
-CONTROL_BAUD = 460_800
-DEFAULT_DATA_BAUD = 2_000_000
+
+CONTROL_BAUD = 1_000_000
+DEFAULT_DATA_BAUD = 1_000_000
 UPLOAD_PROTOCOL_VERSION = 2
 WINDOW_ACK_TIMEOUT_SECONDS = 2.0
 WINDOW_PROGRESS_TIMEOUT_SECONDS = 10.0
@@ -23,6 +28,7 @@ MAX_BLOCK_ATTEMPTS = 5
 SUPPORTED_DATA_BAUDS = (
     460_800,
     921_600,
+    1_000_000,
     1_500_000,
     2_000_000,
     3_000_000,
@@ -108,7 +114,7 @@ def open_port(name: str, baud: int) -> serial.Serial:
     port.baudrate = baud
     port.bytesize = serial.EIGHTBITS
     port.parity = serial.PARITY_NONE
-    port.stopbits = serial.STOPBITS_ONE
+    port.stopbits = serial.STOPBITS_TWO
     port.timeout = 0.2
     port.write_timeout = 10
     # The UART uploader does not use the ROM bootloader. Keeping both modem
@@ -116,6 +122,10 @@ def open_port(name: str, baud: int) -> serial.Serial:
     port.dtr = False
     port.rts = False
     port.open()
+    try:
+        port.set_buffer_size(rx_size=1024 * 1024, tx_size=64 * 1024)
+    except (AttributeError, NotImplementedError, OSError):
+        pass
     port.reset_input_buffer()
     return port
 
@@ -181,6 +191,16 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         ) from error
 
     with port:
+        if data_baud != CONTROL_BAUD:
+            try:
+                begin_session(port, "BAUD", response_timeout)
+                change_baud(port, data_baud, response_timeout)
+            except BaudError as error:
+                raise UploadError(str(error)) from error
+        try:
+            begin_session(port, "UPLOAD", response_timeout)
+        except BaudError as error:
+            raise UploadError(str(error)) from error
         # A leading newline discards a partial command left by a previous
         # interrupted terminal session.
         command = (
@@ -190,28 +210,34 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         ).encode("ascii")
         port.write(command)
         port.flush()
-        ready = wait_for_response(
-            port, ("HLVREADY ",), response_timeout)
-        fields = ready.split()
-        if (
-            len(fields) != 5
-            or fields[:2]
-            != ["HLVREADY", str(UPLOAD_PROTOCOL_VERSION)]
-        ):
-            raise UploadError(f"malformed ready response: {ready}")
-        chunk_size = int(fields[2])
-        accepted_baud = int(fields[3])
-        window_size = int(fields[4])
-        if (
-            not 0 < chunk_size <= 65535
-            or accepted_baud != data_baud
-            or not 0 < window_size <= 16
-        ):
-            raise UploadError(f"unsupported ready response: {ready}")
+        ready_values: tuple[int, int, int] | None = None
+        for _ in range(HANDSHAKE_ATTEMPTS):
+            ready = wait_for_response(
+                port, ("HLVREADY ",), response_timeout)
+            fields = ready.split()
+            if (
+                len(fields) != 5
+                or fields[:2]
+                != ["HLVREADY", str(UPLOAD_PROTOCOL_VERSION)]
+            ):
+                continue
+            try:
+                values = tuple(int(value) for value in fields[2:])
+            except ValueError:
+                continue
+            chunk_size, accepted_baud, window_size = values
+            if (
+                0 < chunk_size <= 65535
+                and accepted_baud == data_baud
+                and 0 < window_size <= 16
+            ):
+                ready_values = values
+                break
+        if ready_values is None:
+            raise UploadError("no valid HLVREADY response received")
+        chunk_size, accepted_baud, window_size = ready_values
 
-        time.sleep(0.05)
         port.baudrate = accepted_baud
-        time.sleep(0.02)
         started = time.monotonic()
         acknowledged = 0
         next_sequence = 0
@@ -331,13 +357,19 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
                     print_progress(acknowledged, size, started)
                     next_report = now + 0.5
 
-        # The player emits HLVDONE before changing back to the control baud.
-        # A byte at that transition can be received as unrelated trailing
-        # noise instead of the line terminator. Match the complete expected
-        # record byte-for-byte and ignore only bytes that follow it.
         wait_for_completion(
             port, size, file_crc, remote_name, response_timeout
         )
+        if data_baud != CONTROL_BAUD:
+            try:
+                begin_session(port, "BAUD", response_timeout)
+                change_baud(port, CONTROL_BAUD, response_timeout)
+            except BaudError as error:
+                raise UploadError(str(error)) from error
+        try:
+            enable_monitoring(port, response_timeout)
+        except BaudError as error:
+            raise UploadError(str(error)) from error
         print_progress(acknowledged, size, started, force=True)
         print(f"Stored as /HLV/{remote_name}; CRC32 {file_crc:08x}")
 

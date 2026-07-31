@@ -40,7 +40,8 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 `sdkconfig.defaults` profile also disables coredumps, the task watchdog,
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
-UART0 at 460800 remains enabled for compact per-frame diagnostics. The default
+UART0 at 1000000 baud, 8 data bits, no parity and 2 stop bits remains enabled
+for compact per-frame diagnostics. The default
 dual-core pipeline pins ordered HLV, BPV, MPEG-1 or H.263 decoding to APP CPU
 (CPU1), while the main task on PRO CPU (CPU0) converts the preceding frame to
 RGB565 and queues its SPI DMA strips. H.263/3GP sample sizes and chunk offsets
@@ -129,21 +130,33 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 
 The wrapper uses `pyserial` from the shared project-local ESP-IDF Python
 environment; `setup.ps1` prepares it through the primary C firmware project,
-so no global Python package is required. The control handshake uses 460800 baud and block data uses
-2000000 baud by default. The optional 3000000-baud mode is CRC-verified but
-does not improve end-to-end throughput on this board. The verified fallback
-values are 1500000, 921600 and 460800 baud.
+so no global Python package is required. The application control channel and
+block data both use 1000000 baud with 8N2 framing by default, so normal commands
+do not transition the UART speed. The verified `HLVBAUD` command remains available
+for an explicit temporary change when diagnostics require another rate.
 
-List the files currently stored in `/sdcard/HLV` without stopping playback:
+Every exchange has an explicit lifecycle. The PC sends
+`HLVSESSION 1 <command>`, waits for `HLVSESSIONREADY 1 <command>`, and only then
+sends the command payload. ESP32 stops playback and diagnostics before READY.
+After the exchange, the PC sends `HLVMONITOR 1 ON` and waits for
+`HLVMONITORREADY 1 ON`; only then does the ESP32 restore diagnostics and reopen
+the selected video. `resume-monitoring.ps1` sends this final command manually
+after an interrupted client:
+
+```powershell
+.\resume-monitoring.ps1 -Port COM8
+```
+
+List the files currently stored in `/sdcard/HLV`:
 
 ```powershell
 .\list-files.ps1 -Port COM8
 .\list-files.ps1 -Port COM8 -Json
 ```
 
-The client sends `HLVLIST 1` at the 460800-baud control rate. The firmware
-returns one `HLVFILE 1 <size> <name>` record per regular file, enclosed by
-`HLVLISTBEGIN 1` and `HLVLISTEND 1 <count>`.
+The client sends `HLVLIST 2` after the LIST session is ready. Each `HLVL`
+binary record contains sequence, file size, UTF-8 name length, name and CRC32.
+The client ACKs every record; a zero-length final record carries the count.
 
 Calculate the size and CRC32 of every video directly from the SD card:
 
@@ -158,9 +171,46 @@ The underlying `HLVCRC 1 <name>` request stops playback and returns
 large file is read only once. A successful UART upload also records its
 verified CRC immediately. If files are changed outside the player while
 keeping the same name and size, remove `crc32.txt` to invalidate the index.
-To remove one explicitly named regular file, send `HLVDELETE 1 <name>`; the firmware
-rejects paths and hidden names, closes playback before removal, returns
-`HLVDELETE 1 <name>` only after success, and then reopens `play.txt`.
+
+Read a complete file, or only a byte range, without removing the SD card:
+
+```powershell
+.\read-file.ps1 -Port COM8 -Name play.txt -Output .\play.txt
+.\read-file.ps1 -Port COM8 -Name video.avi -Offset 1024 -Length 256 `
+    -Output .\video-header.bin
+```
+
+Change the UART control rate explicitly when needed:
+
+```powershell
+.\set-baud.ps1 -Port COM8 -ToBaud 921600
+.\set-baud.ps1 -Port COM8 -FromBaud 921600 -ToBaud 1000000
+```
+
+`HLVBAUD 1 <baud>` uses a verified handshake at both the old and new rates,
+then remembers the new control rate until another `HLVBAUD` command or a
+reset. The read client uses this command before and after a transfer whenever
+`-DataBaud` differs from 1000000. `uart_read.py` and `uart_upload.py` share the
+same handshake timings and retry count from `uart_baud.py`; control records at
+the selected high rate are repeated, while binary blocks retain CRC and
+sequence validation.
+
+The client sends `HLVREAD 2 <name> <offset> <length> <data-baud>`. The firmware
+validates the regular filename and range, then streams the data in reusable
+64-byte payload blocks. Each binary block starts with `HLVX`, a
+little-endian sequence number, payload length, and payload CRC32. The final
+`HLVREADDONE 2 <size> <crc32> <name>` also verifies the entire returned range.
+The client acknowledges each valid block and requests retransmission after a
+CRC error. The default data rate is the same 1000000 baud used by the rest of
+the application UART; `-DataBaud` can explicitly select and verify another
+supported rate.
+When `-Length` is omitted, the client requests everything from `-Offset`
+through EOF. Existing local files are preserved unless `-Force` is supplied.
+
+To remove one explicitly named regular file, start a `DELETE` session and send
+`HLVDELETE 1 <name>`; the firmware rejects paths and hidden names and returns
+`HLVDELETE 1 <name>` only after success. Send `HLVMONITOR 1 ON` to reopen
+`play.txt` afterwards.
 
 The autonomous SD write benchmark uses:
 
@@ -168,13 +218,14 @@ The autonomous SD write benchmark uses:
 HLVSDBENCH 1 <zero|random> <size-MiB>
 ```
 
-The size is limited to 1--64 MiB. The player stops playback, pre-fills one
+Start an `SDBENCH` session before sending this command. The size is limited to
+1--64 MiB. The player stops playback, pre-fills one
 32 KiB block with zeros or deterministic pseudorandom bytes, writes it
 directly to a temporary file, and includes `fflush`, `fsync` and `fclose` in
 the elapsed time. The temporary file is deleted before the result is returned.
 On the installed card, 16 MiB tests delivered 1897 KiB/s for zeros and
 1905 KiB/s for pseudorandom data. Both temporary files were confirmed absent
-through `HLVLIST 1`.
+through the directory listing command.
 
 The destination defaults to the source filename. `/sdcard/HLV/play.txt`
 contains the one video filename that the player opens:
@@ -219,7 +270,7 @@ closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the
 transferred/total size beside it using three significant digits, with the
 destination filename below the bar.
-Each 32 KiB block has its own CRC32. Upload protocol v2 advertises a two-block
+Each 64-byte block has its own CRC32. Upload protocol v2 advertises a two-block
 sliding window, so the PC can send both receive buffers without waiting for an
 individual ACK. An ACK is cumulative and returns buffer credit only after the
 CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
@@ -228,24 +279,26 @@ the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
 seconds without cumulative progress. Hardware flow control is therefore not
 required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is checked before the previous target is replaced; an
-interrupted or corrupt upload leaves the existing video intact. The 60 KiB
-buffer was replaced by two 32 KiB buffers that exist only during an upload,
+interrupted or corrupt upload leaves the existing video intact. Two reusable
+64-byte buffers exist only during an upload,
 while the decoder and audio buffers are released. CPU0 receives and validates
 the next UART block while a CPU1 writer task stores the preceding block on SD.
 An ACK means that a block passed its RAM CRC and completed its SD write;
 `HLVDONE` is emitted only after both buffers are written, `fsync` completes and
-the full-file CRC matches. After each transfer the player reads
-`/HLV/play.txt` again and opens its selection.
+the full-file CRC matches. The video remains stopped until the explicit
+`HLVMONITOR 1 ON` command.
 
-Upload protocol version 2 starts with this ASCII line at the console baud:
+The upload client first uses `HLVBAUD` to put both endpoints at the selected
+data rate. Upload protocol version 2 then starts with this ASCII line:
 
 ```text
 HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 2 32768 <data-baud> 2`, receives windowed `HLVB`
+The device replies `HLVREADY 2 64 <data-baud> 2`, receives windowed `HLVB`
 binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
-`HLVDONE 2 <size> <crc32> <name>`.
+`HLVDONE 2 <size> <crc32> <name>`. The client explicitly restores 1000000 baud
+with `HLVBAUD`, then enables monitoring after successful completion.
 
 The connected CH340C board completed three CRC-verified transfers at every
 supported rate. With the original 4 KiB blocks, 921600, 1500000 and 2000000
@@ -264,8 +317,10 @@ SD benchmark reaches about 1.85 MiB/s, so raw card bandwidth is not the
 bottleneck; the remaining limit is in the combined UART/SD pipeline. An
 experimental 2500000-baud transfer never entered normal data reception and
 timed out.
-Therefore 2000000 baud remains the default; 3000000 baud is retained only as
-an optional verified mode. The Windows CH340 driver rejected attempts to
+Those measurements describe earlier large-block experiments. The current
+application and tools default to exact-divisor 1000000-baud 8N2 framing and
+64-byte packets; 3000000 baud remains an explicit experimental mode. The
+Windows CH340 driver rejected attempts to
 configure both 4000000 and 5000000 baud with device error 31, before either
 transfer could send its first data block.
 

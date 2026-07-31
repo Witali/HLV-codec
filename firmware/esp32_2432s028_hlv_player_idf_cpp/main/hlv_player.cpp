@@ -453,6 +453,20 @@ uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
 int upload_progress_percent = -1;
 int upload_progress_scale = kUploadPercentScale;
+bool uart_diagnostics_quiet = false;
+
+void quietUartDiagnostics() {
+    if (uart_diagnostics_quiet) return;
+    esp_log_level_set("*", ESP_LOG_NONE);
+    uart_diagnostics_quiet = true;
+}
+
+void restoreUartDiagnostics() {
+    if (!uart_diagnostics_quiet) return;
+    esp_log_level_set(
+        "*", static_cast<esp_log_level_t>(CONFIG_LOG_DEFAULT_LEVEL));
+    uart_diagnostics_quiet = false;
+}
 
 int64_t microsNow() { return esp_timer_get_time(); }
 
@@ -1190,6 +1204,13 @@ void showStatus(const char *title, const char *detail = nullptr) {
     } else {
         drawStatusTitle(title);
     }
+}
+
+void showUartSession(const char *command) {
+    if (display.clear(0x0000) != ESP_OK) return;
+    drawStatusText("UART session", 88, 2);
+    drawStatusText(command ? command : "TRANSFER", 126, 2);
+    display.flush();
 }
 
 void beginUploadProgress(const char *filename, uint32_t total) {
@@ -4710,7 +4731,25 @@ extern "C" void app_main(void) {
             showStatus(stored ? "UART upload complete"
                               : "UART upload failed",
                        upload_request.filename);
-            if (!openVideo()) last_retry_ms = millisNow();
+            continue;
+        }
+        char session_command[16]{};
+        if (uart_upload.takeSessionRequest(
+                session_command, sizeof session_command)) {
+            file_browser_active = false;
+            quietUartDiagnostics();
+            closeVideo();
+            showUartSession(session_command);
+            uart_upload.sessionReady(session_command);
+            continue;
+        }
+        if (uart_upload.takeMonitoringRequest()) {
+            uart_upload.monitoringReady();
+            restoreUartDiagnostics();
+            showStatus("UART monitoring", "resuming video");
+            if (sd_mounted && !video_file && !openVideo()) {
+                last_retry_ms = millisNow();
+            }
             continue;
         }
         if (uart_upload.takeListRequest()) {
@@ -4718,9 +4757,19 @@ extern "C" void app_main(void) {
                 uart_upload.reject("NO_SD");
                 last_retry_ms = millisNow();
             } else {
+                file_browser_active = false;
+                closeVideo();
+                showUartSession("LIST");
                 uart_upload.listDirectory(
                     player_settings::kVideoDirectory);
             }
+            continue;
+        }
+        uint32_t requested_baud = 0;
+        if (uart_upload.takeBaudRequest(&requested_baud)) {
+            file_browser_active = false;
+            showUartSession("BAUD");
+            uart_upload.changeBaud(requested_baud);
             continue;
         }
         char delete_filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
@@ -4732,9 +4781,9 @@ extern "C" void app_main(void) {
             } else {
                 file_browser_active = false;
                 closeVideo();
+                showUartSession("DELETE");
                 uart_upload.deleteFile(
                     player_settings::kVideoDirectory, delete_filename);
-                if (!openVideo()) last_retry_ms = millisNow();
             }
             continue;
         }
@@ -4747,9 +4796,23 @@ extern "C" void app_main(void) {
             } else {
                 file_browser_active = false;
                 closeVideo();
+                showUartSession("CRC32");
                 uart_upload.checksumFile(
                     player_settings::kVideoDirectory, crc_filename);
-                if (!openVideo()) last_retry_ms = millisNow();
+            }
+            continue;
+        }
+        UartReadRequest read_request{};
+        if (uart_upload.takeReadRequest(&read_request)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                file_browser_active = false;
+                closeVideo();
+                showUartSession("READ");
+                uart_upload.readFile(
+                    player_settings::kVideoDirectory, read_request);
             }
             continue;
         }
@@ -4762,6 +4825,7 @@ extern "C" void app_main(void) {
             } else {
                 file_browser_active = false;
                 closeVideo();
+                showUartSession("SD BENCHMARK");
                 const bool completed = uart_upload.benchmarkSd(
                     player_settings::kVideoDirectory,
                     sd_benchmark_request);
@@ -4769,7 +4833,6 @@ extern "C" void app_main(void) {
                                      : "SD benchmark failed",
                            completed ? "temporary file removed"
                                      : "see UART error");
-                if (!openVideo()) last_retry_ms = millisNow();
             }
             continue;
         }

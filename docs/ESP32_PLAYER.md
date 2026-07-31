@@ -446,19 +446,25 @@ written into the card's `/HLV` directory without removing the card:
 .\upload-video.ps1 -Port COM8 -File ..\..\out\play.txt
 ```
 
-The command handshake remains at 460800 baud; the verified data-transfer
-default is 2 Mbaud. The player stops video and audio, allocates two temporary
-32 KiB receive blocks, shows a progress bar, and verifies per-block and
+The application UART defaults to 1000000 baud with 8N2 framing for commands,
+diagnostics and data. The PC starts each exchange with
+`HLVSESSION 1 <command>` and waits for `HLVSESSIONREADY 1 <command>`; the player
+then stops video and diagnostics. After the exchange the PC sends the separate
+`HLVMONITOR 1 ON` command, waits for `HLVMONITORREADY 1 ON`, and only then does
+the player restore diagnostics and video. Upload allocates two temporary
+64-byte receive blocks, shows a progress bar, and verifies per-block and
 whole-file CRC32 before replacing the target. Upload protocol v2 uses both
 blocks as a sliding window. The PC retains unacknowledged packets for
 Go-Back-N retransmission, while an ACK returns a credit after the corresponding
 SD write completes. `HLVWAIT` keeps the connection alive during an SD stall;
 the PC retries after two seconds and aborts after ten seconds without
-cumulative progress. On this CH340C board, CRC-verified 5.19 MB windowed
+cumulative progress. In earlier large-block experiments on this CH340C board,
+CRC-verified 5.19 MB windowed
 transfers with two 32 KiB blocks sustained 122.4 KiB/s at 2 Mbaud and
-122.3 KiB/s at 3 Mbaud. The 3 Mbaud mode is available for testing, but 2 Mbaud
-remains the default because the combined upload pipeline prevents a meaningful
-gain. An autonomous 16 MiB SD write benchmark using 32 KiB blocks, including
+122.3 KiB/s at 3 Mbaud. The 3 Mbaud mode remains available for experiments,
+but the current reliable default is 1 Mbaud because the higher rate did not
+produce a meaningful pipeline gain. An autonomous 16 MiB SD write benchmark
+using 32 KiB blocks, including
 final flush, sync and close, sustained 1897 KiB/s for zeros and 1905 KiB/s for
 prefilled deterministic pseudorandom data. Therefore raw SD-card bandwidth is
 not the upload bottleneck. `HLVSDBENCH 1 <zero|random> <size-MiB>` exposes this
