@@ -214,7 +214,8 @@ Examples:
 
 | Script | Purpose |
 | --- | --- |
-| `test_compact_yuv420.ps1` | Builds and runs the native packed Y6/U5/V5 frame-buffer and correction-map tests. |
+| `test_compact_yuv420.ps1` | Builds and runs the native packed frame-buffer tests, including Y6/U5/V5 fast paths, HLV Y7 fallback unpacking, and correction maps. |
+| `test_all_video_formats.ps1` | Generates a short deterministic, picture-rich source with motion and audio; encodes production-named HLV, BPV, MJPEG, DivX 3, MPEG-1, baseline H.263, and MPEG-4 SP clips; then requires complete host decoding and writes a manifest for QEMU/physical acceptance. |
 | `test_divx3.ps1` | Builds the DivX 3 regression decoder, creates a deterministic 256x144 sample from the approved MOV, and verifies pixel-exact output against FFmpeg, including AVI with ignored MP3 audio. |
 | `compare_divx3_compact.ps1` | Builds and runs a frame-by-frame comparison of exact and compact DivX 3 decoder storage for a supplied AVI. |
 | `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
