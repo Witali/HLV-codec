@@ -234,7 +234,8 @@ without physical flashing.
       reference lifetime and render guards make this safe.
 - [x] Evaluate writing all-zero-residual predictions directly to the compact
       output; reject the measured implementations when they do not improve.
-- [ ] Pack coded 8x8 blocks while reconstructed pixels are still cache-hot.
+- [x] Evaluate packing coded 8x8 blocks while reconstructed pixels are still
+      cache-hot; reject the callback implementation when it does not improve.
 - [ ] Compute Q4 block-average corrections during the direct compact write.
 - [ ] Preserve exact compact-frame checksums and row-level renderer safety.
 
@@ -311,6 +312,16 @@ skipped their later row packing. It also retained the exact hash, but measured
 retention threshold. Both candidates were removed without physical flashing.
 No PSNR comparison was needed because their full decoded-sequence hashes
 matched.
+
+A full cache-hot candidate invoked the existing exact packer as soon as each
+non-skipped macroblock completed reconstruction. A committed bit kept the
+row guard as a fallback for concealment while avoiding a second pack, and
+skipped macroblocks retained their direct compact copy. The complete
+`b826825f344bc2e3` hash remained unchanged, but C QEMU measured 2,621,309
+cycles/picture, 0.139% slower than the 2,617,673 baseline. Callback and
+per-macroblock bookkeeping overhead across 17,960 reconstructed macroblocks
+outweighed cache locality. The candidate was removed without physical
+flashing; matching hashes again made PSNR unnecessary.
 
 ## Priority 4: overlap independent work
 
