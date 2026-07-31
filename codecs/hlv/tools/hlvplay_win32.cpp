@@ -2552,6 +2552,79 @@ int dump_h263_nv12(const wchar_t *input_path, const wchar_t *output_path) {
     return valid ? 0 : 1;
 }
 
+int analyze_mpeg4(const wchar_t *input_path) {
+    FILE *input = nullptr;
+    if (_wfopen_s(&input, input_path, L"rb") != 0 || !input) return 1;
+
+    H2633gpInfo info = {};
+    H2633gpDecoder *decoder = h263_3gp_decoder_create();
+    int result =
+        decoder
+            ? h263_3gp_decoder_open(decoder, input, &info)
+            : H263_3GP_ERR_MEMORY;
+    if (result == H263_3GP_OK &&
+        info.video_codec != H263_VIDEO_CODEC_MPEG4_SIMPLE) {
+        result = H263_3GP_ERR_UNSUPPORTED;
+    }
+    h263_3gp_decoder_decode_profile_reset(decoder);
+    uint64_t frames = 0;
+    while (result == H263_3GP_OK) {
+        H2633gpFrame frame = {};
+        result = h263_3gp_decoder_decode_next(decoder, input, &frame);
+        if (result == H263_3GP_OK) ++frames;
+    }
+
+    const H263DecodeProfile *profile =
+        h263_3gp_decoder_decode_profile(decoder);
+    const bool valid =
+        result == H263_3GP_EOF && frames == info.frame_count && profile;
+    char output[1024] = {};
+    int length = 0;
+    if (valid) {
+        length = std::snprintf(
+            output, sizeof output,
+            "{\"frames\":%u,\"i_frames\":%u,\"p_frames\":%u,"
+            "\"macroblocks\":%u,\"skipped_macroblocks\":%u,"
+            "\"intra_macroblocks\":%u,\"inter_macroblocks\":%u,"
+            "\"cbp_zero_macroblocks\":%u,\"coded_blocks\":%u,"
+            "\"dc_only_blocks\":%u,\"sparse_blocks\":%u,"
+            "\"dense_blocks\":%u,\"one_row_blocks\":%u,"
+            "\"one_column_blocks\":%u,\"two_column_blocks\":%u,"
+            "\"integer_predictions\":%u,\"horizontal_predictions\":%u,"
+            "\"vertical_predictions\":%u,\"diagonal_predictions\":%u,"
+            "\"edge_predictions\":%u}\r\n",
+            profile->frames, profile->i_frames, profile->p_frames,
+            profile->macroblocks, profile->skipped_macroblocks,
+            profile->intra_macroblocks, profile->inter_macroblocks,
+            profile->cbp_zero_macroblocks, profile->coded_blocks,
+            profile->dc_only_blocks, profile->sparse_blocks,
+            profile->dense_blocks, profile->one_row_blocks,
+            profile->one_column_blocks, profile->two_column_blocks,
+            profile->compact_integer_predictions,
+            profile->compact_horizontal_predictions,
+            profile->compact_vertical_predictions,
+            profile->compact_diagonal_predictions,
+            profile->compact_edge_predictions);
+    } else {
+        length = std::snprintf(
+            output, sizeof output,
+            "MPEG-4 analysis failed after %llu frames: %s\r\n",
+            static_cast<unsigned long long>(frames),
+            profile
+                ? h263_3gp_strerror(result)
+                : "player was built without H.263 stage profiling");
+    }
+    HANDLE handle = GetStdHandle(
+        valid ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
+    if (length > 0 && handle && handle != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(handle, output, static_cast<DWORD>(length), &written, nullptr);
+    }
+    h263_3gp_decoder_destroy(decoder);
+    fclose(input);
+    return valid ? 0 : 1;
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
@@ -2560,6 +2633,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     if (arguments && argument_count == 3 &&
         std::wcscmp(arguments[1], L"--check") == 0) {
         const int result = check_file(arguments[2]);
+        LocalFree(arguments);
+        return result;
+    }
+    if (arguments && argument_count == 3 &&
+        std::wcscmp(arguments[1], L"--analyze-mpeg4") == 0) {
+        const int result = analyze_mpeg4(arguments[2]);
         LocalFree(arguments);
         return result;
     }

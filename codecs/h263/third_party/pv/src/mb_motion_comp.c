@@ -112,7 +112,7 @@
 /* 10/30 for TPS ***/
 const static int roundtab16[] = {0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2};
 
-#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#if PV_H263_STAGE_PROFILE
 #define COMPACT_PROFILE_PARAMETER , H263DecodeProfile *profile
 #define COMPACT_PROFILE_ARGUMENT(video) \
     , (video)->videoDecControls->decodeProfile

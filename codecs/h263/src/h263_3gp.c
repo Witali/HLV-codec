@@ -24,6 +24,15 @@
     } while (0)
 #define H263_PROFILE_COUNT(decoder, field, amount) \
     ((decoder)->profile.field += (uint32_t)(amount))
+#elif PV_H263_STAGE_PROFILE
+#define H263_PROFILE_NOW() 0U
+#define H263_PROFILE_START(name) uint32_t name = 0U
+#define H263_PROFILE_ADD(decoder, field, start) do {                     \
+        (void)(decoder);                                                \
+        (void)(start);                                                  \
+    } while (0)
+#define H263_PROFILE_COUNT(decoder, field, amount) \
+    ((decoder)->profile.field += (uint32_t)(amount))
 #else
 #define H263_PROFILE_NOW() 0U
 #define H263_PROFILE_START(name) uint32_t name = 0U
@@ -1667,7 +1676,7 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     }
     decoder->controls.readBitstreamData = refillPacketBuffer;
     decoder->controls.appData.object = decoder;
-#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#if PV_H263_STAGE_PROFILE
     decoder->controls.decodeProfile = &decoder->profile;
 #endif
     if (result == H263_3GP_OK) {
@@ -1905,7 +1914,7 @@ size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {
 
 const H263DecodeProfile *h263_3gp_decoder_decode_profile(
     const H2633gpDecoder *decoder) {
-#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#if PV_H263_STAGE_PROFILE
     return decoder ? &decoder->profile : NULL;
 #else
     (void)decoder;
@@ -1914,7 +1923,7 @@ const H263DecodeProfile *h263_3gp_decoder_decode_profile(
 }
 
 void h263_3gp_decoder_decode_profile_reset(H2633gpDecoder *decoder) {
-#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#if PV_H263_STAGE_PROFILE
     if (decoder) memset(&decoder->profile, 0, sizeof(decoder->profile));
 #else
     (void)decoder;

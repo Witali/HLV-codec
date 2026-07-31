@@ -143,3 +143,20 @@ order. Supply the known width, height and frame rate when comparing two dumps
 with FFmpeg's `psnr` filter. This path is intended for investigating a changed
 decoder checksum; it returns failure unless the complete declared video frame
 count is decoded and flushed.
+
+A profiling build can report decoder-relevant MPEG-4 stream structure without
+ESP32 cycle timers:
+
+```powershell
+.\scripts\build_windows_player.ps1 `
+    -OutputDirectory .\build\mpeg4-analysis-player -H263StageProfile
+.\build\mpeg4-analysis-player\hlvplay.exe --analyze-mpeg4 `
+    .\out\MPEG4SP\video.avi
+```
+
+The command completely decodes the file and emits JSON counters for I/P
+pictures, skipped and CBP-zero macroblocks, residual sparsity, and
+integer/horizontal/vertical/diagonal motion prediction. The ordinary player
+build keeps this instrumentation disabled. Use
+`scripts/analyze_mpeg4_simple.ps1` to combine the decoder counters with
+average I/P packet sizes from FFprobe and save a report.

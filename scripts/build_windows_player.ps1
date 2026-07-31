@@ -4,7 +4,9 @@ param(
     [switch]$SkipCompilerCheck,
 
     [ValidateRange(64, 1048576)]
-    [int]$H263PacketBufferBytes = 4096
+    [int]$H263PacketBufferBytes = 4096,
+
+    [switch]$H263StageProfile
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,10 +109,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while archiving the AMR-NB decoder."
 }
 
+$profileDefine = if ($H263StageProfile) {
+    "/DPV_H263_STAGE_PROFILE=1"
+}
+else {
+    "/DPV_H263_STAGE_PROFILE=0"
+}
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /EHsc /std:c++17 /utf-8 ' +
     '/D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE ' +
-    '/DH263_PACKET_BUFFER_BYTES={18} ' +
+    '/DH263_PACKET_BUFFER_BYTES={18} {19} ' +
     '/I"{2}" /I"{3}" /I"{4}" /I"{5}" /I"{6}" /I"{7}" /I"{8}" /I"{9}" ' +
     '"{10}" "{11}" "{12}" "{13}" "{14}" {15} "{16}" ' +
     '/Fe:"{17}" /link /SUBSYSTEM:WINDOWS'
@@ -119,7 +127,7 @@ $command = $commandTemplate -f $devcmd, $OutputDirectory, $include, `
     (Join-Path $pv "include"), (Join-Path $pv "src"), `
     (Join-Path $amrnb "include"), $player, $common, $decoder, `
     $bpvDecoder, $mpegDecoder, $h263SourceArguments, $amrLibrary, $output, `
-    $H263PacketBufferBytes
+    $H263PacketBufferBytes, $profileDefine
 
 Write-Host "Building hlvplay..."
 & cmd.exe /d /c $command

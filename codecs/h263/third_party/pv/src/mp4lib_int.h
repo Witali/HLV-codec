@@ -44,6 +44,20 @@
             pv_profile_->field += (uint32)(amount);                      \
         }                                                               \
     } while (0)
+#elif PV_H263_STAGE_PROFILE
+#define PV_PROFILE_NOW() 0U
+#define PV_PROFILE_START(name) uint32 name = 0U
+#define PV_PROFILE_ADD(video, field, start) do {                         \
+        (void)(video);                                                   \
+        (void)(start);                                                   \
+    } while (0)
+#define PV_PROFILE_COUNT(video, field, amount) do {                      \
+        H263DecodeProfile *pv_profile_ =                                 \
+            (video)->videoDecControls->decodeProfile;                    \
+        if (pv_profile_) {                                               \
+            pv_profile_->field += (uint32)(amount);                      \
+        }                                                               \
+    } while (0)
 #else
 #define PV_PROFILE_NOW() 0U
 #define PV_PROFILE_START(name) uint32 name = 0U

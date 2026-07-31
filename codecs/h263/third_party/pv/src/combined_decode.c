@@ -23,7 +23,7 @@
 
 #define OSCL_DISABLE_WARNING_CONDITIONAL_IS_CONSTANT
 
-#if PV_H263_STAGE_PROFILE && defined(ESP_PLATFORM)
+#if PV_H263_STAGE_PROFILE
 static int ProfileInterBlock(
     VideoDecData *video, int comp, uint8 *bitmapcol, uint8 *bitmaprow)
 {
