@@ -29,7 +29,7 @@ $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $corpus = Join-Path $OutputDirectory "corpus"
 $build = Join-Path $OutputDirectory "build"
-$source = Join-Path $OutputDirectory "VideoFormatRegression.mkv"
+$source = Join-Path $corpus "sources\VideoFormatRegression.mkv"
 
 function Format-Rate {
     param([Parameter(Mandatory)][double]$Value)
@@ -148,48 +148,30 @@ $rate = Format-Rate -Value $Fps
 $divxFrames = [int][Math]::Ceiling($Frames / 2.0)
 $divxRate = Format-Rate -Value ($Fps / 2.0)
 $hlv = Join-Path $corpus (
-    "VideoFormatRegression_320x240_${rate}fps_" +
+    "HLV\VideoFormatRegression_320x240_${rate}fps_" +
     "HLVv14_adaptive35-42dB.hlv"
 )
 $mjpeg = Join-Path $corpus (
-    "VideoFormatRegression_320x240_${rate}fps_MJPEG_q3.avi"
+    "MJPEG\VideoFormatRegression_320x240_${rate}fps_MJPEG_q3.avi"
 )
 $divx3 = Join-Path $corpus (
-    "VideoFormatRegression_320x240_${divxRate}fps_DivX3_q3.avi"
+    "DivX3\VideoFormatRegression_320x240_${divxRate}fps_DivX3_q3.avi"
 )
 $mpeg1 = Join-Path $corpus (
-    "VideoFormatRegression_320x240_${rate}fps_MPEG1_q3.mpg"
+    "MPEG1\VideoFormatRegression_320x240_${rate}fps_MPEG1_q3.mpg"
 )
 $h263 = Join-Path $corpus (
-    "VideoFormatRegression_352x288_${rate}fps_H263_CIF_q6.avi"
+    "H263\VideoFormatRegression_352x288_${rate}fps_H263_CIF_q6.avi"
 )
 $mpeg4 = Join-Path $corpus (
-    "VideoFormatRegression_320x240_${rate}fps_" +
+    "MPEG4SP\VideoFormatRegression_320x240_${rate}fps_" +
     "MPEG4SP_35dB.avi"
 )
 
 if (-not $SkipEncode) {
-    & (Join-Path $PSScriptRoot "python.ps1") `
-        (Join-Path $PSScriptRoot "make_video_format_test_source.py") `
-        --output $source --frames $Frames --fps $Fps
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not generate the visual regression source."
-    }
-    & (Join-Path $PSScriptRoot "transcode_hlv14.ps1") $source `
-        -OutputFile $hlv -MaxFrames $Frames -Force
-    & (Join-Path $PSScriptRoot "transcode_mjpeg.ps1") $source `
-        -OutputFile $mjpeg -MaxFrames $Frames -Force
-    & (Join-Path $PSScriptRoot "transcode_divx3.ps1") $source `
-        -OutputFile $divx3 -MaxFrames $divxFrames -Force
-    & (Join-Path $PSScriptRoot "transcode_mpeg1.ps1") $source `
-        -OutputFile $mpeg1 -MaxFrames $Frames -Force
-    & (Join-Path $PSScriptRoot "transcode_h263.ps1") $source `
-        -OutputFile $h263 -MaxFrames $Frames -Force
-    & (Join-Path $PSScriptRoot "transcode_mpeg4_simple.ps1") $source `
-        -OutputFile $mpeg4 -MaxFrames $Frames -Force
-    & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
-        -OutputDirectory $corpus -Width 320 -Height 240 `
-        -TargetPsnrDb 35 -Device Auto -MaxFrames $Frames -Force
+    & (Join-Path $PSScriptRoot "generate_all_video_formats.ps1") `
+        -OutputRoot $corpus -Frames $Frames -Fps $Fps `
+        -BpvTargetPsnrDb 35 -BpvDevice Auto -Force
 }
 elseif (-not (Test-Path -LiteralPath $source)) {
     throw "-SkipEncode requires an existing generated source: $source"
@@ -199,7 +181,7 @@ if ((Get-DecodedFrameCount -File $source) -ne $Frames) {
 }
 
 $bpvCandidates = @(
-    Get-ChildItem -LiteralPath $corpus `
+    Get-ChildItem -LiteralPath (Join-Path $corpus "BPV") `
         -Filter "VideoFormatRegression_320x240_${rate}fps_BPVv6_*.bpv1"
 )
 if ($bpvCandidates.Count -ne 1) {

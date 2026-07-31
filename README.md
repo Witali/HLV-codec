@@ -241,6 +241,13 @@ and uses `_MPEG4SP_SPEED_q7` instead:
 .\scripts\transcode_mpeg4_simple.ps1 .\input.mp4 -Preset Esp32Speed
 ```
 
+Generate the deterministic picture-rich regression video once and encode it
+in every production format under the matching `out` directories:
+
+```powershell
+.\scripts\generate_all_video_formats.ps1
+```
+
 The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`
 together with explicit bitrate and buffer values only for a deliberate
 CBR/VBV encode.

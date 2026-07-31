@@ -224,6 +224,7 @@ Examples:
 | `test_mpeg1_compact.ps1` | Builds exact and compact MPEG-1 decoder variants and verifies that a supplied MPEG stream produces matching frame counts and checksums. |
 | `test_h263_avi.ps1` | Generates a 30 fps synthetic source and verifies standard QCIF/CIF H.263 AVI encoding and decoding without frame-rate reduction. |
 | `test_mpeg4_simple.ps1` | Verifies MPEG-4 SP/M4S2 encoding and compares decoded checksums for a video packet larger than 4 KiB through fixed-refill and contiguous-input builds. |
+| `generate_all_video_formats.ps1` | Creates the deterministic picture-rich regression source once, then writes production HLV, BPV, H.263, MPEG-4 SP, DivX 3, MJPEG, and MPEG-1 versions into their matching directories under `out`. |
 | `test_transcode_wrappers.ps1` | Encodes all seven production formats with audio, verifies the normalized codec/rate/channel profiles and measurable peaks for FFmpeg-readable containers, and checks HLV/BPV reports. |
 | `test_threaded_encode.py` | Verifies that parallel HLV GOP encoding is enabled by default and remains byte-exact against the serial encoder. |
 | `test_windowed_two_pass.py` | Smoke-tests bounded local two-pass HLV rate control through an FFmpeg Y4M pipe. |
