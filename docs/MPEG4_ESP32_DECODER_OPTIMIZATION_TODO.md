@@ -313,10 +313,17 @@ therefore a large confirmed win with 59,669 bytes of IRAM still free.
 
 ## Test infrastructure follow-up
 
+- [x] Print recent raw UART context when physical metric capture detects a
+      frame-sequence gap.
 - [ ] Remove matching cached records from `crc32.txt` atomically when
       `HLVDELETE` removes a test file, and avoid duplicate records on upload.
 - [x] Make the uploader completion parser accept an exact valid response
       before unrelated bytes emitted during the UART baud transition.
+
+The recent-line dump distinguished a selected BPV1 file failure from an
+apparent MPEG-4 firmware reset at frame 995 without changing the SD card or
+firmware. C and C++ capture tools emit the same bounded 40-line context only
+on failure.
 
 The parser now accumulates raw UART bytes and accepts only the complete
 expected protocol/version/size/CRC/name record. Bytes after that exact record

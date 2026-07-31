@@ -223,6 +223,9 @@ def main() -> int:
                         f"{frame.frame}",
                         file=sys.stderr,
                     )
+                    print("recent UART lines:", file=sys.stderr)
+                    for recent in recent_lines:
+                        print(f"  {recent}", file=sys.stderr)
                     return 2
                 received_at = time.monotonic()
                 if first_frame_time is None:
