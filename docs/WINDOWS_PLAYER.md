@@ -129,3 +129,17 @@ if ($LASTEXITCODE -ne 0) { throw "Video validation failed" }
 
 The headless check still performs a complete independent sequential decode;
 the interactive seek index does not bypass packet CRC validation.
+
+For decoder A/B work, H.263 and MPEG-4 SP frames can also be written as a
+headerless NV12 sequence:
+
+```powershell
+.\build\msvc\hlvplay.exe --dump-h263-nv12 `
+    .\out\video.avi .\build\video.nv12
+```
+
+The output contains tightly packed, display-sized NV12 frames in decode
+order. Supply the known width, height and frame rate when comparing two dumps
+with FFmpeg's `psnr` filter. This path is intended for investigating a changed
+decoder checksum; it returns failure unless the complete declared video frame
+count is decoded and flushed.

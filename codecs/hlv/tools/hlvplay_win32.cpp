@@ -2512,6 +2512,46 @@ int check_file(const wchar_t *path) {
     return 0;
 }
 
+int dump_h263_nv12(const wchar_t *input_path, const wchar_t *output_path) {
+    FILE *input = nullptr;
+    FILE *output = nullptr;
+    if (_wfopen_s(&input, input_path, L"rb") != 0 || !input) return 1;
+    if (_wfopen_s(&output, output_path, L"wb") != 0 || !output) {
+        fclose(input);
+        return 1;
+    }
+
+    H2633gpInfo info = {};
+    H2633gpDecoder *decoder = h263_3gp_decoder_create();
+    int result =
+        decoder
+            ? h263_3gp_decoder_open(decoder, input, &info)
+            : H263_3GP_ERR_MEMORY;
+    uint64_t frames = 0;
+    VideoFrame converted;
+    while (result == H263_3GP_OK) {
+        H2633gpFrame frame = {};
+        result = h263_3gp_decoder_decode_next(decoder, input, &frame);
+        if (result != H263_3GP_OK) break;
+        convert_h263_frame(&frame, converted);
+        if (converted.nv12.empty() ||
+            std::fwrite(converted.nv12.data(), 1, converted.nv12.size(),
+                        output) != converted.nv12.size()) {
+            result = H263_3GP_ERR_IO;
+            break;
+        }
+        ++frames;
+    }
+
+    const bool valid =
+        result == H263_3GP_EOF && frames == info.frame_count &&
+        std::fflush(output) == 0 && std::ferror(output) == 0;
+    h263_3gp_decoder_destroy(decoder);
+    fclose(output);
+    fclose(input);
+    return valid ? 0 : 1;
+}
+
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
@@ -2520,6 +2560,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     if (arguments && argument_count == 3 &&
         std::wcscmp(arguments[1], L"--check") == 0) {
         const int result = check_file(arguments[2]);
+        LocalFree(arguments);
+        return result;
+    }
+    if (arguments && argument_count == 4 &&
+        std::wcscmp(arguments[1], L"--dump-h263-nv12") == 0) {
+        const int result = dump_h263_nv12(arguments[2], arguments[3]);
         LocalFree(arguments);
         return result;
     }
