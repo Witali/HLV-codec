@@ -209,7 +209,41 @@ enum class VideoCodec {
     kBpv,
     kMpeg1,
     kH263,
+    kMpeg4Simple,
 };
+
+bool isPacketVideoCodec(VideoCodec codec) {
+    return codec == VideoCodec::kH263 ||
+           codec == VideoCodec::kMpeg4Simple;
+}
+
+int packetVideoLibraryCodec(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple
+               ? H263_VIDEO_CODEC_MPEG4_SIMPLE
+               : H263_VIDEO_CODEC_H263;
+}
+
+const char *packetVideoCodecName(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple ? "MPEG-4 SP" : "H.263";
+}
+
+const char *packetVideoReadError(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple
+               ? "cannot read MPEG-4 SP video"
+               : "cannot read H.263 video";
+}
+
+const char *packetVideoDecodeErrorTitle(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple
+               ? "MPEG-4 decode error"
+               : "H.263 decode error";
+}
+
+const char *packetVideoPipelineErrorTitle(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple
+               ? "MPEG-4 pipeline error"
+               : "H.263 pipeline error";
+}
 
 enum class SelectionReadResult {
     kReady,
@@ -556,7 +590,7 @@ void decodeTask(void *) {
                 result.result == DIVX3_OK) {
                 result.result = DIVX3_ERR_BITSTREAM;
             }
-        } else if (request.codec == VideoCodec::kH263) {
+        } else if (isPacketVideoCodec(request.codec)) {
             result.result =
                 h263_decoder && video_file
                     ? h263_3gp_decoder_decode_next(
@@ -669,11 +703,11 @@ bool submitDivx3Decode(
 
 bool submitH263Decode() {
     if (!decode_task_handle || decode_in_flight || !h263_decoder ||
-        !video_file) {
+        !video_file || !isPacketVideoCodec(video_codec)) {
         return false;
     }
     DecodeRequest request{};
-    request.codec = VideoCodec::kH263;
+    request.codec = video_codec;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -1428,7 +1462,7 @@ int prefetchH263AviPcmFrame() {
 int prefetchAudioPacket() {
     if (video_codec == VideoCodec::kMpeg1)
         return prefetchMpegAudioFrame();
-    if (video_codec == VideoCodec::kH263) {
+    if (isPacketVideoCodec(video_codec)) {
         return h263_info.container == H263_CONTAINER_AVI
                    ? prefetchH263AviPcmFrame()
                    : prefetchAmrNbAudioFrame();
@@ -1650,7 +1684,7 @@ bool prepareAudio(const HLV1Header &header) {
             stopAudio();
             return false;
         }
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (isPacketVideoCodec(video_codec)) {
         if (h263_info.container == H263_CONTAINER_AVI) {
             H2633gpInfo audio_info{};
             h263_avi_audio_reader = h263_avi_pcm_reader_create();
@@ -2023,7 +2057,10 @@ VideoOpenResult openVideoCandidate(const char *path) {
             return VideoOpenResult::kIoError;
         }
         if (h263_result == H263_3GP_OK) {
-            video_codec = VideoCodec::kH263;
+            video_codec =
+                h263_probe.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                    ? VideoCodec::kMpeg4Simple
+                    : VideoCodec::kH263;
         } else if (divx3_result == DIVX3_AVI_OK) {
             video_codec = VideoCodec::kDivx3;
         } else {
@@ -2129,7 +2166,7 @@ bool openVideo() {
             ? kMpegVideoReadAheadBytes
             : (video_codec == VideoCodec::kDivx3
                    ? kDivx3VideoReadAheadBytes
-                   : (video_codec == VideoCodec::kH263
+                   : (isPacketVideoCodec(video_codec)
                           ? kH263VideoReadAheadBytes
                           : (video_codec == VideoCodec::kBpv &&
                                      bpv_file_version >=
@@ -2233,7 +2270,7 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (isPacketVideoCodec(video_codec)) {
         h263_decoder = h263_3gp_decoder_create();
         if (h263_decoder) {
             /*
@@ -2254,10 +2291,19 @@ bool openVideo() {
             result = H263_3GP_ERR_UNSUPPORTED;
         }
         if (result != H263_3GP_OK) {
-            showStatus("Invalid H263/MPEG4", h263_3gp_strerror(result));
+            const int library_codec =
+                packetVideoLibraryCodec(video_codec);
+            showStatus(video_codec == VideoCodec::kMpeg4Simple
+                           ? "Invalid MPEG-4 SP"
+                           : "Invalid H.263",
+                       h263_3gp_codec_strerror(library_codec, result));
             closeVideo();
             return false;
         }
+        video_codec =
+            h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                ? VideoCodec::kMpeg4Simple
+                : VideoCodec::kH263;
         sequence_header.width = h263_info.width;
         sequence_header.height = h263_info.height;
         sequence_header.fps_num =
@@ -2293,11 +2339,7 @@ bool openVideo() {
                  "%s/%s: %ux%u, %u/%u fps, %u frames, "
                  "profile=%u level=%u, audio=%u Hz/%u-bit, "
                  "decoder=%u bytes",
-                 (h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE ||
-                  (h263_info.container == H263_CONTAINER_AVI &&
-                   h263_info.profile == 1))
-                     ? "MPEG-4 SP"
-                     : "H.263",
+                 packetVideoCodecName(video_codec),
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",
@@ -2572,15 +2614,11 @@ bool openVideo() {
                  player_settings::kScaleVideoToDisplay
                      ? "scale-to-320x240"
                      : "native-centred");
-    } else if (video_codec == VideoCodec::kH263) {
+    } else if (isPacketVideoCodec(video_codec)) {
         ESP_LOGI(kTag,
                  "Playing %s/%s in %s mode, "
                  "frame storage=%s",
-                 (h263_info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE ||
-                  (h263_info.container == H263_CONTAINER_AVI &&
-                   h263_info.profile == 1))
-                     ? "MPEG-4 SP"
-                     : "H.263",
+                 packetVideoCodecName(video_codec),
                  h263_info.container == H263_CONTAINER_AVI
                      ? "AVI"
                      : "3GP",
@@ -3089,8 +3127,9 @@ void failPlayback(const char *title, int result) {
     const char *detail =
         video_codec == VideoCodec::kMpeg1
             ? "invalid, truncated or unsupported MPEG-1 stream"
-            : video_codec == VideoCodec::kH263
-            ? h263_3gp_strerror(result)
+            : isPacketVideoCodec(video_codec)
+            ? h263_3gp_codec_strerror(
+                  packetVideoLibraryCodec(video_codec), result)
             : video_codec == VideoCodec::kMjpeg
             ? mjpeg_avi_strerror(result)
             : video_codec == VideoCodec::kDivx3
@@ -3458,11 +3497,11 @@ void playOneH263Frame() {
         return;
     }
     if (result == H263_3GP_ERR_IO) {
-        failSdCardRead("cannot read H.263 video");
+        failSdCardRead(packetVideoReadError(video_codec));
         return;
     }
     if (result != H263_3GP_OK) {
-        failPlayback("H.263 decode error", result);
+        failPlayback(packetVideoDecodeErrorTitle(video_codec), result);
         return;
     }
     if (!presentH263Frame(&frame, decode_us)) {
@@ -3473,12 +3512,14 @@ void playOneH263Frame() {
 void playOneH263FramePipelined() {
     if (!pending_h263_frame_valid) {
         if (!submitH263Decode()) {
-            failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+            failPlayback(packetVideoPipelineErrorTitle(video_codec),
+                         H263_3GP_ERR_IO);
             return;
         }
         DecodeResult first{};
-        if (!waitDecode(&first) || first.codec != VideoCodec::kH263) {
-            failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+        if (!waitDecode(&first) || first.codec != video_codec) {
+            failPlayback(packetVideoPipelineErrorTitle(video_codec),
+                         H263_3GP_ERR_DECODE);
             return;
         }
         if (first.result == H263_3GP_EOF) {
@@ -3486,11 +3527,12 @@ void playOneH263FramePipelined() {
             return;
         }
         if (first.result == H263_3GP_ERR_IO) {
-            failSdCardRead("cannot read H.263 video");
+            failSdCardRead(packetVideoReadError(video_codec));
             return;
         }
         if (first.result != H263_3GP_OK) {
-            failPlayback("H.263 decode error", first.result);
+            failPlayback(packetVideoDecodeErrorTitle(video_codec),
+                         first.result);
             return;
         }
         pending_h263_frame = first.h263_frame;
@@ -3504,7 +3546,8 @@ void playOneH263FramePipelined() {
     if (h263_row_pipelined) beginH263RowPipeline();
     if (!submitH263Decode()) {
         endH263RowPipeline();
-        failPlayback("H.263 pipeline error", H263_3GP_ERR_IO);
+        failPlayback(packetVideoPipelineErrorTitle(video_codec),
+                     H263_3GP_ERR_IO);
         return;
     }
 
@@ -3521,17 +3564,18 @@ void playOneH263FramePipelined() {
         failPlayback("Display DMA error", H263_3GP_ERR_IO);
         return;
     }
-    if (!received || next.codec != VideoCodec::kH263) {
-        failPlayback("H.263 pipeline error", H263_3GP_ERR_DECODE);
+    if (!received || next.codec != video_codec) {
+        failPlayback(packetVideoPipelineErrorTitle(video_codec),
+                     H263_3GP_ERR_DECODE);
         return;
     }
     if (next.result == H263_3GP_ERR_IO) {
-        failSdCardRead("cannot read H.263 video");
+        failSdCardRead(packetVideoReadError(video_codec));
         return;
     }
     if (next.result != H263_3GP_OK &&
         next.result != H263_3GP_EOF) {
-        failPlayback("H.263 decode error", next.result);
+        failPlayback(packetVideoDecodeErrorTitle(video_codec), next.result);
         return;
     }
     if (next.result == H263_3GP_OK) {
@@ -4294,7 +4338,7 @@ extern "C" void app_main(void) {
             }
             continue;
         }
-        if (video_file && video_codec == VideoCodec::kH263 &&
+        if (video_file && isPacketVideoCodec(video_codec) &&
             h263_decoder) {
             if (player_settings::kUseDualCorePipeline &&
                 (h263_dual_buffered || h263_row_pipelined)) {

@@ -134,7 +134,8 @@ void app_main(void) {
     result = h263_3gp_decoder_open(decoder, file, &info);
     if (result != H263_3GP_OK) {
         ESP_LOGE(k_tag, "Open failed: %s",
-                 h263_3gp_strerror(result));
+                 h263_3gp_codec_strerror(
+                     H263_VIDEO_CODEC_MPEG4_SIMPLE, result));
         finish(3);
     }
     if (info.width != BENCH_WIDTH || info.height != BENCH_HEIGHT
@@ -157,7 +158,8 @@ void app_main(void) {
         }
         if (result != H263_3GP_OK) {
             ESP_LOGE(k_tag, "Frame %" PRIu32 " failed: %s",
-                     frames, h263_3gp_strerror(result));
+                     frames, h263_3gp_codec_strerror(
+                                 H263_VIDEO_CODEC_MPEG4_SIMPLE, result));
             finish(5);
         }
         decode_cycles += elapsed;

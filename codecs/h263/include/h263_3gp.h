@@ -130,6 +130,7 @@ const H263DecodeProfile *h263_3gp_decoder_decode_profile(
     const H2633gpDecoder *decoder);
 void h263_3gp_decoder_decode_profile_reset(H2633gpDecoder *decoder);
 const char *h263_3gp_strerror(int result);
+const char *h263_3gp_codec_strerror(int codec, int result);
 
 /*
  * Probe the bounded H.263 or MPEG-4 Simple Profile AVI profile without

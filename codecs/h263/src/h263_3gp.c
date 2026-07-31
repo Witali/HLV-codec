@@ -1941,9 +1941,9 @@ const char *h263_3gp_strerror(int result) {
         case H263_3GP_ERR_IO:
             return "I/O error";
         case H263_3GP_ERR_FORMAT:
-            return "invalid H.263/MPEG-4 container";
+            return "invalid video container";
         case H263_3GP_ERR_UNSUPPORTED:
-            return "unsupported H.263/MPEG-4 profile";
+            return "unsupported video profile";
         case H263_3GP_ERR_MEMORY:
             return "out of memory";
         case H263_3GP_ERR_FRAME_MEMORY:
@@ -1953,9 +1953,32 @@ const char *h263_3gp_strerror(int result) {
         case H263_3GP_ERR_PACKET_MEMORY:
             return "compressed packet memory";
         case H263_3GP_ERR_DECODE:
-            return "H.263/MPEG-4 decode error";
+            return "video decode error";
         default:
-            return "unknown H.263/MPEG-4 container error";
+            return "unknown video container error";
+    }
+}
+
+const char *h263_3gp_codec_strerror(int codec, int result) {
+    if (codec != H263_VIDEO_CODEC_H263 &&
+        codec != H263_VIDEO_CODEC_MPEG4_SIMPLE) {
+        return h263_3gp_strerror(result);
+    }
+    switch (result) {
+        case H263_3GP_ERR_FORMAT:
+            return codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                       ? "invalid MPEG-4 container"
+                       : "invalid H.263 container";
+        case H263_3GP_ERR_UNSUPPORTED:
+            return codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                       ? "unsupported MPEG-4 Simple Profile stream"
+                       : "unsupported H.263 profile";
+        case H263_3GP_ERR_DECODE:
+            return codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                       ? "MPEG-4 Simple Profile decode error"
+                       : "H.263 decode error";
+        default:
+            return h263_3gp_strerror(result);
     }
 }
 

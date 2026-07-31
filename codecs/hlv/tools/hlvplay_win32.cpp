@@ -98,8 +98,24 @@ enum class VideoCodec {
     kHlv,
     kBpv,
     kMpeg1,
-    kH263
+    kH263,
+    kMpeg4Simple
 };
+
+bool is_packet_video_codec(VideoCodec codec) {
+    return codec == VideoCodec::kH263 ||
+           codec == VideoCodec::kMpeg4Simple;
+}
+
+int packet_video_library_codec(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple
+               ? H263_VIDEO_CODEC_MPEG4_SIMPLE
+               : H263_VIDEO_CODEC_H263;
+}
+
+const wchar_t *packet_video_codec_name(VideoCodec codec) {
+    return codec == VideoCodec::kMpeg4Simple ? L"MPEG-4 SP" : L"H.263";
+}
 
 void convert_frame(const HLV1Frame *source, VideoFrame &destination) {
     destination.width = source->width;
@@ -904,12 +920,20 @@ public:
                           h263_decoder_, file_, &h263_info_)
                     : H263_3GP_ERR_MEMORY;
             if (result != H263_3GP_OK) {
-                return fail(L"Invalid H.263/MPEG-4 video: " +
+                return fail((!std::memcmp(signature, "RIFF", 4)
+                                 ? L"Invalid AVI video: "
+                                 : L"Invalid H.263 video: ") +
                             widen_ascii(h263_3gp_strerror(result)));
             }
+            codec_ =
+                h263_info_.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                    ? VideoCodec::kMpeg4Simple
+                    : VideoCodec::kH263;
             if (h263_info_.fps_num > UINT16_MAX ||
                 h263_info_.fps_den > UINT16_MAX) {
-                return fail(L"The H.263/MPEG-4 frame rate is unsupported");
+                return fail(std::wstring(L"The ") +
+                            packet_video_codec_name(codec_) +
+                            L" frame rate is unsupported");
             }
             header_ = {};
             header_.width = h263_info_.width;
@@ -977,13 +1001,13 @@ public:
         } else {
             return fail(
                 L"Unsupported video signature; expected HLV1, BPV1, "
-                L"MPEG-PS, 3GP/H.263 or AVI/H.263");
+                L"MPEG-PS, 3GP/H.263, AVI/H.263 or AVI/MPEG-4 SP");
         }
         if (header_.width > 8192 || header_.height > 8192)
             return fail(L"The video dimensions are too large for this player");
         first_packet_offset_ =
             codec_ == VideoCodec::kMpeg1 ||
-                    codec_ == VideoCodec::kH263
+                    is_packet_video_codec(codec_)
                 ? 0
                 : _ftelli64(file_);
         if (first_packet_offset_ < 0)
@@ -1380,7 +1404,7 @@ private:
     bool build_seek_index() {
         seek_index_.clear();
         if (codec_ == VideoCodec::kMpeg1 ||
-            codec_ == VideoCodec::kH263) {
+            is_packet_video_codec(codec_)) {
             for (uint32_t frame = 0; frame < header_.frame_count; ++frame)
                 seek_index_.push_back({0, 0});
             if (seek_index_.empty()) {
@@ -1582,13 +1606,14 @@ private:
                 return false;
             }
             mpeg_audio_samples_ = 0;
-        } else if (codec_ == VideoCodec::kH263) {
+        } else if (is_packet_video_codec(codec_)) {
             if (h263_decoder_) {
                 h263_3gp_decoder_destroy(h263_decoder_);
                 h263_decoder_ = nullptr;
             }
             if (_fseeki64(file_, 0, SEEK_SET) != 0) {
-                error_ = L"Cannot rewind the H.263 stream";
+                error_ = std::wstring(L"Cannot rewind the ") +
+                         packet_video_codec_name(codec_) + L" stream";
                 return false;
             }
             H2633gpInfo info = {};
@@ -1601,7 +1626,9 @@ private:
                 info.width != h263_info_.width ||
                 info.height != h263_info_.height ||
                 info.frame_count != h263_info_.frame_count) {
-                error_ = L"Cannot reset the H.263 decoder for seeking";
+                error_ = std::wstring(L"Cannot reset the ") +
+                         packet_video_codec_name(codec_) +
+                         L" decoder for seeking";
                 return false;
             }
             if (h263_avi_audio_reader_) {
@@ -1672,11 +1699,11 @@ private:
         }
 
         const uint64_t keyframe =
-            codec_ == VideoCodec::kH263
+            is_packet_video_codec(codec_)
                 ? 0
                 : seek_index_[target].keyframe_index;
         if (codec_ != VideoCodec::kMpeg1 &&
-            codec_ != VideoCodec::kH263 &&
+            !is_packet_video_codec(codec_) &&
             _fseeki64(file_, seek_index_[keyframe].packet_offset,
                       SEEK_SET) != 0) {
                 error_ = L"Cannot seek to the selected video keyframe";
@@ -1743,7 +1770,7 @@ private:
     }
 
     bool decode_one(bool queue_video = true, bool queue_audio = true) {
-        if (codec_ == VideoCodec::kH263) {
+        if (is_packet_video_codec(codec_)) {
             H2633gpFrame decoded = {};
             const int result = h263_3gp_decoder_decode_next(
                 h263_decoder_, file_, &decoded);
@@ -1752,10 +1779,12 @@ private:
                 return true;
             }
             if (result != H263_3GP_OK) {
-                error_ = L"H.263 frame " +
+                error_ = std::wstring(packet_video_codec_name(codec_)) +
+                         L" frame " +
                          std::to_wstring(decoded_frames_) +
                          L" failed to decode: " +
-                         widen_ascii(h263_3gp_strerror(result));
+                         widen_ascii(h263_3gp_codec_strerror(
+                             packet_video_library_codec(codec_), result));
                 return false;
             }
             if (queue_video) {
@@ -2027,7 +2056,8 @@ private:
     }
 
     void update_title() const {
-        std::wstring title = L"HLV/BPV/MPEG-1/H.263 Player";
+        std::wstring title =
+            L"HLV/BPV/MPEG-1/H.263/MPEG-4 SP Player";
         if (!path_.empty()) title += L" - " + file_name(path_);
         if (loaded_) {
             title += L" [";
@@ -2136,6 +2166,7 @@ std::wstring choose_file(HWND owner) {
         L"MPEG-1 Program Stream (*.mpg;*.mpeg)\0*.mpg;*.mpeg\0"
         L"H.263 3GP video (*.3gp)\0*.3gp\0"
         L"H.263 AVI video (*.avi)\0*.avi\0"
+        L"MPEG-4 SP AVI video (*.avi)\0*.avi\0"
         L"All files (*.*)\0*.*\0\0";
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
@@ -2349,10 +2380,16 @@ int check_file(const wchar_t *path) {
                 ? h263_3gp_decoder_open(decoder, file, &info)
                 : H263_3GP_ERR_MEMORY;
         label = !std::memcmp(signature, "RIFF", 4)
-                    ? "H.263/MPEG-4 SP/AVI"
+                    ? "AVI video"
                     : "H.263/3GP";
         if (result != H263_3GP_OK)
             failure_detail = h263_3gp_strerror(result);
+        else
+            label = info.video_codec == H263_VIDEO_CODEC_MPEG4_SIMPLE
+                        ? "MPEG-4 SP/AVI"
+                        : (info.container == H263_CONTAINER_AVI
+                               ? "H.263/AVI"
+                               : "H.263/3GP");
         while (result == H263_3GP_OK) {
             H2633gpFrame frame = {};
             result = h263_3gp_decoder_decode_next(
@@ -2367,6 +2404,11 @@ int check_file(const wchar_t *path) {
         }
         valid = result == H263_3GP_EOF &&
                 frames == info.frame_count;
+        if (result != H263_3GP_EOF &&
+            info.video_codec != H263_VIDEO_CODEC_UNKNOWN) {
+            failure_detail = h263_3gp_codec_strerror(
+                info.video_codec, result);
+        }
         if (info.container == H263_CONTAINER_AVI &&
             info.audio_sample_rate) {
             FILE *audio_file = nullptr;
@@ -2611,7 +2653,8 @@ int analyze_mpeg4(const wchar_t *input_path) {
             "MPEG-4 analysis failed after %llu frames: %s\r\n",
             static_cast<unsigned long long>(frames),
             profile
-                ? h263_3gp_strerror(result)
+                ? h263_3gp_codec_strerror(
+                      H263_VIDEO_CODEC_MPEG4_SIMPLE, result)
                 : "player was built without H.263 stage profiling");
     }
     HANDLE handle = GetStdHandle(
