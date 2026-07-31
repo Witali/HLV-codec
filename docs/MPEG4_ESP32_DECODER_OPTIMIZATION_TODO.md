@@ -240,6 +240,24 @@ gaps or audio recovery events. Average decode improved from 66,462.1 to
 66,014.3 us (0.67%), complete work from 95,111.5 to 94,585.2 us (0.55%) and
 observed rate from 13.475 to 13.535 fps.
 
+Because skipped blocks are now copied during compact row commit, their
+temporary byte-planar prediction was dead data. Removing that unpack preserved
+the decoded hash and reduced compact-reference copy calls by exactly 120
+(40 skipped macroblocks times Y/U/V). C QEMU improved from 2,629,072 to
+2,619,812 cycles/picture (0.35%); C++ measured 2,619,790.
+
+All three physical profile trials were bit-for-bit identical. Motion
+compensation improved from 7,875,511 to 7,588,039 cycles/picture (3.65%) and
+complete decode from 14,956,841 to 14,700,677 cycles/picture (1.71%).
+Decoder memory and heap headroom were unchanged.
+
+The production build again completed all 3,357 pictures with no sequence gaps,
+rebuffers, underruns or inserted silence. End-to-end timing did not improve in
+this run: observed rate was 13.522 fps, average decode 66,137.4 us and complete
+work 94,655.1 us, versus 13.535 fps, 66,014.3 us and 94,585.2 us in the
+preceding run. The change is retained on the three deterministic physical
+decoder profiles rather than the noisier renderer/audio wall-clock result.
+
 ## Priority 4: overlap independent work
 
 - [ ] Verify current core affinity, queue waits and reference/display lifetime.

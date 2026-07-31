@@ -1036,18 +1036,13 @@ void  SkippedMBMotionComp(
 
     if (compact_reference)
     {
-        CompactReferenceCopy(
-            &compact_reference->y, xpos, ypos,
-            c_comp, width, 16, 16
-            COMPACT_PROFILE_ARGUMENT(video));
-        CompactReferenceCopy(
-            &compact_reference->u, xpos >> 1, ypos >> 1,
-            cu_comp, width_uv, 8, 8
-            COMPACT_PROFILE_ARGUMENT(video));
-        CompactReferenceCopy(
-            &compact_reference->v, xpos >> 1, ypos >> 1,
-            cv_comp, width_uv, 8, 8
-            COMPACT_PROFILE_ARGUMENT(video));
+        /*
+         * The compact-output row commit copies MODE_SKIPPED blocks directly
+         * from compact_reference. No residual reconstruction or current-frame
+         * prediction reads these rolling byte-plane samples, so unpacking
+         * them here would only create data that the packer deliberately
+         * ignores.
+         */
         return;
     }
 
