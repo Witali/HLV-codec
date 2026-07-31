@@ -356,7 +356,7 @@ additional safe parallel work.
 
 ## Priority 5: flash and code placement
 
-- [ ] Capture exact physical A/B results for DIO 80 MHz and QIO 80 MHz on the
+- [x] Capture exact physical A/B results for DIO 80 MHz and QIO 80 MHz on the
       installed flash before changing the default.
 - [x] Measure motion compensation IRAM placement independently.
 - [x] Place stage-profiled hot motion-compensation code in IRAM and keep byte-addressed
@@ -374,6 +374,25 @@ to 71,403 bytes (34.48% to 54.48%) and flash code shrinks by the same amount.
 Runtime decoder memory (194,056 bytes), free heap (104,112 bytes) and largest
 free block (102,400 bytes) are unchanged. The existing enabled default is
 therefore a large confirmed win with 59,669 bytes of IRAM still free.
+
+Fresh DIO/QIO images were built from the same source with the stage profile
+enabled and flashed at 80 MHz. Each configuration completed three reset-to-
+reset 60-picture trials without sequence gaps, audio rebuffers, underruns or
+inserted silence.
+
+| Flash mode | Decode us/picture, trials | Complete work us/picture, trials | Observed fps, trials |
+| --- | --- | --- | --- |
+| DIO 80 MHz | 73,441.7; 73,453.3; 73,458.7 | 102,172.1; 102,173.0; 102,177.9 | 12.463; 12.463; 12.460 |
+| QIO 80 MHz | 69,376.4; 69,431.6; 69,441.1 | 97,023.4; 97,076.8; 97,085.5 | 13.155; 13.158; 13.155 |
+
+By the three-trial medians, QIO reduces decode time by 5.48% and complete
+work by 4.99%, and raises observed throughput by 5.55%. The existing QIO
+default is retained. ESP-IDF deliberately writes `dio` into the application
+image header for QIO/QOUT selections; the QIO-aware bootloader enables the
+four-line flash mode after boot, so the generated `flash_args` text is not the
+mode-selection check. The tested QIO firmware remains installed on the
+physical board. This A/B run did not upload or generate any SD-card files, so
+its exact cleanup set is empty.
 
 ## Priority 6: speed-oriented encoding profile
 
