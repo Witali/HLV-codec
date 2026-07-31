@@ -453,6 +453,14 @@ retained normal full-file result, decode improved by 10.84%, complete work by
 audio reported zero rebuffers, underruns and inserted silence. The uploaded
 file's 43,482,002-byte size and CRC32 `3e4ac3d3` matched the local file.
 
+After every checklist item and physical acceptance run completed, cleanup
+deleted exactly `Danila_320x240_30fps_MPEG4SP_SPEED_q7.avi` and the deferred
+`Danila_320x240_30fps_MPEG4SP_35dB.avi` from the SD card. A fresh listing
+confirmed that both are absent, `crc32.txt` remains present at 1,595 bytes,
+and `play.txt` remains present at 36 bytes selecting the pre-existing
+`Danila_320x240_30fps_HLVv14_38dB.hlv`. No other user or demo asset was
+removed.
+
 ## Explicit non-targets
 
 - Do not feed individual MPEG-4 DCT blocks to `esp_new_jpeg`. Its supported
