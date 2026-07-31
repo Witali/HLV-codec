@@ -200,24 +200,84 @@ bool findCachedCrc(const char *directory, const char *filename,
     return found;
 }
 
-bool appendCachedCrc(const char *directory, const char *filename,
-                     uint32_t file_size, uint32_t file_crc) {
+bool rewriteCachedCrc(const char *directory, const char *filename,
+                      bool include_record, uint32_t file_size,
+                      uint32_t file_crc) {
     char path[128];
-    if (!std::strcmp(filename, kCrcIndexFilename) ||
-        !buildPath(path, sizeof path, directory, kCrcIndexFilename, "")) {
+    char temporary[128];
+    char backup[128];
+    if (!directory || !filename ||
+        !std::strcmp(filename, kCrcIndexFilename) ||
+        !buildPath(path, sizeof path, directory, kCrcIndexFilename, "") ||
+        !buildPath(temporary, sizeof temporary, directory,
+                   kCrcIndexFilename, ".part") ||
+        !buildPath(backup, sizeof backup, directory,
+                   kCrcIndexFilename, ".bak")) {
         return false;
     }
-    FILE *index = std::fopen(path, "ab");
-    if (!index) return false;
 
-    bool success = std::fprintf(index, "%08x,%u,%s\n",
-                                static_cast<unsigned>(file_crc),
-                                static_cast<unsigned>(file_size),
-                                filename) > 0;
-    if (success && std::fflush(index)) success = false;
-    if (success && fsync(fileno(index))) success = false;
-    if (std::fclose(index)) success = false;
-    return success;
+    struct stat status {};
+    const bool had_index = stat(path, &status) == 0;
+    FILE *input = had_index ? std::fopen(path, "rb") : nullptr;
+    if (had_index && !input) return false;
+    unlink(temporary);
+    FILE *output = std::fopen(temporary, "wb");
+    if (!output) {
+        if (input) std::fclose(input);
+        return false;
+    }
+
+    bool success = true;
+    char line[kCrcIndexLineBytes];
+    while (input && std::fgets(line, sizeof line, input)) {
+        unsigned cached_crc;
+        unsigned long cached_size;
+        char cached_filename[
+            UartUploadRequest::kMaximumFilenameBytes + 1]{};
+        const int fields = std::sscanf(
+            line, "%8x,%lu,%48[^\r\n]",
+            &cached_crc, &cached_size, cached_filename);
+        if (fields == 3 && !std::strcmp(cached_filename, filename)) {
+            continue;
+        }
+        if (std::fputs(line, output) == EOF) {
+            success = false;
+            break;
+        }
+    }
+    if (input) {
+        if (std::ferror(input) || std::fclose(input)) success = false;
+        input = nullptr;
+    }
+    if (success && include_record &&
+        std::fprintf(output, "%08x,%u,%s\n",
+                     static_cast<unsigned>(file_crc),
+                     static_cast<unsigned>(file_size), filename) <= 0) {
+        success = false;
+    }
+    if (success && std::fflush(output)) success = false;
+    if (success && fsync(fileno(output))) success = false;
+    if (std::fclose(output)) success = false;
+    output = nullptr;
+    if (!success) {
+        unlink(temporary);
+        return false;
+    }
+
+    unlink(backup);
+    if (had_index && rename(path, backup)) {
+        unlink(temporary);
+        return false;
+    }
+    if (rename(temporary, path)) {
+        if (had_index) {
+            (void)rename(backup, path);
+        }
+        unlink(temporary);
+        return false;
+    }
+    if (had_index) unlink(backup);
+    return true;
 }
 
 }  // namespace
@@ -478,7 +538,8 @@ bool UartFileUpload::checksumFile(const char *directory,
         finishResponse("HLVERR 1 READ_FAILED\n");
         return false;
     }
-    (void)appendCachedCrc(directory, filename, file_size, file_crc);
+    (void)rewriteCachedCrc(
+        directory, filename, true, file_size, file_crc);
     finishResponse("HLVCRC 1 %u %08x %s\n",
                    static_cast<unsigned>(file_size),
                    static_cast<unsigned>(file_crc), filename);
@@ -502,6 +563,7 @@ bool UartFileUpload::deleteFile(
         reject("DELETE_FAILED");
         return false;
     }
+    (void)rewriteCachedCrc(directory, filename, false, 0, 0);
     finishResponse("HLVDELETE 1 %s\n", filename);
     return true;
 }
@@ -923,8 +985,9 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     if (stored_path && stored_path_bytes) {
         std::snprintf(stored_path, stored_path_bytes, "%s", target);
     }
-    (void)appendCachedCrc(directory, request.filename,
-                         request.size, actual_crc);
+    (void)rewriteCachedCrc(
+        directory, request.filename, true,
+        request.size, actual_crc);
     finishResponse("HLVDONE 2 %u %08x %s\n",
                    static_cast<unsigned>(request.size),
                    static_cast<unsigned>(actual_crc), request.filename);

@@ -232,35 +232,102 @@ static bool find_cached_crc(const char *directory,
     return found;
 }
 
-static bool append_cached_crc(const char *directory,
-                              const char *filename,
-                              uint32_t file_size,
-                              uint32_t file_crc) {
+static bool rewrite_cached_crc(const char *directory,
+                               const char *filename,
+                               bool include_record,
+                               uint32_t file_size,
+                               uint32_t file_crc) {
     char path[128];
-    FILE *index;
-    bool success;
+    char temporary[128];
+    char backup[128];
+    char line[CRC_INDEX_LINE_BYTES];
+    struct stat status = {0};
+    FILE *input = NULL;
+    FILE *output = NULL;
+    bool had_index;
+    bool success = true;
 
-    if (strcmp(filename, CRC_INDEX_FILENAME) == 0 ||
-        !build_path(path, sizeof path, directory, CRC_INDEX_FILENAME, "")) {
+    if (directory == NULL || filename == NULL ||
+        strcmp(filename, CRC_INDEX_FILENAME) == 0 ||
+        !build_path(path, sizeof path, directory,
+                    CRC_INDEX_FILENAME, "") ||
+        !build_path(temporary, sizeof temporary, directory,
+                    CRC_INDEX_FILENAME, ".part") ||
+        !build_path(backup, sizeof backup, directory,
+                    CRC_INDEX_FILENAME, ".bak")) {
         return false;
     }
-    index = fopen(path, "ab");
-    if (index == NULL) {
+    had_index = stat(path, &status) == 0;
+    if (had_index) {
+        input = fopen(path, "rb");
+        if (input == NULL) {
+            return false;
+        }
+    }
+    unlink(temporary);
+    output = fopen(temporary, "wb");
+    if (output == NULL) {
+        if (input != NULL) fclose(input);
         return false;
     }
-    success = fprintf(index, "%08x,%u,%s\n",
-                      (unsigned)file_crc, (unsigned)file_size,
-                      filename) > 0;
-    if (success && fflush(index) != 0) {
+
+    while (input != NULL && fgets(line, sizeof line, input) != NULL) {
+        unsigned cached_crc;
+        unsigned long cached_size;
+        char cached_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U] = {0};
+        int fields = sscanf(line, "%8x,%lu,%48[^\r\n]",
+                            &cached_crc, &cached_size, cached_filename);
+        if (fields == 3 && strcmp(cached_filename, filename) == 0) {
+            continue;
+        }
+        if (fputs(line, output) == EOF) {
+            success = false;
+            break;
+        }
+    }
+    if (input != NULL) {
+        if (ferror(input) != 0 || fclose(input) != 0) {
+            success = false;
+        }
+        input = NULL;
+    }
+    if (success && include_record &&
+        fprintf(output, "%08x,%u,%s\n",
+                (unsigned)file_crc, (unsigned)file_size,
+                filename) <= 0) {
         success = false;
     }
-    if (success && fsync(fileno(index)) != 0) {
+    if (success && fflush(output) != 0) {
         success = false;
     }
-    if (fclose(index) != 0) {
+    if (success && fsync(fileno(output)) != 0) {
         success = false;
     }
-    return success;
+    if (fclose(output) != 0) {
+        success = false;
+    }
+    output = NULL;
+    if (!success) {
+        unlink(temporary);
+        return false;
+    }
+
+    unlink(backup);
+    if (had_index && rename(path, backup) != 0) {
+        unlink(temporary);
+        return false;
+    }
+    if (rename(temporary, path) != 0) {
+        if (had_index) {
+            (void)rename(backup, path);
+        }
+        unlink(temporary);
+        return false;
+    }
+    if (had_index) {
+        unlink(backup);
+    }
+    return true;
 }
 
 static bool set_baud(uint32_t baud) {
@@ -684,7 +751,8 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
         finish_response(upload, "HLVERR 1 READ_FAILED\n");
         return false;
     }
-    (void)append_cached_crc(directory, filename, file_size, file_crc);
+    (void)rewrite_cached_crc(
+        directory, filename, true, file_size, file_crc);
     finish_response(upload, "HLVCRC 1 %u %08x %s\n",
                     (unsigned)file_size, (unsigned)file_crc, filename);
     return true;
@@ -708,6 +776,7 @@ bool uart_file_upload_delete_file(uart_file_upload_t *upload,
         uart_file_upload_reject(upload, "DELETE_FAILED");
         return false;
     }
+    (void)rewrite_cached_crc(directory, filename, false, 0U, 0U);
     finish_response(upload, "HLVDELETE 1 %s\n", filename);
     return true;
 }
@@ -1081,8 +1150,9 @@ bool uart_file_upload_receive(
     if (stored_path != NULL && stored_path_bytes != 0U) {
         snprintf(stored_path, stored_path_bytes, "%s", target);
     }
-    (void)append_cached_crc(directory, request->filename,
-                            request->size, writer.file_crc);
+    (void)rewrite_cached_crc(
+        directory, request->filename, true,
+        request->size, writer.file_crc);
     finish_response(upload, "HLVDONE 2 %u %08x %s\n",
                     (unsigned)request->size,
                     (unsigned)writer.file_crc,

@@ -315,7 +315,7 @@ therefore a large confirmed win with 59,669 bytes of IRAM still free.
 
 - [x] Print recent raw UART context when physical metric capture detects a
       frame-sequence gap.
-- [ ] Remove matching cached records from `crc32.txt` atomically when
+- [x] Remove matching cached records from `crc32.txt` atomically when
       `HLVDELETE` removes a test file, and avoid duplicate records on upload.
 - [x] Make the uploader completion parser accept an exact valid response
       before unrelated bytes emitted during the UART baud transition.
@@ -330,3 +330,14 @@ expected protocol/version/size/CRC/name record. Bytes after that exact record
 are ignored, so transition noise cannot extend the filename. A regression
 test reproduces the observed invalid-byte suffix; all four uploader tests
 pass, and the C and C++ uploader implementations remain identical.
+
+The C and C++ firmware now rewrite `crc32.txt` through a flushed and synced
+temporary file, replace the previous index through a backup rename, and drop
+all prior records for the affected filename before optionally writing its one
+current record. Both production firmware variants build successfully. On the
+physical ESP32, uploading the 38-byte `crc_index_probe.txt` grew the index from
+3604 to 3636 bytes; uploading the same file again left it at 3636 bytes.
+`HLVDELETE` removed the file and returned the index to exactly 3604 bytes.
+Fresh listings after upload and deletion contained neither `crc32.txt.part`
+nor `crc32.txt.bak`; the retained MPEG-4 test AVI remained 32800102 bytes and
+`play.txt` remained 37 bytes.
