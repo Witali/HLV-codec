@@ -157,7 +157,9 @@ static inline void compact_yuv420_unpack_packed_samples(
      * groups of 8 samples. Decode their byte-aligned representation directly
      * instead of maintaining the generic bit window for every sample.
      */
-    if ((count & (COMPACT_YUV420_BLOCK_SIZE - 1)) == 0 &&
+    if ((bits == COMPACT_YUV420_LUMA_BITS ||
+         bits == COMPACT_YUV420_CHROMA_BITS) &&
+        (count & (COMPACT_YUV420_BLOCK_SIZE - 1)) == 0 &&
         (x & (COMPACT_YUV420_BLOCK_SIZE - 1)) == 0) {
         const uint8_t *aligned = row + ((size_t)x * bits >> 3);
         int remaining = count;

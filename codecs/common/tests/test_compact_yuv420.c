@@ -126,6 +126,7 @@ static int test_row_packing(void) {
 
 int main(void) {
     if (test_layout()) return 1;
+    if (test_round_trip(7)) return 1;
     if (test_round_trip(6)) return 1;
     if (test_round_trip(5)) return 1;
     if (test_correction()) return 1;
