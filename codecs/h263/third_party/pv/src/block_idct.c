@@ -374,6 +374,103 @@ void Copy_Blk_to_Vop(uint8 *dst, uint8 *pred, int width)
     return ;
 }
 
+/*
+ * When every non-zero coefficient is in frequency row zero, idctcol1()
+ * would replicate the same eight values into all spatial rows.  Transform
+ * that row once, then add its result to each prediction row.  Besides
+ * avoiding seven identical row transforms, this clears only the eight input
+ * coefficients instead of writing and clearing a 64-value intermediate.
+ */
+__attribute__((no_sanitize("signed-integer-overflow")))
+static void idct_dc_frequency_row(
+    uint8 *dst, uint8 *pred, int16 *coefficients, int width)
+{
+    int32 x0, x1, x2, x3, x4, x5, x6, x7, x8;
+    int residual[8];
+    int row;
+
+    x1 = (int32)((int16)(coefficients[4] * 8)) * 256;
+    x2 = (int16)(coefficients[6] * 8);
+    x3 = (int16)(coefficients[2] * 8);
+    x4 = (int16)(coefficients[1] * 8);
+    x5 = (int16)(coefficients[7] * 8);
+    x6 = (int16)(coefficients[5] * 8);
+    x7 = (int16)(coefficients[3] * 8);
+    x0 = (int32)((int16)(coefficients[0] * 8)) * 256 + 8192;
+
+    x8 = W7 * (x4 + x5) + 4;
+    x4 = (x8 + (W1 - W7) * x4) >> 3;
+    x5 = (x8 - (W1 + W7) * x5) >> 3;
+    x8 = W3 * (x6 + x7) + 4;
+    x6 = (x8 - (W3 - W5) * x6) >> 3;
+    x7 = (x8 - (W3 + W5) * x7) >> 3;
+
+    x8 = x0 + x1;
+    x0 -= x1;
+    x1 = W6 * (x3 + x2) + 4;
+    x2 = (x1 - (W2 + W6) * x2) >> 3;
+    x3 = (x1 + (W2 - W6) * x3) >> 3;
+    x1 = x4 + x6;
+    x4 -= x6;
+    x6 = x5 + x7;
+    x5 -= x7;
+
+    x7 = x8 + x3;
+    x8 -= x3;
+    x3 = x0 + x2;
+    x0 -= x2;
+    x2 = (181 * (x4 + x5) + 128) >> 8;
+    x4 = (181 * (x4 - x5) + 128) >> 8;
+
+    residual[0] = (x7 + x1) >> 14;
+    residual[1] = (x3 + x2) >> 14;
+    residual[2] = (x0 + x4) >> 14;
+    residual[3] = (x8 + x6) >> 14;
+    residual[4] = (x8 - x6) >> 14;
+    residual[5] = (x0 - x4) >> 14;
+    residual[6] = (x3 - x2) >> 14;
+    residual[7] = (x7 - x1) >> 14;
+
+    for (row = 0; row < 8; ++row)
+    {
+        uint32 pred_word = *((uint32*)pred);
+        uint32 dst_word;
+        int res = residual[0] + (pred_word & 0xFF);
+        int res2 = residual[1] + ((pred_word >> 8) & 0xFF);
+        CLIP_RESULT(res);
+        CLIP_RESULT(res2);
+        dst_word = (uint32)((res2 << 8) | res);
+        res = residual[2] + ((pred_word >> 16) & 0xFF);
+        CLIP_RESULT(res);
+        dst_word |= (uint32)res << 16;
+        res = residual[3] + ((pred_word >> 24) & 0xFF);
+        CLIP_RESULT(res);
+        dst_word |= (uint32)res << 24;
+        *((uint32*)dst) = dst_word;
+
+        pred_word = *((uint32*)(pred + 4));
+        res = residual[4] + (pred_word & 0xFF);
+        res2 = residual[5] + ((pred_word >> 8) & 0xFF);
+        CLIP_RESULT(res);
+        CLIP_RESULT(res2);
+        dst_word = (uint32)((res2 << 8) | res);
+        res = residual[6] + ((pred_word >> 16) & 0xFF);
+        CLIP_RESULT(res);
+        dst_word |= (uint32)res << 16;
+        res = residual[7] + ((pred_word >> 24) & 0xFF);
+        CLIP_RESULT(res);
+        dst_word |= (uint32)res << 24;
+        *((uint32*)(dst + 4)) = dst_word;
+
+        pred += 16;
+        dst += width;
+    }
+    *((uint32*)coefficients) = 0;
+    *((uint32*)(coefficients + 2)) = 0;
+    *((uint32*)(coefficients + 4)) = 0;
+    *((uint32*)(coefficients + 6)) = 0;
+}
+
 /*  08/04/05 compute IDCT and add prediction at the end  */
 void BlockIDCT(
     uint8 *dst,  /* destination */
@@ -388,9 +485,23 @@ void BlockIDCT(
 #ifdef INTEGER_IDCT
 #ifdef FAST_IDCT  /* VCA IDCT using nzcoefs and bitmaps*/
     int i, bmapr;
+    uint32 active_rows;
     /*----------------------------------------------------------------------------
     ; Function body here
     ----------------------------------------------------------------------------*/
+    if (nz_coefs > 1)
+    {
+        active_rows =
+            *((const uint32*)bitmapcol) |
+            *((const uint32*)(bitmapcol + 4));
+        active_rows |= active_rows >> 16;
+        active_rows |= active_rows >> 8;
+        if ((active_rows & 0xFFU) == 0x80U)
+        {
+            idct_dc_frequency_row(dst, pred, coeff_in, width);
+            return;
+        }
+    }
     if (nz_coefs <= 10)
     {
         bmapr = (nz_coefs - 1);

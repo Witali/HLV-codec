@@ -96,10 +96,11 @@ followed by compact-row packing.
 
 - [x] Measure a direct DC-only inter residual plus prediction kernel.
 - [x] Measure exact one-row, one-column and two-column coefficient patterns.
-- [ ] Add exact one-row, one-column and two-column sparse kernels independently.
-- [ ] Avoid clearing untouched coefficient slots when a sparse representation
+- [x] Add an exact frequency-row-zero sparse kernel.
+- [ ] Add exact one-column and two-column sparse kernels independently.
+- [x] Avoid clearing untouched coefficient slots when a sparse representation
       is faster.
-- [ ] Fuse inverse transform, prediction addition, clipping and rolling-row
+- [x] Fuse inverse transform, prediction addition, clipping and rolling-row
       stores where that preserves exact pixels.
 - [ ] Retain each specialization independently only after QEMU hash and
       physical A/B acceptance.
@@ -119,6 +120,27 @@ the decoded hash but improved QEMU from 2,701,213 to 2,698,905
 cycles/picture, only 0.085%. The dispatch-only candidate was removed without
 physical flashing; a useful specialization must instead fuse more of the
 transform, prediction add and output stores.
+
+The retained frequency-row-zero inter kernel applies the vertical DC scaling
+once, performs the horizontal transform once, and adds and clips those eight
+residuals directly into every prediction row. It clears only the eight input
+coefficients instead of producing and then clearing a 64-value intermediate.
+The existing paths remain active for DC-only, other one-row shapes, columns
+and general blocks.
+
+C QEMU improved from 2,619,812 to 2,607,330 cycles/picture (0.48%); C++ QEMU
+measured 2,607,337. Both retained the `b826825f344bc2e3` hash and identical
+decoder memory. Although this is just below the nominal QEMU threshold, all
+three physical profile trials were bit-for-bit identical and improved
+complete decode from 14,700,677 to 14,580,186 cycles/picture (0.82%).
+The profiled IDCT total was 136,623,427 cycles over 60 pictures; decoder
+memory, free heap and largest free block were unchanged.
+
+The production firmware then completed all 3,357 pictures with no sequence
+gaps, rebuffers, underruns or inserted silence. Observed rate improved from
+13.522 to 13.679 fps, average decode from 66,137.4 to 65,188.0 us (1.44%),
+and complete work from 94,655.1 to 93,687.2 us (1.02%). MPEG-4 streaming,
+audio-normalization and baseline H.263 QCIF/CIF regressions also passed.
 
 ## Priority 2: decode compact motion compensation directly
 
