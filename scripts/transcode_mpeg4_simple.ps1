@@ -14,6 +14,9 @@ param(
     [ValidateRange(1, 16)]
     [int]$Threads = 6,
 
+    [ValidateSet("Standard", "Esp32Speed")]
+    [string]$Preset = "Standard",
+
     [ValidateRange(0, 2147483647)]
     [int]$MaxFrames = 0,
 
@@ -26,13 +29,19 @@ $ErrorActionPreference = "Stop"
 
 $info = Get-TranscodeVideoInfo -InputFile $InputFile
 $fpsText = Format-TranscodeNumber -Value $info.Fps
-$defaultQuality = 5
+$defaultQuality = if ($Preset -eq "Esp32Speed") { 7 } else { 5 }
+$profileLabel = if ($Preset -eq "Esp32Speed") {
+    "MPEG4SP_SPEED"
+}
+else {
+    "MPEG4SP_M4S2"
+}
 $OutputFile = Get-TranscodeOutputFile `
     -OutputFile $OutputFile `
     -CodecDirectory "MPEG4SP" `
     -FileName (
         "$($info.BaseName)_320x240_${fpsText}fps_" +
-        "MPEG4SP_M4S2_q${defaultQuality}.avi"
+        "${profileLabel}_q${defaultQuality}.avi"
     )
 Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 
@@ -42,6 +51,7 @@ $arguments = @{
     FitMode = "Crop"
     VideoQuality = $defaultQuality
     Gop = 30
+    Preset = $Preset
     Threads = $Threads
     MaxFrames = $MaxFrames
 }

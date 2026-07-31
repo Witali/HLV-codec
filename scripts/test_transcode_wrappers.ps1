@@ -94,6 +94,9 @@ try {
     & (Join-Path $PSScriptRoot "transcode_mpeg4_simple.ps1") $source `
         -OutputFile (Join-Path $work "mpeg4-simple.avi") `
         -MaxFrames 3 -Force
+    & (Join-Path $PSScriptRoot "transcode_mpeg4_simple.ps1") $source `
+        -OutputFile (Join-Path $work "mpeg4-simple-esp32-speed.avi") `
+        -Preset Esp32Speed -MaxFrames 3 -Force
     & (Join-Path $PSScriptRoot "transcode_mjpeg.ps1") $source `
         -OutputFile (Join-Path $work "mjpeg.avi") `
         -MaxFrames 3 -Force
@@ -119,6 +122,10 @@ try {
     Assert-ProbedValue -File (Join-Path $work "mpeg4-simple.avi") `
         -Entries "codec_name,profile,codec_tag_string,width,height,has_b_frames" `
         -Expected "(?s)mpeg4.*Simple Profile.*M4S2.*320.*240.*0"
+    Assert-ProbedValue `
+        -File (Join-Path $work "mpeg4-simple-esp32-speed.avi") `
+        -Entries "codec_name,profile,codec_tag_string,width,height,has_b_frames" `
+        -Expected "(?s)mpeg4.*Simple Profile.*M4S2.*320.*240.*0"
     Assert-ProbedValue -File (Join-Path $work "mjpeg.avi") `
         -Entries "codec_name,width,height" `
         -Expected "(?s)mjpeg.*320.*240"
@@ -131,6 +138,9 @@ try {
     Assert-NormalizedAudio -File (Join-Path $work "h263.avi") `
         -Codec "pcm_s16le" -Rate 8000
     Assert-NormalizedAudio -File (Join-Path $work "mpeg4-simple.avi") `
+        -Codec "pcm_s16le" -Rate 8000
+    Assert-NormalizedAudio `
+        -File (Join-Path $work "mpeg4-simple-esp32-speed.avi") `
         -Codec "pcm_s16le" -Rate 8000
     Assert-NormalizedAudio -File (Join-Path $work "mjpeg.avi") `
         -Codec "pcm_u8" -Rate 16000

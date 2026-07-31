@@ -396,15 +396,62 @@ its exact cleanup set is empty.
 
 ## Priority 6: speed-oriented encoding profile
 
-- [ ] Add encoder analysis that reports skip/CBP-zero rate, residual sparsity,
+- [x] Add encoder analysis that reports skip/CBP-zero rate, residual sparsity,
       motion-vector precision and I/P picture cost.
-- [ ] Evaluate a separately named ESP32-speed preset that favors sparse
+- [x] Evaluate a separately named ESP32-speed preset that favors sparse
       residuals and integer motion vectors while remaining MPEG-4 Simple
       Profile.
-- [ ] Preserve the source frame rate and audio normalization.
-- [ ] Record output size, decoded PSNR/quality and physical decode speed.
-- [ ] Do not replace the normal quality profile unless the trade-off is
+- [x] Preserve the source frame rate and audio normalization.
+- [x] Record output size, decoded PSNR/quality and physical decode speed.
+- [x] Do not replace the normal quality profile unless the trade-off is
       explicit and accepted.
+
+`analyze_mpeg4_simple.ps1` builds an opt-in profiling Windows player,
+completely decodes the input, and combines decoder structure counters with
+FFprobe packet sizes. It reports I/P pictures, skip and CBP-zero macroblocks,
+DC/sparse/dense residual blocks, exact coefficient shapes, and
+integer/horizontal/vertical/diagonal prediction classes. Ordinary Windows and
+ESP32 builds keep the profiling switch disabled.
+
+The normal Q5 preset is unchanged. The separately selected
+`-Preset Esp32Speed` defaults to Q7 in the production wrapper, uses zero
+motion estimation (therefore integer motion vectors), enables residual skip
+RDO and eliminates coefficients below four quantizer units. Its normal output
+name contains `_MPEG4SP_SPEED_q7`, making the quality/size trade-off explicit.
+Both presets retain MPEG-4 Simple Profile/M4S2, the complete source rate and
+peak-safe PCM S16LE mono 8 kHz normalization.
+
+On the complete 3,357-picture Danila corpus, the original file contains 2.79%
+skipped macroblocks, 2.84% CBP-zero inter macroblocks, 86.17% dense inter
+residual blocks and 36.98% integer predictions. The speed file contains
+10.46% skipped macroblocks, no separate CBP-zero macroblocks, 84.27% dense
+inter residual blocks and 100% integer predictions. It has 203 I and 3,154 P
+pictures, averaging 16,916.8 and 12,060.6 packet bytes respectively, versus
+112 I and 3,245 P pictures averaging 21,220.1 and 8,756.4 bytes in the
+original.
+
+The different encoded stream necessarily has a different decoded hash, so
+the complete sequence was compared by PSNR as required: Y 32.05 dB, U
+40.22 dB, V 41.27 dB and 33.52 dB overall relative to the original decoded
+sequence. The speed file is 43,482,002 bytes, 32.57% larger than the
+32,800,102-byte original. This is an explicit speed/quality/size option, not
+a replacement quality preset.
+
+For the same first 60 pictures, QEMU improved from 2,591,640 to 2,170,624
+cycles/picture (16.24%); the C++ reference measured 2,170,735 with the same
+`a2e25e7b4ea60caa` decoded hash. Three reset-to-reset physical QIO trials
+measured
+64,564.9, 65,072.6 and 64,571.0 us/picture decode, with complete-work times
+92,403.4, 92,927.5 and 92,407.9 us/picture. Against the contemporaneous
+normal-stream medians, this improves decode by 7.00%, complete work by 4.81%
+and observed throughput by 4.01%.
+
+The full physical run decoded all 3,357 pictures at 15.010 fps with
+58,124.1 us average decode and 86,805.5 us complete work. Relative to the
+retained normal full-file result, decode improved by 10.84%, complete work by
+7.35% and throughput by 9.73%. All sequence numbers were consecutive and
+audio reported zero rebuffers, underruns and inserted silence. The uploaded
+file's 43,482,002-byte size and CRC32 `3e4ac3d3` matched the local file.
 
 ## Explicit non-targets
 

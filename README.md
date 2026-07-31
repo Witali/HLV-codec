@@ -231,6 +231,15 @@ Create a `320x240` MPEG-4 Simple Profile M4S2 AVI with PCM S16LE audio:
 .\scripts\encode_mpeg4_simple_avi.ps1 -InputFile .\input.mp4
 ```
 
+For an explicit ESP32 decoder-speed trade-off, use
+`-Preset Esp32Speed`. The standard Q5 profile remains unchanged; the
+production wrapper selects Q7 and adds `_MPEG4SP_SPEED_q7` to the normal
+converted-video filename:
+
+```powershell
+.\scripts\transcode_mpeg4_simple.ps1 .\input.mp4 -Preset Esp32Speed
+```
+
 The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`
 together with explicit bitrate and buffer values only for a deliberate
 CBR/VBV encode.

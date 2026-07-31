@@ -17,6 +17,9 @@ param(
     [ValidateRange(1, 300)]
     [int]$Gop = 30,
 
+    [ValidateSet("Standard", "Esp32Speed")]
+    [string]$Preset = "Standard",
+
     [ValidateRange(1, 16)]
     [int]$Threads = 8,
 
@@ -87,9 +90,15 @@ $sourceRateExpression = $sourceFps.ToString("0.########", $culture)
 
 if (-not $OutputFile) {
     $baseName = [IO.Path]::GetFileNameWithoutExtension($InputFile)
+    $profileLabel = if ($Preset -eq "Esp32Speed") {
+        "MPEG4SP_SPEED"
+    }
+    else {
+        "MPEG4SP_M4S2"
+    }
     $OutputFile = Join-Path $repo (
         "out\MPEG4SP\${baseName}_320x240_${fpsLabel}fps_" +
-        "MPEG4SP_M4S2_q${VideoQuality}.avi"
+        "${profileLabel}_q${VideoQuality}.avi"
     )
 }
 $OutputFile = [IO.Path]::GetFullPath($OutputFile)
@@ -164,6 +173,14 @@ $arguments = @(
     "-pix_fmt", "yuv420p",
     "-threads", $Threads
 )
+if ($Preset -eq "Esp32Speed") {
+    $arguments += @(
+        "-motion_est", "zero",
+        "-mpv_flags", "+skip_rd",
+        "-luma_elim_threshold", "4",
+        "-chroma_elim_threshold", "4"
+    )
+}
 if ($MaxFrames) {
     $arguments += @("-frames:v", $MaxFrames)
 }
@@ -189,7 +206,7 @@ $arguments += @("-f", "avi", $OutputFile)
 Write-Host (
     "Encoding MPEG-4 Simple Profile/M4S2 AVI: 320x240, " +
     "full source rate $($sourceFps.ToString("0.###", $culture)) fps, " +
-    "q=$VideoQuality, GOP $Gop, $FitMode fit..."
+    "q=$VideoQuality, GOP $Gop, $FitMode fit, $Preset preset..."
 )
 & $ffmpeg @arguments
 if ($LASTEXITCODE -ne 0) {
