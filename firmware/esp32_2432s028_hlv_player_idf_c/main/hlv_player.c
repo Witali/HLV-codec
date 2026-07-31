@@ -5024,6 +5024,24 @@ void app_main(void) {
             continue;
         }
         {
+            uart_block_crc_request_t block_crc_request = {0};
+            if (uart_file_upload_take_block_crc_request(
+                    &uart_upload, &block_crc_request)) {
+                if (!sd_mounted && !mountSdCard()) {
+                    uart_file_upload_reject(&uart_upload, "NO_SD");
+                    last_retry_ms = millisNow();
+                } else {
+                    file_browser_active = false;
+                    closeVideo();
+                    showUartSession("BLOCK CRC32");
+                    uart_file_upload_checksum_blocks(
+                        &uart_upload, PLAYER_VIDEO_DIRECTORY,
+                        &block_crc_request);
+                }
+                continue;
+            }
+        }
+        {
             uart_read_request_t read_request = {0};
             if (uart_file_upload_take_read_request(
                     &uart_upload, &read_request)) {
@@ -5036,6 +5054,24 @@ void app_main(void) {
                     showUartSession("READ");
                     uart_file_upload_read_file(
                         &uart_upload, PLAYER_VIDEO_DIRECTORY, &read_request);
+                }
+                continue;
+            }
+        }
+        {
+            uart_patch_request_t patch_request = {0};
+            if (uart_file_upload_take_patch_request(
+                    &uart_upload, &patch_request)) {
+                if (!sd_mounted && !mountSdCard()) {
+                    uart_file_upload_reject(&uart_upload, "NO_SD");
+                    last_retry_ms = millisNow();
+                } else {
+                    file_browser_active = false;
+                    closeVideo();
+                    showUartSession("PATCH");
+                    uart_file_upload_patch_file(
+                        &uart_upload, PLAYER_VIDEO_DIRECTORY,
+                        &patch_request);
                 }
                 continue;
             }

@@ -4802,6 +4802,20 @@ extern "C" void app_main(void) {
             }
             continue;
         }
+        UartBlockCrcRequest block_crc_request{};
+        if (uart_upload.takeBlockCrcRequest(&block_crc_request)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                file_browser_active = false;
+                closeVideo();
+                showUartSession("BLOCK CRC32");
+                uart_upload.checksumBlocks(
+                    player_settings::kVideoDirectory, block_crc_request);
+            }
+            continue;
+        }
         UartReadRequest read_request{};
         if (uart_upload.takeReadRequest(&read_request)) {
             if (!sd_mounted && !mountSdCard()) {
@@ -4813,6 +4827,20 @@ extern "C" void app_main(void) {
                 showUartSession("READ");
                 uart_upload.readFile(
                     player_settings::kVideoDirectory, read_request);
+            }
+            continue;
+        }
+        UartPatchRequest patch_request{};
+        if (uart_upload.takePatchRequest(&patch_request)) {
+            if (!sd_mounted && !mountSdCard()) {
+                uart_upload.reject("NO_SD");
+                last_retry_ms = millisNow();
+            } else {
+                file_browser_active = false;
+                closeVideo();
+                showUartSession("PATCH");
+                uart_upload.patchFile(
+                    player_settings::kVideoDirectory, patch_request);
             }
             continue;
         }

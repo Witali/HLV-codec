@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 
 #define UPLOAD_UART UART_NUM_0
-#define UART_RX_BUFFER_BYTES 2048
+#define UART_RX_BUFFER_BYTES 4096
 #define CHUNK_TIMEOUT_MS 10000U
 #define TRANSFER_BAUD_460K 460800U
 #define TRANSFER_BAUD_921K 921600U
@@ -37,6 +37,11 @@
 #define LIST_PACKET_HEADER_BYTES 17U
 #define LIST_PACKET_ATTEMPTS 20U
 #define LIST_ACK_TIMEOUT_MS 500U
+#define BLOCK_CRC_PACKET_BYTES 24U
+#define BLOCK_CRC_PACKET_ATTEMPTS 20U
+#define BLOCK_CRC_ACK_TIMEOUT_MS 500U
+#define MINIMUM_BLOCK_CRC_BYTES 4096U
+#define MAXIMUM_BLOCK_CRC_BYTES (1024U * 1024U)
 #define CRC_BUFFER_BYTES 4096U
 #define WRITER_STACK_BYTES 4096U
 #define WRITER_PRIORITY (tskIDLE_PRIORITY + 2U)
@@ -47,8 +52,10 @@
 #define CRC_INDEX_LINE_BYTES 128U
 
 static const uint8_t k_block_magic[] = {'H', 'L', 'V', 'B'};
+static const uint8_t k_patch_block_magic[] = {'H', 'L', 'V', 'P'};
 static const uint8_t k_read_block_magic[] = {'H', 'L', 'V', 'X'};
 static const uint8_t k_list_packet_magic[] = {'H', 'L', 'V', 'L'};
+static const uint8_t k_block_crc_packet_magic[] = {'H', 'L', 'V', 'K'};
 
 typedef struct {
     uint8_t *data;
@@ -622,6 +629,7 @@ static bool parse_request(uart_file_upload_t *upload,
             (strcmp(command, "UPLOAD") != 0 &&
              strcmp(command, "LIST") != 0 &&
              strcmp(command, "READ") != 0 &&
+             strcmp(command, "PATCH") != 0 &&
              strcmp(command, "CRC32") != 0 &&
              strcmp(command, "BAUD") != 0 &&
              strcmp(command, "DELETE") != 0 &&
@@ -681,6 +689,28 @@ static bool parse_request(uart_file_upload_t *upload,
         upload->crc_requested = true;
         return false;
     }
+    if (strncmp(line, "HLVBLOCKCRC ", 12) == 0) {
+        uart_block_crc_request_t parsed = {0};
+        unsigned block_size = 0;
+        char trailing = '\0';
+        int fields = sscanf(
+            line, "HLVBLOCKCRC 1 %48s %u %c", parsed.filename,
+            &block_size, &trailing);
+        if (fields != 2 || !valid_filename(parsed.filename) ||
+            block_size < MINIMUM_BLOCK_CRC_BYTES ||
+            block_size > MAXIMUM_BLOCK_CRC_BYTES ||
+            (block_size & (block_size - 1U)) != 0U) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "CRC32")) {
+            return false;
+        }
+        parsed.block_size = block_size;
+        upload->block_crc_request = parsed;
+        upload->block_crc_requested = true;
+        return false;
+    }
     if (strncmp(line, "HLVREAD ", 8) == 0) {
         uart_read_request_t parsed = {0};
         unsigned long offset = 0;
@@ -704,6 +734,33 @@ static bool parse_request(uart_file_upload_t *upload,
         parsed.data_baud = baud;
         upload->read_request = parsed;
         upload->read_requested = true;
+        return false;
+    }
+    if (strncmp(line, "HLVPATCH ", 9) == 0) {
+        uart_patch_request_t parsed = {0};
+        unsigned long offset = 0;
+        unsigned long size = 0;
+        unsigned crc = 0;
+        unsigned baud = 0;
+        char trailing = '\0';
+        int fields = sscanf(
+            line, "HLVPATCH 1 %48s %lu %lu %x %u %c",
+            parsed.filename, &offset, &size, &crc, &baud, &trailing);
+        if (fields != 5 || offset > UINT32_MAX || size == 0U ||
+            size > UINT32_MAX || !valid_filename(parsed.filename) ||
+            !supported_data_baud(baud)) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        if (!require_session(upload, "PATCH")) {
+            return false;
+        }
+        parsed.offset = (uint32_t)offset;
+        parsed.size = (uint32_t)size;
+        parsed.crc32 = (uint32_t)crc;
+        parsed.data_baud = baud;
+        upload->patch_request = parsed;
+        upload->patch_requested = true;
         return false;
     }
     if (strncmp(line, "HLVDELETE ", 10) == 0) {
@@ -904,6 +961,31 @@ bool uart_file_upload_take_read_request(uart_file_upload_t *upload,
     return true;
 }
 
+bool uart_file_upload_take_patch_request(uart_file_upload_t *upload,
+                                         uart_patch_request_t *request) {
+    if (upload == NULL || request == NULL || !upload->patch_requested) {
+        return false;
+    }
+    *request = upload->patch_request;
+    memset(&upload->patch_request, 0, sizeof upload->patch_request);
+    upload->patch_requested = false;
+    return true;
+}
+
+bool uart_file_upload_take_block_crc_request(
+    uart_file_upload_t *upload,
+    uart_block_crc_request_t *request) {
+    if (upload == NULL || request == NULL ||
+        !upload->block_crc_requested) {
+        return false;
+    }
+    *request = upload->block_crc_request;
+    memset(&upload->block_crc_request, 0,
+           sizeof upload->block_crc_request);
+    upload->block_crc_requested = false;
+    return true;
+}
+
 bool uart_file_upload_take_baud_request(uart_file_upload_t *upload,
                                         uint32_t *baud) {
     if (upload == NULL || baud == NULL ||
@@ -1026,6 +1108,128 @@ bool uart_file_upload_list_directory(uart_file_upload_t *upload,
         finish_response(upload, "HLVERR 2 LIST_FAILED\n");
         return false;
     }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    return true;
+}
+
+static bool send_block_crc_packet(uint32_t sequence,
+                                  uint32_t offset,
+                                  uint32_t size,
+                                  uint32_t block_crc) {
+    uint8_t packet[BLOCK_CRC_PACKET_BYTES];
+    uint32_t attempt;
+    memcpy(packet, k_block_crc_packet_magic,
+           sizeof k_block_crc_packet_magic);
+    write_le32(packet + 4, sequence);
+    write_le32(packet + 8, offset);
+    write_le32(packet + 12, size);
+    write_le32(packet + 16, block_crc);
+    write_le32(packet + 20, crc32(packet, 20));
+    for (attempt = 0; attempt < BLOCK_CRC_PACKET_ATTEMPTS; ++attempt) {
+        uint8_t acknowledgment[READ_ACK_BYTES];
+        int written = uart_write_bytes(
+            UPLOAD_UART, packet, sizeof packet);
+        if (written != (int)sizeof packet) {
+            continue;
+        }
+        if (!read_exact(acknowledgment, sizeof acknowledgment,
+                        BLOCK_CRC_ACK_TIMEOUT_MS) ||
+            memcmp(acknowledgment, "HLVA", 4) != 0 ||
+            read_le32(acknowledgment + 4) != sequence ||
+            read_le32(acknowledgment + 9) !=
+                crc32(acknowledgment, 9)) {
+            continue;
+        }
+        if (acknowledgment[8] == 1U) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool uart_file_upload_checksum_blocks(
+    uart_file_upload_t *upload,
+    const char *directory,
+    const uart_block_crc_request_t *request) {
+    char path[128];
+    struct stat status = {0};
+    FILE *input;
+    uint8_t *buffer;
+    uint32_t file_size;
+    uint32_t file_crc = 0;
+    uint32_t offset = 0;
+    uint32_t sequence = 0;
+    bool success = true;
+
+    if (request == NULL ||
+        !build_path(path, sizeof path, directory, request->filename, "")) {
+        uart_file_upload_reject(upload, "BAD_PATH");
+        return false;
+    }
+    if (stat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 || (uint64_t)status.st_size > UINT32_MAX) {
+        uart_file_upload_reject(upload, "NOT_FOUND");
+        return false;
+    }
+    file_size = (uint32_t)status.st_size;
+    input = fopen(path, "rb");
+    if (input == NULL) {
+        uart_file_upload_reject(upload, "OPEN_FAILED");
+        return false;
+    }
+    buffer = (uint8_t *)heap_caps_malloc(CRC_BUFFER_BYTES,
+                                         MALLOC_CAP_8BIT);
+    if (buffer == NULL) {
+        fclose(input);
+        uart_file_upload_reject(upload, "NO_MEMORY");
+        return false;
+    }
+
+    uart_flush_input(UPLOAD_UART);
+    while (offset < file_size) {
+        uint32_t block_size = file_size - offset;
+        uint32_t consumed = 0;
+        uint32_t block_crc = 0;
+        if (block_size > request->block_size) {
+            block_size = request->block_size;
+        }
+        while (consumed < block_size) {
+            size_t wanted = block_size - consumed;
+            size_t received;
+            if (wanted > CRC_BUFFER_BYTES) {
+                wanted = CRC_BUFFER_BYTES;
+            }
+            received = fread(buffer, 1, wanted, input);
+            if (received != wanted) {
+                success = false;
+                break;
+            }
+            block_crc = esp_rom_crc32_le(block_crc, buffer, received);
+            file_crc = esp_rom_crc32_le(file_crc, buffer, received);
+            consumed += (uint32_t)received;
+        }
+        if (!success ||
+            !send_block_crc_packet(sequence, offset, block_size, block_crc)) {
+            success = false;
+            break;
+        }
+        offset += block_size;
+        ++sequence;
+    }
+    if (success &&
+        !send_block_crc_packet(sequence, file_size, 0, file_crc)) {
+        success = false;
+    }
+    if (fclose(input) != 0) {
+        success = false;
+    }
+    heap_caps_free(buffer);
+    if (!success) {
+        finish_response(upload, "HLVERR 1 BLOCK_CRC_FAILED\n");
+        return false;
+    }
+    (void)rewrite_cached_crc(directory, request->filename, true,
+                             file_size, file_crc);
     uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
     return true;
 }
@@ -1285,6 +1489,265 @@ bool uart_file_upload_delete_file(uart_file_upload_t *upload,
     return true;
 }
 
+static bool copy_file_bytes(FILE *source, FILE *destination,
+                            uint32_t bytes, uint32_t *checksum) {
+    uint8_t buffer[1024];
+    uint32_t copied = 0;
+    uint32_t crc = 0;
+
+    while (copied < bytes) {
+        size_t remaining = (size_t)(bytes - copied);
+        size_t wanted = remaining < sizeof buffer ? remaining : sizeof buffer;
+        if (fread(buffer, 1, wanted, source) != wanted) {
+            return false;
+        }
+        if (destination != NULL &&
+            fwrite(buffer, 1, wanted, destination) != wanted) {
+            return false;
+        }
+        crc = esp_rom_crc32_le(crc, buffer, wanted);
+        copied += (uint32_t)wanted;
+    }
+    if (checksum != NULL) {
+        *checksum = crc;
+    }
+    return true;
+}
+
+static bool sync_file(FILE *file) {
+    return file != NULL && fflush(file) == 0 &&
+           fsync(fileno(file)) == 0;
+}
+
+bool uart_file_upload_patch_file(uart_file_upload_t *upload,
+                                 const char *directory,
+                                 const uart_patch_request_t *request) {
+    char target_path[128];
+    char patch_path[128];
+    char backup_path[128];
+    struct stat status = {0};
+    FILE *patch = NULL;
+    FILE *target = NULL;
+    FILE *backup = NULL;
+    uint8_t block[UART_PATCH_CHUNK_BYTES];
+    uint32_t received = 0;
+    uint32_t sequence = 0;
+    uint32_t patch_crc = 0;
+    uint32_t original_crc = 0;
+    uint32_t verified_crc = 0;
+    const char *failure = "PATCH_FAILED";
+    bool backup_ready = false;
+    bool applied = false;
+    bool restored = false;
+    size_t attempt;
+
+    if (upload == NULL || request == NULL ||
+        !build_path(target_path, sizeof target_path, directory,
+                    request->filename, "") ||
+        !build_path(patch_path, sizeof patch_path, directory,
+                    request->filename, ".patch") ||
+        !build_path(backup_path, sizeof backup_path, directory,
+                    request->filename, ".patchbak")) {
+        uart_file_upload_reject(upload, "PATH_TOO_LONG");
+        return false;
+    }
+    if (stat(target_path, &status) != 0 || status.st_size < 0 ||
+        (uint64_t)status.st_size > UINT32_MAX) {
+        uart_file_upload_reject(upload, "OPEN_FAILED");
+        return false;
+    }
+    if (request->offset > (uint32_t)status.st_size ||
+        request->size > (uint32_t)status.st_size - request->offset) {
+        uart_file_upload_reject(upload, "RANGE");
+        return false;
+    }
+
+    unlink(patch_path);
+    unlink(backup_path);
+    patch = fopen(patch_path, "wb");
+    if (patch == NULL) {
+        uart_file_upload_reject(upload, "OPEN_FAILED");
+        return false;
+    }
+
+    uart_flush_input(UPLOAD_UART);
+    for (attempt = 0; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        write_response("HLVPATCHREADY 1 %u %u\n",
+                       (unsigned)UART_PATCH_CHUNK_BYTES,
+                       (unsigned)request->data_baud);
+    }
+    uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    if (request->data_baud != upload->control_baud) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!set_baud(request->data_baud)) {
+            failure = "BAUD_FAILED";
+            goto receive_failed;
+        }
+    }
+
+    while (received < request->size) {
+        uint8_t header[BLOCK_HEADER_BYTES];
+        uint32_t block_sequence;
+        uint16_t block_bytes;
+        uint32_t block_crc;
+
+        if (!read_exact(header, sizeof header, CHUNK_TIMEOUT_MS)) {
+            failure = "TIMEOUT";
+            goto receive_failed;
+        }
+        block_sequence = read_le32(header + 4);
+        block_bytes = read_le16(header + 8);
+        block_crc = read_le32(header + 10);
+        if (memcmp(header, k_patch_block_magic,
+                   sizeof k_patch_block_magic) != 0 ||
+            block_bytes == 0U ||
+            block_bytes > UART_PATCH_CHUNK_BYTES ||
+            block_bytes > request->size - received) {
+            failure = "BAD_BLOCK";
+            goto receive_failed;
+        }
+        if (!read_exact(block, block_bytes, CHUNK_TIMEOUT_MS)) {
+            failure = "TIMEOUT";
+            goto receive_failed;
+        }
+        if (block_sequence != sequence) {
+            if (block_sequence < sequence && sequence != 0U) {
+                write_response("HLVPATCHACK %u %u\n",
+                               (unsigned)(sequence - 1U),
+                               (unsigned)received);
+            } else {
+                write_response("HLVPATCHNAK %u ORDER\n",
+                               (unsigned)sequence);
+            }
+            continue;
+        }
+        if (crc32(block, block_bytes) != block_crc) {
+            write_response("HLVPATCHNAK %u CRC\n",
+                           (unsigned)sequence);
+            continue;
+        }
+        if (fwrite(block, 1, block_bytes, patch) != block_bytes) {
+            failure = "WRITE_FAILED";
+            goto receive_failed;
+        }
+        patch_crc = esp_rom_crc32_le(patch_crc, block, block_bytes);
+        received += block_bytes;
+        write_response("HLVPATCHACK %u %u\n",
+                       (unsigned)sequence, (unsigned)received);
+        ++sequence;
+    }
+    if (patch_crc != request->crc32) {
+        failure = "PATCH_CRC";
+        goto receive_failed;
+    }
+    if (!sync_file(patch)) {
+        fclose(patch);
+        patch = NULL;
+        failure = "FLUSH_FAILED";
+        goto receive_failed;
+    }
+    if (fclose(patch) != 0) {
+        patch = NULL;
+        failure = "CLOSE_FAILED";
+        goto receive_failed;
+    }
+    patch = NULL;
+
+    target = fopen(target_path, "rb");
+    backup = fopen(backup_path, "wb");
+    if (target == NULL || backup == NULL ||
+        fseek(target, (long)request->offset, SEEK_SET) != 0 ||
+        !copy_file_bytes(target, backup, request->size, &original_crc) ||
+        !sync_file(backup)) {
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    if (fclose(backup) != 0) {
+        backup = NULL;
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    backup = NULL;
+    if (fclose(target) != 0) {
+        target = NULL;
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    target = NULL;
+    backup_ready = true;
+
+    target = fopen(target_path, "r+b");
+    patch = fopen(patch_path, "rb");
+    if (target == NULL || patch == NULL ||
+        fseek(target, (long)request->offset, SEEK_SET) != 0 ||
+        !copy_file_bytes(patch, target, request->size, NULL) ||
+        !sync_file(target) ||
+        fseek(target, (long)request->offset, SEEK_SET) != 0 ||
+        !copy_file_bytes(target, NULL, request->size, &verified_crc) ||
+        verified_crc != request->crc32) {
+        failure = "VERIFY_FAILED";
+        goto apply_failed;
+    }
+    applied = true;
+
+apply_failed:
+    if (!applied && backup_ready) {
+        if (patch != NULL) {
+            fclose(patch);
+            patch = NULL;
+        }
+        if (backup != NULL) {
+            fclose(backup);
+            backup = NULL;
+        }
+        if (target == NULL) {
+            target = fopen(target_path, "r+b");
+        }
+        backup = fopen(backup_path, "rb");
+        if (target != NULL && backup != NULL &&
+            fseek(target, (long)request->offset, SEEK_SET) == 0 &&
+            copy_file_bytes(backup, target, request->size, NULL) &&
+            sync_file(target) &&
+            fseek(target, (long)request->offset, SEEK_SET) == 0 &&
+            copy_file_bytes(target, NULL, request->size, &verified_crc) &&
+            verified_crc == original_crc) {
+            restored = true;
+        }
+    }
+    if (backup != NULL) fclose(backup);
+    if (patch != NULL) fclose(patch);
+    if (target != NULL) fclose(target);
+    unlink(patch_path);
+    if (applied || restored) unlink(backup_path);
+    if (!applied) {
+        finish_response(upload, "HLVERR 1 %s%s\n", failure,
+                        restored ? "_RESTORED" : "");
+        return false;
+    }
+
+    (void)rewrite_cached_crc(directory, request->filename,
+                             false, 0U, 0U);
+    for (attempt = 1; attempt < READ_BLOCK_ATTEMPTS; ++attempt) {
+        write_response("HLVPATCHDONE 1 %u %u %08x %s\n",
+                       (unsigned)request->offset,
+                       (unsigned)request->size,
+                       (unsigned)request->crc32,
+                       request->filename);
+    }
+    finish_response(upload, "HLVPATCHDONE 1 %u %u %08x %s\n",
+                    (unsigned)request->offset,
+                    (unsigned)request->size,
+                    (unsigned)request->crc32,
+                    request->filename);
+    return true;
+
+receive_failed:
+    if (patch != NULL) fclose(patch);
+    unlink(patch_path);
+    finish_response(upload, "HLVERR 1 %s\n", failure);
+    return false;
+}
+
 bool uart_file_upload_benchmark_sd(
     uart_file_upload_t *upload,
     const char *directory,
@@ -1404,9 +1867,11 @@ bool uart_file_upload_receive(
     QueueHandle_t ready;
     QueueHandle_t completed;
     FILE *output;
+    FILE *verification;
     upload_block_t blocks[UART_UPLOAD_BUFFER_COUNT] = {0};
     upload_writer_t writer = {0};
     uint32_t received = 0;
+    uint32_t verified_file_crc = 0;
     uint32_t sequence = 0;
     size_t pending_writes = 0;
     bool success = true;
@@ -1627,6 +2092,23 @@ bool uart_file_upload_receive(
     if (success && writer.file_crc != request->crc32) {
         failure = "FILE_CRC";
         success = false;
+    }
+    if (success) {
+        bool verification_success;
+        verification = fopen(temporary, "rb");
+        verification_success = verification != NULL;
+        if (verification_success) {
+            verification_success = copy_file_bytes(
+                verification, NULL, request->size, &verified_file_crc);
+            if (fclose(verification) != 0) {
+                verification_success = false;
+            }
+        }
+        if (!verification_success ||
+            verified_file_crc != request->crc32) {
+            failure = "FILE_VERIFY_CRC";
+            success = false;
+        }
     }
     if (!success) {
         unlink(temporary);

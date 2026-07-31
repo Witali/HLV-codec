@@ -19,7 +19,7 @@
 namespace {
 
 constexpr uart_port_t kUploadUart = UART_NUM_0;
-constexpr int kUartRxBufferBytes = 2048;
+constexpr int kUartRxBufferBytes = 4096;
 constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;
@@ -29,9 +29,11 @@ constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint32_t kTransferBaud3000k = 3000000;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
+constexpr uint8_t kPatchBlockMagic[] = {'H', 'L', 'V', 'P'};
 constexpr size_t kBlockHeaderBytes = 14;
 constexpr uint8_t kReadBlockMagic[] = {'H', 'L', 'V', 'X'};
 constexpr uint8_t kListPacketMagic[] = {'H', 'L', 'V', 'L'};
+constexpr uint8_t kBlockCrcPacketMagic[] = {'H', 'L', 'V', 'K'};
 constexpr size_t kReadBlockBytes = 64;
 constexpr size_t kReadBlockHeaderBytes = 14;
 constexpr size_t kReadAckBytes = 13;
@@ -43,6 +45,11 @@ constexpr uint32_t kReadAckTimeoutMs = 500;
 constexpr size_t kListPacketHeaderBytes = 17;
 constexpr unsigned kListPacketAttempts = 20;
 constexpr unsigned kListAckTimeoutMs = 500;
+constexpr size_t kBlockCrcPacketBytes = 24;
+constexpr unsigned kBlockCrcPacketAttempts = 20;
+constexpr uint32_t kBlockCrcAckTimeoutMs = 500;
+constexpr uint32_t kMinimumBlockCrcBytes = 4096;
+constexpr uint32_t kMaximumBlockCrcBytes = 1024 * 1024;
 constexpr uint32_t kWriterStackBytes = 4096;
 constexpr UBaseType_t kWriterPriority = tskIDLE_PRIORITY + 2;
 constexpr size_t kSdBenchmarkBlockBytes = 32 * 1024;
@@ -313,6 +320,31 @@ uint32_t calibratedBaud(uint32_t baud) {
     return baud == kTransferBaud1000k ? kCalibratedBaud1000k : baud;
 }
 
+bool copyFileBytes(FILE *source, FILE *destination,
+                   uint32_t bytes, uint32_t *checksum) {
+    uint8_t buffer[1024];
+    uint32_t copied = 0;
+    uint32_t value = 0;
+    while (copied < bytes) {
+        const size_t remaining = static_cast<size_t>(bytes - copied);
+        const size_t wanted =
+            remaining < sizeof buffer ? remaining : sizeof buffer;
+        if (std::fread(buffer, 1, wanted, source) != wanted) return false;
+        if (destination &&
+            std::fwrite(buffer, 1, wanted, destination) != wanted) {
+            return false;
+        }
+        value = esp_rom_crc32_le(value, buffer, wanted);
+        copied += static_cast<uint32_t>(wanted);
+    }
+    if (checksum) *checksum = value;
+    return true;
+}
+
+bool syncFile(FILE *file) {
+    return file && !std::fflush(file) && !fsync(fileno(file));
+}
+
 }  // namespace
 
 esp_err_t UartFileUpload::begin(uint32_t control_baud) {
@@ -365,6 +397,7 @@ bool UartFileUpload::parseRequest(const char *line,
             (std::strcmp(command, "UPLOAD") &&
              std::strcmp(command, "LIST") &&
              std::strcmp(command, "READ") &&
+             std::strcmp(command, "PATCH") &&
              std::strcmp(command, "CRC32") &&
              std::strcmp(command, "BAUD") &&
              std::strcmp(command, "DELETE") &&
@@ -418,6 +451,26 @@ bool UartFileUpload::parseRequest(const char *line,
         crc_requested_ = true;
         return false;
     }
+    if (!std::strncmp(line, "HLVBLOCKCRC ", 12)) {
+        UartBlockCrcRequest parsed{};
+        unsigned block_size = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVBLOCKCRC 1 %48s %u %c", parsed.filename,
+            &block_size, &trailing);
+        if (fields != 2 || !validFilename(parsed.filename) ||
+            block_size < kMinimumBlockCrcBytes ||
+            block_size > kMaximumBlockCrcBytes ||
+            (block_size & (block_size - 1U))) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        if (!requireSession("CRC32")) return false;
+        parsed.block_size = block_size;
+        block_crc_request_ = parsed;
+        block_crc_requested_ = true;
+        return false;
+    }
     if (!std::strncmp(line, "HLVREAD ", 8)) {
         UartReadRequest parsed{};
         unsigned long offset = 0;
@@ -439,6 +492,31 @@ bool UartFileUpload::parseRequest(const char *line,
         parsed.data_baud = baud;
         read_request_ = parsed;
         read_requested_ = true;
+        return false;
+    }
+    if (!std::strncmp(line, "HLVPATCH ", 9)) {
+        UartPatchRequest parsed{};
+        unsigned long offset = 0;
+        unsigned long size = 0;
+        unsigned crc = 0;
+        unsigned baud = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVPATCH 1 %48s %lu %lu %x %u %c",
+            parsed.filename, &offset, &size, &crc, &baud, &trailing);
+        if (fields != 5 || offset > UINT32_MAX || !size ||
+            size > UINT32_MAX || !validFilename(parsed.filename) ||
+            !supportedDataBaud(baud)) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        if (!requireSession("PATCH")) return false;
+        parsed.offset = static_cast<uint32_t>(offset);
+        parsed.size = static_cast<uint32_t>(size);
+        parsed.crc32 = static_cast<uint32_t>(crc);
+        parsed.data_baud = baud;
+        patch_request_ = parsed;
+        patch_requested_ = true;
         return false;
     }
     if (!std::strncmp(line, "HLVDELETE ", 10)) {
@@ -586,6 +664,22 @@ bool UartFileUpload::takeReadRequest(UartReadRequest *request) {
     return true;
 }
 
+bool UartFileUpload::takePatchRequest(UartPatchRequest *request) {
+    if (!request || !patch_requested_) return false;
+    *request = patch_request_;
+    patch_request_ = {};
+    patch_requested_ = false;
+    return true;
+}
+
+bool UartFileUpload::takeBlockCrcRequest(UartBlockCrcRequest *request) {
+    if (!request || !block_crc_requested_) return false;
+    *request = block_crc_request_;
+    block_crc_request_ = {};
+    block_crc_requested_ = false;
+    return true;
+}
+
 bool UartFileUpload::takeBaudRequest(uint32_t *baud) {
     if (!baud || !control_baud_requested_) return false;
     *baud = requested_control_baud_;
@@ -686,6 +780,110 @@ bool UartFileUpload::listDirectory(const char *directory) {
         finishResponse("HLVERR 2 LIST_FAILED\n");
         return false;
     }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    return true;
+}
+
+bool UartFileUpload::checksumBlocks(
+    const char *directory, const UartBlockCrcRequest &request) {
+    char path[128];
+    if (!directory ||
+        !buildPath(path, sizeof path, directory, request.filename, "")) {
+        reject("BAD_PATH");
+        return false;
+    }
+    struct stat status {};
+    if (stat(path, &status) || !S_ISREG(status.st_mode) ||
+        status.st_size < 0 ||
+        static_cast<uint64_t>(status.st_size) > UINT32_MAX) {
+        reject("NOT_FOUND");
+        return false;
+    }
+    const uint32_t file_size = static_cast<uint32_t>(status.st_size);
+    FILE *input = std::fopen(path, "rb");
+    if (!input) {
+        reject("OPEN_FAILED");
+        return false;
+    }
+    constexpr size_t kCrcBufferBytes = 4096;
+    auto *buffer = static_cast<uint8_t *>(
+        heap_caps_malloc(kCrcBufferBytes, MALLOC_CAP_8BIT));
+    if (!buffer) {
+        std::fclose(input);
+        reject("NO_MEMORY");
+        return false;
+    }
+
+    const auto send_packet = [this](uint32_t sequence, uint32_t offset,
+                                    uint32_t size, uint32_t block_crc) {
+        uint8_t packet[kBlockCrcPacketBytes]{};
+        std::memcpy(packet, kBlockCrcPacketMagic,
+                    sizeof kBlockCrcPacketMagic);
+        writeLe32(packet + 4, sequence);
+        writeLe32(packet + 8, offset);
+        writeLe32(packet + 12, size);
+        writeLe32(packet + 16, block_crc);
+        writeLe32(packet + 20, crc32(packet, 20));
+        for (unsigned attempt = 0; attempt < kBlockCrcPacketAttempts;
+             ++attempt) {
+            uint8_t acknowledgment[kReadAckBytes]{};
+            const int written = uart_write_bytes(
+                kUploadUart, packet, sizeof packet);
+            if (written != static_cast<int>(sizeof packet)) continue;
+            if (!readExact(acknowledgment, sizeof acknowledgment,
+                           kBlockCrcAckTimeoutMs)) continue;
+            if (std::memcmp(acknowledgment, "HLVA", 4) ||
+                readLe32(acknowledgment + 4) != sequence ||
+                readLe32(acknowledgment + 9) !=
+                    crc32(acknowledgment, 9)) {
+                continue;
+            }
+            if (acknowledgment[8] == 1) return true;
+        }
+        return false;
+    };
+
+    uart_flush_input(kUploadUart);
+    uint32_t file_crc = 0;
+    uint32_t offset = 0;
+    uint32_t sequence = 0;
+    bool success = true;
+    while (offset < file_size) {
+        const uint32_t block_size = std::min(
+            request.block_size, file_size - offset);
+        uint32_t consumed = 0;
+        uint32_t block_crc = 0;
+        while (consumed < block_size) {
+            const size_t wanted = std::min<size_t>(
+                kCrcBufferBytes, block_size - consumed);
+            const size_t received = std::fread(buffer, 1, wanted, input);
+            if (received != wanted) {
+                success = false;
+                break;
+            }
+            block_crc = esp_rom_crc32_le(block_crc, buffer, received);
+            file_crc = esp_rom_crc32_le(file_crc, buffer, received);
+            consumed += static_cast<uint32_t>(received);
+        }
+        if (!success ||
+            !send_packet(sequence, offset, block_size, block_crc)) {
+            success = false;
+            break;
+        }
+        offset += block_size;
+        ++sequence;
+    }
+    if (success && !send_packet(sequence, file_size, 0, file_crc)) {
+        success = false;
+    }
+    if (std::fclose(input)) success = false;
+    heap_caps_free(buffer);
+    if (!success) {
+        finishResponse("HLVERR 1 BLOCK_CRC_FAILED\n");
+        return false;
+    }
+    (void)rewriteCachedCrc(directory, request.filename, true,
+                           file_size, file_crc);
     uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
     return true;
 }
@@ -923,6 +1121,227 @@ bool UartFileUpload::deleteFile(
     (void)rewriteCachedCrc(directory, filename, false, 0, 0);
     finishResponse("HLVDELETE 1 %s\n", filename);
     return true;
+}
+
+bool UartFileUpload::patchFile(
+        const char *directory, const UartPatchRequest &request) {
+    char target_path[128];
+    char patch_path[128];
+    char backup_path[128];
+    struct stat status{};
+    FILE *patch = nullptr;
+    FILE *target = nullptr;
+    FILE *backup = nullptr;
+    uint8_t block[kPatchChunkBytes];
+    uint32_t received = 0;
+    uint32_t sequence = 0;
+    uint32_t patch_crc = 0;
+    uint32_t original_crc = 0;
+    uint32_t verified_crc = 0;
+    const char *failure = "PATCH_FAILED";
+    bool backup_ready = false;
+    bool applied = false;
+    bool restored = false;
+
+    if (!directory ||
+        !buildPath(target_path, sizeof target_path, directory,
+                   request.filename, "") ||
+        !buildPath(patch_path, sizeof patch_path, directory,
+                   request.filename, ".patch") ||
+        !buildPath(backup_path, sizeof backup_path, directory,
+                   request.filename, ".patchbak")) {
+        reject("PATH_TOO_LONG");
+        return false;
+    }
+    if (stat(target_path, &status) || status.st_size < 0 ||
+        static_cast<uint64_t>(status.st_size) > UINT32_MAX) {
+        reject("OPEN_FAILED");
+        return false;
+    }
+    if (request.offset > static_cast<uint32_t>(status.st_size) ||
+        request.size > static_cast<uint32_t>(status.st_size) -
+                           request.offset) {
+        reject("RANGE");
+        return false;
+    }
+
+    unlink(patch_path);
+    unlink(backup_path);
+    patch = std::fopen(patch_path, "wb");
+    if (!patch) {
+        reject("OPEN_FAILED");
+        return false;
+    }
+
+    uart_flush_input(kUploadUart);
+    for (unsigned attempt = 0; attempt < kReadBlockAttempts; ++attempt) {
+        writeResponse("HLVPATCHREADY 1 %u %u\n",
+                      static_cast<unsigned>(kPatchChunkBytes),
+                      static_cast<unsigned>(request.data_baud));
+    }
+    uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    if (request.data_baud != control_baud_) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (!setBaud(request.data_baud)) {
+            failure = "BAUD_FAILED";
+            goto receive_failed;
+        }
+    }
+
+    while (received < request.size) {
+        uint8_t header[kBlockHeaderBytes];
+        if (!readExact(header, sizeof header, kChunkTimeoutMs)) {
+            failure = "TIMEOUT";
+            goto receive_failed;
+        }
+        const uint32_t block_sequence = readLe32(header + 4);
+        const uint16_t block_bytes = readLe16(header + 8);
+        const uint32_t block_crc = readLe32(header + 10);
+        if (std::memcmp(header, kPatchBlockMagic,
+                        sizeof kPatchBlockMagic) ||
+            !block_bytes || block_bytes > kPatchChunkBytes ||
+            block_bytes > request.size - received) {
+            failure = "BAD_BLOCK";
+            goto receive_failed;
+        }
+        if (!readExact(block, block_bytes, kChunkTimeoutMs)) {
+            failure = "TIMEOUT";
+            goto receive_failed;
+        }
+        if (block_sequence != sequence) {
+            if (block_sequence < sequence && sequence) {
+                writeResponse("HLVPATCHACK %u %u\n",
+                              static_cast<unsigned>(sequence - 1),
+                              static_cast<unsigned>(received));
+            } else {
+                writeResponse("HLVPATCHNAK %u ORDER\n",
+                              static_cast<unsigned>(sequence));
+            }
+            continue;
+        }
+        if (crc32(block, block_bytes) != block_crc) {
+            writeResponse("HLVPATCHNAK %u CRC\n",
+                          static_cast<unsigned>(sequence));
+            continue;
+        }
+        if (std::fwrite(block, 1, block_bytes, patch) != block_bytes) {
+            failure = "WRITE_FAILED";
+            goto receive_failed;
+        }
+        patch_crc = esp_rom_crc32_le(patch_crc, block, block_bytes);
+        received += block_bytes;
+        writeResponse("HLVPATCHACK %u %u\n",
+                      static_cast<unsigned>(sequence),
+                      static_cast<unsigned>(received));
+        ++sequence;
+    }
+    if (patch_crc != request.crc32) {
+        failure = "PATCH_CRC";
+        goto receive_failed;
+    }
+    if (!syncFile(patch)) {
+        std::fclose(patch);
+        patch = nullptr;
+        failure = "FLUSH_FAILED";
+        goto receive_failed;
+    }
+    if (std::fclose(patch)) {
+        patch = nullptr;
+        failure = "CLOSE_FAILED";
+        goto receive_failed;
+    }
+    patch = nullptr;
+
+    target = std::fopen(target_path, "rb");
+    backup = std::fopen(backup_path, "wb");
+    if (!target || !backup ||
+        std::fseek(target, static_cast<long>(request.offset), SEEK_SET) ||
+        !copyFileBytes(target, backup, request.size, &original_crc) ||
+        !syncFile(backup)) {
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    if (std::fclose(backup)) {
+        backup = nullptr;
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    backup = nullptr;
+    if (std::fclose(target)) {
+        target = nullptr;
+        failure = "BACKUP_FAILED";
+        goto apply_failed;
+    }
+    target = nullptr;
+    backup_ready = true;
+
+    target = std::fopen(target_path, "r+b");
+    patch = std::fopen(patch_path, "rb");
+    if (!target || !patch ||
+        std::fseek(target, static_cast<long>(request.offset), SEEK_SET) ||
+        !copyFileBytes(patch, target, request.size, nullptr) ||
+        !syncFile(target) ||
+        std::fseek(target, static_cast<long>(request.offset), SEEK_SET) ||
+        !copyFileBytes(target, nullptr, request.size, &verified_crc) ||
+        verified_crc != request.crc32) {
+        failure = "VERIFY_FAILED";
+        goto apply_failed;
+    }
+    applied = true;
+
+apply_failed:
+    if (!applied && backup_ready) {
+        if (patch) {
+            std::fclose(patch);
+            patch = nullptr;
+        }
+        if (backup) {
+            std::fclose(backup);
+            backup = nullptr;
+        }
+        if (!target) target = std::fopen(target_path, "r+b");
+        backup = std::fopen(backup_path, "rb");
+        if (target && backup &&
+            !std::fseek(target, static_cast<long>(request.offset), SEEK_SET) &&
+            copyFileBytes(backup, target, request.size, nullptr) &&
+            syncFile(target) &&
+            !std::fseek(target, static_cast<long>(request.offset), SEEK_SET) &&
+            copyFileBytes(target, nullptr, request.size, &verified_crc) &&
+            verified_crc == original_crc) {
+            restored = true;
+        }
+    }
+    if (backup) std::fclose(backup);
+    if (patch) std::fclose(patch);
+    if (target) std::fclose(target);
+    unlink(patch_path);
+    if (applied || restored) unlink(backup_path);
+    if (!applied) {
+        finishResponse("HLVERR 1 %s%s\n", failure,
+                       restored ? "_RESTORED" : "");
+        return false;
+    }
+
+    rewriteCachedCrc(directory, request.filename, false, 0, 0);
+    for (unsigned attempt = 1; attempt < kReadBlockAttempts; ++attempt) {
+        writeResponse("HLVPATCHDONE 1 %u %u %08x %s\n",
+                      static_cast<unsigned>(request.offset),
+                      static_cast<unsigned>(request.size),
+                      static_cast<unsigned>(request.crc32),
+                      request.filename);
+    }
+    finishResponse("HLVPATCHDONE 1 %u %u %08x %s\n",
+                   static_cast<unsigned>(request.offset),
+                   static_cast<unsigned>(request.size),
+                   static_cast<unsigned>(request.crc32),
+                   request.filename);
+    return true;
+
+receive_failed:
+    if (patch) std::fclose(patch);
+    unlink(patch_path);
+    finishResponse("HLVERR 1 %s\n", failure);
+    return false;
 }
 
 bool UartFileUpload::benchmarkSd(
@@ -1400,6 +1819,20 @@ bool UartFileUpload::receive(const UartUploadRequest &request,
     if (success && actual_crc != request.crc32) {
         failure = "FILE_CRC";
         success = false;
+    }
+    if (success) {
+        uint32_t verified_file_crc = 0;
+        FILE *verification = std::fopen(temporary, "rb");
+        bool verification_success = verification != nullptr;
+        if (verification_success) {
+            verification_success = copyFileBytes(
+                verification, nullptr, request.size, &verified_file_crc);
+            if (std::fclose(verification)) verification_success = false;
+        }
+        if (!verification_success || verified_file_crc != request.crc32) {
+            failure = "FILE_VERIFY_CRC";
+            success = false;
+        }
     }
     if (!success) {
         unlink(temporary);

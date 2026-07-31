@@ -207,6 +207,31 @@ supported rate.
 When `-Length` is omitted, the client requests everything from `-Offset`
 through EOF. Existing local files are preserved unless `-Force` is supplied.
 
+Rewrite one byte range while preserving the rest of an existing SD file:
+
+```powershell
+.\patch-file.ps1 -Port COM8 -Name video.avi -Offset 32764928 `
+    -File .\correct-range.bin
+```
+
+`HLVPATCH 1` transfers 1 KiB CRC-protected packets to a temporary file. The
+firmware backs up the exact target range, applies the patch, flushes it, and
+rereads the range from SD before reporting success. A failed verification
+restores the backup.
+
+To detect and repair only corrupt regions of a large file, compare 64 KiB
+blocks on both endpoints and patch adjacent mismatches:
+
+```powershell
+.\sync-file.ps1 -Port COM8 -File .\video.avi -DryRun
+.\sync-file.ps1 -Port COM8 -File .\video.avi
+```
+
+`HLVBLOCKCRC 1` calculates every block CRC and the whole-file CRC directly on
+the ESP32. The client acknowledges each protected result, patches only ranges
+whose CRC differs, then repeats the complete block and whole-file scan before
+declaring success.
+
 To remove one explicitly named regular file, start a `DELETE` session and send
 `HLVDELETE 1 <name>`; the firmware rejects paths and hidden names and returns
 `HLVDELETE 1 <name>` only after success. Send `HLVMONITOR 1 ON` to reopen
@@ -270,7 +295,7 @@ closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the
 transferred/total size beside it using three significant digits, with the
 destination filename below the bar.
-Each 64-byte block has its own CRC32. Upload protocol v2 advertises a two-block
+Each 1024-byte block has its own CRC32. Upload protocol v2 advertises a two-block
 sliding window, so the PC can send both receive buffers without waiting for an
 individual ACK. An ACK is cumulative and returns buffer credit only after the
 CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
@@ -278,14 +303,15 @@ the rejected sequence. During an SD stall the ESP32 sends `HLVWAIT` every
 250 ms; the client retries after a two-second ACK timeout and aborts after ten
 seconds without cumulative progress. Hardware flow control is therefore not
 required. CRC calculation uses the ESP32 ROM table implementation. The
-complete file CRC32 is checked before the previous target is replaced; an
-interrupted or corrupt upload leaves the existing video intact. Two reusable
-64-byte buffers exist only during an upload,
+complete file CRC32 is accumulated while receiving the upload. After `fsync`,
+the temporary file is reopened and reread from SD to verify that CRC before
+the previous target is replaced; an interrupted or corrupt upload leaves the
+existing video intact. Two reusable 1024-byte buffers exist only during an upload,
 while the decoder and audio buffers are released. CPU0 receives and validates
 the next UART block while a CPU1 writer task stores the preceding block on SD.
 An ACK means that a block passed its RAM CRC and completed its SD write;
 `HLVDONE` is emitted only after both buffers are written, `fsync` completes and
-the full-file CRC matches. The video remains stopped until the explicit
+the SD readback full-file CRC matches. The video remains stopped until the explicit
 `HLVMONITOR 1 ON` command.
 
 The upload client first uses `HLVBAUD` to put both endpoints at the selected
@@ -295,7 +321,7 @@ data rate. Upload protocol version 2 then starts with this ASCII line:
 HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 2 64 <data-baud> 2`, receives windowed `HLVB`
+The device replies `HLVREADY 2 1024 <data-baud> 2`, receives windowed `HLVB`
 binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
 `HLVDONE 2 <size> <crc32> <name>`. The client explicitly restores 1000000 baud
 with `HLVBAUD`, then enables monitoring after successful completion.

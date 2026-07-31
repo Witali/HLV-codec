@@ -24,6 +24,7 @@ DEFAULT_DATA_BAUD = 1_000_000
 UPLOAD_PROTOCOL_VERSION = 2
 WINDOW_ACK_TIMEOUT_SECONDS = 2.0
 WINDOW_PROGRESS_TIMEOUT_SECONDS = 10.0
+MINIMUM_VERIFY_BYTES_PER_SECOND = 256 * 1024
 MAX_BLOCK_ATTEMPTS = 5
 SUPPORTED_DATA_BAUDS = (
     460_800,
@@ -106,6 +107,14 @@ def wait_for_completion(port: serial.Serial, size: int, checksum: int,
         if len(received) > 1024:
             del received[:-512]
     raise ResponseTimeout("timeout waiting for the ESP32 completion response")
+
+
+def completion_timeout(size: int, response_timeout: float) -> float:
+    """Allow time for ESP32 to reread and CRC the staged SD-card file."""
+    return max(
+        response_timeout,
+        30.0 + size / MINIMUM_VERIFY_BYTES_PER_SECOND,
+    )
 
 
 def open_port(name: str, baud: int) -> serial.Serial:
@@ -358,7 +367,8 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
                     next_report = now + 0.5
 
         wait_for_completion(
-            port, size, file_crc, remote_name, response_timeout
+            port, size, file_crc, remote_name,
+            completion_timeout(size, response_timeout),
         )
         if data_baud != CONTROL_BAUD:
             try:

@@ -12,7 +12,8 @@ extern "C" {
 
 #define UART_UPLOAD_MAX_FILENAME_BYTES 48U
 #define UART_SESSION_COMMAND_BYTES 16U
-#define UART_UPLOAD_CHUNK_BYTES 64U
+#define UART_UPLOAD_CHUNK_BYTES 1024U
+#define UART_PATCH_CHUNK_BYTES 1024U
 #define UART_UPLOAD_BUFFER_COUNT 2U
 #define UART_UPLOAD_LINE_BYTES 128U
 
@@ -29,6 +30,19 @@ typedef struct {
     uint32_t size;
     uint32_t data_baud;
 } uart_read_request_t;
+
+typedef struct {
+    char filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
+    uint32_t offset;
+    uint32_t size;
+    uint32_t crc32;
+    uint32_t data_baud;
+} uart_patch_request_t;
+
+typedef struct {
+    char filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
+    uint32_t block_size;
+} uart_block_crc_request_t;
 
 typedef enum {
     UART_SD_BENCHMARK_ZEROS,
@@ -59,6 +73,10 @@ typedef struct {
     bool crc_requested;
     uart_read_request_t read_request;
     bool read_requested;
+    uart_patch_request_t patch_request;
+    bool patch_requested;
+    uart_block_crc_request_t block_crc_request;
+    bool block_crc_requested;
     uint32_t requested_control_baud;
     bool control_baud_requested;
     char delete_filename[UART_UPLOAD_MAX_FILENAME_BYTES + 1U];
@@ -85,6 +103,11 @@ bool uart_file_upload_take_crc_request(uart_file_upload_t *upload,
                                        size_t filename_bytes);
 bool uart_file_upload_take_read_request(uart_file_upload_t *upload,
                                         uart_read_request_t *request);
+bool uart_file_upload_take_patch_request(uart_file_upload_t *upload,
+                                         uart_patch_request_t *request);
+bool uart_file_upload_take_block_crc_request(
+    uart_file_upload_t *upload,
+    uart_block_crc_request_t *request);
 bool uart_file_upload_take_baud_request(uart_file_upload_t *upload,
                                         uint32_t *baud);
 bool uart_file_upload_take_delete_request(uart_file_upload_t *upload,
@@ -101,6 +124,13 @@ bool uart_file_upload_checksum_file(uart_file_upload_t *upload,
 bool uart_file_upload_read_file(uart_file_upload_t *upload,
                                 const char *directory,
                                 const uart_read_request_t *request);
+bool uart_file_upload_patch_file(uart_file_upload_t *upload,
+                                 const char *directory,
+                                 const uart_patch_request_t *request);
+bool uart_file_upload_checksum_blocks(
+    uart_file_upload_t *upload,
+    const char *directory,
+    const uart_block_crc_request_t *request);
 bool uart_file_upload_change_baud(uart_file_upload_t *upload,
                                   uint32_t baud);
 bool uart_file_upload_delete_file(uart_file_upload_t *upload,

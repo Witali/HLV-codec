@@ -21,6 +21,19 @@ struct UartReadRequest {
     uint32_t data_baud = 0;
 };
 
+struct UartPatchRequest {
+    char filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+    uint32_t offset = 0;
+    uint32_t size = 0;
+    uint32_t crc32 = 0;
+    uint32_t data_baud = 0;
+};
+
+struct UartBlockCrcRequest {
+    char filename[UartUploadRequest::kMaximumFilenameBytes + 1]{};
+    uint32_t block_size = 0;
+};
+
 enum class SdBenchmarkPattern : uint8_t {
     kZeros,
     kPseudoRandom,
@@ -33,7 +46,8 @@ struct SdBenchmarkRequest {
 
 class UartFileUpload {
 public:
-    static constexpr size_t kChunkBytes = 64;
+    static constexpr size_t kChunkBytes = 1024;
+    static constexpr size_t kPatchChunkBytes = 1024;
     static constexpr size_t kBufferCount = 2;
     using ProgressCallback =
         void (*)(uint32_t received, uint32_t total, void *context);
@@ -47,12 +61,17 @@ public:
     bool takeListRequest();
     bool takeCrcRequest(char *filename, size_t filename_bytes);
     bool takeReadRequest(UartReadRequest *request);
+    bool takePatchRequest(UartPatchRequest *request);
+    bool takeBlockCrcRequest(UartBlockCrcRequest *request);
     bool takeBaudRequest(uint32_t *baud);
     bool takeDeleteRequest(char *filename, size_t filename_bytes);
     bool takeSdBenchmarkRequest(SdBenchmarkRequest *request);
     bool listDirectory(const char *directory);
     bool checksumFile(const char *directory, const char *filename);
     bool readFile(const char *directory, const UartReadRequest &request);
+    bool patchFile(const char *directory, const UartPatchRequest &request);
+    bool checksumBlocks(const char *directory,
+                        const UartBlockCrcRequest &request);
     bool changeBaud(uint32_t baud);
     bool deleteFile(const char *directory, const char *filename);
     bool benchmarkSd(const char *directory,
@@ -89,6 +108,10 @@ private:
     bool crc_requested_ = false;
     UartReadRequest read_request_{};
     bool read_requested_ = false;
+    UartPatchRequest patch_request_{};
+    bool patch_requested_ = false;
+    UartBlockCrcRequest block_crc_request_{};
+    bool block_crc_requested_ = false;
     uint32_t requested_control_baud_ = 0;
     bool control_baud_requested_ = false;
     char delete_filename_[UartUploadRequest::kMaximumFilenameBytes + 1]{};
