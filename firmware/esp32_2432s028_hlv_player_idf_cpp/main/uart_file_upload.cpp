@@ -19,7 +19,7 @@
 namespace {
 
 constexpr uart_port_t kUploadUart = UART_NUM_0;
-constexpr int kUartRxBufferBytes = 4096;
+constexpr int kUartRxBufferBytes = 12288;
 constexpr uint32_t kChunkTimeoutMs = 10000;
 constexpr uint32_t kTransferBaud460k = 460800;
 constexpr uint32_t kTransferBaud921k = 921600;

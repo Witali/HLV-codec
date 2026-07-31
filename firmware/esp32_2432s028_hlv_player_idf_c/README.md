@@ -302,7 +302,7 @@ closes both SD file cursors before acknowledging an upload. During the transfer
 the screen shows a large completion percentage above the progress bar and the
 transferred/total size beside it using three significant digits, with the
 destination filename below the bar.
-Each 1024-byte block has its own CRC32. Upload protocol v2 advertises a two-block
+Each 4096-byte block has its own CRC32. Upload protocol v2 advertises a two-block
 sliding window, so the PC can send both receive buffers without waiting for an
 individual ACK. An ACK is cumulative and returns buffer credit only after the
 CPU1 SD writer completes that block. A NAK causes Go-Back-N retransmission from
@@ -313,7 +313,7 @@ required. CRC calculation uses the ESP32 ROM table implementation. The
 complete file CRC32 is accumulated while receiving the upload. After `fsync`,
 the temporary file is reopened and reread from SD to verify that CRC before
 the previous target is replaced; an interrupted or corrupt upload leaves the
-existing video intact. Two reusable 1024-byte buffers exist only during an upload,
+existing video intact. Two reusable 4096-byte buffers exist only during an upload,
 while the decoder and audio buffers are released. CPU0 receives and validates
 the next UART block while a CPU1 writer task stores the preceding block on SD.
 An ACK means that a block passed its RAM CRC and completed its SD write;
@@ -328,7 +328,7 @@ data rate. Upload protocol version 2 then starts with this ASCII line:
 HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 ```
 
-The device replies `HLVREADY 2 1024 <data-baud> 2`, receives windowed `HLVB`
+The device replies `HLVREADY 2 4096 <data-baud> 2`, receives windowed `HLVB`
 binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
 `HLVDONE 2 <size> <crc32> <name>`. The client explicitly restores 1000000 baud
 with `HLVBAUD`, then enables monitoring after successful completion.

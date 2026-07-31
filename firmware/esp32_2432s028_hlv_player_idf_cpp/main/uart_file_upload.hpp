@@ -46,7 +46,7 @@ struct SdBenchmarkRequest {
 
 class UartFileUpload {
 public:
-    static constexpr size_t kChunkBytes = 1024;
+    static constexpr size_t kChunkBytes = 4096;
     static constexpr size_t kPatchChunkBytes = 1024;
     static constexpr size_t kBufferCount = 2;
     using ProgressCallback =

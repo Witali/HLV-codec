@@ -64,7 +64,7 @@ class FakeEsp32Port:
             self.responses.append(
                 (
                     f"HLVREADY {uart_upload.UPLOAD_PROTOCOL_VERSION} "
-                    f"1024 {data_baud} 2\n"
+                    f"4096 {data_baud} 2\n"
                 ).encode("ascii")
             )
             return len(packet)
@@ -176,7 +176,7 @@ class UartUploadTest(unittest.TestCase):
                 uart_upload.time.sleep = original_sleep
                 uart_upload.print_progress = original_progress
             self.assertEqual(bytes(fake.data), content)
-            self.assertEqual(fake.sequence, (len(content) + 1023) // 1024)
+            self.assertEqual(fake.sequence, (len(content) + 4095) // 4096)
             self.assertEqual(fake.baudrate, uart_upload.CONTROL_BAUD)
             self.assertEqual(fake.baud_changes, [921600, 1000000])
             self.assertEqual(fake.maximum_unread_acks, 2)
@@ -207,7 +207,7 @@ class UartUploadTest(unittest.TestCase):
                 uart_upload.print_progress = original_progress
             self.assertTrue(fake.nak_sent)
             self.assertEqual(bytes(fake.data), content)
-            self.assertEqual(fake.sequence, (len(content) + 1023) // 1024)
+            self.assertEqual(fake.sequence, (len(content) + 4095) // 4096)
             self.assertEqual(fake.monitoring_calls, 1)
 
     def test_completion_ignores_trailing_baud_transition_noise(self):
