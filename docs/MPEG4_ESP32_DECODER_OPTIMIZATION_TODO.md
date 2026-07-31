@@ -236,8 +236,8 @@ without physical flashing.
       output; reject the measured implementations when they do not improve.
 - [x] Evaluate packing coded 8x8 blocks while reconstructed pixels are still
       cache-hot; reject the callback implementation when it does not improve.
-- [ ] Compute Q4 block-average corrections during the direct compact write.
-- [ ] Preserve exact compact-frame checksums and row-level renderer safety.
+- [x] Compute Q4 block-average corrections during compact writes.
+- [x] Preserve exact compact-frame checksums and row-level renderer safety.
 
 The retained aligned packer derives the signed correction residual from the
 sum of eight source samples minus the sum of their quantized codes. The
@@ -323,14 +323,36 @@ per-macroblock bookkeeping overhead across 17,960 reconstructed macroblocks
 outweighed cache locality. The candidate was removed without physical
 flashing; matching hashes again made PSNR unnecessary.
 
+The retained aligned packer already accumulates each 8x8 block's signed
+quantization residual while writing its eight packed rows, then emits the Q4
+block-average correction without a second pixel pass. Both rejected direct
+write candidates reused that fused path. Because no direct-write scheduling
+candidate improved, there is no separate direct-output correction path to
+retain. Exact QEMU sequence hashes and the existing 16-row output guard remain
+the acceptance gates for every compact-write change.
+
 ## Priority 4: overlap independent work
 
-- [ ] Verify current core affinity, queue waits and reference/display lifetime.
-- [ ] Pipeline rendering of picture N with decoding of picture N+1 when the
+- [x] Verify current core affinity, queue waits and reference/display lifetime.
+- [x] Pipeline rendering of picture N with decoding of picture N+1 when the
       output/reference frame cannot be overwritten early.
-- [ ] Preserve the two compact predictive pictures; a single total picture
+- [x] Preserve the two compact predictive pictures; a single total picture
       buffer is unsafe for unrestricted MPEG-4 P-frame motion vectors.
-- [ ] Measure wall-clock throughput, not only per-task CPU time.
+- [x] Measure wall-clock throughput, not only per-task CPU time.
+
+The production C and C++ players already run ordered video decode on CPU1 and
+main/render I/O on CPU0 through one-entry request/result queues. MPEG-4 uses
+the requested single byte-planar output workspace together with two
+ping-ponged compact pictures. While CPU0 renders picture N, CPU1 reconstructs
+picture N+1 into the older compact picture; the 16-source-row output guard
+waits only when rendering has not released the row that is about to be
+overwritten. Queue depth one is sufficient because decoding is ordered and
+only one old compact output can be safely reused.
+
+The full-file acceptance figures above are wall-clock production-player
+measurements with this overlap enabled, not decoder-only estimates. A third
+compact picture or deeper decode queue would increase memory without exposing
+additional safe parallel work.
 
 ## Priority 5: flash and code placement
 
