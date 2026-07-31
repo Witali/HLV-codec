@@ -106,8 +106,8 @@ try {
     & (Join-Path $PSScriptRoot "transcode_divx3.ps1") $source `
         -OutputFile (Join-Path $work "divx3.avi") `
         -MaxFrames 3 -Force
-    & (Join-Path $PSScriptRoot "transcode_hlv14.ps1") $source `
-        -OutputFile (Join-Path $work "hlv14.hlv") `
+    & (Join-Path $PSScriptRoot "transcode_hlv15.ps1") $source `
+        -OutputFile (Join-Path $work "hlv15.hlv") `
         -MaxFrames 2 -Force
     & (Join-Path $PSScriptRoot "transcode_bpv6.ps1") $source `
         -OutputDirectory (Join-Path $work "BPV") `
@@ -151,18 +151,19 @@ try {
 
     foreach ($required in @(
         (Join-Path $work "divx3.json"),
-        (Join-Path $work "hlv14.hlv"),
-        (Join-Path $work "hlv14.json"),
-        (Join-Path $work "hlv14.cq.csv")
+        (Join-Path $work "hlv15.hlv"),
+        (Join-Path $work "hlv15.json"),
+        (Join-Path $work "hlv15.cq.csv")
     )) {
         if (-not (Test-Path -LiteralPath $required)) {
             throw "Wrapper did not create required output: $required"
         }
     }
     $hlvReport = Get-Content -LiteralPath (
-        Join-Path $work "hlv14.json"
+        Join-Path $work "hlv15.json"
     ) -Raw | ConvertFrom-Json
-    if ($hlvReport.audio -ne "PCM_U8 mono 16000 Hz" -or
+    if ($hlvReport.syntax -ne 15 -or
+        $hlvReport.audio -ne "PCM_U8 mono 16000 Hz" -or
         $hlvReport.audioNormalization.curve -ne
             "primary-compressor-peak" -or
         [Math]::Abs(

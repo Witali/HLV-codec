@@ -1,6 +1,6 @@
 # Native Windows HLV/BPV/MPEG-1/H.263 player
 
-`hlvplay.exe` is a dependency-free Windows desktop player for stable HLV v14,
+`hlvplay.exe` is a dependency-free Windows desktop player for stable HLV v14/v15,
 BPV1 v1 through v7, the constrained MPEG-1/MP2 profile, and the
 bounded H.263 profiles in 3GP with AMR-NB or AVI with PCM S16LE at `176x144`,
 or intra-only baseline `352x288` CIF. All H.263+ custom-size profiles are
@@ -22,7 +22,8 @@ high-resolution frame timer without opening audio. BPV1 v6 uses four 2-bit
 block modes, one-byte motion vectors and unified 2/4/7/9-byte RAW records.
 BPV1 v7 additionally decodes pixel-motion frames and RGB565 palettes; its
 dimensions must be multiples of four. Standalone HLV files from versions
-1-13 are intentionally rejected because HLV v14 is the current stable format.
+1-13 are intentionally rejected; v14 is retained for compatibility and v15
+is the current stable format.
 No FFmpeg, codec pack or third-party runtime DLL is required.
 
 The video output has its own child window above the timeline. The DXGI swap

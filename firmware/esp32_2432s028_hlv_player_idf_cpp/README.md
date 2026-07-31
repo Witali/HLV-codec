@@ -71,7 +71,7 @@ The current decoder audit is:
 
 | Path | Compressed input | Status |
 | --- | --- | --- |
-| HLV v14 video | One reusable 7,680-byte refill buffer used by `hlv1_decoder_decode_file()` | Compliant; packets may exceed the buffer |
+| HLV v14/v15 video | One reusable 7,680-byte refill buffer used by `hlv1_decoder_decode_file()` | Compliant; packets may exceed the buffer |
 | H.263/MPEG-4 SP video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer. Only MPEG-4 VOL configuration is retained contiguously, capped at 256 bytes |
 | MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
 | Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
@@ -559,7 +559,7 @@ Its modeled-device inventory and known accuracy limits are recorded in
   single-reference strategy uses 118,520 bytes, 84,760 fewer than two compact
   references, while CPU0 waits only for source rows needed by rendering.
   Correction tables preserve each block's discarded average to 1/16 sample.
-  Stable HLV v14 makes this compact reconstruction normative, so packed and
+  Stable HLV v14/v15 makes this compact reconstruction normative, so packed and
   expanded decoders predict from identical samples. Literal blocks carry four
   separate Y corrections plus one U and one V correction. BPV instead retains two
   32,400-byte block-record frames plus its

@@ -97,7 +97,7 @@ select the production parameters and output directory automatically:
 
 | Wrapper | Fixed production rules |
 | --- | --- |
-| `transcode_hlv14.ps1` | Stable syntax v14, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
+| `transcode_hlv15.ps1` | Stable syntax v15, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
 | `transcode_bpv6.ps1` | Stable BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. `-PixelMotion` opts into experimental BPV v7. |
 | `transcode_h263.ps1` | CIF/AVI only, macroblock-aligned visible 320x240 area at `(16,16)`, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_mpeg4_simple.ps1` | `320x240` M4S2 AVI, MPEG-4 Simple Profile, GOP 30, I/P pictures only, full source FPS up to 30. The default accepted 35 dB profile uses Q5 and produces a `_MPEG4SP_35dB` filename; `-Preset Esp32Speed` is separately named, defaults to Q7, and produces `_MPEG4SP_SPEED_q7`. |
@@ -126,7 +126,7 @@ Examples:
 .\scripts\transcode_mpeg4_simple.ps1 .\out\sources\input.mp4 `
     -Preset Esp32Speed
 .\scripts\transcode_divx3.ps1 .\out\sources\input.mp4 -Height 180
-.\scripts\transcode_hlv14.ps1 .\out\sources\input.mp4 -Height 180
+.\scripts\transcode_hlv15.ps1 .\out\sources\input.mp4 -Height 180
 .\scripts\transcode_bpv6.ps1 .\out\sources\input.mp4 `
     -Height 180 -TargetPsnrDb 40
 .\scripts\transcode_bpv6.ps1 .\out\sources\input.mp4 `

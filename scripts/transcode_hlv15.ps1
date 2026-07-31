@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-Transcodes one video to stable HLV v14 with adaptive 35..42 dB quality.
+Transcodes one video to stable HLV v15 with adaptive 35..42 dB quality.
 #>
 [CmdletBinding()]
 param(
@@ -58,12 +58,12 @@ $OutputFile = Get-TranscodeOutputFile `
     -CodecDirectory "HLV" `
     -FileName (
         "$($info.BaseName)_${Width}x${Height}_${fpsText}fps_" +
-        "HLVv14_adaptive35-42dB.hlv"
+        "HLVv15_adaptive35-42dB.hlv"
     )
 Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) (
-    "hlv-v14-profile-" + [guid]::NewGuid().ToString("N")
+    "hlv-v15-profile-" + [guid]::NewGuid().ToString("N")
 )
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 $temporaryVideo = Join-Path $temporaryDirectory "video.y4m"
@@ -133,7 +133,7 @@ try {
     $encoderArguments = @(
         $temporaryVideo, $OutputFile,
         "--preset", "slow",
-        "--syntax", "14",
+        "--syntax", "15",
         "--gop", "45",
         "--adaptive-quality",
         "--psnr-min", "35",
@@ -153,12 +153,12 @@ try {
     }
     & $encoder @encoderArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "HLV v14 encoding failed."
+        throw "HLV v15 encoding failed."
     }
 
     & $decoder $OutputFile NUL
     if ($LASTEXITCODE -ne 0) {
-        throw "Full HLV v14 validation failed."
+        throw "Full HLV v15 validation failed."
     }
     $cqLines = @(Get-Content -LiteralPath $cqLog).Count
     $encodedFrames = [Math]::Max(0, $cqLines - 1)
@@ -167,7 +167,7 @@ try {
         input = $info.InputFile
         output = $OutputFile
         codec = "HLV"
-        syntax = 14
+        syntax = 15
         width = $Width
         height = $Height
         fps = $info.Fps

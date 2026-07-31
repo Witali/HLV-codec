@@ -328,7 +328,7 @@ def main() -> None:
     ap.add_argument("--hlv-preset", default="balanced", choices=["fast", "balanced", "slow"])
     ap.add_argument("--hlv-search-mode", default="qstep", choices=["qstep", "quality"],
                     help="use exact 1..255 qsteps for finer rate matching")
-    ap.add_argument("--hlv-syntax", type=int, default=10,
+    ap.add_argument("--hlv-syntax", type=int, default=15,
                     choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     ap.add_argument("--hlv-chroma-scale", type=float, default=1.35)
     ap.add_argument("--hlv-luma-weight", type=int, default=4)

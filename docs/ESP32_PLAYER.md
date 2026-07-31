@@ -15,7 +15,7 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
 - lets the physical BOOT button browse `/sdcard/HLV`: a short press opens the
   browser or advances to the next video, while an 800 ms hold saves the
   displayed filename to `play.txt` and starts playback;
-- decodes stable standalone HLV-1 v14, standard AVI/MJPEG, DivX 3
+- decodes stable standalone HLV-1 v14/v15, standard AVI/MJPEG, DivX 3
   (`DIV3`/`MP43`) AVI up to 320x240 with compact Y6/U5/V5 references, BPV1
   v1 through v7 including adaptive RAW records, active per-GOP palettes and
   experimental v7 pixel motion,
@@ -66,7 +66,7 @@ black rows above and below the picture.
 
 The compile-time flag `PLAYER_USE_COMPACT_HLV_REFERENCE` in
 `firmware/esp32_2432s028_hlv_player_idf_c/main/player_settings.h` is currently
-`1`. Stable v14 makes Y7/U6/V6 plus a separate signed Q4 local-average
+`1`. Stable v14/v15 makes Y7/U6/V6 plus a separate signed Q4 local-average
 coefficient for every 8x8 Y, U and V block normative. A `LITERAL` macroblock
 carries four Y coefficients plus one U and one V coefficient. The packed and
 expanded decoders reconstruct identical samples, preventing coherent

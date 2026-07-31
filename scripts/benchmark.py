@@ -319,7 +319,7 @@ def main() -> None:
     ap.add_argument("--fps", type=int, default=25)
     ap.add_argument("--hlv-qualities", default="40,55,70")
     ap.add_argument("--hlv-presets", default="fast,balanced")
-    ap.add_argument("--hlv-syntaxes", default="1,2")
+    ap.add_argument("--hlv-syntaxes", default="14,15")
     ap.add_argument("--skip-hlv", action="store_true",
                     help="run only codecs selected by --codecs")
     ap.add_argument("--codecs", default="mjpeg,mpeg1,mpeg2,h264,vp8,vp9")

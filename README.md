@@ -66,12 +66,21 @@ rate-distortion selection, streaming validation, Y4M adapters and the supplied
 the native Windows and ESP32 players. BPV1 v6 can carry PCM_U8 mono audio;
 video-only files use the players' frame timer.
 
-## HLV v14 stable format
+## HLV v15 stable format
 
-HLV v14 is the current stable, standalone format. Encoders and players emit
-and accept **stream v14**; v1-v13 decoding is not part of the stable v14
-implementation. This keeps the decoder hot path free of legacy syntax
-branches. The stable syntax includes:
+HLV v15 is the current stable, standalone format. Encoders emit **stream
+v15** by default, while players accept v14 and v15; v1-v13 decoding is not
+part of the stable implementation. v15 preserves v14 reconstruction and adds
+shorter paths for common predictive pictures:
+
+- zero-payload `REPEAT` frames when reconstruction is unchanged;
+- row-bounded runs of 2–17 zero-motion `SKIP` macroblocks;
+- four 8×8 predictors with one joint 16×16 residual;
+- two 16×8 or 8×16 predictors with one joint 16×16 residual.
+
+The encoder admits the new split modes only when they are no larger and have
+no greater weighted reconstruction error than the best legacy v14 candidate.
+The common v14/v15 syntax also includes:
 
 - short `SKIP` and zero-residual paths;
 - 16×16 and optional four-way 8×8 motion prediction;
@@ -120,7 +129,8 @@ make test
 make sanitize
 ```
 
-`make test` covers v14 round-trip, forced `FILL`/`SKIP`/split/palette/literal
+`make test` covers v14/v15 round-trip, forced `REPEAT`, `SKIP_RUN`,
+`FILL`/`SKIP`/split/palette/literal
 paths, encoder-state cloning, malformed headers, truncated packets, CRC
 errors, and invalid frame ordering. `make sanitize` repeats the tests with
 AddressSanitizer and UndefinedBehaviorSanitizer.
@@ -257,8 +267,10 @@ The default H.263 quality is constant-quality Q6. Pass `-VideoQuality 0`
 together with explicit bitrate and buffer values only for a deliberate
 CBR/VBV encode.
 
-The v14 literal/palette syntax and the decoder-cycle term used by RDO are
+The v14/v15 literal/palette syntax and the decoder-cycle term used by RDO are
 described in [`docs/LITERAL_PALETTE_RDO.md`](docs/LITERAL_PALETTE_RDO.md).
+The v15 additions are specified in
+[`docs/HLV_V15_FORMAT.md`](docs/HLV_V15_FORMAT.md).
 
 ## FFmpeg pipe encoding
 
@@ -271,7 +283,7 @@ ffmpeg -hide_banner -loglevel error -i input.mp4 -an \
 | ./codecs/hlv/hlvenc - output.hlv --preset balanced --quality 55
 ```
 
-The checked-in Big Buck Bunny v14 profile uses only the project-approved
+The checked-in Big Buck Bunny v15 profile uses only the project-approved
 1080p MOV source, its native frame rate and four GOP workers. The previous
 audio-filter chain is replaced by one smooth, peak-detected level curve
 (`-20 dB` threshold, `1.6:1` ratio and a wide soft knee). Quiet levels are
@@ -280,7 +292,7 @@ built-in makeup so the actual source peak lands at -0.1 dBFS without a
 separate volume filter or limiter.
 
 ```powershell
-.\scripts\encode_big_buck_bunny_v14.ps1
+.\scripts\encode_big_buck_bunny_v15.ps1
 ```
 
 Use `-Fps 1..30`, `-Threads`, or `-OutputFile` to override those three output
@@ -304,7 +316,7 @@ On x86 hosts, exact SSE2 SAD and RDO paths are selected at runtime;
 check the one/four/default/SIMD-fallback equivalence. Benchmark details are in
 [`docs/ENCODER_SIMD.md`](docs/ENCODER_SIMD.md).
 
-Stable HLV accepts `--syntax 14`; it is also the default.
+Stable HLV accepts `--syntax 14` and `--syntax 15`; v15 is the default.
 
 ## Constant and adaptive quality
 

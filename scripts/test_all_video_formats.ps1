@@ -149,7 +149,7 @@ $divxFrames = [int][Math]::Ceiling($Frames / 2.0)
 $divxRate = Format-Rate -Value ($Fps / 2.0)
 $hlv = Join-Path $corpus (
     "HLV\VideoFormatRegression_320x240_${rate}fps_" +
-    "HLVv14_adaptive35-42dB.hlv"
+    "HLVv15_adaptive35-42dB.hlv"
 )
 $mjpeg = Join-Path $corpus (
     "MJPEG\VideoFormatRegression_320x240_${rate}fps_MJPEG_q3.avi"
@@ -190,7 +190,7 @@ if ($bpvCandidates.Count -ne 1) {
 $bpv = $bpvCandidates[0].FullName
 
 $expected = @(
-    [pscustomobject]@{ Name = "HLV v14"; Path = $hlv; Frames = $Frames },
+    [pscustomobject]@{ Name = "HLV v15"; Path = $hlv; Frames = $Frames },
     [pscustomobject]@{ Name = "BPV v6"; Path = $bpv; Frames = $Frames },
     [pscustomobject]@{ Name = "MJPEG"; Path = $mjpeg; Frames = $Frames },
     [pscustomobject]@{
@@ -206,7 +206,7 @@ foreach ($entry in $expected) {
     if (-not (Test-Path -LiteralPath $entry.Path)) {
         throw "Missing encoded regression clip: $($entry.Path)"
     }
-    if ($entry.Name -notin @("HLV v14", "BPV v6")) {
+    if ($entry.Name -notin @("HLV v15", "BPV v6")) {
         Assert-FfmpegFullDecode `
             -File $entry.Path -ExpectedFrames $entry.Frames
     }
@@ -222,7 +222,7 @@ if (-not (Test-Path -LiteralPath $player)) {
 }
 
 $checks = [ordered]@{}
-$checks["HLV v14"] = Invoke-PlayerCheck `
+$checks["HLV v15"] = Invoke-PlayerCheck `
     -Player $player -File $hlv -Label "HLV" -ExpectedFrames $Frames
 $checks["BPV v6"] = Invoke-PlayerCheck `
     -Player $player -File $bpv -Label "BPV1" -ExpectedFrames $Frames
@@ -257,7 +257,7 @@ if ($LASTEXITCODE -ne 0 -or
         "Single-reference segmented/refill reconstruction: bit exact") {
     throw "The ESP32 compact HLV decoder did not match the exact decoder."
 }
-$checks["HLV v14"] | Add-Member `
+$checks["HLV v15"] | Add-Member `
     -NotePropertyName Esp32CompactReference `
     -NotePropertyValue "bit exact (segmented, refill, single-reference)"
 

@@ -2,7 +2,7 @@
 
 ## Current stable format
 
-- Stable stream syntax: **v12**.
+- Stable stream syntax: **v15**; v14 remains decode-compatible.
 - Decoder target: 320×240 at 25 fps on a scalar 100 MHz processor.
 - Conservative worst synthetic decoder estimate: about 2.0 million work-cycle
   equivalents per frame, below the 4 million cycle budget. New decoder-side tools should normally keep the codec core below about 2.5–3.0 million cycles/frame, reserving the remaining budget for color conversion, I/O, and scheduling overhead.
@@ -30,6 +30,12 @@
       1.00 is accepted; decoder cost is zero and continuous-scene false
       positives were not observed in the screening suite.
 - [x] Round-trip, CRC, malformed-stream, ASan, and UBSan tests.
+- [x] Stable v14 normative Y7/U6/V6+Q4 reconstructed references and bounded
+      7,680-byte ESP32 packet refill.
+- [x] v15 zero-payload repeat frames.
+- [x] v15 row-bounded `SKIP_RUN` for 2–17 macroblocks.
+- [x] v15 four-way prediction with one joint macroblock residual.
+- [x] v15 16x8 and 8x16 prediction with one joint macroblock residual.
 
 ## Implemented but still requiring broader validation
 
@@ -89,7 +95,9 @@
 ## Tested and rejected for now
 
 - [x] Additional pair-VLC tree: average file growth around 0.3%.
-- [x] 16×8 and 8×16 motion partitions: about -0.06% size and +0.016 dB.
+- [x] Original 16×8 and 8×16 experiment: about -0.06% size and +0.016 dB;
+      replaced in v15 by a dedicated joint-residual syntax guarded against
+      both size and weighted-distortion regression.
 - [x] Separate gradient block: about -0.05% size.
 - [x] Broad palette mode: damaged natural imagery; only strict palette retained.
 - [x] Aggressive adaptive-keyframe bias 1.03: too many K-frames for negligible

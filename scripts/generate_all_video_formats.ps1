@@ -43,7 +43,7 @@ $sourceDirectory = Join-Path $OutputRoot "sources"
 $source = Join-Path $sourceDirectory "${BaseName}.mkv"
 $hlv = Join-Path $OutputRoot (
     "HLV\${BaseName}_320x240_${rate}fps_" +
-    "HLVv14_adaptive35-42dB.hlv"
+    "HLVv15_adaptive35-42dB.hlv"
 )
 $mjpeg = Join-Path $OutputRoot (
     "MJPEG\${BaseName}_320x240_${rate}fps_MJPEG_q3.avi"
@@ -94,7 +94,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $replace = @{}
 if ($Force) { $replace.Force = $true }
-& (Join-Path $PSScriptRoot "transcode_hlv14.ps1") $source `
+& (Join-Path $PSScriptRoot "transcode_hlv15.ps1") $source `
     -OutputFile $hlv @replace
 & (Join-Path $PSScriptRoot "transcode_mjpeg.ps1") $source `
     -OutputFile $mjpeg -Threads $Threads @replace
@@ -128,7 +128,7 @@ if (-not $bpvCandidates.Count) {
 $bpv = $bpvCandidates[0].FullName
 
 $clips = @(
-    [ordered]@{ format = "HLV v14"; file = $hlv; frames = $Frames },
+    [ordered]@{ format = "HLV v15"; file = $hlv; frames = $Frames },
     [ordered]@{ format = "BPV v6"; file = $bpv; frames = $Frames },
     [ordered]@{ format = "MJPEG"; file = $mjpeg; frames = $Frames },
     [ordered]@{ format = "DivX 3"; file = $divx3; frames = $divxFrames },
