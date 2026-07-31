@@ -55,7 +55,7 @@ uint32_t hlv1_crc32_end(uint32_t crc);
 int hlv1_packet_header_parse(const uint8_t header[HLV1_FRAME_HEADER_SIZE],
                              HLV1Packet *packet, uint32_t *expected_crc);
 
-/* A zero-initialized in-memory header selects the stable v14 syntax. */
+/* A zero-initialized in-memory header selects the stable v15 syntax. */
 static inline unsigned hlv1_stream_version(const HLV1Header *h) {
     return h && h->version ? h->version : HLV1_VERSION;
 }

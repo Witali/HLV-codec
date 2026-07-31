@@ -334,7 +334,7 @@ int hlv1_packet_header_parse(const uint8_t b[HLV1_FRAME_HEADER_SIZE],
     p->bit_length = hlv1_rd32(b + 8);
     p->payload_size = hlv1_rd32(b + 12);
     *expected_crc = hlv1_rd32(b + 16);
-    if (p->frame_type > HLV1_FRAME_P || !p->q_y || !p->q_uv ||
+    if (p->frame_type > HLV1_FRAME_REPEAT || !p->q_y || !p->q_uv ||
         p->q_shift > 3 || p->bit_length > p->payload_size * 8ULL ||
         p->payload_size > (1U << 30))
         return HLV1_ERR_FORMAT;

@@ -167,11 +167,15 @@ static void add_stats(HLV1Stats *dst, const HLV1Stats *src) {
 #define ADD_STAT(name) dst->name += src->name
     ADD_STAT(frames);
     ADD_STAT(keyframes);
+    ADD_STAT(repeated_frames);
     ADD_STAT(macroblocks);
     ADD_STAT(skipped);
+    ADD_STAT(skip_runs);
     ADD_STAT(inter);
     ADD_STAT(global);
     ADD_STAT(split_inter);
+    ADD_STAT(split_joint);
+    ADD_STAT(rect_split);
     ADD_STAT(fill);
     ADD_STAT(palette);
     ADD_STAT(palette_2);
@@ -318,7 +322,7 @@ static void usage(const char *p) {
         "  --two-pass-window X local first-pass window in seconds (e.g. 10)\n"
         "  --two-pass-trials N whole-window q probes 2..10 (default 5)\n"
         "  --two-pass-log FILE write per-window analysis as CSV\n"
-        "  --syntax N        stable stream syntax 14 (default and only value)\n"
+        "  --syntax N        stream syntax 14 or 15 (default 15)\n"
         "  --gop N           maximum keyframe interval (default by preset)\n"
         "  --adaptive-gop    compare K/P frames with encoder-only RDO\n"
         "  --min-key-interval N minimum frames between adaptive K frames (default 8)\n"
@@ -1543,9 +1547,12 @@ int main(int argc, char **argv) {
     }
     fputc('\n', stderr);
     if (s && s->macroblocks) fprintf(stderr,
-        "Modes: skip %.1f%%, global %.1f%%, inter %.1f%%, split8 %.1f%%, fill %.1f%%, palette %.1f%% (2/4/8 %.1f/%.1f/%.1f%%), gradient %.1f%%, literal %.1f%%, intra %.1f%%; syntax v%d\n",
-        100.0*s->skipped/s->macroblocks, 100.0*s->global/s->macroblocks,
+        "Modes: skip %.1f%% (%" PRIu64 " runs), global %.1f%%, inter %.1f%%, split8 %.1f%%, joint %.1f%%, rect %.1f%%, fill %.1f%%, palette %.1f%% (2/4/8 %.1f/%.1f/%.1f%%), gradient %.1f%%, literal %.1f%%, intra %.1f%%; repeat frames %" PRIu64 "; syntax v%d\n",
+        100.0*s->skipped/s->macroblocks, s->skip_runs,
+        100.0*s->global/s->macroblocks,
         100.0*s->inter/s->macroblocks, 100.0*s->split_inter/s->macroblocks,
+        100.0*s->split_joint/s->macroblocks,
+        100.0*s->rect_split/s->macroblocks,
         100.0*s->fill/s->macroblocks, 100.0*s->palette/s->macroblocks,
         100.0*s->palette_2/s->macroblocks,
         100.0*s->palette_4/s->macroblocks,
@@ -1553,7 +1560,7 @@ int main(int argc, char **argv) {
         100.0*s->gradient/s->macroblocks,
         100.0*s->literal/s->macroblocks,
         100.0*(s->intra_dc+s->intra_vertical+s->intra_horizontal+s->intra_plane)/s->macroblocks,
-        syntax);
+        s->repeated_frames, syntax);
     if (s && encoded_frames > 0)
         fprintf(stderr, "Estimated decoder work: %.0f cycles/frame (architecture-independent RDO model)\n",
                 (double)s->estimated_decode_cycles / encoded_frames);

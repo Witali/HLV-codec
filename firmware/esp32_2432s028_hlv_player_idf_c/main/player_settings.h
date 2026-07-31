@@ -21,7 +21,7 @@ typedef enum {
    pixel-for-pixel. */
 #define PLAYER_SCALE_VIDEO_TO_DISPLAY 0
 
-/* Store HLV v14 references as compact Y7/U6/V6 planes with per-plane Q4
+/* Store HLV v14/v15 references as compact Y7/U6/V6 planes with per-plane Q4
    local-average corrections. */
 #define PLAYER_USE_COMPACT_HLV_REFERENCE 1
 

@@ -212,6 +212,54 @@ int main(void) {
 
     d = hlv1_decoder_create(&h);
     CHECK(d != NULL);
+    HLV1Packet first_repeat;
+    memset(&first_repeat, 0, sizeof first_repeat);
+    first_repeat.frame_type = HLV1_FRAME_REPEAT;
+    first_repeat.q_y = 8;
+    first_repeat.q_uv = 10;
+    CHECK(hlv1_decoder_decode(d, &first_repeat, &frame) == HLV1_ERR_FORMAT);
+    hlv1_decoder_destroy(d);
+
+    HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
+    d = hlv1_decoder_create(&h);
+    HLV1Frame constant;
+    CHECK(encoder != NULL && d != NULL);
+    CHECK(hlv1_frame_alloc(&constant, h.width, h.height) == HLV1_OK);
+    memset(constant.y, 72,
+           (size_t)constant.stride_y * constant.padded_height);
+    memset(constant.u, 111,
+           (size_t)constant.stride_u * (constant.padded_height / 2));
+    memset(constant.v, 149,
+           (size_t)constant.stride_v * (constant.padded_height / 2));
+    HLV1Packet valid_key = {0};
+    const HLV1Frame *encoded = NULL;
+    CHECK(hlv1_encoder_encode(encoder, &constant, &valid_key,
+                              &encoded) == HLV1_OK);
+    CHECK(hlv1_decoder_decode(d, &valid_key, &frame) == HLV1_OK);
+    hlv1_packet_free(&valid_key);
+
+    HLV1Packet repeat = {0};
+    repeat.frame_type = HLV1_FRAME_REPEAT;
+    repeat.q_y = 8;
+    repeat.q_uv = 10;
+    CHECK(hlv1_decoder_decode(d, &repeat, &frame) == HLV1_OK);
+
+    unsigned char bad_skip_run_payload[] = {0x00, 0x90};
+    HLV1Packet bad_skip_run = {0};
+    bad_skip_run.frame_type = HLV1_FRAME_P;
+    bad_skip_run.q_y = 8;
+    bad_skip_run.q_uv = 10;
+    bad_skip_run.bit_length = 16;
+    bad_skip_run.payload_size = sizeof bad_skip_run_payload;
+    bad_skip_run.payload = bad_skip_run_payload;
+    CHECK(hlv1_decoder_decode(d, &bad_skip_run, &frame) ==
+          HLV1_ERR_BITSTREAM);
+    hlv1_frame_free(&constant);
+    hlv1_encoder_destroy(encoder);
+    hlv1_decoder_destroy(d);
+
+    d = hlv1_decoder_create(&h);
+    CHECK(d != NULL);
     HLV1Packet empty_key;
     memset(&empty_key, 0, sizeof empty_key);
     empty_key.frame_type = HLV1_FRAME_KEY;

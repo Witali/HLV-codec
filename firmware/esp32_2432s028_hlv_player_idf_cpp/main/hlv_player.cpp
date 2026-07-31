@@ -1384,7 +1384,7 @@ int prefetchHlvAudioPacket() {
     const uint8_t q_shift = header[7];
     const uint32_t bit_length = readLe32(header + 8);
     const uint32_t payload_size = readLe32(header + 12);
-    if (frame_type > HLV1_FRAME_P || !q_y || !q_uv || q_shift > 3 ||
+    if (frame_type > HLV1_FRAME_REPEAT || !q_y || !q_uv || q_shift > 3 ||
         bit_length > static_cast<uint64_t>(payload_size) * 8U) {
         return HLV1_ERR_FORMAT;
     }

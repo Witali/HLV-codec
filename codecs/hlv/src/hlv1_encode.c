@@ -55,6 +55,9 @@ typedef struct Candidate {
     int partition;
     int mvx;
     int mvy;
+    uint8_t split_use_inter[4];
+    int split_mvx[4];
+    int split_mvy[4];
     int reference_quantized;
     HLV1BitWriter bits;
     MB rec;
@@ -558,7 +561,12 @@ static uint64_t estimate_candidate_decode_cycles(const Candidate *candidate) {
         break;
     }
     case HLV1_MODE_SPLIT_INTER:
+    case HLV1_MODE_SPLIT_JOINT:
         predictor_cycles = 384U * 14U;
+        residual_cycles = bits * 5U;
+        break;
+    case HLV1_MODE_RECT_SPLIT:
+        predictor_cycles = 384U * 10U;
         residual_cycles = bits * 5U;
         break;
     case HLV1_MODE_FILL:
@@ -1552,7 +1560,10 @@ static int encode_gradient_candidate(HLV1Encoder *e, const MB *src,
 static int put_mode(HLV1BitWriter *bw, unsigned version, int frame_type,
                     int mode, int use_global) {
     if (version >= HLV1_STREAM_VERSION_13) {
-        if (mode < HLV1_MODE_SKIP || mode > HLV1_MODE_LITERAL)
+        int maximum_mode = version >= HLV1_STREAM_VERSION_15
+                               ? HLV1_MODE_RECT_SPLIT
+                               : HLV1_MODE_LITERAL;
+        if (mode < HLV1_MODE_SKIP || mode > maximum_mode)
             return HLV1_ERR_ARGUMENT;
         return hlv1_bw_put(bw, (uint32_t)mode, 4);
     }
@@ -2177,6 +2188,22 @@ HLV1Encoder *hlv1_encoder_create(const HLV1Header *header, double scene_cut) {
     return e;
 }
 
+static int append_skip_run(HLV1BitWriter *bw, unsigned version,
+                           int use_global, int count) {
+    if (version < HLV1_STREAM_VERSION_15 || count < 1 || count > 17)
+        return HLV1_ERR_ARGUMENT;
+    int r;
+    if (count == 1) {
+        r = put_mode(bw, version, HLV1_FRAME_P,
+                     HLV1_MODE_SKIP, use_global);
+        return r < 0 ? r : align_writer_zero(bw);
+    }
+    r = put_mode(bw, version, HLV1_FRAME_P,
+                 HLV1_MODE_SKIP_RUN, use_global);
+    if (r < 0) return r;
+    return hlv1_bw_put(bw, (uint32_t)(count - 2), 4);
+}
+
 HLV1Encoder *hlv1_encoder_clone(const HLV1Encoder *src) {
     if (!src) return NULL;
     HLV1Encoder *dst = (HLV1Encoder *)calloc(1, sizeof *dst);
@@ -2386,8 +2413,6 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     int legacy_even = version < HLV1_STREAM_VERSION_5;
     int r = put_mode(&out->bits, version, HLV1_FRAME_P,
                      HLV1_MODE_SPLIT_INTER, use_global);
-    if (r >= 0 && version >= 15)
-        r = hlv1_bw_put(&out->bits, 0, 1); /* four 8x8 blocks */
     if (r < 0) return r;
     out->partition = 0;
     memset(&out->rec, 0, sizeof out->rec);
@@ -2395,6 +2420,7 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
     for (int sy = 0; sy < 16; sy += 8) {
         for (int sx = 0; sx < 16; sx += 8) {
             int gx = x + sx, gy = y + sy;
+            int block = (sy / 8) * 2 + sx / 8;
             SB8 src, skip_rec, inter_rec;
             memset(&inter_rec, 0, sizeof inter_rec);
             extract_sb8(input, gx, gy, &src);
@@ -2421,6 +2447,7 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                 &e->stats.encoder_work,
                 choices, 12);
             double inter_score = HUGE_VAL;
+            int best_inter_mvx = 0, best_inter_mvy = 0;
             for (int choice = 0; choice < choice_count; ++choice) {
                 HLV1BitWriter trial_bits;
                 SB8 trial_pred, trial_rec;
@@ -2460,6 +2487,8 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                     inter_bits = trial_bits;
                     memset(&trial_bits, 0, sizeof trial_bits);
                     inter_rec = trial_rec;
+                    best_inter_mvx = mvx;
+                    best_inter_mvy = mvy;
                     inter_score = trial_score;
                 }
                 hlv1_bw_free(&trial_bits);
@@ -2473,9 +2502,15 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
             if (skip_score <= inter_score) {
                 r = hlv1_bw_append(&out->bits, &skip_bits);
                 if (r >= 0) store_sb8_to_mb(&out->rec, sx, sy, &skip_rec);
+                out->split_use_inter[block] = 0;
+                out->split_mvx[block] = 0;
+                out->split_mvy[block] = 0;
             } else {
                 r = hlv1_bw_append(&out->bits, &inter_bits);
                 if (r >= 0) store_sb8_to_mb(&out->rec, sx, sy, &inter_rec);
+                out->split_use_inter[block] = 1;
+                out->split_mvx[block] = best_inter_mvx;
+                out->split_mvy[block] = best_inter_mvy;
             }
             hlv1_bw_free(&skip_bits);
             hlv1_bw_free(&inter_bits);
@@ -2488,6 +2523,53 @@ static int encode_split_inter_candidate(HLV1Encoder *e,
                                       e->use_simd,
                                       &e->stats.encoder_work) +
                  lambda_bits * out->bits.bit_count;
+    return HLV1_OK;
+}
+
+static int encode_joint_split_candidate(HLV1Encoder *e,
+                                        const MB *src_mb, int x, int y,
+                                        unsigned version, double lambda_bits,
+                                        int global_mvx, int global_mvy,
+                                        int use_global,
+                                        const Candidate *legacy,
+                                        Candidate *out) {
+    int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
+    out->mode = HLV1_MODE_SPLIT_JOINT;
+    int r = put_mode(&out->bits, version, HLV1_FRAME_P,
+                     HLV1_MODE_SPLIT_JOINT, use_global);
+    memset(&out->rec, 0, sizeof out->rec);
+    for (int block = 0; r >= 0 && block < 4; ++block) {
+        int sx = (block & 1) * 8;
+        int sy = (block >> 1) * 8;
+        int gx = x + sx, gy = y + sy;
+        int is_inter = legacy->split_use_inter[block] != 0;
+        int mvx = is_inter ? legacy->split_mvx[block] : 0;
+        int mvy = is_inter ? legacy->split_mvy[block] : 0;
+        r = hlv1_bw_put(&out->bits, (uint32_t)is_inter, 1);
+        if (r >= 0 && is_inter) {
+            int coded_mvx = mvx, coded_mvy = mvy;
+            if (use_global) {
+                coded_mvx -= global_mvx;
+                coded_mvy -= global_mvy;
+            }
+            r = put_motion_vector(&out->bits, version,
+                                  coded_mvx, coded_mvy);
+        }
+        if (r >= 0) {
+            SB8 pred;
+            motion_predict_sb8(&e->previous, gx, gy, mvx, mvy,
+                               denominator, &pred,
+                               &e->stats.encoder_work);
+            store_sb8_to_mb(&out->rec, sx, sy, &pred);
+        }
+    }
+    if (r >= 0)
+        r = put_residual(&out->bits, version, src_mb, &out->rec,
+                         &out->rec, e->q_y, e->q_uv,
+                         e->ac_deadzone, NULL);
+    if (r >= 0) r = hlv1_bw_finish(&out->bits);
+    if (r < 0) return r;
+    out->score = score_candidate(e, src_mb, out, lambda_bits, x, y);
     return HLV1_OK;
 }
 
@@ -2513,20 +2595,20 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
     }
 
     out->score = HUGE_VAL;
-    out->mode = HLV1_MODE_SPLIT_INTER;
+    out->mode = HLV1_MODE_RECT_SPLIT;
     out->partition = vertical ? 2 : 1;
     /* Evaluate skip/inter independently for the two halves.  The residual is
        then coded once for the complete macroblock, avoiding four separate
        residual headers as in the 8x8 partition. */
     for (int combination = 0; combination < 4; ++combination) {
         Candidate trial;
-        candidate_init(&trial, HLV1_MODE_SPLIT_INTER,
+        candidate_init(&trial, HLV1_MODE_RECT_SPLIT,
                        &e->stats.encoder_work);
         trial.partition = out->partition;
         int r = put_mode(&trial.bits, version, HLV1_FRAME_P,
-                         HLV1_MODE_SPLIT_INTER, use_global);
+                         HLV1_MODE_RECT_SPLIT, use_global);
         if (r >= 0)
-            r = hlv1_bw_put(&trial.bits, vertical ? 3U : 2U, 2); /* 11/10 */
+            r = hlv1_bw_put(&trial.bits, vertical ? 1U : 0U, 1);
         memset(&trial.rec, 0, sizeof trial.rec);
         for (int i = 0; r >= 0 && i < 2; ++i) {
             int sx = vertical ? i * 8 : 0;
@@ -2571,6 +2653,15 @@ static int encode_rect_inter_candidate(HLV1Encoder *e,
     return HLV1_OK;
 }
 
+static int reconstructed_frames_equal(const HLV1Frame *a,
+                                      const HLV1Frame *b) {
+    size_t y_size = (size_t)a->stride_y * (size_t)a->padded_height;
+    size_t c_size = (size_t)a->stride_u * (size_t)(a->padded_height / 2);
+    return memcmp(a->y, b->y, y_size) == 0 &&
+           memcmp(a->u, b->u, c_size) == 0 &&
+           memcmp(a->v, b->v, c_size) == 0;
+}
+
 /* --- Frame encoding and reference-state commit ------------------------- */
 static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                    HLV1Packet *packet,
@@ -2579,6 +2670,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
     if (!e || !input || !packet || !reconstructed || input->width != e->header.width || input->height != e->header.height)
         return HLV1_ERR_ARGUMENT;
     memset(packet, 0, sizeof *packet);
+    HLV1Stats stats_before = e->stats;
+    uint64_t estimated_cycles_before = e->estimated_decode_cycles;
     int key;
     if (forced_frame_type == HLV1_FRAME_KEY) {
         key = 1;
@@ -2591,7 +2684,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             key = 1;
     }
     int frame_type = key ? HLV1_FRAME_KEY : HLV1_FRAME_P;
-    const unsigned version = HLV1_VERSION;
+    const unsigned version = hlv1_stream_version(&e->header);
     HLV1BitWriter frame_bits;
     encoder_bw_init(&frame_bits, &e->stats.encoder_work);
     double lambda_bits = e->lambda_scale *
@@ -2629,6 +2722,7 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
         }
     }
 
+    int pending_skip_count = 0;
     for (int y = 0; y < e->current.padded_height; y += 16) {
         if (!key && version >= HLV1_STREAM_VERSION_11) {
             for (int i = 0; i < e->mv_cols; ++i) {
@@ -2651,10 +2745,11 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                         fallback_mvx, fallback_mvy,
                                         &predictor_mvx, &predictor_mvy);
             MB src; extract_mb(input, x, y, &src);
-            Candidate c[16];
-            for (int i = 0; i < 16; ++i)
+            Candidate c[20];
+            for (int i = 0; i < 20; ++i)
                 candidate_init(&c[i], i, &e->stats.encoder_work);
             int count = 0;
+            int baseline_count = 0;
 
             MB pred;
             int intra_count = version >= HLV1_STREAM_VERSION_10 ? 4 : 1;
@@ -2796,8 +2891,9 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                 }
                 if (choice_count <= 0) { r = HLV1_ERR_RANGE; goto fail_mb; }
 
+                Candidate *ct = NULL;
                 if (version >= HLV1_STREAM_VERSION_3) {
-                    Candidate *ct = &c[count++];
+                    ct = &c[count++];
                     ct->mode = HLV1_MODE_SPLIT_INTER;
                     if ((r = encode_split_inter_candidate(e, input, &src, x, y,
                                                           version, lambda_bits,
@@ -2805,29 +2901,70 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
                                                           use_global,
                                                           ct)) < 0)
                         goto fail_mb;
-                    if (version >= 15) {
-                        Candidate *ch = &c[count++];
-                        if ((r = encode_rect_inter_candidate(
-                                e, input, &src, x, y, version, lambda_bits,
-                                global_mvx, global_mvy, use_global, 0, ch)) < 0)
-                            goto fail_mb;
-                        Candidate *cv = &c[count++];
-                        if ((r = encode_rect_inter_candidate(
-                                e, input, &src, x, y, version, lambda_bits,
-                                global_mvx, global_mvy, use_global, 1, cv)) < 0)
-                            goto fail_mb;
-                    }
+                }
+                baseline_count = count;
+                if (version >= HLV1_STREAM_VERSION_15 && ct) {
+                    Candidate *cj = &c[count++];
+                    if ((r = encode_joint_split_candidate(
+                            e, &src, x, y, version, lambda_bits,
+                            global_mvx, global_mvy, use_global, ct, cj)) < 0)
+                        goto fail_mb;
+                    Candidate *ch = &c[count++];
+                    if ((r = encode_rect_inter_candidate(
+                            e, input, &src, x, y, version, lambda_bits,
+                            global_mvx, global_mvy, use_global, 0, ch)) < 0)
+                        goto fail_mb;
+                    Candidate *cv = &c[count++];
+                    if ((r = encode_rect_inter_candidate(
+                            e, input, &src, x, y, version, lambda_bits,
+                            global_mvx, global_mvy, use_global, 1, cv)) < 0)
+                        goto fail_mb;
                 }
             }
+
+            if (!baseline_count) baseline_count = count;
 
             Candidate *best = &c[0];
             for (int i = 0; i < count; ++i) {
                 if (c[i].bits.bit_count)
                     c[i].score = score_candidate(e, &src, &c[i],
                                                  lambda_bits, x, y);
-                if (c[i].score < best->score) best = &c[i];
+                if (i < baseline_count && c[i].score < best->score)
+                    best = &c[i];
             }
-            if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0) goto fail_mb;
+            uint64_t baseline_bits = best->bits.bit_count;
+            uint64_t baseline_distortion = weighted_sse(
+                &src, &best->rec, e->luma_weight, e->use_simd, NULL);
+            for (int i = baseline_count; i < count; ++i) {
+                uint64_t candidate_distortion = weighted_sse(
+                    &src, &c[i].rec, e->luma_weight, e->use_simd, NULL);
+                if (c[i].score < best->score &&
+                    c[i].bits.bit_count <= baseline_bits &&
+                    candidate_distortion <= baseline_distortion)
+                    best = &c[i];
+            }
+            if (version >= HLV1_STREAM_VERSION_15 && !key &&
+                best->mode == HLV1_MODE_SKIP) {
+                pending_skip_count++;
+                if (pending_skip_count == 17 ||
+                    x + 16 >= e->current.padded_width) {
+                    if ((r = append_skip_run(&frame_bits, version, use_global,
+                                             pending_skip_count)) < 0)
+                        goto fail_mb;
+                    if (pending_skip_count > 1) e->stats.skip_runs++;
+                    pending_skip_count = 0;
+                }
+            } else {
+                if (pending_skip_count) {
+                    if ((r = append_skip_run(&frame_bits, version, use_global,
+                                             pending_skip_count)) < 0)
+                        goto fail_mb;
+                    if (pending_skip_count > 1) e->stats.skip_runs++;
+                    pending_skip_count = 0;
+                }
+                if ((r = hlv1_bw_append(&frame_bits, &best->bits)) < 0)
+                    goto fail_mb;
+            }
             store_mb(&e->current, x, y, &best->rec);
             e->estimated_decode_cycles += best->estimated_decode_cycles;
             e->stats.estimated_decode_cycles += best->estimated_decode_cycles;
@@ -2851,6 +2988,8 @@ static int encoder_encode_internal(HLV1Encoder *e, const HLV1Frame *input,
             else if (best->mode == HLV1_MODE_INTER) e->stats.inter++;
             else if (best->mode == HLV1_MODE_GLOBAL) e->stats.global++;
             else if (best->mode == HLV1_MODE_SPLIT_INTER) e->stats.split_inter++;
+            else if (best->mode == HLV1_MODE_SPLIT_JOINT) e->stats.split_joint++;
+            else if (best->mode == HLV1_MODE_RECT_SPLIT) e->stats.rect_split++;
             else if (best->mode == HLV1_MODE_FILL) e->stats.fill++;
             else if (best->mode == HLV1_MODE_PALETTE) {
                 e->stats.palette++;
@@ -2883,6 +3022,24 @@ fail_mb:
 
     r = hlv1_bw_finish(&frame_bits);
     if (r < 0) { hlv1_bw_free(&frame_bits); return r; }
+    if (!key && version >= HLV1_STREAM_VERSION_15 &&
+        reconstructed_frames_equal(&e->current, &e->previous)) {
+        HLV1EncoderWork work_after = e->stats.encoder_work;
+        e->stats = stats_before;
+        e->stats.encoder_work = work_after;
+        e->estimated_decode_cycles = estimated_cycles_before;
+        packet->frame_type = HLV1_FRAME_REPEAT;
+        packet->q_y = (uint8_t)(e->q_y >> e->q_shift);
+        packet->q_uv = (uint8_t)(e->q_uv >> e->q_shift);
+        packet->q_shift = (uint8_t)e->q_shift;
+        hlv1_bw_free(&frame_bits);
+        e->frames_since_key++;
+        e->frame_index++;
+        e->stats.frames++;
+        e->stats.repeated_frames++;
+        *reconstructed = &e->previous;
+        return HLV1_OK;
+    }
     packet->frame_type = (uint8_t)frame_type;
     packet->q_y = (uint8_t)(e->q_y >> e->q_shift);
     packet->q_uv = (uint8_t)(e->q_uv >> e->q_shift);

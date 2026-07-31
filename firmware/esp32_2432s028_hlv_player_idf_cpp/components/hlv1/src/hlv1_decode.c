@@ -647,8 +647,11 @@ static void predict_plane_fractional(HLV1_STATS_PARAMETER
         int inv_x = denominator - fx;
         int inv_y = denominator - fy;
         unsigned denominator_shift = denominator == 4 ? 2U : 1U;
-        uint8_t top_samples[17];
-        uint8_t bottom_samples[17];
+        /* The aligned unpacker writes complete eight-sample groups.  Keep one
+           padded group after the maximum 17 samples so compiler vectorisation
+           and future aligned tails remain within the scratch arrays. */
+        uint8_t top_samples[24];
+        uint8_t bottom_samples[24];
         int row_samples = w + !!fx;
         if (!fy) {
             int round = denominator >> 1;
@@ -1837,13 +1840,28 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                                  int segmented,
                                  HLV1BitReaderRefill refill,
                                  void *refill_context) {
-    if (p->frame_type == HLV1_FRAME_P && !d->have_previous) return HLV1_ERR_FORMAT;
-    const unsigned version = HLV1_VERSION;
+    const unsigned version = hlv1_stream_version(&d->header);
+    if ((p->frame_type == HLV1_FRAME_P ||
+         p->frame_type == HLV1_FRAME_REPEAT) && !d->have_previous)
+        return HLV1_ERR_FORMAT;
     if (!p->q_y || !p->q_uv || p->q_shift > 3 ||
         (version < HLV1_STREAM_VERSION_4 && p->q_shift != 0) ||
         p->bit_length > p->payload_size * 8ULL)
         return HLV1_ERR_FORMAT;
     uint32_t profile_start = HLV1_PROFILE_NOW();
+    if (p->frame_type == HLV1_FRAME_REPEAT) {
+        if (version < HLV1_STREAM_VERSION_15 || p->bit_length != 0 ||
+            hlv1_packet_video_payload_size(p) != 0)
+            return HLV1_ERR_FORMAT;
+        HLV1_STAT_ADD(d, frames, 1);
+        HLV1_STAT_ADD(d, repeated_frames, 1);
+        *frame = &d->previous;
+        HLV1_PROFILE_ADD(d, total_cycles, profile_start);
+#if HLV1_ENABLE_STAGE_PROFILE
+        ++d->profile.frames;
+#endif
+        return HLV1_OK;
+    }
     int q_y = (int)p->q_y << p->q_shift;
     int q_uv = (int)p->q_uv << p->q_shift;
     int denominator = version >= HLV1_STREAM_VERSION_6 ? 2 : 1;
@@ -1928,6 +1946,35 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 context_mvx = context_mvy = 0;
                 HLV1_STAT_ADD(d, skipped, 1);
                 break;
+            case HLV1_MODE_SKIP_RUN: {
+                if (version < HLV1_STREAM_VERSION_15 ||
+                    p->frame_type != HLV1_FRAME_P || !d->have_previous)
+                    return HLV1_ERR_BITSTREAM;
+                int run = (int)hlv1_br_get(&br, 4) + 2;
+                if (br.error || run > (pw - x) / 16)
+                    return HLV1_ERR_BITSTREAM;
+                for (int i = 0; i < run; ++i) {
+                    int gx = x + i * 16;
+                    if (d->compact_y7_u6_v6) {
+                        compact_copy_macroblock(d, gx, y);
+                        HLV1_STAT_ADD(d, copied_samples, 384);
+                    } else {
+                        predict_motion(d, gx, y, 0, 0, denominator);
+                        hlv1_frame_quantize_v14_reference_mb(
+                            &d->current, gx, y);
+                    }
+                    if (version >= HLV1_STREAM_VERSION_11) {
+                        int column = mv_column + i;
+                        d->mv_cur_x[column] = 0;
+                        d->mv_cur_y[column] = 0;
+                    }
+                }
+                HLV1_STAT_ADD(d, skipped, run);
+                HLV1_STAT_ADD(d, skip_runs, 1);
+                HLV1_STAT_ADD(d, macroblocks, run);
+                x += (run - 1) * 16;
+                continue;
+            }
             case HLV1_MODE_INTER: {
                 if (p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
@@ -1968,19 +2015,8 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                 if (version < HLV1_STREAM_VERSION_3 ||
                     p->frame_type != HLV1_FRAME_P || !d->have_previous)
                     return HLV1_ERR_BITSTREAM;
-                int partition = 0;
-                if (version >= 15) {
-                    int first = (int)hlv1_br_get(&br, 1);
-                    if (br.error) return br.error;
-                    if (first) {
-                        int orientation = (int)hlv1_br_get(&br, 1);
-                        if (br.error) return br.error;
-                        partition = orientation ? 2 : 1;
-                    }
-                }
-                if (!partition) {
-                    for (int sy = 0; sy < 16; sy += 8) {
-                        for (int sx = 0; sx < 16; sx += 8) {
+                for (int sy = 0; sy < 16; sy += 8) {
+                    for (int sx = 0; sx < 16; sx += 8) {
                             int gx = x + sx, gy = y + sy;
                             uint32_t is_inter = hlv1_br_get(&br, 1);
                             if (br.error) return br.error;
@@ -2004,19 +2040,24 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                             r = decode_optional_sb8_residual(d, &br, version, gx, gy,
                                                              q_y, q_uv);
                             if (r < 0) return r;
-                        }
                     }
-                } else {
-                    for (int i = 0; i < 2; ++i) {
-                        int gx = x + (partition == 2 ? i * 8 : 0);
-                        int gy = y + (partition == 1 ? i * 8 : 0);
-                        int w = partition == 2 ? 8 : 16;
-                        int h = partition == 2 ? 16 : 8;
+                }
+                HLV1_STAT_ADD(d, split_inter, 1);
+                break;
+            }
+            case HLV1_MODE_SPLIT_JOINT: {
+                if (version < HLV1_STREAM_VERSION_15 ||
+                    p->frame_type != HLV1_FRAME_P || !d->have_previous)
+                    return HLV1_ERR_BITSTREAM;
+                for (int sy = 0; sy < 16; sy += 8) {
+                    for (int sx = 0; sx < 16; sx += 8) {
+                        int gx = x + sx, gy = y + sy;
                         uint32_t is_inter = hlv1_br_get(&br, 1);
                         if (br.error) return br.error;
                         int mvx = 0, mvy = 0;
                         if (is_inter) {
-                            if ((r = get_motion_vector(&br, version, &mvx, &mvy)) < 0)
+                            if ((r = get_motion_vector(
+                                     &br, version, &mvx, &mvy)) < 0)
                                 return r;
                             if (use_global) {
                                 mvx += global_mvx;
@@ -2025,17 +2066,51 @@ static int decoder_decode_packet(HLV1Decoder *d, const HLV1Packet *p,
                         }
                         if (!motion_within_declared_radius(
                                 d, mvx, mvy, denominator) ||
-                            !motion_valid_rect(&d->previous, gx, gy, w, h,
-                                               mvx, mvy, denominator))
+                            !motion_valid(&d->previous, gx, gy, 8,
+                                          mvx, mvy, denominator))
                             return HLV1_ERR_BITSTREAM;
-                        predict_motion_rect(d, gx, gy, w, h,
-                                            mvx, mvy, denominator);
+                        predict_motion_sb8(d, gx, gy, mvx, mvy, denominator);
                     }
-                    r = decode_optional_mb_residual(d, &br, version,
-                                                    x, y, q_y, q_uv);
-                    if (r < 0) return r;
                 }
-                HLV1_STAT_ADD(d, split_inter, 1);
+                r = decode_optional_mb_residual(d, &br, version,
+                                                x, y, q_y, q_uv);
+                HLV1_STAT_ADD(d, split_joint, 1);
+                break;
+            }
+            case HLV1_MODE_RECT_SPLIT: {
+                if (version < HLV1_STREAM_VERSION_15 ||
+                    p->frame_type != HLV1_FRAME_P || !d->have_previous)
+                    return HLV1_ERR_BITSTREAM;
+                int partition = hlv1_br_get(&br, 1) ? 2 : 1;
+                if (br.error) return br.error;
+                for (int i = 0; i < 2; ++i) {
+                    int gx = x + (partition == 2 ? i * 8 : 0);
+                    int gy = y + (partition == 1 ? i * 8 : 0);
+                    int w = partition == 2 ? 8 : 16;
+                    int h = partition == 2 ? 16 : 8;
+                    uint32_t is_inter = hlv1_br_get(&br, 1);
+                    if (br.error) return br.error;
+                    int mvx = 0, mvy = 0;
+                    if (is_inter) {
+                        if ((r = get_motion_vector(
+                                 &br, version, &mvx, &mvy)) < 0)
+                            return r;
+                        if (use_global) {
+                            mvx += global_mvx;
+                            mvy += global_mvy;
+                        }
+                    }
+                    if (!motion_within_declared_radius(
+                            d, mvx, mvy, denominator) ||
+                        !motion_valid_rect(&d->previous, gx, gy, w, h,
+                                           mvx, mvy, denominator))
+                        return HLV1_ERR_BITSTREAM;
+                    predict_motion_rect(d, gx, gy, w, h,
+                                        mvx, mvy, denominator);
+                }
+                r = decode_optional_mb_residual(d, &br, version,
+                                                x, y, q_y, q_uv);
+                HLV1_STAT_ADD(d, rect_split, 1);
                 break;
             }
             case HLV1_MODE_FILL: {

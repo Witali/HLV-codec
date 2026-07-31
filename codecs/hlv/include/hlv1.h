@@ -17,9 +17,8 @@
 extern "C" {
 #endif
 
-/* HLV v14 is a standalone format. Historical syntax constants remain named
- * only while legacy branches are removed from the implementation; readers
- * and writers accept v14 exclusively. */
+/* HLV v15 is the current standalone format. Readers retain v14 compatibility;
+ * historical syntax constants remain named for shared v14/v15 code paths. */
 #define HLV1_STREAM_VERSION_1 1
 #define HLV1_STREAM_VERSION_2 2
 #define HLV1_STREAM_VERSION_3 3
@@ -34,9 +33,10 @@ extern "C" {
 #define HLV1_STREAM_VERSION_12 12
 #define HLV1_STREAM_VERSION_13 13
 #define HLV1_STREAM_VERSION_14 14
+#define HLV1_STREAM_VERSION_15 15
 #define HLV1_MIN_VERSION HLV1_STREAM_VERSION_14
-#define HLV1_VERSION HLV1_STREAM_VERSION_14
-#define HLV1_MAX_VERSION HLV1_STREAM_VERSION_14
+#define HLV1_VERSION HLV1_STREAM_VERSION_15
+#define HLV1_MAX_VERSION HLV1_STREAM_VERSION_15
 
 /* Effective quantizer steps are represented as an 8-bit mantissa and a small
  * left shift.  2040 is therefore the largest stable v4+ step. */
@@ -56,6 +56,7 @@ extern "C" {
  * B-frames or future-frame dependencies. */
 #define HLV1_FRAME_KEY 0
 #define HLV1_FRAME_P   1
+#define HLV1_FRAME_REPEAT 2
 
 /* Macroblock prediction modes used by the latest syntax. */
 #define HLV1_MODE_SKIP        0
@@ -67,6 +68,9 @@ extern "C" {
 #define HLV1_MODE_PALETTE     6
 #define HLV1_MODE_GRADIENT    7
 #define HLV1_MODE_LITERAL     8
+#define HLV1_MODE_SKIP_RUN    9
+#define HLV1_MODE_SPLIT_JOINT 10
+#define HLV1_MODE_RECT_SPLIT  11
 
 /* Intra predictors.  Plane prediction uses already reconstructed top/left
  * samples, so encoder and decoder must process macroblocks in raster order. */
@@ -99,7 +103,7 @@ typedef struct HLV1Header {
     uint8_t quality;         /**< Informational friendly quality setting. */
     uint8_t search_radius;   /**< Informational encoder search radius. */
     uint8_t flags;           /**< HLV1_FLAG_* sequence features. */
-    uint8_t version;         /**< Zero selects the current v14 syntax. */
+    uint8_t version;         /**< Zero selects the current v15 syntax. */
     uint16_t audio_sample_rate; /**< Audio samples per second; zero without audio. */
     uint8_t audio_codec;     /**< HLV1_AUDIO_* value. */
     uint8_t audio_channels;  /**< Interleaved channels; PCM_U8 currently requires 1. */
@@ -107,7 +111,7 @@ typedef struct HLV1Header {
 
 /** One compressed frame packet, excluding its on-disk 20-byte packet header. */
 typedef struct HLV1Packet {
-    uint8_t frame_type;      /**< HLV1_FRAME_KEY or HLV1_FRAME_P. */
+    uint8_t frame_type;      /**< HLV1_FRAME_KEY, P, or v15 REPEAT. */
     uint8_t q_y;             /**< Quantizer mantissa for luma. */
     uint8_t q_uv;            /**< Quantizer mantissa for chroma. */
     uint8_t q_shift;         /**< v4+: effective qstep = q_* << q_shift. */
@@ -190,11 +194,15 @@ typedef struct HLV1EncoderWork {
 typedef struct HLV1Stats {
     uint64_t frames;
     uint64_t keyframes;
+    uint64_t repeated_frames;
     uint64_t macroblocks;
     uint64_t skipped;
+    uint64_t skip_runs;
     uint64_t inter;
     uint64_t global;
     uint64_t split_inter;
+    uint64_t split_joint;
+    uint64_t rect_split;
     uint64_t fill;
     uint64_t palette;
     uint64_t palette_2;

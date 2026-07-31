@@ -1,5 +1,19 @@
 # HLV ESP32 memory and unpack performance TODO
 
+## HLV v15 acceptance (2026-07-31)
+
+- [x] Portable v14/v15 round-trip and malformed-stream tests pass.
+- [x] Compact, expanded, 257-byte refill and single-reference segmented
+      simulator paths produce the same 60-frame reconstruction hash.
+- [x] Xtensa QEMU decodes 30 v15 frames with final hash
+      `cff1e112a17aba41` at 2,252,229 cycles/frame average.
+- [x] Physical ESP32-2432S028 decodes the complete 60-frame QVGA/30 v15 test
+      without frame gaps or display skips. Decode averages 61.812 ms and total
+      work 98.004 ms, so this high-quality QVGA profile remains below real
+      time despite the smaller bitstream.
+- [x] Test asset removed from SD after CRC verification and playback; original
+      `play.txt`, user/demo media and persistent `crc32.txt` preserved.
+
 This checklist tracks bit-exact HLV v14 decoder and player experiments for the
 ESP32-2432S028. The primary goals are to make the `320x240` compact decoder fit
 in internal RAM and to increase packed Y7/U6/V6 decode/render throughput.

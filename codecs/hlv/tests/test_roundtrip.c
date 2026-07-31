@@ -1,5 +1,5 @@
 /*
- * Bit-exact encoder/decoder regression tests for standalone syntax v14.
+ * Bit-exact encoder/decoder regression tests for stable syntax v14/v15.
  * Synthetic frames isolate mode syntax, motion, palette coding, extended
  * quantization, encoder cloning, and adaptive keyframe decisions.
  */
@@ -93,11 +93,14 @@ static int test_version(int version) {
         return 1;
     }
 
-    /* Identical P frame should exercise the one-bit SKIP fast path. */
+    /* v14 emits SKIP macroblocks; v15 collapses the same reconstruction to
+       one zero-video-payload REPEAT packet. */
     if (roundtrip_one(e, d, &input, version, 1)) return 1;
     s = hlv1_encoder_stats(e);
-    if (!s || !s->skipped) {
-        fprintf(stderr, "SKIP not exercised in v%d\n", version);
+    if (!s || (version >= HLV1_STREAM_VERSION_15
+                   ? !s->repeated_frames
+                   : !s->skipped)) {
+        fprintf(stderr, "SKIP/REPEAT not exercised in v%d\n", version);
         return 1;
     }
 
@@ -107,7 +110,7 @@ static int test_version(int version) {
         if (roundtrip_one(e, d, &input, version, i)) return 1;
     }
     s = hlv1_encoder_stats(e);
-    if (version == HLV1_STREAM_VERSION_14 &&
+    if (version >= HLV1_STREAM_VERSION_14 &&
         (!s->encoder_work.motion_sad_evaluations ||
          !(s->encoder_work.sad_integer_samples +
            s->encoder_work.sad_hv_samples +
@@ -127,7 +130,7 @@ static int test_version(int version) {
          !s->encoder_work.bitwriter_put_calls ||
          !s->encoder_work.bitwriter_append_calls ||
          !s->encoder_work.bitwriter_buffer_grows)) {
-        fprintf(stderr, "encoder work counters not exercised in v14\n");
+        fprintf(stderr, "encoder work counters not exercised in v%d\n", version);
         return 1;
     }
 
@@ -167,20 +170,20 @@ static void make_partitioned_motion(const HLV1Frame *src, HLV1Frame *dst) {
     }
 }
 
-static int test_split_v3(void) {
-    HLV1Header h = {32,32,15,1,0,100,100,4,0,HLV1_STREAM_VERSION_3};
+static int test_joint_split_v15(void) {
+    HLV1Header h = {32,32,15,1,0,100,100,4,0,HLV1_STREAM_VERSION_15};
     HLV1Encoder *e = hlv1_encoder_create(&h, 1000.0);
     HLV1Decoder *d = hlv1_decoder_create(&h);
     HLV1Frame base, moved;
     if (!e || !d || hlv1_frame_alloc(&base,32,32)<0 ||
         hlv1_frame_alloc(&moved,32,32)<0) return 2;
     make_texture_frame(&base);
-    if (roundtrip_one(e, d, &base, 3, 0)) return 1;
+    if (roundtrip_one(e, d, &base, 15, 0)) return 1;
     make_partitioned_motion(&base, &moved);
-    if (roundtrip_one(e, d, &moved, 3, 1)) return 1;
+    if (roundtrip_one(e, d, &moved, 15, 1)) return 1;
     const HLV1Stats *st = hlv1_encoder_stats(e);
-    if (!st || !st->split_inter) {
-        fprintf(stderr, "SPLIT_INTER not exercised in v3\n");
+    if (!st || !st->split_joint) {
+        fprintf(stderr, "SPLIT_JOINT not exercised in v15\n");
         return 1;
     }
     hlv1_frame_free(&base);
@@ -421,7 +424,7 @@ static int test_literal_v14(void) {
 
 
 static int test_adaptive_gop_v14(void) {
-    HLV1Header h = {64,48,25,1,0,100,55,4,0,HLV1_VERSION};
+    HLV1Header h = {64,48,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_14};
     HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
     HLV1Decoder *decoder = hlv1_decoder_create(&h);
     HLV1Frame input;
@@ -542,15 +545,127 @@ static int test_segmented_decode(void) {
     return failed;
 }
 
+static int test_skip_run_v15(void) {
+    HLV1Header h14 = {64,16,25,1,0,100,55,4,0,HLV1_STREAM_VERSION_14};
+    HLV1Header h15 = h14;
+    h15.version = HLV1_STREAM_VERSION_15;
+    HLV1Encoder *e14 = hlv1_encoder_create(&h14, 1000.0);
+    HLV1Encoder *e15 = hlv1_encoder_create(&h15, 1000.0);
+    HLV1Decoder *d15 = hlv1_decoder_create(&h15);
+    HLV1Frame input;
+    if (!e14 || !e15 || !d15 || hlv1_frame_alloc(&input, 64, 16) < 0)
+        return 2;
+    make_constant_frame(&input, 72, 105, 149);
+    HLV1Packet key14 = {0}, key15 = {0};
+    const HLV1Frame *rec14 = NULL, *rec15 = NULL, *decoded = NULL;
+    int r = hlv1_encoder_encode(e14, &input, &key14, &rec14);
+    if (r >= 0) r = hlv1_encoder_encode(e15, &input, &key15, &rec15);
+    if (r >= 0) r = hlv1_decoder_decode(d15, &key15, &decoded);
+    hlv1_packet_free(&key14);
+    hlv1_packet_free(&key15);
+    if (r < 0) return 1;
+
+    for (int y = 0; y < 16; ++y)
+        memset(input.y + y * input.stride_y + 48, 218, 16);
+    for (int y = 0; y < 8; ++y) {
+        memset(input.u + y * input.stride_u + 24, 61, 8);
+        memset(input.v + y * input.stride_v + 24, 191, 8);
+    }
+    HLV1Packet p14 = {0}, p15 = {0};
+    r = hlv1_encoder_encode(e14, &input, &p14, &rec14);
+    if (r >= 0) r = hlv1_encoder_encode(e15, &input, &p15, &rec15);
+    if (r >= 0) r = hlv1_decoder_decode(d15, &p15, &decoded);
+    const HLV1Stats *stats = hlv1_encoder_stats(e15);
+    int failed = r < 0 || p15.frame_type != HLV1_FRAME_P ||
+                 !stats || !stats->skip_runs ||
+                 p15.bit_length >= p14.bit_length ||
+                 !same_frame(rec15, decoded) || !same_frame(rec14, rec15);
+    hlv1_packet_free(&p14);
+    hlv1_packet_free(&p15);
+    hlv1_frame_free(&input);
+    hlv1_encoder_destroy(e14);
+    hlv1_encoder_destroy(e15);
+    hlv1_decoder_destroy(d15);
+    if (failed) fprintf(stderr, "v15 SKIP_RUN test failed\n");
+    return failed;
+}
+
+static int test_rect_split_v15(void) {
+    HLV1Header h = {48,16,25,1,0,100,100,4,0,HLV1_STREAM_VERSION_15};
+    HLV1Encoder *encoder = hlv1_encoder_create(&h, 1000.0);
+    HLV1Decoder *decoder = hlv1_decoder_create(&h);
+    HLV1Frame base, moved;
+    if (!encoder || !decoder || hlv1_frame_alloc(&base, 48, 16) < 0 ||
+        hlv1_frame_alloc(&moved, 48, 16) < 0 ||
+        hlv1_encoder_set_quantization(encoder, 1, 1) < 0)
+        return 2;
+    make_texture_frame(&base);
+    HLV1Packet packet = {0};
+    const HLV1Frame *encoded = NULL, *decoded = NULL;
+    int r = hlv1_encoder_encode(encoder, &base, &packet, &encoded);
+    if (r >= 0) r = hlv1_decoder_decode(decoder, &packet, &decoded);
+    hlv1_packet_free(&packet);
+    if (r < 0 || hlv1_frame_copy_visible(&moved, encoded) < 0)
+        return 1;
+
+    for (int y = 0; y < 16; ++y) {
+        int dx = y < 8 ? 2 : -2;
+        for (int x = 16; x < 32; ++x)
+            moved.y[y * moved.stride_y + x] =
+                encoded->y[y * encoded->stride_y + x + dx];
+    }
+    for (int y = 0; y < 8; ++y) {
+        int dx = y < 4 ? 1 : -1;
+        for (int x = 8; x < 16; ++x) {
+            moved.u[y * moved.stride_u + x] =
+                encoded->u[y * encoded->stride_u + x + dx];
+            moved.v[y * moved.stride_v + x] =
+                encoded->v[y * encoded->stride_v + x + dx];
+        }
+    }
+    r = hlv1_encoder_encode(encoder, &moved, &packet, &encoded);
+    if (r >= 0) r = hlv1_decoder_decode(decoder, &packet, &decoded);
+    const HLV1Stats *stats = hlv1_encoder_stats(encoder);
+    int failed = r < 0 || !stats || !stats->rect_split ||
+                 !same_frame(encoded, decoded);
+    hlv1_packet_free(&packet);
+    hlv1_frame_free(&base);
+    hlv1_frame_free(&moved);
+    hlv1_encoder_destroy(encoder);
+    hlv1_decoder_destroy(decoder);
+    if (failed) fprintf(stderr, "RECT_SPLIT not exercised in v15\n");
+    return failed;
+}
+
 int main(void) {
     if (test_quality_qstep_range()) {
         fprintf(stderr, "quality/qstep range test failed\n");
         return 1;
     }
-    if (test_version(HLV1_STREAM_VERSION_14) ||
-        test_palette8_v14() || test_literal_v14() ||
-        test_adaptive_gop_v14() || test_encoder_clone() ||
-        test_segmented_decode()) return 1;
-    puts("HLV v14 standalone round-trip including LITERAL/PALETTE8/FILL/SKIP/SPLIT: PASS");
+    if (test_version(HLV1_STREAM_VERSION_14)) {
+        fprintf(stderr, "v14 round-trip test failed\n"); return 1;
+    }
+    if (test_version(HLV1_STREAM_VERSION_15)) {
+        fprintf(stderr, "v15 round-trip test failed\n"); return 1;
+    }
+    if (test_palette8_v14()) {
+        fprintf(stderr, "v14 palette8 test failed\n"); return 1;
+    }
+    if (test_literal_v14()) {
+        fprintf(stderr, "v14 literal test failed\n"); return 1;
+    }
+    if (test_adaptive_gop_v14()) {
+        fprintf(stderr, "v14 adaptive GOP test failed\n"); return 1;
+    }
+    if (test_encoder_clone()) {
+        fprintf(stderr, "encoder clone test failed\n"); return 1;
+    }
+    if (test_segmented_decode()) {
+        fprintf(stderr, "segmented decode test failed\n"); return 1;
+    }
+    if (test_skip_run_v15()) return 1;
+    if (test_joint_split_v15()) return 1;
+    if (test_rect_split_v15()) return 1;
+    puts("HLV v14/v15 round-trip including REPEAT/SKIP_RUN/LITERAL/PALETTE8/FILL/SPLIT: PASS");
     return 0;
 }

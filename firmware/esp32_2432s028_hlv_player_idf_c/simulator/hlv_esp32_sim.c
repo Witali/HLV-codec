@@ -401,14 +401,17 @@ int main(int argc, char **argv) {
     printf("Timed decode: %.3f s, %.1f fps, %.2f us/frame (%d loop%s)\n",
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
     if (stats.frames) {
-        printf("Modes/frame: skip %.2f, inter %.2f, global %.2f, split %.2f, "
+        printf("Modes/frame: skip %.2f (%" PRIu64 " runs), inter %.2f, global %.2f, split %.2f, joint %.2f, rect %.2f, "
                "fill %.2f, palette %.2f (2/4/8 %.2f/%.2f/%.2f), "
                "literal %.2f; "
                "coeff %.1f, WHT %.1f\n",
                (double)stats.skipped / stats.frames,
+               stats.skip_runs,
                (double)stats.inter / stats.frames,
                (double)stats.global / stats.frames,
                (double)stats.split_inter / stats.frames,
+               (double)stats.split_joint / stats.frames,
+               (double)stats.rect_split / stats.frames,
                (double)stats.fill / stats.frames,
                (double)stats.palette / stats.frames,
                (double)stats.palette_2 / stats.frames,
