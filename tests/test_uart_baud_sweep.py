@@ -16,53 +16,85 @@ sys.modules[SPEC.name] = sweep
 SPEC.loader.exec_module(sweep)
 
 
-def result(**overrides):
-    values = {
-        "nominal_baud": 3_000_000,
-        "calibrated_baud": 2_935_780,
-        "repetition": 1,
-        "status": "PASS",
-        "crc_rejections": 0,
-        "accepted_blocks": 64,
-        "received_bytes": 4096,
-        "crc32": "12345678",
-        "elapsed_seconds": 1.0,
-        "detail": "",
-    }
-    values.update(overrides)
-    return sweep.ProbeResult(**values)
-
-
 class UartBaudSweepTest(unittest.TestCase):
-    def test_default_candidates_are_unique_hardware_steps(self):
-        two_megabit = sweep.default_candidates(2_000_000)
-        three_megabit = sweep.default_candidates(3_000_000)
-        self.assertEqual(len(two_megabit), len(set(two_megabit)))
-        self.assertEqual(len(three_megabit), len(set(three_megabit)))
-        self.assertIn(2_000_000, two_megabit)
-        self.assertIn(3_000_000, three_megabit)
-        self.assertGreater(max(two_megabit), 2_000_000)
-        self.assertLess(min(three_megabit), 3_000_000)
+    def test_wait_line_discards_binary_transition_prefix(self):
+        class Port:
+            def __init__(self):
+                self.lines = iter((b"\x00\x80SWEEP TXDONE 1 2000000 1\n",))
 
-    def test_candidate_requires_complete_zero_retry_transfer(self):
-        self.assertTrue(sweep.candidate_is_clean([result()], 4096))
-        self.assertFalse(
-            sweep.candidate_is_clean([result(crc_rejections=1)], 4096)
-        )
-        self.assertFalse(
-            sweep.candidate_is_clean([result(received_bytes=4032)], 4096)
-        )
-        self.assertFalse(
-            sweep.candidate_is_clean([result(status="FAIL")], 4096)
-        )
+            def readline(self):
+                return next(self.lines, b"")
 
-    def test_candidate_parser_rejects_unsupported_nominal_rate(self):
         self.assertEqual(
-            sweep.parse_candidate("2000000=2015748"),
-            (2_000_000, 2_015_748),
+            sweep.wait_line(Port(), "SWEEP TXDONE 1 ", 0.1),
+            "SWEEP TXDONE 1 2000000 1",
         )
-        with self.assertRaises(Exception):
-            sweep.parse_candidate("2500000=2500000")
+
+    def test_binary_frame_round_trip(self):
+        frame = sweep.make_frame(17, 256, 2_929_062)
+        self.assertTrue(sweep.valid_frame(frame, 17, 256, 2_929_062))
+        damaged = bytearray(frame)
+        damaged[-1] ^= 1
+        self.assertFalse(
+            sweep.valid_frame(bytes(damaged), 17, 256, 2_929_062)
+        )
+
+    def test_payload_depends_on_candidate_and_sequence(self):
+        first = sweep.make_payload(64, 0, 2_000_000)
+        self.assertNotEqual(first, sweep.make_payload(64, 1, 2_000_000))
+        self.assertNotEqual(first, sweep.make_payload(64, 0, 2_003_130))
+
+    def test_host_report_is_crc_protected(self):
+        report = sweep.make_host_report(2_000_000, 2_003_130, 7, 1)
+        fields = sweep.HOST_REPORT.unpack(report)
+        self.assertEqual(fields[1:-1], (2_000_000, 2_003_130, 7, 1))
+        self.assertEqual(fields[-1], sweep.zlib.crc32(report[:-4]) & 0xFFFFFFFF)
+
+    def test_control_result_layout(self):
+        prefix = sweep.RESULT.pack(
+            b"SWPR", 3_000_000, 2_929_062, 8, 0, 7, 1, 0
+        )[:-4]
+        frame = prefix + sweep.struct.pack(
+            "<I", sweep.zlib.crc32(prefix) & 0xFFFFFFFF
+        )
+        fields = sweep.RESULT.unpack(frame)
+        self.assertEqual(fields[1:-1], (3_000_000, 2_929_062, 8, 0, 7, 1))
+
+    def test_rx_go_marker_is_crc_protected(self):
+        prefix = sweep.RX_READY.pack(
+            b"SWPG", 2_000_000, 2_003_130, 8, 256, 0
+        )[:-4]
+        frame = prefix + sweep.struct.pack(
+            "<I", sweep.zlib.crc32(prefix) & 0xFFFFFFFF
+        )
+
+        class Port:
+            def __init__(self, data):
+                self.data = bytearray(data)
+
+            def read(self, size):
+                chunk = self.data[:size]
+                del self.data[:size]
+                return bytes(chunk)
+
+        sweep.wait_rx_ready(
+            Port(frame), 2_000_000, 2_003_130, 8, 256, 0.1
+        )
+
+    def test_result_and_best_parsing(self):
+        best = sweep.parse_best("SWEEP BEST 1 3000000 2929062 1 0")
+        self.assertFalse(best.clean)
+        self.assertEqual(best.calibrated_baud, 2_929_062)
+        joined = sweep.parse_best(
+            "SWEEP BEST 1 3000000 2929062 1 0P COMPLETE 1"
+        )
+        self.assertEqual(joined.calibrated_baud, 2_929_062)
+
+    def test_rate_mask(self):
+        self.assertEqual(sweep.rate_mask(None), 3)
+        self.assertEqual(sweep.rate_mask([2_000_000]), 1)
+        self.assertEqual(sweep.rate_mask([3_000_000]), 2)
+        self.assertEqual(sweep.rate_mask([3_000_000, 2_000_000]), 3)
 
 
 if __name__ == "__main__":

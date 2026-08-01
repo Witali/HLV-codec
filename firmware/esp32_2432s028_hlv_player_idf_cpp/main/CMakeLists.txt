@@ -14,10 +14,6 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
-set(UART_CALIBRATED_BAUD_2000K 2000000 CACHE STRING
-    "ESP32 UART rate used when the host requests 2000000 baud")
-set(UART_CALIBRATED_BAUD_3000K 3000000 CACHE STRING
-    "ESP32 UART rate used when the host requests 3000000 baud")
 set(mjpeg_stream_dir
     "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
@@ -326,9 +322,6 @@ else()
             sdmmc
             vfs
     )
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE
-        UART_CALIBRATED_BAUD_2000K=${UART_CALIBRATED_BAUD_2000K}
-        UART_CALIBRATED_BAUD_3000K=${UART_CALIBRATED_BAUD_3000K})
     enable_mjpeg_optimized_idct_link()
     enable_mjpeg_fast_clear_link()
     enable_mjpeg_streaming_huffman_link()

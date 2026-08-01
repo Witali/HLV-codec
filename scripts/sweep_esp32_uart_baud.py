@@ -1,108 +1,129 @@
 #!/usr/bin/env python3
-"""Build, flash, and CRC-test ESP32 UART calibration candidates.
-
-The calibration is compiled into each firmware image.  It is therefore fixed
-from boot and shared by the ESP32 receive and transmit paths.  The probe reads
-an existing SD-card file; it creates no files on the card.
-"""
+"""Build, flash, and drive the standalone ESP32 UART SWEEP firmware."""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import io
-import multiprocessing
 import os
 import pathlib
-import statistics
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from dataclasses import dataclass
 
 
 REPOSITORY = pathlib.Path(__file__).resolve().parents[1]
-PROJECTS = {
-    "c": REPOSITORY / "firmware" / "esp32_2432s028_hlv_player_idf_c",
-    "cpp": REPOSITORY / "firmware" / "esp32_2432s028_hlv_player_idf_cpp",
-}
+SWEEP_PROJECT = REPOSITORY / "firmware" / "esp32_2432s028_uart_sweep"
 CONTROL_BAUD = 1_000_000
-APB_CLOCK_HZ = 80_000_000
-DEFAULT_FILE = "Danila_320x180_30fps_HLVv14_38dB.hlv"
-DEFAULT_DIVISORS = {
-    # The crystal-less CH340C on the measured board needed the ESP32 side
-    # moved upward at 2 Mbaud.  Enumerate the distinct 1/16 APB-divider steps
-    # around that window; closer integer baud values would map to duplicates.
-    2_000_000: (
-        40.0,
-        39.9375,
-        39.875,
-        39.8125,
-        39.75,
-        39.6875,
-        39.625,
-        39.5625,
-        39.5,
-    ),
-    3_000_000: (
-        80 / 3,
-        26.875,
-        27.0,
-        27.125,
-        27.25,
-        27.3125,
-        27.375,
-        27.4375,
-        27.5,
-        27.5625,
-        27.625,
-    ),
-}
-DEFINE_NAMES = {
-    2_000_000: "UART_CALIBRATED_BAUD_2000K",
-    3_000_000: "UART_CALIBRATED_BAUD_3000K",
-}
+PROTOCOL_VERSION = 1
+FRAME_HEADER = struct.Struct("<4sHHI")
+CONTROL_FRAME_REPEATS = 20
+HOST_REPORT = struct.Struct("<4sIIIII")
+RX_READY = struct.Struct("<4sIIIII")
+RESULT = struct.Struct("<4sIIIIIII")
+MAX_PAYLOAD_BYTES = 512
+
+
+class SweepError(RuntimeError):
+    pass
 
 
 @dataclass
-class ProbeResult:
+class SweepResult:
     nominal_baud: int
     calibrated_baud: int
-    repetition: int
-    status: str
-    crc_rejections: int
-    accepted_blocks: int
-    received_bytes: int
-    crc32: str
-    elapsed_seconds: float
-    detail: str
+    tx_valid: int
+    tx_errors: int
+    rx_valid: int
+    rx_errors: int
+
+    @property
+    def total_errors(self) -> int:
+        return self.tx_errors + self.rx_errors
 
 
-def default_candidates(nominal_baud: int) -> tuple[int, ...]:
-    rates = {
-        round(APB_CLOCK_HZ / divisor)
-        for divisor in DEFAULT_DIVISORS[nominal_baud]
-    }
-    return tuple(sorted(rates, reverse=True))
+@dataclass
+class BestResult:
+    nominal_baud: int
+    calibrated_baud: int
+    errors: int
+    clean: bool
 
 
-def parse_candidate(value: str) -> tuple[int, int]:
-    try:
-        nominal_text, calibrated_text = value.split("=", 1)
-        nominal = int(nominal_text)
-        calibrated = int(calibrated_text)
-    except (ValueError, TypeError) as error:
-        raise argparse.ArgumentTypeError(
-            "candidate must look like 2000000=1957187"
-        ) from error
-    if nominal not in DEFINE_NAMES or calibrated <= 0:
-        raise argparse.ArgumentTypeError("unsupported UART candidate")
-    return nominal, calibrated
+def make_payload(size: int, sequence: int, actual_baud: int) -> bytes:
+    return bytes(
+        (
+            sequence * 131
+            + index * 17
+            + actual_baud
+            + (index >> 3)
+        )
+        & 0xFF
+        for index in range(size)
+    )
 
 
-def powershell(
-    command: str, environment: dict[str, str], cwd: pathlib.Path
-) -> None:
+def make_frame(sequence: int, payload_bytes: int, actual_baud: int) -> bytes:
+    payload = make_payload(payload_bytes, sequence, actual_baud)
+    return FRAME_HEADER.pack(
+        b"SWPB",
+        sequence,
+        payload_bytes,
+        zlib.crc32(payload) & 0xFFFFFFFF,
+    ) + payload
+
+
+def valid_frame(
+    frame: bytes, sequence: int, payload_bytes: int, actual_baud: int
+) -> bool:
+    if len(frame) != FRAME_HEADER.size + payload_bytes:
+        return False
+    magic, received_sequence, received_size, checksum = (
+        FRAME_HEADER.unpack_from(frame)
+    )
+    payload = frame[FRAME_HEADER.size:]
+    return (
+        magic == b"SWPB"
+        and received_sequence == sequence
+        and received_size == payload_bytes
+        and checksum == zlib.crc32(payload) & 0xFFFFFFFF
+        and payload == make_payload(payload_bytes, sequence, actual_baud)
+    )
+
+
+def make_host_report(
+    nominal: int, actual: int, valid: int, errors: int
+) -> bytes:
+    prefix = struct.pack("<4sIIII", b"SWPH", nominal, actual, valid, errors)
+    return prefix + struct.pack("<I", zlib.crc32(prefix) & 0xFFFFFFFF)
+
+
+def parse_best(line: str) -> BestResult:
+    fields = line.split()
+    if len(fields) < 7 or fields[:3] != ["SWEEP", "BEST", "1"]:
+        raise SweepError(f"invalid best line: {line}")
+    nominal, calibrated, errors = map(int, fields[3:6])
+    # A CH340C may join the following status line to the final digit when it
+    # reopens after reset (for example, "0P COMPLETE 1").  BEST's last field
+    # is a boolean, so consume only that leading digit.
+    if not fields[6] or fields[6][0] not in "01":
+        raise SweepError(f"invalid best line: {line}")
+    clean = int(fields[6][0])
+    return BestResult(nominal, calibrated, errors, bool(clean))
+
+
+def rate_mask(bauds: list[int] | None) -> int:
+    selected = bauds or [2_000_000, 3_000_000]
+    mask = 0
+    for baud in selected:
+        mask |= {2_000_000: 1, 3_000_000: 2}[baud]
+    return mask
+
+
+def powershell(command: str, environment: dict[str, str]) -> None:
     process_environment = os.environ.copy()
     process_environment.update(environment)
     completed = subprocess.run(
@@ -114,266 +135,282 @@ def powershell(
             "-Command",
             command,
         ],
-        cwd=cwd,
+        cwd=SWEEP_PROJECT,
         env=process_environment,
         check=False,
     )
     if completed.returncode:
-        raise RuntimeError(
+        raise SweepError(
             f"PowerShell command failed with exit code {completed.returncode}"
         )
 
 
-def build_variant(
-    project: pathlib.Path,
-    build_directory: pathlib.Path,
-    calibrated: dict[int, int],
-) -> None:
-    command = r"""
-$ErrorActionPreference = 'Stop'
-& $env:HLV_SWEEP_IDF -IdfArguments @(
-    '-B', $env:HLV_SWEEP_BUILD,
-    '-D', "UART_CALIBRATED_BAUD_2000K=$env:HLV_SWEEP_BAUD_2M",
-    '-D', "UART_CALIBRATED_BAUD_3000K=$env:HLV_SWEEP_BAUD_3M",
-    'build'
-)
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-"""
+def build_firmware() -> None:
     powershell(
-        command,
-        {
-            "HLV_SWEEP_IDF": str(project / "idf.ps1"),
-            "HLV_SWEEP_BUILD": str(build_directory),
-            "HLV_SWEEP_BAUD_2M": str(calibrated[2_000_000]),
-            "HLV_SWEEP_BAUD_3M": str(calibrated[3_000_000]),
-        },
-        project,
+        "& $env:HLV_SWEEP_BUILD",
+        {"HLV_SWEEP_BUILD": str(SWEEP_PROJECT / "build.ps1")},
     )
 
 
-def flash_variant(
-    project: pathlib.Path,
-    build_directory: pathlib.Path,
-    port: str,
-    flash_baud: int,
-) -> None:
-    command = r"""
-$ErrorActionPreference = 'Stop'
-$env:ESPTOOL_OPEN_PORT_ATTEMPTS = '60'
-& $env:HLV_SWEEP_IDF `
-    -EsptoolWorkingDirectory $env:HLV_SWEEP_BUILD `
-    -EsptoolArguments @(
-    '--chip', 'esp32',
-    '--port', $env:HLV_SWEEP_PORT,
-    '--baud', $env:HLV_SWEEP_FLASH_BAUD,
-    '--before', 'default_reset',
-    '--after', 'hard_reset',
-    'write_flash', '@flash_args'
-)
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-"""
+def flash_firmware(port: str, flash_baud: int) -> None:
+    command = "& $env:HLV_SWEEP_FLASH -Port $env:HLV_SWEEP_PORT " \
+              "-Baud $env:HLV_SWEEP_FLASH_BAUD -SkipBuild"
     powershell(
         command,
         {
-            "HLV_SWEEP_IDF": str(project / "idf.ps1"),
-            "HLV_SWEEP_BUILD": str(build_directory),
+            "HLV_SWEEP_FLASH": str(SWEEP_PROJECT / "flash.ps1"),
             "HLV_SWEEP_PORT": port,
             "HLV_SWEEP_FLASH_BAUD": str(flash_baud),
         },
-        project,
     )
 
 
-def load_uart_modules(project: pathlib.Path):
-    sys.path.insert(0, str(project))
-    import uart_read  # pylint: disable=import-outside-toplevel
-    from uart_baud import (  # pylint: disable=import-outside-toplevel
-        begin_session,
-        change_baud,
-        enable_monitoring,
-        open_port,
-    )
-
-    return uart_read, begin_session, change_baud, enable_monitoring, open_port
-
-
-def probe_once(
-    modules,
-    port_name: str,
-    nominal_baud: int,
-    calibrated_baud: int,
-    filename: str,
-    length: int,
-    timeout: float,
-    max_rejections: int,
-    repetition: int,
-) -> ProbeResult:
-    (uart_read, begin_session, _, _, open_port) = modules
-    counters = {"accepted": 0, "rejected": 0}
-    received = 0
-    checksum = 0
-    started = time.monotonic()
-    status = "PASS"
-    detail = ""
-    stage = "open control port"
-    original_send_ack = uart_read._send_ack
-
-    def counting_ack(target, sequence, accepted):
-        counters["accepted" if accepted else "rejected"] += 1
-        original_send_ack(target, sequence, accepted)
-        if not accepted and counters["rejected"] >= max_rejections:
-            raise RuntimeError(
-                f"stopped after {max_rejections} CRC rejections"
-            )
-
+def load_serial():
     try:
-        port = open_port(port_name, CONTROL_BAUD)
-        with port:
-            stage = "begin READ session at control rate"
-            begin_session(port, "READ", timeout)
-            uart_read._send_ack = counting_ack
-            try:
-                output = io.BytesIO()
-                stage = "CRC-protected range read"
-                _, received, checksum = uart_read.read_range(
-                    port,
-                    filename,
-                    0,
-                    length,
-                    output,
-                    nominal_baud,
-                    CONTROL_BAUD,
-                    timeout,
-                )
-            finally:
-                uart_read._send_ack = original_send_ack
-    except Exception as error:  # Keep the sweep going after a bad candidate.
-        uart_read._send_ack = original_send_ack
-        status = "FAIL"
-        detail = f"{stage}: {str(error).replace(chr(10), ' ')}"
-
-    return ProbeResult(
-        nominal_baud=nominal_baud,
-        calibrated_baud=calibrated_baud,
-        repetition=repetition,
-        status=status,
-        crc_rejections=counters["rejected"],
-        accepted_blocks=counters["accepted"],
-        received_bytes=received,
-        crc32=f"{checksum:08x}" if received else "",
-        elapsed_seconds=time.monotonic() - started,
-        detail=detail,
-    )
+        import serial  # pylint: disable=import-outside-toplevel
+    except ModuleNotFoundError as error:
+        raise SweepError(
+            "pyserial is missing; run this script with the pinned ESP-IDF "
+            "Python shown in firmware/esp32_2432s028_uart_sweep/README.md"
+        ) from error
+    return serial
 
 
-def probe_worker(queue, project: pathlib.Path, arguments: tuple) -> None:
+def open_port(serial, name: str):
+    port = serial.Serial()
+    port.port = name
+    port.baudrate = CONTROL_BAUD
+    port.bytesize = serial.EIGHTBITS
+    port.parity = serial.PARITY_NONE
+    port.stopbits = serial.STOPBITS_TWO
+    port.timeout = 0.1
+    port.write_timeout = 10
+    port.dtr = False
+    port.rts = False
+    port.open()
     try:
-        result = probe_once(load_uart_modules(project), *arguments)
-    except Exception as error:
-        result = ProbeResult(
-            nominal_baud=arguments[1],
-            calibrated_baud=arguments[2],
-            repetition=arguments[-1],
-            status="FAIL",
-            crc_rejections=0,
-            accepted_blocks=0,
-            received_bytes=0,
-            crc32="",
-            elapsed_seconds=0.0,
-            detail=str(error).replace("\n", " "),
-        )
-    queue.put(result)
-    queue.close()
-    queue.join_thread()
+        port.set_buffer_size(rx_size=1024 * 1024, tx_size=256 * 1024)
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+    return port
 
 
-def bounded_probe(
-    project: pathlib.Path,
-    arguments: tuple,
-    wall_timeout: float,
-) -> ProbeResult:
-    context = multiprocessing.get_context("spawn")
-    queue = context.Queue()
-    process = context.Process(
-        target=probe_worker,
-        args=(queue, project, arguments),
-    )
-    started = time.monotonic()
-    process.start()
-    process.join(wall_timeout)
-    if process.is_alive():
-        process.terminate()
-        process.join(5.0)
-        queue.close()
-        queue.join_thread()
-        return ProbeResult(
-            nominal_baud=arguments[1],
-            calibrated_baud=arguments[2],
-            repetition=arguments[-1],
-            status="FAIL",
-            crc_rejections=0,
-            accepted_blocks=0,
-            received_bytes=0,
-            crc32="",
-            elapsed_seconds=time.monotonic() - started,
-            detail=f"probe exceeded {wall_timeout:.1f} second wall timeout",
-        )
-    if queue.empty():
-        queue.close()
-        queue.join_thread()
-        raise RuntimeError(f"probe process exited with code {process.exitcode}")
-    result = queue.get()
-    queue.close()
-    queue.join_thread()
-    return result
-
-
-def wait_for_application(modules, port_name: str, timeout: float) -> None:
-    (_, begin_session, _, _, open_port) = modules
+def wait_line(port, prefix: str, timeout: float) -> str:
     deadline = time.monotonic() + timeout
-    last_error: Exception | None = None
     while time.monotonic() < deadline:
-        try:
-            port = open_port(port_name, CONTROL_BAUD)
-            with port:
-                begin_session(port, "LIST", 1.0)
+        raw = port.readline()
+        if not raw:
+            continue
+        line = raw.decode("ascii", errors="replace").strip()
+        marker = line.find(prefix)
+        if marker >= 0:
+            return line[marker:]
+    raise SweepError(f"timeout waiting for {prefix.strip()}")
+
+
+def read_exact(port, size: int, timeout: float) -> bytes:
+    data = bytearray()
+    deadline = time.monotonic() + timeout
+    while len(data) < size and time.monotonic() < deadline:
+        chunk = port.read(size - len(data))
+        if chunk:
+            data.extend(chunk)
+    return bytes(data)
+
+
+def find_magic(port, magic: bytes, timeout: float) -> None:
+    window = bytearray()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        byte = port.read(1)
+        if not byte:
+            continue
+        window.extend(byte)
+        if len(window) > len(magic):
+            del window[0]
+        if bytes(window) == magic:
             return
-        except Exception as error:  # Boot messages may consume the first try.
-            last_error = error
-            time.sleep(0.25)
-    raise RuntimeError(
-        f"application did not become ready on {port_name}: {last_error}"
-    )
+    raise SweepError(f"timeout waiting for {magic.decode('ascii')}")
 
 
-def resume_application(modules, port_name: str, timeout: float) -> None:
-    (_, _, _, enable_monitoring, open_port) = modules
-    port = open_port(port_name, CONTROL_BAUD)
-    with port:
-        enable_monitoring(port, timeout)
+def wait_rx_ready(
+    port, nominal: int, actual: int, blocks: int, payload: int, timeout: float
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        find_magic(port, b"SWPG", remaining)
+        suffix = read_exact(port, RX_READY.size - 4, remaining)
+        if len(suffix) != RX_READY.size - 4:
+            continue
+        frame = b"SWPG" + suffix
+        fields = RX_READY.unpack(frame)
+        if (
+            fields[1:5] == (nominal, actual, blocks, payload)
+            and fields[-1] == zlib.crc32(frame[:-4]) & 0xFFFFFFFF
+        ):
+            return
+    raise SweepError("timeout waiting for valid SWPG")
 
 
-def result_score(rows: list[ProbeResult]) -> tuple[int, int, float]:
-    failures = sum(row.status != "PASS" for row in rows)
-    rejections = sum(row.crc_rejections for row in rows)
-    elapsed = statistics.median(row.elapsed_seconds for row in rows)
-    return failures, rejections, elapsed
+def wait_result_frame(port, timeout: float) -> SweepResult:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        find_magic(port, b"SWPR", remaining)
+        suffix = read_exact(port, RESULT.size - 4, remaining)
+        if len(suffix) != RESULT.size - 4:
+            continue
+        frame = b"SWPR" + suffix
+        fields = RESULT.unpack(frame)
+        if fields[-1] != zlib.crc32(frame[:-4]) & 0xFFFFFFFF:
+            continue
+        return SweepResult(*fields[1:-1])
+    raise SweepError("timeout waiting for valid SWPR")
 
 
-def candidate_is_clean(rows: list[ProbeResult], expected_bytes: int) -> bool:
-    """Return true only for complete transfers without a single CRC retry."""
-    return bool(rows) and all(
-        row.status == "PASS"
-        and row.crc_rejections == 0
-        and row.received_bytes == expected_bytes
-        for row in rows
-    )
+def receive_frames(
+    port, blocks: int, payload_bytes: int, actual_baud: int, timeout: float
+) -> tuple[int, int]:
+    frame_bytes = FRAME_HEADER.size + payload_bytes
+    valid = 0
+    errors = 0
+    for sequence in range(blocks):
+        frame = read_exact(port, frame_bytes, timeout)
+        if valid_frame(frame, sequence, payload_bytes, actual_baud):
+            valid += 1
+        else:
+            errors += 1
+            if len(frame) != frame_bytes:
+                errors += blocks - sequence - 1
+                break
+    return valid, errors
 
 
-def write_results(path: pathlib.Path, rows: list[ProbeResult]) -> None:
+def send_frames(
+    port, blocks: int, payload_bytes: int, actual_baud: int
+) -> None:
+    for sequence in range(blocks):
+        port.write(make_frame(sequence, payload_bytes, actual_baud))
+    port.flush()
+
+
+def switch_host_rate(port, baud: int) -> None:
+    if baud == CONTROL_BAUD:
+        port.close()
+        port.baudrate = baud
+        port.dtr = False
+        port.rts = False
+        port.open()
+        return
+    port.baudrate = baud
+    time.sleep(0.02)
+
+
+def parse_candidate(line: str) -> tuple[int, int, int, int, int]:
+    fields = line.split()
+    if (
+        len(fields) != 8
+        or fields[:3] != ["SWEEP", "CANDIDATE", "1"]
+    ):
+        raise SweepError(f"invalid candidate line: {line}")
+    nominal = int(fields[3])
+    actual = int(fields[4])
+    blocks = int(fields[5])
+    payload_bytes = int(fields[6])
+    switch_delay_ms = int(fields[7])
+    return nominal, actual, blocks, payload_bytes, switch_delay_ms
+
+
+def reopen_control(port) -> None:
+    time.sleep(1.2)
+    port.close()
+    port.baudrate = CONTROL_BAUD
+    port.dtr = False
+    port.rts = False
+    time.sleep(0.05)
+    port.open()
+
+
+def run_protocol(
+    port, blocks: int, payload_bytes: int, selected_mask: int,
+    timeout: float, csv_path: pathlib.Path | None = None
+) -> tuple[list[SweepResult], list[BestResult]]:
+    results: list[SweepResult] = []
+    result_keys: set[tuple[int, int]] = set()
+    best: list[BestResult] = []
+    while True:
+        ready = wait_line(port, "SWEEP READY 1 ", 30.0)
+        status = ready.split()[-1]
+        if status == "IDLE":
+            port.write(
+                f"SWEEP START 1 {blocks} {payload_bytes} "
+                f"{selected_mask}\n".encode("ascii")
+            )
+            port.flush()
+            wait_line(port, "SWEEP STARTED 1", timeout)
+        elif status == "ACTIVE":
+            port.write(b"SWEEP CONTINUE 1\n")
+            port.flush()
+            wait_line(port, "SWEEP CONTINUING 1", timeout)
+        elif status == "COMPLETE":
+            while True:
+                line = wait_line(port, "SWEEP ", timeout)
+                if line.startswith("SWEEP BEST 1 "):
+                    selected = parse_best(line)
+                    if all(
+                        item.nominal_baud != selected.nominal_baud
+                        for item in best
+                    ):
+                        best.append(selected)
+                elif line.startswith("SWEEP COMPLETE 1"):
+                    port.write(b"SWEEP ACK 1\n")
+                    port.flush()
+                    return results, best
+
+        candidate_line = wait_line(port, "SWEEP CANDIDATE 1 ", timeout)
+        nominal, actual, candidate_blocks, candidate_payload, _switch_delay_ms = (
+            parse_candidate(candidate_line)
+        )
+        if candidate_blocks != blocks or candidate_payload != payload_bytes:
+            raise SweepError("firmware changed the requested probe size")
+        switch_host_rate(port, nominal)
+        valid, errors = receive_frames(
+            port, blocks, payload_bytes, actual, timeout
+        )
+        print(
+            f"phase TX {nominal}: ESP32={actual} "
+            f"valid={valid}/{blocks} errors={errors}",
+            flush=True,
+        )
+        report = make_host_report(nominal, actual, valid, errors)
+        port.write(report * CONTROL_FRAME_REPEATS)
+        port.flush()
+        wait_rx_ready(
+            port, nominal, actual, blocks, payload_bytes, timeout + 5.0
+        )
+        send_frames(port, blocks, payload_bytes, actual)
+        result = wait_result_frame(port, timeout + 5.0)
+        key = (result.nominal_baud, result.calibrated_baud)
+        if key not in result_keys:
+            result_keys.add(key)
+            results.append(result)
+            if csv_path is not None:
+                write_results(csv_path, results)
+            print(
+                f"{result.nominal_baud}: ESP32={result.calibrated_baud} "
+                f"TX={result.tx_valid}/{blocks} "
+                f"RX={result.rx_valid}/{blocks} "
+                f"errors={result.total_errors}",
+                flush=True,
+            )
+        reopen_control(port)
+
+
+def write_results(path: pathlib.Path, rows: list[SweepResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.DictWriter(output, fieldnames=ProbeResult.__annotations__)
+        writer = csv.DictWriter(output, fieldnames=SweepResult.__annotations__)
         writer.writeheader()
         for row in rows:
             writer.writerow(row.__dict__)
@@ -382,183 +419,65 @@ def write_results(path: pathlib.Path, rows: list[ProbeResult]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
-    parser.add_argument("--project", choices=PROJECTS, default="c")
     parser.add_argument(
         "--baud",
         type=int,
-        choices=tuple(DEFINE_NAMES),
+        choices=(2_000_000, 3_000_000),
         action="append",
-        help="nominal rate to sweep; repeat for both (default: both)",
+        help="rate to sweep; repeat for both (default: both)",
     )
-    parser.add_argument(
-        "--candidate",
-        type=parse_candidate,
-        action="append",
-        default=[],
-        help="override defaults, for example 2000000=1957187",
-    )
-    parser.add_argument("--file", default=DEFAULT_FILE)
-    parser.add_argument("--length", type=int, default=64 * 1024)
-    parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--max-rejections", type=int, default=20)
-    parser.add_argument("--timeout", type=float, default=10.0)
-    parser.add_argument("--probe-wall-timeout", type=float, default=45.0)
+    parser.add_argument("--blocks", type=int, default=128)
+    parser.add_argument("--payload", type=int, default=256)
+    parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--flash-baud", type=int, default=460_800)
-    parser.add_argument("--build-dir", type=pathlib.Path)
-    parser.add_argument("--csv", type=pathlib.Path)
+    parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--skip-flash", action="store_true")
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="print the candidate plan without building or touching the board",
+        "--csv",
+        type=pathlib.Path,
+        default=REPOSITORY / ".tmp" / "uart-baud-sweep.csv",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if (
-        args.length <= 0
-        or args.repetitions <= 0
-        or args.max_rejections <= 0
-        or args.timeout <= 0
-        or args.probe_wall_timeout <= 0
-    ):
-        raise SystemExit(
-            "length, repetitions, rejection limit, and timeouts must be positive"
+    if not 1 <= args.blocks <= 1000:
+        raise SweepError("--blocks must be between 1 and 1000")
+    if not 1 <= args.payload <= MAX_PAYLOAD_BYTES:
+        raise SweepError(f"--payload must be between 1 and {MAX_PAYLOAD_BYTES}")
+    if args.timeout <= 0:
+        raise SweepError("--timeout must be positive")
+    if not args.skip_build:
+        build_firmware()
+    if not args.skip_flash:
+        flash_firmware(args.port, args.flash_baud)
+
+    serial = load_serial()
+    port = open_port(serial, args.port)
+    with port:
+        rows, best = run_protocol(
+            port,
+            args.blocks,
+            args.payload,
+            rate_mask(args.baud),
+            args.timeout,
+            args.csv.resolve(),
         )
-    project = PROJECTS[args.project]
-    bauds = args.baud or list(DEFINE_NAMES)
-    custom = {baud: [] for baud in DEFINE_NAMES}
-    for nominal, calibrated in args.candidate:
-        custom[nominal].append(calibrated)
-    candidates = {
-        baud: tuple(custom[baud]) or default_candidates(baud)
-        for baud in bauds
-    }
-    build_directory = (
-        args.build_dir.resolve()
-        if args.build_dir
-        else project / "build-uart-sweep"
-    )
-    csv_path = (
-        args.csv.resolve()
-        if args.csv
-        else REPOSITORY / ".tmp" / "uart-baud-sweep.csv"
-    )
-
-    calibrated = {2_000_000: 2_000_000, 3_000_000: 3_000_000}
-    original_calibration = dict(calibrated)
-    print(f"project={project}")
-    print(f"build={build_directory}")
-    for baud in bauds:
-        print(f"{baud}: {', '.join(map(str, candidates[baud]))}")
-    if args.dry_run:
-        return 0
-
-    modules = load_uart_modules(project)
-    wait_for_application(modules, args.port, 30.0)
-    all_rows: list[ProbeResult] = []
-    last_flashed: dict[int, int] | None = None
-    for nominal_baud in bauds:
-        candidate_rows: dict[int, list[ProbeResult]] = {}
-        for candidate in candidates[nominal_baud]:
-            calibrated[nominal_baud] = candidate
-            print(
-                f"\n=== nominal {nominal_baud}, ESP32 {candidate} "
-                f"({candidate / nominal_baud:.6f}) ===",
-                flush=True,
-            )
-            build_variant(project, build_directory, calibrated)
-            flash_variant(
-                project, build_directory, args.port, args.flash_baud
-            )
-            last_flashed = dict(calibrated)
-            wait_for_application(modules, args.port, 30.0)
-            rows = []
-            for repetition in range(1, args.repetitions + 1):
-                row = bounded_probe(
-                    project,
-                    (
-                        args.port,
-                        nominal_baud,
-                        candidate,
-                        args.file,
-                        args.length,
-                        args.timeout,
-                        args.max_rejections,
-                        repetition,
-                    ),
-                    args.probe_wall_timeout,
-                )
-                rows.append(row)
-                all_rows.append(row)
-                print(
-                    f"run={repetition} status={row.status} "
-                    f"crc_rejections={row.crc_rejections} "
-                    f"accepted={row.accepted_blocks} "
-                    f"crc={row.crc32 or '-'} "
-                    f"seconds={row.elapsed_seconds:.3f} {row.detail}",
-                    flush=True,
-                )
-            candidate_rows[candidate] = rows
-            write_results(csv_path, all_rows)
-
-        passing = [
-            value
-            for value, rows in candidate_rows.items()
-            if candidate_is_clean(rows, args.length)
-        ]
-        if not passing:
-            closest = max(
-                candidate_rows,
-                key=lambda value: (
-                    sum(row.accepted_blocks for row in candidate_rows[value]),
-                    -sum(
-                        row.crc_rejections for row in candidate_rows[value]
-                    ),
-                ),
-            )
-            calibrated[nominal_baud] = original_calibration[nominal_baud]
-            print(
-                f"NO PASS nominal={nominal_baud}; "
-                f"closest={closest} "
-                f"accepted={sum(row.accepted_blocks for row in candidate_rows[closest])}; "
-                f"restoring={calibrated[nominal_baud]}",
-                flush=True,
-            )
-            continue
-        best = min(
-            passing,
-            key=lambda value: (
-                result_score(candidate_rows[value]),
-                abs(value - nominal_baud),
-            ),
-        )
-        calibrated[nominal_baud] = best
+    write_results(args.csv.resolve(), rows)
+    for selected in best:
+        reliability = "clean" if selected.clean else "no clean candidate"
         print(
-            f"BEST nominal={nominal_baud} calibrated={best} "
-            f"coefficient={best / nominal_baud:.6f} "
-            f"score={result_score(candidate_rows[best])}",
-            flush=True,
+            f"selected {selected.nominal_baud}={selected.calibrated_baud} "
+            f"({reliability}, errors={selected.errors})"
         )
-
-    if last_flashed != calibrated:
-        print("\n=== flashing best combined calibration ===", flush=True)
-        build_variant(project, build_directory, calibrated)
-        flash_variant(project, build_directory, args.port, args.flash_baud)
-        wait_for_application(modules, args.port, 30.0)
-    else:
-        print("\n=== best combined calibration is already flashed ===")
-    resume_application(modules, args.port, args.timeout)
-    print(
-        "selected " + " ".join(
-            f"{baud}={calibrated[baud]}"
-            for baud in sorted(calibrated)
-        )
-    )
-    print(csv_path)
+    print(args.csv.resolve())
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SweepError as error:
+        print(f"uart-sweep: {error}", file=sys.stderr)
+        raise SystemExit(1)
