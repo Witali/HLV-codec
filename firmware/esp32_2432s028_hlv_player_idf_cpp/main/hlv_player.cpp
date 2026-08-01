@@ -448,6 +448,7 @@ bool bpv_stream_eof = false;
 uint32_t ready_bpv_read_us = 0;
 uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
+long pending_hlv_packet_offset = -1;
 uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
 int upload_progress_pixels = -1;
@@ -742,6 +743,7 @@ bool startDecodeWorker() {
 
 bool submitDecode(FILE *file) {
     if (!decode_task_handle || decode_in_flight || !file) return false;
+    pending_hlv_packet_offset = ftell(file);
     DecodeRequest request{};
     request.codec = VideoCodec::kHlv;
     request.hlv_file = file;
@@ -4672,6 +4674,9 @@ void playOneFramePipelined() {
         return;
     }
     if (result.result != HLV1_OK || !result.hlv_frame) {
+        ESP_LOGE(kTag, "HLV frame %u packet range %ld..%ld",
+                 static_cast<unsigned>(decoded_frames + 1U),
+                 pending_hlv_packet_offset, ftell(video_file));
         failPlayback("Decode error", result.result);
         return;
     }

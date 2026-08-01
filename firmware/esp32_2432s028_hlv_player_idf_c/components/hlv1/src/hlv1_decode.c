@@ -2342,7 +2342,7 @@ int hlv1_decoder_decode_file(HLV1Decoder *d, FILE *file,
             break;
         }
     }
-    if (result >= 0 && hlv1_crc32_end(stream.crc) != expected_crc)
+    if (!stream.remaining && hlv1_crc32_end(stream.crc) != expected_crc)
         result = HLV1_ERR_CRC;
     return result;
 }
