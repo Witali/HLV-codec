@@ -6,7 +6,7 @@ BPV v7,Danila,Danila_320x240_30fps_BPVv7_34dB.bpv1,3359,30,false,SD CRC mismatch
 H.263,Big Buck Bunny,BigBuckBunny_352x288_24fps_H263_39dB.avi,14315,24,false,SD CRC mismatch
 H.263,Danila,Danila_352x288_30fps_H263_Q6.avi,3357,29.97003,true,
 MJPEG,Big Buck Bunny,BigBuckBunny_320x240_24fps_MJPEG_40dB.avi,14315,24,false,SD CRC mismatch
-MJPEG,Danila,Danila_320x240_30fps_MJPEG_40dB.avi,3357,30,true,
+MJPEG,Danila,Danila_320x240_30fps_MJPEG_40dB.avi,3357,30,false,SD CRC mismatch
 MPEG-1,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg,14315,24,true,
 MPEG-1,Danila,Danila_320x240_30fps_MPEG1_41dB.mpg,3357,30,true,
 MPEG-4 SP,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG4SP_35dB.avi,14315,24,true,
