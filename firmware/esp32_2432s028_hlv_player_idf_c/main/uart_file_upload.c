@@ -25,6 +25,12 @@
 #define TRANSFER_BAUD_1500K 1500000U
 #define TRANSFER_BAUD_2000K 2000000U
 #define TRANSFER_BAUD_3000K 3000000U
+#ifndef UART_CALIBRATED_BAUD_2000K
+#define UART_CALIBRATED_BAUD_2000K TRANSFER_BAUD_2000K
+#endif
+#ifndef UART_CALIBRATED_BAUD_3000K
+#define UART_CALIBRATED_BAUD_3000K TRANSFER_BAUD_3000K
+#endif
 #define BLOCK_HEADER_BYTES 14U
 #define READ_BLOCK_BYTES 64U
 #define READ_BLOCK_HEADER_BYTES 14U
@@ -384,9 +390,10 @@ static uint32_t calibrated_baud(uint32_t baud) {
      * when the ESP32 uses APB divider 81.75 (978593 baud).  Keep this one
      * boot-time calibration common to both receive and transmit directions.
      */
-    return baud == TRANSFER_BAUD_1000K
-               ? CALIBRATED_BAUD_1000K
-               : baud;
+    if (baud == TRANSFER_BAUD_1000K) return CALIBRATED_BAUD_1000K;
+    if (baud == TRANSFER_BAUD_2000K) return UART_CALIBRATED_BAUD_2000K;
+    if (baud == TRANSFER_BAUD_3000K) return UART_CALIBRATED_BAUD_3000K;
+    return baud;
 }
 
 static bool set_baud(uint32_t baud) {

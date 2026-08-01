@@ -28,6 +28,8 @@ constexpr uint32_t kCalibratedBaud1000k = 978593;
 constexpr uint32_t kTransferBaud1500k = 1500000;
 constexpr uint32_t kTransferBaud2000k = 2000000;
 constexpr uint32_t kTransferBaud3000k = 3000000;
+constexpr uint32_t kCalibratedBaud2000k = UART_CALIBRATED_BAUD_2000K;
+constexpr uint32_t kCalibratedBaud3000k = UART_CALIBRATED_BAUD_3000K;
 constexpr uint8_t kBlockMagic[] = {'H', 'L', 'V', 'B'};
 constexpr uint8_t kPatchBlockMagic[] = {'H', 'L', 'V', 'P'};
 constexpr size_t kBlockHeaderBytes = 14;
@@ -317,7 +319,10 @@ void writeLe32(uint8_t *bytes, uint32_t value) {
 
 uint32_t calibratedBaud(uint32_t baud) {
     // One boot-time calibration is shared by the ESP32 RX and TX paths.
-    return baud == kTransferBaud1000k ? kCalibratedBaud1000k : baud;
+    if (baud == kTransferBaud1000k) return kCalibratedBaud1000k;
+    if (baud == kTransferBaud2000k) return kCalibratedBaud2000k;
+    if (baud == kTransferBaud3000k) return kCalibratedBaud3000k;
+    return baud;
 }
 
 bool copyFileBytes(FILE *source, FILE *destination,

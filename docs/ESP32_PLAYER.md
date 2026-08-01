@@ -474,6 +474,27 @@ Windows CH340 driver rejected both 4 and 5 Mbaud with device error 31 before
 the first data block. The 1.5 Mbaud, 921600 and 460800 rates remain available
 as fallbacks.
 
+The ESP32-side timing for 2 and 3 Mbaud can be swept on a physical board with
+CRC verification. The calibration is compiled into each candidate firmware,
+is fixed from boot, and is shared by receive and transmit. During the whole
+sweep the player remains stopped on the command screen; monitoring and video
+are restored once after the final candidate. The probe only reads an existing
+SD-card file and writes its measurements under `.tmp`, so it creates no test
+files on the card:
+
+```powershell
+.\firmware\esp32_2432s028_hlv_player_idf_c\.tools\espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe `
+    .\scripts\sweep_esp32_uart_baud.py --port COM8
+```
+
+Use `--baud 2000000` or `--baud 3000000` for one rate and
+`--candidate 3000000=2929062` to test an explicit ESP32-side rate. A candidate
+is selected only when every requested transfer completes with zero CRC
+retries; otherwise the script restores the nominal timings. On the measured
+crystal-less CH340C board, the exhaustive adjacent-divider checks around the
+best windows on 2026-08-01 found no clean coefficient for either 2 or 3 Mbaud,
+so 1 Mbaud remains the reliable application default.
+
 The IDF driver defaults to an 80 MHz LCD clock. If the display
 still shows unstable pixels, lower `kDisplayClockHz` in
 `main/player_settings.hpp` to 26 MHz.
