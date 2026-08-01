@@ -95,7 +95,8 @@ try {
             & $captureScript -Port $Port -Baud $Baud `
                 -SeekMilliseconds $seekMilliseconds `
                 -Frames $windowFrames -TimeoutSeconds $timeoutSeconds `
-                -OutputCsv $outputCsv -AllowAudioUnderrun
+                -OutputCsv $outputCsv -AllowAudioUnderrun `
+                -AllowMissingAudio
             if ($LASTEXITCODE -ne 0) {
                 throw (
                     "Metric capture failed for {0} {1}." -f `

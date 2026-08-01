@@ -7,7 +7,8 @@ param(
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
     [string]$OutputCsv,
     [Nullable[UInt32]]$SeekMilliseconds,
-    [switch]$AllowAudioUnderrun
+    [switch]$AllowAudioUnderrun,
+    [switch]$AllowMissingAudio
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +42,9 @@ $captureArguments = @(
 )
 if ($AllowAudioUnderrun) {
     $captureArguments += "--allow-audio-underrun"
+}
+if ($AllowMissingAudio) {
+    $captureArguments += "--allow-missing-audio"
 }
 if ($OutputCsv) {
     $captureArguments += @("--output-csv", $OutputCsv)

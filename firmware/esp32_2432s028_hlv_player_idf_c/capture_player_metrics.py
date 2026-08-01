@@ -178,6 +178,11 @@ def main() -> int:
         help="return success even if the audio telemetry reports an underrun",
     )
     parser.add_argument(
+        "--allow-missing-audio",
+        action="store_true",
+        help="return success when video timing is present without audio telemetry",
+    )
+    parser.add_argument(
         "--output-csv",
         help="write every collected frame timing record to this CSV file",
     )
@@ -462,6 +467,9 @@ def main() -> int:
     if not audio:
         if video.audio_rate == 0:
             print("audio=disabled")
+            return 0
+        if args.allow_missing_audio:
+            print("audio=telemetry-missing (allowed)")
             return 0
         print("no audio telemetry records received", file=sys.stderr)
         return 5
