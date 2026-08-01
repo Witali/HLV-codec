@@ -184,8 +184,9 @@ Run the default and control variants from the ESP-IDF project directory:
 .\qemu-benchmark.ps1 -BitReaderBits 32 -Optimization Os
 ```
 
-`setup-qemu.ps1` installs the Espressif QEMU package below the project's
-`.tools` directory. The generated 120-frame clip and all build directories are
-ignored by Git. No encoder is called or changed: the preparation script indexes
-the existing stream, copies complete GOP packet ranges, and only patches the
-copied header's frame count.
+`setup-qemu.ps1` validates the separate sibling `C:\Work\QEMU-ESP32` project;
+`idf.ps1` prepends that project's `bin` directory when it launches QEMU. Set
+`HLV_QEMU_ESP32_ROOT` to select another checkout. The generated 120-frame clip
+and all build directories are ignored by Git. No encoder is called or changed:
+the preparation script indexes the existing stream, copies complete GOP packet
+ranges, and only patches the copied header's frame count.

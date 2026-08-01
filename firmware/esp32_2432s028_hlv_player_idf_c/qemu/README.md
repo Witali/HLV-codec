@@ -109,9 +109,15 @@ Automated tests can capture console zero through the QEMU monitor with
 For a native Windows build and launch (no WSL runtime), use:
 
 ```powershell
-..\setup-qemu-sdspi-windows.ps1
 ..\run-qemu-demo-windows.ps1
 ```
+
+The Windows launcher uses the sibling `C:\Work\QEMU-ESP32` project by
+default. Its `setup-qemu-esp32-windows.ps1` keeps `bin\qemu-system-xtensa.exe`
+and `share\qemu` synchronized with that QEMU checkout. Override the project
+location with `-QemuRoot <path>` or the `HLV_QEMU_ESP32_ROOT` environment
+variable. The legacy runtime under HLV-codec `local_tools/` is no longer used
+by the Windows launcher.
 
 The planned Windows virtual-COM integration, including a direct null-modem
 pair, driver-free CI backend and later RESET/BOOT control-line support, is
@@ -152,7 +158,6 @@ handling. A five-run Windows benchmark reading 65,536 bytes in 4,096-byte
 requests improved the guest median from 1,322,191 us to 1,310,672 us
 (0.87%). An SSI-only batching prototype improved about 0.13% and was not kept.
 
-The minimal `local_tools/qemu-sdspi-windows/` runtime is stored in Git, with
-its executable managed by Git LFS. The demo SD image is also managed by Git
-LFS. MSYS2, QEMU sources, build outputs and other disk images remain ignored
-local artifacts.
+The demo SD image is managed by Git LFS. QEMU sources, its runtime and build
+outputs live in the separate QEMU-ESP32 project; MSYS2 and other generated
+disk images remain ignored local artifacts.

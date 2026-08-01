@@ -4,6 +4,7 @@
 param(
     [switch]$Rebuild,
     [switch]$Headless,
+    [string]$QemuRoot,
     [ValidateRange(0, 100)]
     [int]$Volume = 70
 )
@@ -106,6 +107,9 @@ if ($Rebuild -or
 $arguments = @{
     FlashImage = $flash
     Volume = $Volume
+}
+if ($QemuRoot) {
+    $arguments.QemuRoot = $QemuRoot
 }
 if ($Headless) {
     $arguments.Headless = $true

@@ -504,8 +504,8 @@ H.263/AVI demo:
     -FlashImage .\build\qemu_flash_4mb.bin
 ```
 
-The repository includes the minimal patched emulator as a native, static
-Windows executable managed by Git LFS. Run it instead of the WSL build with:
+The sibling `C:\Work\QEMU-ESP32` project supplies the patched native Windows
+emulator. Run it instead of the WSL build with:
 
 ```powershell
 .\run-qemu-demo-windows.ps1
@@ -522,6 +522,12 @@ independent QEMU gain with `-Volume 0..100`; the default is 70:
 .\run-qemu-demo-windows.ps1 -Volume 50
 ```
 
+`run-qemu-demo-windows.ps1` and `run-qemu-sdspi-windows.ps1` use
+`C:\Work\QEMU-ESP32` by default. Select another checkout with
+`-QemuRoot <path>` or set `HLV_QEMU_ESP32_ROOT`. Unless `-SkipSetup` is used,
+the launcher calls that checkout's `setup-qemu-esp32-windows.ps1`, which
+validates or refreshes its `bin` and `share\qemu` runtime.
+
 The default FAT32 image is
 `qemu\hlv-big-buck-bunny-5min-h263-avi.img`. It contains `HLV\bunny.avi`
 and a matching `HLV\play.txt`: the first 7200 frames (five minutes) of Big
@@ -530,13 +536,11 @@ mono 8 kHz audio. Recreate it from the approved source with
 `.\prepare-qemu-demo-sd.ps1`. The image is tracked with Git LFS. Use
 `-SdImage <sd.img>` to run a different card image.
 
-To rebuild or refresh the saved runtime, run
-`.\setup-qemu-sdspi-windows.ps1`. It downloads the pinned MSYS2 `20260611`
-SFX into repository-local `local_tools/`, verifies its SHA-256 and builds only
-`xtensa-softmmu`. The tracked runtime contains the static
-`qemu-system-xtensa.exe`, upstream license texts and the two ESP32 ROM blobs.
-MSYS2, cloned QEMU sources, build outputs, UART logs and generated card images
-outside the tracked demo remain ignored local artifacts.
+To rebuild or refresh the runtime directly, run
+`C:\Work\QEMU-ESP32\setup-qemu-esp32-windows.ps1`. The QEMU project installs
+`qemu-system-xtensa.exe` under its own `bin` directory and the two ESP32 ROM
+blobs under `share\qemu`. HLV-codec no longer installs or launches the native
+Windows emulator from repository-local `local_tools`.
 
 The patched machine options include `sdspi`, `st7789`, `audiodev`,
 `dac-rate` and `dac-volume`. QEMU models SPI3 transfers, DMA descriptor
@@ -563,6 +567,11 @@ measures only `decode()` with the guest ESP32 cycle counter. Its 120-frame test
 clip contains four complete GOP windows distributed across the existing HLV
 file. Packets are copied byte-for-byte and every window starts at a keyframe;
 the benchmark never runs or modifies the encoder.
+
+These `idf.py qemu` wrappers also use the sibling `C:\Work\QEMU-ESP32`
+runtime. `setup-qemu.ps1` validates that project instead of installing
+`qemu-xtensa` inside this firmware's `.tools` directory. Set
+`HLV_QEMU_ESP32_ROOT` when the QEMU checkout is elsewhere.
 
 ```powershell
 .\qemu-benchmark.ps1 -BitReaderBits 32

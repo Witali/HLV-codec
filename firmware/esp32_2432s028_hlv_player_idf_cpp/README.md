@@ -465,6 +465,11 @@ clip contains four complete GOP windows distributed across the existing HLV
 file. Packets are copied byte-for-byte and every window starts at a keyframe;
 the benchmark never runs or modifies the encoder.
 
+The C++ wrappers use the same sibling `C:\Work\QEMU-ESP32` runtime as the
+primary C firmware. `setup-qemu.ps1` delegates to that project's setup and
+`idf.ps1` places its `bin` directory ahead of any legacy `.tools` QEMU. Set
+`HLV_QEMU_ESP32_ROOT` when the QEMU checkout is elsewhere.
+
 ```powershell
 .\qemu-benchmark.ps1 -BitReaderBits 32
 .\qemu-benchmark.ps1 -BitReaderBits 64

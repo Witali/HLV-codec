@@ -15,6 +15,13 @@ $idf = Join-Path $tools "esp-idf-v5.5.5"
 $idfTools = Join-Path $tools "espressif"
 $python = Join-Path $tools "python"
 $marker = Join-Path $tools "ready-v5.5.5"
+$repository = [IO.Path]::GetFullPath((Join-Path $project "..\.."))
+$qemuRoot = if ($env:HLV_QEMU_ESP32_ROOT) {
+    [IO.Path]::GetFullPath($env:HLV_QEMU_ESP32_ROOT)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $repository "..\QEMU-ESP32"))
+}
+$qemuBin = Join-Path $qemuRoot "bin"
 
 if (-not (Test-Path -LiteralPath (Join-Path $idf "tools\idf.py")) -or
     -not (Test-Path -LiteralPath $marker)) {
@@ -32,6 +39,13 @@ try {
     $env:ESPTOOL_CFGFILE = Join-Path $project "esptool.cfg"
     $env:Path = "$python;$python\Scripts;$env:Path"
     . (Join-Path $idf "export.ps1")
+    if (Test-Path -LiteralPath (
+            Join-Path $qemuBin "qemu-system-xtensa.exe"
+        ) -PathType Leaf) {
+        # idf.py resolves QEMU with shutil.which(). Put the separate project
+        # after ESP-IDF export so an old .tools installation cannot win.
+        $env:Path = "$qemuBin;$env:Path"
+    }
     $idfPython = (Get-Command python.exe -CommandType Application |
         Select-Object -First 1 -ExpandProperty Source)
     $workingDirectory = if ($PSCmdlet.ParameterSetName -eq "Esptool" -and
