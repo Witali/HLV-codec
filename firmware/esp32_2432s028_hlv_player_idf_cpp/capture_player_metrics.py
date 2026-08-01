@@ -262,6 +262,12 @@ def main() -> int:
                 if "HLVSEEKERR " in line:
                     print(line, file=sys.stderr)
                     return 5
+                if line.startswith("S,") and "error" in line.lower():
+                    print(f"playback failed during seek: {line}", file=sys.stderr)
+                    for recent in recent_lines:
+                        if recent != line:
+                            print(recent, file=sys.stderr)
+                    return 6
                 marker = line.find("HLVSEEKDONE 1 ")
                 if marker >= 0:
                     fields = line[marker:].split()

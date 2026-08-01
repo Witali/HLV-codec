@@ -22,7 +22,7 @@ if (-not $python) {
 }
 
 & $python (Join-Path $project "capture_player_metrics.py") `
-    --port $Port --baud $Baud --frames 1 --timeout $TimeoutSeconds `
+    --port $Port --baud $Baud --frames 31 --timeout $TimeoutSeconds `
     --seek-ms $Milliseconds --allow-audio-underrun
 if ($LASTEXITCODE -ne 0) {
     throw "Video seek failed with exit code $LASTEXITCODE"

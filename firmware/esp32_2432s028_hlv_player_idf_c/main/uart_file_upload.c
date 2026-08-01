@@ -187,14 +187,23 @@ static bool valid_delete_filename(const char *filename) {
         return false;
     }
     length = strlen(filename);
-    if (length <= 5U ||
-        !ends_with_ignore_case(filename, length, ".part")) {
-        return false;
+    static const char *const suffixes[] = {".part", ".patch"};
+    size_t suffix_index;
+    for (suffix_index = 0;
+         suffix_index < sizeof suffixes / sizeof suffixes[0];
+         ++suffix_index) {
+        const size_t suffix_length = strlen(suffixes[suffix_index]);
+        if (length <= suffix_length ||
+            !ends_with_ignore_case(
+                filename, length, suffixes[suffix_index])) {
+            continue;
+        }
+        destination_length = length - suffix_length;
+        memcpy(destination, filename, destination_length);
+        destination[destination_length] = '\0';
+        return valid_filename(destination);
     }
-    destination_length = length - 5U;
-    memcpy(destination, filename, destination_length);
-    destination[destination_length] = '\0';
-    return valid_filename(destination);
+    return false;
 }
 
 static bool supported_data_baud(uint32_t baud) {
