@@ -214,7 +214,7 @@ Rewrite one byte range while preserving the rest of an existing SD file:
     -File .\correct-range.bin
 ```
 
-`HLVPATCH 1` transfers 1 KiB CRC-protected packets to a temporary file. The
+`HLVPATCH 1` transfers 4 KiB CRC-protected packets to a temporary file. The
 firmware backs up the exact target range, applies the patch, flushes it, and
 rereads the range from SD before reporting success. A failed verification
 restores the backup.

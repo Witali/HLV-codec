@@ -59,7 +59,7 @@ class FakePatchPort:
             self.expected_crc = int(fields[5], 16)
             baud = int(fields[6])
             self.responses.append(
-                f"HLVPATCHREADY 1 1024 {baud}\n".encode("ascii")
+                f"HLVPATCHREADY 1 4096 {baud}\n".encode("ascii")
             )
             return len(packet)
 
@@ -116,10 +116,14 @@ class UartPatchTest(unittest.TestCase):
         self.assertEqual(packet[:10], b"HLVP" + struct.pack("<IH", 7, 9))
         self.assertEqual(struct.unpack("<I", packet[10:14])[0], 0xCBF43926)
 
+    def test_large_patch_gets_time_to_finalize_on_sd(self):
+        timeout = uart_patch.patch_finalize_timeout(32 * 1024 * 1024, 15.0)
+        self.assertGreater(timeout, 250.0)
+
     def run_transfer(self, nak_once_sequence=None):
-        content = bytes(range(256)) * 16
+        content = bytes(range(256)) * 48
         source_offset = 123
-        length = 2700
+        length = 10000
         fake = FakePatchPort(nak_once_sequence)
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory) / "sample.avi"

@@ -25,6 +25,7 @@ PATCH_PROTOCOL_VERSION = 1
 PATCH_MAGIC = b"HLVP"
 PATCH_HEADER = struct.Struct("<4sIHI")
 MAX_ATTEMPTS = 5
+PATCH_FINALIZE_BYTES_PER_SECOND = 128 * 1024
 
 
 class PatchError(RuntimeError):
@@ -72,6 +73,14 @@ def range_crc(path: pathlib.Path, offset: int, size: int) -> int:
 def make_packet(sequence: int, data: bytes) -> bytes:
     checksum = zlib.crc32(data) & 0xFFFFFFFF
     return PATCH_HEADER.pack(PATCH_MAGIC, sequence, len(data), checksum) + data
+
+
+def patch_finalize_timeout(size: int, timeout: float) -> float:
+    """Allow the ESP32 to back up, apply, flush, and verify a large range."""
+    return max(
+        timeout * 4,
+        timeout + size / PATCH_FINALIZE_BYTES_PER_SECOND,
+    )
 
 
 def patch(path: pathlib.Path, port_name: str, remote_name: str,
@@ -124,7 +133,7 @@ def patch(path: pathlib.Path, port_name: str, remote_name: str,
                 chunk_size, accepted_baud = map(int, fields[2:])
             except ValueError:
                 continue
-            if 0 < chunk_size <= 1024 and accepted_baud == data_baud:
+            if 0 < chunk_size <= 4096 and accepted_baud == data_baud:
                 ready_values = chunk_size, accepted_baud
                 break
         if ready_values is None:
@@ -182,7 +191,11 @@ def patch(path: pathlib.Path, port_name: str, remote_name: str,
             f"{checksum:08x} {remote_name}"
         )
         while True:
-            completion = wait_for(port, ("HLVPATCHDONE ",), timeout * 4)
+            completion = wait_for(
+                port,
+                ("HLVPATCHDONE ",),
+                patch_finalize_timeout(size, timeout),
+            )
             if completion == expected_done:
                 break
         if data_baud != CONTROL_BAUD:
