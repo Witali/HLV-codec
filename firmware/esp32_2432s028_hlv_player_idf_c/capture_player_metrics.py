@@ -231,6 +231,20 @@ def main() -> int:
             time.sleep(0.05)
             port.reset_input_buffer()
         if args.seek_ms is not None:
+            if args.reset:
+                ready_deadline = min(deadline, time.monotonic() + 15.0)
+                while time.monotonic() < ready_deadline:
+                    raw = port.readline()
+                    if not raw:
+                        continue
+                    line = raw.decode("ascii", errors="ignore").strip()
+                    if line:
+                        recent_lines.append(line)
+                    if "HLVUART 1 READY " in line:
+                        break
+                else:
+                    print("UART application did not become ready after reset", file=sys.stderr)
+                    return 5
             port.reset_input_buffer()
             port.write(f"HLVSEEK 1 {args.seek_ms}\n".encode("ascii"))
             port.flush()

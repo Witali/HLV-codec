@@ -41,7 +41,7 @@ if ($OutputCsv) {
     $captureArguments += @("--output-csv", $OutputCsv)
 }
 if ($null -ne $SeekMilliseconds) {
-    $captureArguments += @("--seek-ms", $SeekMilliseconds.Value)
+    $captureArguments += @("--seek-ms", $SeekMilliseconds)
 }
 
 & $python @captureArguments
