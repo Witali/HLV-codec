@@ -7,6 +7,7 @@ import argparse
 import collections
 import csv
 import math
+import re
 import statistics
 import sys
 import time
@@ -79,9 +80,24 @@ def percentile(values: list[int], percent: int) -> int:
 def print_metric(name: str, values: list[int]) -> None:
     print(
         f"{name}: avg={statistics.fmean(values):.1f} us "
-        f"p50={percentile(values, 50)} "
+        f"min={min(values)} p50={percentile(values, 50)} "
         f"p95={percentile(values, 95)} max={max(values)}"
     )
+
+
+FRAME_RECORD_PATTERN = re.compile(
+    r"F,(?:\d+,){10}\d+|F,(?:\d+,){5}\d+"
+)
+
+
+def parse_embedded_frames(line: str) -> list[FrameRecord]:
+    """Recover frame records even when another core interleaves UART text."""
+    records: list[FrameRecord] = []
+    for match in FRAME_RECORD_PATTERN.finditer(line):
+        record = parse_frame(match.group(0))
+        if record is not None:
+            records.append(record)
+    return records
 
 
 def parse_frame(line: str) -> FrameRecord | None:
@@ -143,7 +159,7 @@ def parse_video(line: str) -> VideoRecord | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
-    parser.add_argument("--baud", type=int, default=1000000)
+    parser.add_argument("--baud", type=int, default=460800)
     parser.add_argument("--frames", type=int, default=900)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
@@ -177,6 +193,9 @@ def main() -> int:
     port = serial.Serial()
     port.port = args.port
     port.baudrate = args.baud
+    port.bytesize = serial.EIGHTBITS
+    port.parity = serial.PARITY_NONE
+    port.stopbits = serial.STOPBITS_TWO
     port.timeout = 0.5
     port.dsrdtr = False
     port.rtscts = False
@@ -186,6 +205,10 @@ def main() -> int:
     port.rts = False
     port.open()
     try:
+        try:
+            port.set_buffer_size(rx_size=1024 * 1024, tx_size=64 * 1024)
+        except (AttributeError, NotImplementedError, OSError):
+            pass
         if args.reset:
             port.reset_input_buffer()
             # Normal application reset: keep GPIO0 released (DTR=0), hold EN
@@ -215,8 +238,8 @@ def main() -> int:
             if video_record is not None:
                 video = video_record
                 continue
-            frame = parse_frame(line)
-            if frame is not None:
+            embedded_frames = parse_embedded_frames(line)
+            for frame in embedded_frames:
                 if frames and frame.frame != frames[-1].frame + 1:
                     print(
                         f"frame sequence gap: {frames[-1].frame} -> "
@@ -232,6 +255,9 @@ def main() -> int:
                     first_frame_time = received_at
                 last_frame_time = received_at
                 frames.append(frame)
+                if len(frames) >= args.frames:
+                    break
+            if embedded_frames:
                 continue
             audio_record = parse_audio(line)
             if audio_record is not None:

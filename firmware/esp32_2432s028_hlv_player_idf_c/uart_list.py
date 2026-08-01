@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from uart_baud import BaudError, begin_session, enable_monitoring
 
 
-CONTROL_BAUD = 1_000_000
+CONTROL_BAUD = 460_800
 LIST_MAGIC = b"HLVL"
 LIST_HEADER = struct.Struct("<4sIIBI")
 MAX_PACKET_ATTEMPTS = 20

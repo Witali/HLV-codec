@@ -5,7 +5,7 @@ param(
         460800, 921600, 1000000, 1500000, 2000000, 3000000
     )][UInt32]$ToBaud,
     [ValidateSet(460800, 921600, 1000000, 1500000, 2000000, 3000000)]
-    [UInt32]$FromBaud = 1000000
+    [UInt32]$FromBaud = 460800
 )
 
 $ErrorActionPreference = "Stop"

@@ -47,7 +47,7 @@ dependencies, excluding Wi-Fi, Bluetooth, networking, NVS and OTA. The
 `sdkconfig.defaults` profile also disables coredumps, the task watchdog,
 FreeRTOS software timers, trace facilities, long FAT names and the per-file
 FatFs cache; it limits FatFs to one volume and VFS to three registrations.
-UART0 at 1000000 baud, 8 data bits, no parity and 2 stop bits remains enabled
+UART0 at 460800 baud, 8 data bits, no parity and 2 stop bits remains enabled
 for compact per-frame diagnostics. The default
 dual-core pipeline pins ordered HLV, BPV, MPEG-1 or H.263 decoding to APP CPU
 (CPU1), while the main task on PRO CPU (CPU0) converts the preceding frame to
@@ -136,7 +136,7 @@ Set-Content play.txt "bunny.bpv1" -Encoding ascii
 The wrapper uses `pyserial` from this project's local ESP-IDF Python
 environment; `setup.ps1` installs it under this project, so no global Python
 package is required. The application control channel and block data both use
-1000000 baud with 8N2 framing by default, so normal commands do not transition
+460800 baud with 8N2 framing by default, so normal commands do not transition
 the UART speed.
 The verified `HLVBAUD` command remains available for an explicit temporary
 change when diagnostics require another supported rate.
@@ -190,13 +190,13 @@ Change the UART control rate explicitly when needed:
 
 ```powershell
 .\set-baud.ps1 -Port COM8 -ToBaud 921600
-.\set-baud.ps1 -Port COM8 -FromBaud 921600 -ToBaud 1000000
+.\set-baud.ps1 -Port COM8 -FromBaud 921600 -ToBaud 460800
 ```
 
 `HLVBAUD 1 <baud>` uses a verified handshake at both the old and new rates,
 then remembers the new control rate until another `HLVBAUD` command or a
 reset. The read client uses this command before and after a transfer whenever
-`-DataBaud` differs from 1000000. `uart_read.py` and `uart_upload.py` share the
+`-DataBaud` differs from 460800. `uart_read.py` and `uart_upload.py` share the
 same handshake timings and retry count from `uart_baud.py`; control records at
 the selected high rate are repeated, while binary blocks retain CRC and
 sequence validation.
@@ -207,7 +207,7 @@ validates the regular filename and range, then streams the data in reusable
 little-endian sequence number, payload length, and payload CRC32. The final
 `HLVREADDONE 2 <size> <crc32> <name>` also verifies the entire returned range.
 The client acknowledges each valid block and requests retransmission after a
-CRC error. The default data rate is the same 1000000 baud used by the rest of
+CRC error. The default data rate is the same 460800 baud used by the rest of
 the application UART; `-DataBaud` can explicitly select and verify another
 supported rate.
 When `-Length` is omitted, the client requests everything from `-Offset`
@@ -330,7 +330,7 @@ HLVPUT 2 <name> <size> <crc32-hex> <data-baud>
 
 The device replies `HLVREADY 2 4096 <data-baud> 2`, receives windowed `HLVB`
 binary blocks, reports `HLVACK`, `HLVNAK` or `HLVWAIT`, and finishes with
-`HLVDONE 2 <size> <crc32> <name>`. The client explicitly restores 1000000 baud
+`HLVDONE 2 <size> <crc32> <name>`. The client explicitly restores 460800 baud
 with `HLVBAUD`, then enables monitoring after successful completion.
 
 The connected CH340C board completed three CRC-verified transfers at every
@@ -351,7 +351,7 @@ bottleneck; the remaining limit is in the combined UART/SD pipeline. An
 experimental 2500000-baud transfer never entered normal data reception and
 timed out.
 Those measurements describe earlier large-block experiments. The current
-application and tools default to exact-divisor 1000000-baud 8N2 framing and
+application and tools default to 460800-baud 8N2 framing and
 64-byte packets; 3000000 baud remains an explicit experimental mode. The
 Windows CH340 driver rejected attempts to
 configure both 4000000 and 5000000 baud with device error 31, before either

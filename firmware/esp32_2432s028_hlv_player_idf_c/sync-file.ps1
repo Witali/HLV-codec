@@ -6,7 +6,7 @@ param(
     [ValidateScript({ $_ -ge 4096 -and $_ -le 1048576 -and ($_ -band ($_ - 1)) -eq 0 })]
     [UInt32]$BlockSize = 65536,
     [ValidateSet(460800, 921600, 1000000, 1500000, 2000000, 3000000)]
-    [UInt32]$DataBaud = 1000000,
+    [UInt32]$DataBaud = 460800,
     [switch]$DryRun
 )
 

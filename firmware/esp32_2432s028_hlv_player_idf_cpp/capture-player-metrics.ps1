@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Port,
+    [ValidateSet(115200, 230400, 460800, 921600, 1000000, 1500000, 2000000, 3000000)]
+    [int]$Baud = 460800,
     [ValidateRange(1, 1000000)][int]$Frames = 900,
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
     [string]$OutputCsv,
@@ -31,6 +33,7 @@ if (-not $python) {
 $captureArguments = @(
     (Join-Path $project "capture_player_metrics.py"),
     "--port", $Port,
+    "--baud", $Baud,
     "--frames", $Frames,
     "--timeout", $TimeoutSeconds,
     "--reset"
