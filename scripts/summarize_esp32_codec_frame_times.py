@@ -30,6 +30,7 @@ def read_manifest(path: Path) -> list[Test]:
                 fps=float(row["fps"]),
             )
             for row in csv.DictReader(source)
+            if row.get("enabled", "true").strip().lower() != "false"
         ]
 
 

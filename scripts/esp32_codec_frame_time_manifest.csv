@@ -1,15 +1,15 @@
-codec,source,filename,frames,fps
-HLV v14,Big Buck Bunny,BigBuckBunny_320x180_24fps_HLVv14_42dB.hlv,14315,24
-HLV v14,Danila,Danila_320x240_30fps_HLVv14_38dB.hlv,3359,30
-BPV v7,Big Buck Bunny,BigBuckBunny_320x240_24fps_BPVv7_36dB.bpv1,14315,24
-BPV v7,Danila,Danila_320x240_30fps_BPVv7_34dB.bpv1,3359,30
-H.263,Big Buck Bunny,BigBuckBunny_352x288_24fps_H263_39dB.avi,14315,24
-H.263,Danila,Danila_352x288_30fps_H263_Q6.avi,3357,29.97003
-MJPEG,Big Buck Bunny,BigBuckBunny_320x240_24fps_MJPEG_40dB.avi,14315,24
-MJPEG,Danila,Danila_320x240_30fps_MJPEG_40dB.avi,3357,30
-MPEG-1,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg,14315,24
-MPEG-1,Danila,Danila_320x240_30fps_MPEG1_41dB.mpg,3357,30
-MPEG-4 SP,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG4SP_35dB.avi,14315,24
-MPEG-4 SP,Danila,Danila_320x240_30fps_MPEG4SP_35dB.avi,3357,30
-DivX 3,Big Buck Bunny,BigBuckBunny_320x240_12fps_DivX3_41dB.avi,7157,12
-DivX 3,Danila,Danila_320x240_15fps_DivX3_40dB.avi,1679,15
+codec,source,filename,frames,fps,enabled,skip_reason
+HLV v14,Big Buck Bunny,BigBuckBunny_320x180_24fps_HLVv14_42dB.hlv,14315,24,true,
+HLV v14,Danila,Danila_320x240_30fps_HLVv14_38dB.hlv,3359,30,true,
+BPV v7,Big Buck Bunny,BigBuckBunny_320x240_24fps_BPVv7_36dB.bpv1,14315,24,false,SD CRC mismatch
+BPV v7,Danila,Danila_320x240_30fps_BPVv7_34dB.bpv1,3359,30,true,
+H.263,Big Buck Bunny,BigBuckBunny_352x288_24fps_H263_39dB.avi,14315,24,true,
+H.263,Danila,Danila_352x288_30fps_H263_Q6.avi,3357,29.97003,true,
+MJPEG,Big Buck Bunny,BigBuckBunny_320x240_24fps_MJPEG_40dB.avi,14315,24,true,
+MJPEG,Danila,Danila_320x240_30fps_MJPEG_40dB.avi,3357,30,true,
+MPEG-1,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg,14315,24,true,
+MPEG-1,Danila,Danila_320x240_30fps_MPEG1_41dB.mpg,3357,30,true,
+MPEG-4 SP,Big Buck Bunny,BigBuckBunny_320x240_24fps_MPEG4SP_35dB.avi,14315,24,true,
+MPEG-4 SP,Danila,Danila_320x240_30fps_MPEG4SP_35dB.avi,3357,30,true,
+DivX 3,Big Buck Bunny,BigBuckBunny_320x240_12fps_DivX3_41dB.avi,7157,12,true,
+DivX 3,Danila,Danila_320x240_15fps_DivX3_40dB.avi,1679,15,true,

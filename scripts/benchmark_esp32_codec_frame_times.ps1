@@ -37,6 +37,12 @@ if (-not $originalSelection) {
 
 try {
     foreach ($test in $tests) {
+        if ($test.enabled -and $test.enabled.Trim().ToLowerInvariant() -eq "false") {
+            Write-Warning (
+                "Skipping {0}: {1}" -f $test.filename, $test.skip_reason
+            )
+            continue
+        }
         Write-Host "Selecting $($test.filename)"
         & $selectScript -Port $Port -Name $test.filename -DataBaud $Baud
         if ($LASTEXITCODE -ne 0) {

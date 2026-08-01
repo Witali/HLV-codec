@@ -1,0 +1,3 @@
+filename,size_bytes,sd_crc32,expected_crc32,different_offset,different_length,reason,detected_on
+BigBuckBunny_320x240_24fps_BPVv7_36dB.bpv1,224155951,f507221d,4b69f98c,116391936,107764015,ESP32 BPV1 decode error and SD CRC mismatch,2026-08-01
+BigBuckBunny_320x240_24fps_BPVv5_36dB.bpv1,300382068,d5712c20,34ef7d68,223346688,29360128,ESP32 BPV1 decode error and SD CRC mismatch,2026-08-01
