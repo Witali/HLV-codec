@@ -293,6 +293,12 @@ def main() -> int:
                 recent_lines.append(line)
             if line.startswith("S,"):
                 statuses.append(line)
+                if "error" in line.lower():
+                    print(f"playback failed: {line}", file=sys.stderr)
+                    for recent in recent_lines:
+                        if recent != line:
+                            print(recent, file=sys.stderr)
+                    return 6
                 continue
             video_record = parse_video(line)
             if video_record is not None:
