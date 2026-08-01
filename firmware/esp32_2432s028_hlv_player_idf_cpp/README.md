@@ -410,6 +410,33 @@ audio sample is reported:
 .\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120
 ```
 
+Seek the selected video to an absolute position in milliseconds with the
+standalone UART command:
+
+```text
+HLVSEEK 1 60000
+```
+
+or with the local wrapper:
+
+```powershell
+.\seek-video.ps1 -Port COM8 -Milliseconds 60000
+```
+
+The firmware reopens the selected video and restores predictive decoder state
+without displaying or pacing the intermediate frames. Independent MJPEG
+packets are skipped without decoding. Compressed audio is consumed to the same
+timeline before normal A/V-synchronised playback resumes. The board reports
+`HLVSEEKBEGIN 1 requested_ms target_frame` followed by
+`HLVSEEKDONE 1 requested_ms actual_ms frame`; a request beyond a known
+duration is clamped to the last frame. For a timed measurement window, the
+collector can issue the same command immediately after reset:
+
+```powershell
+.\capture-player-metrics.ps1 -Port COM8 -SeekMilliseconds 60000 `
+    -Frames 1800 -TimeoutSeconds 600
+```
+
 The ST7789 and SD-card SPI clocks are available under the `HLV player`
 section of ESP-IDF menuconfig:
 

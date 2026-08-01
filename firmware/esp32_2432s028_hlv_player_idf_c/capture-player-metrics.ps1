@@ -6,6 +6,7 @@ param(
     [ValidateRange(1, 1000000)][int]$Frames = 900,
     [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120,
     [string]$OutputCsv,
+    [Nullable[UInt32]]$SeekMilliseconds,
     [switch]$AllowAudioUnderrun
 )
 
@@ -38,6 +39,9 @@ if ($AllowAudioUnderrun) {
 }
 if ($OutputCsv) {
     $captureArguments += @("--output-csv", $OutputCsv)
+}
+if ($null -ne $SeekMilliseconds) {
+    $captureArguments += @("--seek-ms", $SeekMilliseconds.Value)
 }
 
 & $python @captureArguments

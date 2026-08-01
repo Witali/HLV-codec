@@ -83,6 +83,8 @@ typedef struct {
     bool delete_requested;
     uart_sd_benchmark_request_t sd_benchmark_request;
     bool sd_benchmark_requested;
+    uint32_t seek_position_ms;
+    bool seek_requested;
 } uart_file_upload_t;
 
 esp_err_t uart_file_upload_begin(uart_file_upload_t *upload,
@@ -116,6 +118,8 @@ bool uart_file_upload_take_delete_request(uart_file_upload_t *upload,
 bool uart_file_upload_take_sd_benchmark_request(
     uart_file_upload_t *upload,
     uart_sd_benchmark_request_t *request);
+bool uart_file_upload_take_seek_request(uart_file_upload_t *upload,
+                                        uint32_t *position_ms);
 bool uart_file_upload_list_directory(uart_file_upload_t *upload,
                                      const char *directory);
 bool uart_file_upload_checksum_file(uart_file_upload_t *upload,

@@ -335,6 +335,10 @@ uint32_t frame_period_remainder = 0;
 uint32_t frame_period_phase = 0;
 int64_t next_present_us = 0;
 uint32_t decoded_frames = 0;
+bool seek_fast_forward = false;
+uint32_t seek_target_frame = 0;
+uint32_t seek_requested_ms = 0;
+uint64_t seek_discarded_audio_samples = 0;
 uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
@@ -3687,6 +3691,7 @@ bool renderMpegOpaque(const void *frame) {
 struct PresentationState {
     int64_t start_us = 0;
     bool render = true;
+    bool seeking = false;
 };
 
 struct BpvDecodeBreakdown {
@@ -3698,7 +3703,12 @@ struct BpvDecodeBreakdown {
 };
 
 PresentationState beginPresentation() {
-    PresentationState state{microsNow(), true};
+    PresentationState state{microsNow(), true, false};
+    if (seek_fast_forward && decoded_frames < seek_target_frame) {
+        state.render = false;
+        state.seeking = true;
+        return state;
+    }
     if (audio_enabled) {
         if (!audio_started) {
             startAudio();
@@ -3775,7 +3785,54 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
 
-    if (!audio_enabled) {
+    if (state.seeking && audio_enabled && audio_stream) {
+        const uint64_t target_samples = frameAudioTarget(decoded_frames);
+        uint8_t discard[256];
+        while (seek_discarded_audio_samples < target_samples) {
+            const size_t wanted = static_cast<size_t>(std::min<uint64_t>(
+                sizeof discard,
+                target_samples - seek_discarded_audio_samples));
+            const size_t received = xStreamBufferReceive(
+                audio_stream, discard, wanted, pdMS_TO_TICKS(20));
+            if (!received) {
+                if (audio_output_failed || audio_reader_result < HLV1_OK ||
+                    (audio_prefetch_eof &&
+                     !xStreamBufferBytesAvailable(audio_stream))) {
+                    ESP_LOGW(kTag,
+                             "Audio seek stopped at %llu/%llu samples",
+                             static_cast<unsigned long long>(
+                                 seek_discarded_audio_samples),
+                             static_cast<unsigned long long>(target_samples));
+                    stopAudio();
+                    break;
+                }
+                continue;
+            }
+            seek_discarded_audio_samples += received;
+        }
+    }
+
+    if (state.seeking && decoded_frames >= seek_target_frame) {
+        seek_fast_forward = false;
+        next_present_us = microsNow();
+        frame_period_phase = 0;
+        if (audio_enabled) {
+            audio_played_samples = static_cast<uint32_t>(
+                std::min<uint64_t>(seek_discarded_audio_samples,
+                                   UINT32_MAX));
+        }
+        const uint64_t actual_ms =
+            (static_cast<uint64_t>(decoded_frames) * 1000ULL *
+             sequence_header.fps_den) /
+            sequence_header.fps_num;
+        esp_rom_printf(
+            "HLVSEEKDONE 1 %u %llu %u\n",
+            static_cast<unsigned>(seek_requested_ms),
+            static_cast<unsigned long long>(actual_ms),
+            static_cast<unsigned>(decoded_frames));
+    }
+
+    if (!state.seeking && !audio_enabled) {
         advanceTimerDeadline();
         const int64_t lateness = microsNow() - next_present_us;
         if (lateness > frame_period_us) {
@@ -3788,7 +3845,7 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
     const uint32_t present_us =
         static_cast<uint32_t>(microsNow() - state.start_us);
     const uint32_t work_us = read_us + decode_us + render_us;
-    if (player_settings::kLogFrameTimings) {
+    if (player_settings::kLogFrameTimings && !state.seeking) {
         // Capture every value before printing. UART overhead is therefore not
         // charged to this record, although it can consume slack before the
         // following frame.
@@ -3872,6 +3929,25 @@ bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
 }
 
 void finishVideoLoop() {
+    if (seek_fast_forward) {
+        seek_fast_forward = false;
+        next_present_us = microsNow();
+        frame_period_phase = 0;
+        if (audio_enabled) {
+            audio_played_samples = static_cast<uint32_t>(
+                std::min<uint64_t>(seek_discarded_audio_samples,
+                                   UINT32_MAX));
+        }
+        const uint64_t actual_ms =
+            (static_cast<uint64_t>(decoded_frames) * 1000ULL *
+             sequence_header.fps_den) /
+            sequence_header.fps_num;
+        esp_rom_printf(
+            "HLVSEEKDONE 1 %u %llu %u\n",
+            static_cast<unsigned>(seek_requested_ms),
+            static_cast<unsigned long long>(actual_ms),
+            static_cast<unsigned>(decoded_frames));
+    }
     if (audio_enabled) {
         // A held DMA ring never drains by itself. Release it so the remaining
         // queued PCM can finish before the file is reopened.
@@ -4002,7 +4078,9 @@ void playOneH263FramePipelined() {
     const H2633gpFrame frame = pending_h263_frame;
     const uint32_t decode_us = pending_h263_decode_us;
     pending_h263_frame_valid = false;
-    if (h263_row_pipelined) beginH263RowPipeline();
+    if (h263_row_pipelined && !seek_fast_forward) {
+        beginH263RowPipeline();
+    }
     if (!submitH263Decode()) {
         endH263RowPipeline();
         failPlayback(packetVideoPipelineErrorTitle(video_codec),
@@ -4636,7 +4714,7 @@ void playOneBpvFramePipelined() {
 }
 
 void playOneFramePipelined() {
-    if (pending_frame_valid)
+    if (pending_frame_valid && !seek_fast_forward)
         beginHlvRowPipeline();
     if (!submitDecode(video_file)) {
         endHlvRowPipeline();
@@ -4754,6 +4832,46 @@ extern "C" void app_main(void) {
             showStatus("UART monitoring", "resuming video");
             if (sd_mounted && !video_file && !openVideo()) {
                 last_retry_ms = millisNow();
+            }
+            continue;
+        }
+        uint32_t seek_position_ms = 0;
+        if (uart_upload.takeSeekRequest(&seek_position_ms)) {
+            file_browser_active = false;
+            seek_fast_forward = false;
+            closeVideo();
+            if (!sd_mounted && !mountSdCard()) {
+                esp_rom_printf("HLVSEEKERR 1 NO_SD\n");
+                last_retry_ms = millisNow();
+                continue;
+            }
+            if (!openVideo()) {
+                esp_rom_printf("HLVSEEKERR 1 OPEN_FAILED\n");
+                last_retry_ms = millisNow();
+                continue;
+            }
+            uint64_t target_frame =
+                (static_cast<uint64_t>(seek_position_ms) *
+                 sequence_header.fps_num) /
+                (1000ULL * sequence_header.fps_den);
+            if (sequence_header.frame_count &&
+                target_frame >= sequence_header.frame_count) {
+                target_frame = sequence_header.frame_count - 1U;
+            }
+            target_frame = std::min<uint64_t>(target_frame, UINT32_MAX);
+            seek_requested_ms = seek_position_ms;
+            seek_target_frame = static_cast<uint32_t>(target_frame);
+            seek_discarded_audio_samples = 0;
+            if (!seek_target_frame) {
+                esp_rom_printf(
+                    "HLVSEEKDONE 1 %u 0 0\n",
+                    static_cast<unsigned>(seek_requested_ms));
+            } else {
+                seek_fast_forward = true;
+                esp_rom_printf(
+                    "HLVSEEKBEGIN 1 %u %u\n",
+                    static_cast<unsigned>(seek_requested_ms),
+                    static_cast<unsigned>(seek_target_frame));
             }
             continue;
         }

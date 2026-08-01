@@ -558,6 +558,19 @@ bool UartFileUpload::parseRequest(const char *line,
         sd_benchmark_requested_ = true;
         return false;
     }
+    if (!std::strncmp(line, "HLVSEEK ", 8)) {
+        unsigned long position_ms = 0;
+        char trailing = '\0';
+        const int fields = std::sscanf(
+            line, "HLVSEEK 1 %lu %c", &position_ms, &trailing);
+        if (fields != 1 || position_ms > UINT32_MAX) {
+            reject("BAD_REQUEST");
+            return false;
+        }
+        seek_position_ms_ = static_cast<uint32_t>(position_ms);
+        seek_requested_ = true;
+        return false;
+    }
     if (std::strncmp(line, "HLVPUT ", 7)) return false;
 
     UartUploadRequest parsed{};
@@ -782,6 +795,14 @@ bool UartFileUpload::listDirectory(const char *directory) {
         return false;
     }
     uart_wait_tx_done(kUploadUart, pdMS_TO_TICKS(1000));
+    return true;
+}
+
+bool UartFileUpload::takeSeekRequest(uint32_t *position_ms) {
+    if (!seek_requested_ || !position_ms) return false;
+    *position_ms = seek_position_ms_;
+    seek_position_ms_ = 0;
+    seek_requested_ = false;
     return true;
 }
 

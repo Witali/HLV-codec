@@ -163,6 +163,11 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=900)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument(
+        "--seek-ms",
+        type=int,
+        help="seek to this playback position before collecting frames",
+    )
+    parser.add_argument(
         "--reset",
         action="store_true",
         help="pulse EN through RTS before collecting records",
@@ -177,8 +182,9 @@ def main() -> int:
         help="write every collected frame timing record to this CSV file",
     )
     args = parser.parse_args()
-    if args.frames <= 0 or args.timeout <= 0:
-        parser.error("--frames and --timeout must be positive")
+    if (args.frames <= 0 or args.timeout <= 0 or
+            (args.seek_ms is not None and args.seek_ms < 0)):
+        parser.error("--frames/--timeout must be positive and --seek-ms non-negative")
 
     frames: list[FrameRecord] = []
     audio: list[AudioRecord] = []
@@ -224,6 +230,40 @@ def main() -> int:
             # second flush removes only stale pre-reset telemetry.
             time.sleep(0.05)
             port.reset_input_buffer()
+        if args.seek_ms is not None:
+            port.reset_input_buffer()
+            port.write(f"HLVSEEK 1 {args.seek_ms}\n".encode("ascii"))
+            port.flush()
+            seek_done = False
+            while time.monotonic() < deadline:
+                raw = port.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="ignore").strip()
+                if line:
+                    recent_lines.append(line)
+                video_record = parse_video(line)
+                if video_record is not None:
+                    video = video_record
+                if "HLVSEEKERR " in line:
+                    print(line, file=sys.stderr)
+                    return 5
+                marker = line.find("HLVSEEKDONE 1 ")
+                if marker >= 0:
+                    fields = line[marker:].split()
+                    if len(fields) >= 5:
+                        print(
+                            f"seek_requested_ms={fields[2]} "
+                            f"seek_actual_ms={fields[3]} "
+                            f"seek_frame={fields[4]}"
+                        )
+                    seek_done = True
+                    break
+            if not seek_done:
+                print("seek did not complete before timeout", file=sys.stderr)
+                for line in recent_lines:
+                    print(line, file=sys.stderr)
+                return 5
         while len(frames) < args.frames and time.monotonic() < deadline:
             raw = port.readline()
             if not raw:

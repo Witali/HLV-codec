@@ -804,6 +804,19 @@ static bool parse_request(uart_file_upload_t *upload,
         upload->sd_benchmark_requested = true;
         return false;
     }
+    if (strncmp(line, "HLVSEEK ", 8) == 0) {
+        unsigned long position_ms = 0;
+        char trailing = '\0';
+        int fields = sscanf(
+            line, "HLVSEEK 1 %lu %c", &position_ms, &trailing);
+        if (fields != 1 || position_ms > UINT32_MAX) {
+            uart_file_upload_reject(upload, "BAD_REQUEST");
+            return false;
+        }
+        upload->seek_position_ms = (uint32_t)position_ms;
+        upload->seek_requested = true;
+        return false;
+    }
     if (strncmp(line, "HLVPUT ", 7) != 0) {
         return false;
     }
@@ -1108,6 +1121,18 @@ bool uart_file_upload_list_directory(uart_file_upload_t *upload,
         return false;
     }
     uart_wait_tx_done(UPLOAD_UART, pdMS_TO_TICKS(1000));
+    return true;
+}
+
+bool uart_file_upload_take_seek_request(uart_file_upload_t *upload,
+                                        uint32_t *position_ms) {
+    if (upload == NULL || position_ms == NULL ||
+        !upload->seek_requested) {
+        return false;
+    }
+    *position_ms = upload->seek_position_ms;
+    upload->seek_position_ms = 0;
+    upload->seek_requested = false;
     return true;
 }
 

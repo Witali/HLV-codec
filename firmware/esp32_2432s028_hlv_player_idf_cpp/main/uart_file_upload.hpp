@@ -66,6 +66,7 @@ public:
     bool takeBaudRequest(uint32_t *baud);
     bool takeDeleteRequest(char *filename, size_t filename_bytes);
     bool takeSdBenchmarkRequest(SdBenchmarkRequest *request);
+    bool takeSeekRequest(uint32_t *position_ms);
     bool listDirectory(const char *directory);
     bool checksumFile(const char *directory, const char *filename);
     bool readFile(const char *directory, const UartReadRequest &request);
@@ -118,4 +119,6 @@ private:
     bool delete_requested_ = false;
     SdBenchmarkRequest sd_benchmark_request_{};
     bool sd_benchmark_requested_ = false;
+    uint32_t seek_position_ms_ = 0;
+    bool seek_requested_ = false;
 };
