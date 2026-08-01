@@ -2,7 +2,7 @@ codec,source,filename,frames,fps,enabled,skip_reason
 HLV v14,Big Buck Bunny,BigBuckBunny_320x180_24fps_HLVv14_42dB.hlv,14315,24,true,
 HLV v14,Danila,Danila_320x240_30fps_HLVv14_38dB.hlv,3359,30,true,
 BPV v7,Big Buck Bunny,BigBuckBunny_320x240_24fps_BPVv7_36dB.bpv1,14315,24,false,SD CRC mismatch
-BPV v7,Danila,Danila_320x240_30fps_BPVv7_34dB.bpv1,3359,30,true,
+BPV v7,Danila,Danila_320x240_30fps_BPVv7_34dB.bpv1,3359,30,false,SD CRC mismatch
 H.263,Big Buck Bunny,BigBuckBunny_352x288_24fps_H263_39dB.avi,14315,24,true,
 H.263,Danila,Danila_352x288_30fps_H263_Q6.avi,3357,29.97003,true,
 MJPEG,Big Buck Bunny,BigBuckBunny_320x240_24fps_MJPEG_40dB.avi,14315,24,true,
