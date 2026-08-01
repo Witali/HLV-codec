@@ -1229,6 +1229,18 @@ static void showUartSession(const char *command) {
     cyd_display_flush(&display);
 }
 
+static void showSeekStatus(uint32_t position_ms) {
+    const uint32_t total_seconds = position_ms / 1000U;
+    char position[16] = {0};
+    snprintf(position, sizeof position, "%u:%02u",
+             (unsigned)(total_seconds / 60U),
+             (unsigned)(total_seconds % 60U));
+    if (cyd_display_clear(&display, 0x0000) != ESP_OK) return;
+    drawStatusText("Seeking to", 82, 2);
+    drawStatusText(position, 122, 3);
+    cyd_display_flush(&display);
+}
+
 void beginUploadProgress(const char *filename, uint32_t total) {
     char progress_text[48] = {0};
     if (cyd_display_set_double_buffered(&display, true) == ESP_OK) {
@@ -5055,6 +5067,7 @@ void app_main(void) {
                 uint64_t target_frame;
                 file_browser_active = false;
                 seek_fast_forward = false;
+                showSeekStatus(position_ms);
                 closeVideo();
                 if (!sd_mounted && !mountSdCard()) {
                     esp_rom_printf("HLVSEEKERR 1 NO_SD\n");

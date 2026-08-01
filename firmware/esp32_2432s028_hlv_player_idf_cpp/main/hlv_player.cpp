@@ -1219,6 +1219,18 @@ void showUartSession(const char *command) {
     display.flush();
 }
 
+void showSeekStatus(uint32_t position_ms) {
+    const uint32_t total_seconds = position_ms / 1000U;
+    char position[16]{};
+    std::snprintf(position, sizeof position, "%u:%02u",
+                  static_cast<unsigned>(total_seconds / 60U),
+                  static_cast<unsigned>(total_seconds % 60U));
+    if (display.clear(0x0000) != ESP_OK) return;
+    drawStatusText("Seeking to", 82, 2);
+    drawStatusText(position, 122, 3);
+    display.flush();
+}
+
 void beginUploadProgress(const char *filename, uint32_t total) {
     if (display.setDoubleBuffered(true) == ESP_OK) {
         upload_progress_scale = kUploadPercentScale;
@@ -4839,6 +4851,7 @@ extern "C" void app_main(void) {
         if (uart_upload.takeSeekRequest(&seek_position_ms)) {
             file_browser_active = false;
             seek_fast_forward = false;
+            showSeekStatus(seek_position_ms);
             closeVideo();
             if (!sd_mounted && !mountSdCard()) {
                 esp_rom_printf("HLVSEEKERR 1 NO_SD\n");
