@@ -61,6 +61,33 @@ preparation, not LCD bandwidth, determine the renderer wall time. The final
 queued transactions can also finish after `renderMpegFrame()` returns and are
 therefore not charged to `render_us`.
 
+### Fused compact YUV-to-RGB565 renderer — 2026-08-02
+
+The IDF C native renderer now handles aligned Y6/U5/V5 input in 16x2 luma
+tiles. Each tile unpacks byte-aligned compact spans, applies the existing Q4
+correction pattern, reuses eight U/V samples for both YUV420 rows, performs
+branch-free clamp-and-pack lookup, and stores pairs of RGB565 pixels directly
+in the LCD DMA strip. Scaled and unaligned pictures retain the reference row
+renderer as a fallback.
+
+The final build keeps the fused 3,024-byte kernel in IRAM. Independent medians
+from three 60-frame physical ESP32 runs were:
+
+| Metric | Reference | Fused renderer | Change |
+| --- | ---: | ---: | ---: |
+| Complete renderer | 27.462 ms | 25.706 ms | -6.4% |
+| Compact unpack + chroma + RGB565 | 25.443 ms | 23.284 ms | -8.5% |
+| Static DRAM | 50,828 bytes | 54,796 bytes | +3,968 bytes |
+| IRAM | 104,603 bytes | 107,627 bytes | +3,024 bytes |
+
+An A/B build with only the general clamp tables was 0.31 ms slower, so those
+tables are restricted to the fused tile kernel and the reference
+`yuvToRgb565()` path remains unchanged. Keeping the fused kernel in flash was
+about 0.22 ms slower than IRAM. The verification build rendered both paths and
+compared every output row: all 5,400 row pairs from 60 complete 320x180 frames
+matched bit for bit. The test restored the original 43-byte `play.txt` with
+CRC32 `ebbae2ae`; the final 52-entry SD listing contained no test-only files.
+
 ## Completed work
 
 - [x] Restore the SD bus to 40 MHz after the reliability test.
@@ -92,7 +119,7 @@ therefore not charged to `render_us`.
 - [ ] Evaluate an IDCT DC-only fast path if coefficient telemetry shows enough
       eligible blocks. The previous generic sparse row/column checks were too
       expensive.
-- [ ] Reduce display-side packed-sample unpack work while preserving the
+- [x] Reduce display-side packed-sample unpack work while preserving the
       Y6/U5/V5 correction table bit for bit.
 
 ## Test commands

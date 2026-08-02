@@ -409,6 +409,35 @@ The last three cumulative fields separately measure `plm_decode_audio()` and
 the subsequent float-to-mono-PCM_U8 conversion. The collector reports both
 averages per MP2 frame; non-MPEG formats leave these fields at zero.
 
+### Compact YUV-to-RGB565 fast path
+
+The native, aligned Y6/U5/V5 renderer processes 16x2 luma tiles and writes
+RGB565 pairs directly into the LCD DMA strip. It avoids complete unpacked Y/U/V
+rows, reuses chroma for both YUV420 rows, and preserves the reference Q4
+correction pattern bit for bit. Scaled or unaligned pictures automatically use
+the reference row renderer.
+
+Three build-time CMake options default to `ON`:
+
+- `COMPACT_YUV_RGB565_FAST_PATH` enables the fused tile renderer.
+- `COMPACT_YUV_RGB565_CLAMP_TABLES` enables its branch-free clamp-and-pack
+  tables. The reference converter deliberately does not use these tables.
+- `COMPACT_YUV_RGB565_HOT_IRAM` places the 3 KiB fused kernel in IRAM.
+
+`COMPACT_YUV_RGB565_VERIFY` defaults to `OFF`. When enabled, it renders each
+eligible row pair through both implementations, compares the RGB565 bytes and
+emits `CRG`, `CRF` and `CRV` diagnostics. It is a correctness build and must
+not be used for performance measurements. For example:
+
+```powershell
+.\idf.ps1 -IdfArguments @(
+    "-B", "build-compact-rgb-verify",
+    "-D", "SDKCONFIG=build-compact-rgb-verify/sdkconfig",
+    "-D", "COMPACT_YUV_RGB565_VERIFY=ON",
+    "build"
+)
+```
+
 ### Optional MPEG-1 render-phase profile
 
 `MPEG1_RENDER_PROFILE` is a build-time CMake option and defaults to `OFF`.
@@ -429,7 +458,7 @@ After 60 rendered MPEG-1 frames the firmware emits one record and the metrics
 collector passes it through to stdout:
 
 ```text
-MRP,frames,cpu_mhz,render_avg_us,whole_avg_cycles,acquire_avg_cycles,y_unpack_avg_cycles,uv_unpack_avg_cycles,chroma_avg_cycles,rgb565_avg_cycles,submit_avg_cycles,transfers_per_frame
+MRP,frames,cpu_mhz,render_avg_us,whole_avg_cycles,acquire_avg_cycles,y_unpack_avg_cycles,uv_unpack_avg_cycles,chroma_avg_cycles,rgb565_avg_cycles,fused_rgb565_avg_cycles,submit_avg_cycles,transfers_per_frame
 ```
 
 The phase fields are average CPU cycles per rendered frame. Divide them by
@@ -438,6 +467,10 @@ DMA strip, and `submit` measures the CPU/software cost of queuing strips; the
 fixed-rate SPI transfer itself overlaps conversion and can continue after the
 last strip is queued. `whole` covers the complete renderer call, so the
 difference between it and the named phases is loop/control overhead.
+`fused_rgb565` measures the native aligned Y6/U5/V5 fast path, including
+compact unpacking, Q4 correction, chroma contribution lookup and RGB565
+packing; the separate unpack/chroma/RGB fields remain zero for rows handled by
+that path.
 
 The local collector resets the application without entering the ROM
 bootloader, rejects frame-sequence gaps, and fails if any rebuffer or missing

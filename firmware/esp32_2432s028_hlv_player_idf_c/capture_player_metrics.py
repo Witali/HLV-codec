@@ -299,6 +299,15 @@ def main() -> int:
             if line.startswith("MRP,"):
                 print(line)
                 continue
+            if "CRV," in line:
+                print(line[line.find("CRV,"):])
+                continue
+            if "CRG," in line:
+                print(line[line.find("CRG,"):])
+                continue
+            if "CRF," in line:
+                print(line[line.find("CRF,"):])
+                continue
             if line.startswith("S,"):
                 statuses.append(line)
                 if "error" in line.lower():

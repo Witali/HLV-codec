@@ -44,6 +44,22 @@
 #define MPEG1_RENDER_PROFILE 0
 #endif
 
+#ifndef COMPACT_YUV_RGB565_FAST_PATH
+#define COMPACT_YUV_RGB565_FAST_PATH 0
+#endif
+
+#ifndef COMPACT_YUV_RGB565_CLAMP_TABLES
+#define COMPACT_YUV_RGB565_CLAMP_TABLES 0
+#endif
+
+#ifndef COMPACT_YUV_RGB565_HOT_IRAM
+#define COMPACT_YUV_RGB565_HOT_IRAM 0
+#endif
+
+#ifndef COMPACT_YUV_RGB565_VERIFY
+#define COMPACT_YUV_RGB565_VERIFY 0
+#endif
+
 #if MPEG1_RENDER_PROFILE
 #include "esp_cpu.h"
 #endif
@@ -370,6 +386,7 @@ typedef struct MpegRenderProfile {
     uint64_t uv_unpack_cycles;
     uint64_t chroma_cycles;
     uint64_t rgb565_cycles;
+    uint64_t fused_rgb565_cycles;
     uint64_t submit_cycles;
     uint64_t wall_us;
     uint32_t frames;
@@ -397,6 +414,23 @@ static int32_t yuv_red_add[256];
 static int32_t yuv_green_u_add[256];
 static int32_t yuv_green_v_add[256];
 static int32_t yuv_blue_add[256];
+#if COMPACT_YUV_RGB565_VERIFY
+static uint16_t compact_yuv_reference_row0[kScreenWidth];
+static uint16_t compact_yuv_reference_row1[kScreenWidth];
+static uint32_t compact_yuv_attempted_pairs = 0;
+static uint32_t compact_yuv_verified_pairs = 0;
+#endif
+#if COMPACT_YUV_RGB565_CLAMP_TABLES
+enum {
+    /* Exact extrema of the existing fixed-point BT.601 conversion. */
+    kYuvRgbMinimum = -258,
+    kYuvRgbMaximum = 534,
+    kYuvRgbTableEntries = kYuvRgbMaximum - kYuvRgbMinimum + 1
+};
+static uint16_t yuv_red_565[kYuvRgbTableEntries];
+static uint16_t yuv_green_565[kYuvRgbTableEntries];
+static uint8_t yuv_blue_565[kYuvRgbTableEntries];
+#endif
 
 static void initializeYuvTables(void) {
     for (int sample = 0; sample < 256; ++sample) {
@@ -406,6 +440,15 @@ static void initializeYuvTables(void) {
         yuv_green_v_add[sample] = -208 * (sample - 128) + 128;
         yuv_blue_add[sample] = 516 * (sample - 128) + 128;
     }
+#if COMPACT_YUV_RGB565_CLAMP_TABLES
+    for (int value = kYuvRgbMinimum; value <= kYuvRgbMaximum; ++value) {
+        const int clamped = value < 0 ? 0 : value > 255 ? 255 : value;
+        const int index = value - kYuvRgbMinimum;
+        yuv_red_565[index] = (uint16_t)((clamped & 0xf8) << 8);
+        yuv_green_565[index] = (uint16_t)((clamped & 0xfc) << 3);
+        yuv_blue_565[index] = (uint8_t)(clamped >> 3);
+    }
+#endif
 }
 int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = NULL;
@@ -1045,7 +1088,8 @@ uint8_t mpegSampleToU8(float left, float right) {
         0, 255));
 }
 
-uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
+static inline uint16_t yuvToRgb565(
+    int y, int red_add, int green_add, int blue_add) {
     const int luma = yuv_luma[(uint8_t)(y)];
     const int red = clamp8((luma + red_add) >> 8);
     const int green = clamp8((luma + green_add) >> 8);
@@ -3482,6 +3526,221 @@ bool renderFrame(const HLV1Frame *frame) {
     return true;
 }
 
+#if COMPACT_YUV_RGB565_FAST_PATH
+#if COMPACT_YUV_RGB565_HOT_IRAM
+#define COMPACT_YUV_RGB565_ATTR IRAM_ATTR __attribute__((noinline))
+#else
+#define COMPACT_YUV_RGB565_ATTR
+#endif
+
+/*
+ * Compact planes are byte aligned for 8 samples: Y6 uses 6 bytes and U5/V5
+ * use 5. The native renderer consumes 16x2 luma pixels so one eight-sample
+ * chroma group is unpacked once and reused by both YUV420 rows. Keeping these
+ * short spans local avoids materializing three complete unpacked rows and the
+ * three full-width chroma-contribution rows.
+ */
+static inline uint8_t compactYuvCorrectSample(
+    unsigned sample, int correction) {
+    const int value = (int)(sample) + correction;
+    return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
+}
+
+static inline void compactYuvCorrection4(
+    const plm_plane_t *plane, int x, int y, int correction[4]) {
+    static const uint8_t threshold[4][4] = {
+        {0, 8, 2, 10},
+        {12, 4, 14, 6},
+        {3, 11, 1, 9},
+        {15, 7, 13, 5}
+    };
+    if (!plane->correction) {
+        correction[0] = 0;
+        correction[1] = 0;
+        correction[2] = 0;
+        correction[3] = 0;
+        return;
+    }
+    const int q4 = plane->correction[
+        (size_t)(y >> 3) * plane->correction_stride + (size_t)(x >> 3)];
+    const unsigned biased = (unsigned)(q4 + 128);
+    const int whole = (int)(biased >> 4) - 8;
+    const int fraction = (int)(biased & 15U);
+    const uint8_t *row = threshold[(unsigned)y & 3U];
+    correction[0] = whole + (row[0] < fraction);
+    correction[1] = whole + (row[1] < fraction);
+    correction[2] = whole + (row[2] < fraction);
+    correction[3] = whole + (row[3] < fraction);
+}
+
+static inline void compactYuvUnpackLuma8(
+    const plm_plane_t *plane, const uint8_t *packed, int x, int y,
+    uint8_t output[8]) {
+    int correction[4];
+    compactYuvCorrection4(plane, x, y, correction);
+    output[0] = compactYuvCorrectSample(
+        (packed[0] & 0x3fU) << 2, correction[0]);
+    output[1] = compactYuvCorrectSample(
+        ((packed[0] >> 6) | ((packed[1] & 0x0fU) << 2)) << 2,
+        correction[1]);
+    output[2] = compactYuvCorrectSample(
+        ((packed[1] >> 4) | ((packed[2] & 0x03U) << 4)) << 2,
+        correction[2]);
+    output[3] = compactYuvCorrectSample(
+        (packed[2] >> 2) << 2, correction[3]);
+    output[4] = compactYuvCorrectSample(
+        (packed[3] & 0x3fU) << 2, correction[0]);
+    output[5] = compactYuvCorrectSample(
+        ((packed[3] >> 6) | ((packed[4] & 0x0fU) << 2)) << 2,
+        correction[1]);
+    output[6] = compactYuvCorrectSample(
+        ((packed[4] >> 4) | ((packed[5] & 0x03U) << 4)) << 2,
+        correction[2]);
+    output[7] = compactYuvCorrectSample(
+        (packed[5] >> 2) << 2, correction[3]);
+}
+
+static inline void compactYuvUnpackChroma8(
+    const plm_plane_t *plane, const uint8_t *packed, int x, int y,
+    uint8_t output[8]) {
+    int correction[4];
+    compactYuvCorrection4(plane, x, y, correction);
+    output[0] = compactYuvCorrectSample(
+        (packed[0] & 0x1fU) << 3, correction[0]);
+    output[1] = compactYuvCorrectSample(
+        ((packed[0] >> 5) | ((packed[1] & 0x03U) << 3)) << 3,
+        correction[1]);
+    output[2] = compactYuvCorrectSample(
+        ((packed[1] >> 2) & 0x1fU) << 3, correction[2]);
+    output[3] = compactYuvCorrectSample(
+        ((packed[1] >> 7) | ((packed[2] & 0x0fU) << 1)) << 3,
+        correction[3]);
+    output[4] = compactYuvCorrectSample(
+        ((packed[2] >> 4) | ((packed[3] & 0x01U) << 4)) << 3,
+        correction[0]);
+    output[5] = compactYuvCorrectSample(
+        ((packed[3] >> 1) & 0x1fU) << 3, correction[1]);
+    output[6] = compactYuvCorrectSample(
+        ((packed[3] >> 6) | ((packed[4] & 0x07U) << 2)) << 3,
+        correction[2]);
+    output[7] = compactYuvCorrectSample(
+        (packed[4] >> 3) << 3, correction[3]);
+}
+
+static inline void storeRgb565Pair(
+    uint16_t *output, uint16_t first, uint16_t second) {
+    const uint32_t pair = (uint32_t)first | ((uint32_t)second << 16);
+    memcpy(output, &pair, sizeof pair);
+}
+
+static inline uint16_t compactYuvToRgb565(
+    int y, int red_add, int green_add, int blue_add) {
+#if COMPACT_YUV_RGB565_CLAMP_TABLES
+    const int luma = yuv_luma[(uint8_t)(y)];
+    const int red = ((luma + red_add) >> 8) - kYuvRgbMinimum;
+    const int green = ((luma + green_add) >> 8) - kYuvRgbMinimum;
+    const int blue = ((luma + blue_add) >> 8) - kYuvRgbMinimum;
+    return (uint16_t)(
+        yuv_red_565[red] | yuv_green_565[green] | yuv_blue_565[blue]);
+#else
+    return yuvToRgb565(y, red_add, green_add, blue_add);
+#endif
+}
+
+static bool canConvertCompactYuvRows2(
+    const plm_frame_t *frame, int source_y, int first_source_x,
+    int output_width) {
+    const int chroma_x = first_source_x >> 1;
+    const int chroma_y = source_y >> 1;
+    const int chroma_width = output_width >> 1;
+    const bool supported =
+           frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5 &&
+           frame->y.data && frame->cb.data && frame->cr.data &&
+           source_y >= 0 && first_source_x >= 0 && output_width > 0 &&
+           (source_y & 1) == 0 && (first_source_x & 15) == 0 &&
+           (output_width & 15) == 0 &&
+           source_y + 1 < (int)(frame->y.height) &&
+           first_source_x + output_width <= (int)(frame->y.width) &&
+           chroma_y < (int)(frame->cb.height) &&
+           chroma_y < (int)(frame->cr.height) &&
+           chroma_x + chroma_width <= (int)(frame->cb.width) &&
+           chroma_x + chroma_width <= (int)(frame->cr.width);
+#if COMPACT_YUV_RGB565_VERIFY
+    static bool reported_geometry = false;
+    if (!reported_geometry) {
+        esp_rom_printf(
+            "CRG,%d,%d,%d,%u,%u,%u,%u,%u,%u,%d\n",
+            frame->storage_mode, source_y, first_source_x,
+            frame->y.width, frame->y.height,
+            frame->cb.width, frame->cb.height,
+            frame->cr.width, frame->cr.height, supported);
+        reported_geometry = true;
+    }
+#endif
+    return supported;
+}
+
+static void COMPACT_YUV_RGB565_ATTR convertCompactYuvRows2(
+    const plm_frame_t *frame, int source_y, int first_source_x,
+    uint16_t *output0, uint16_t *output1, int output_width) {
+    const int chroma_y = source_y >> 1;
+    const uint8_t *y0_row =
+        frame->y.data + (size_t)source_y * frame->y.stride;
+    const uint8_t *y1_row = y0_row + frame->y.stride;
+    const uint8_t *cb_row =
+        frame->cb.data + (size_t)chroma_y * frame->cb.stride;
+    const uint8_t *cr_row =
+        frame->cr.data + (size_t)chroma_y * frame->cr.stride;
+
+    for (int output_x = 0; output_x < output_width; output_x += 16) {
+        const int source_x = first_source_x + output_x;
+        const int chroma_x = source_x >> 1;
+        const size_t y_byte = (size_t)source_x * 6U >> 3;
+        const size_t chroma_byte = (size_t)chroma_x * 5U >> 3;
+        uint8_t y0[16];
+        uint8_t y1[16];
+        uint8_t cb[8];
+        uint8_t cr[8];
+
+        compactYuvUnpackLuma8(
+            &frame->y, y0_row + y_byte, source_x, source_y, y0);
+        compactYuvUnpackLuma8(
+            &frame->y, y0_row + y_byte + 6, source_x + 8, source_y,
+            y0 + 8);
+        compactYuvUnpackLuma8(
+            &frame->y, y1_row + y_byte, source_x, source_y + 1, y1);
+        compactYuvUnpackLuma8(
+            &frame->y, y1_row + y_byte + 6, source_x + 8, source_y + 1,
+            y1 + 8);
+        compactYuvUnpackChroma8(
+            &frame->cb, cb_row + chroma_byte, chroma_x, chroma_y, cb);
+        compactYuvUnpackChroma8(
+            &frame->cr, cr_row + chroma_byte, chroma_x, chroma_y, cr);
+
+        for (int sample = 0; sample < 8; ++sample) {
+            const int luma_x = sample << 1;
+            const int red_add = yuv_red_add[cr[sample]];
+            const int green_add =
+                yuv_green_u_add[cb[sample]] + yuv_green_v_add[cr[sample]];
+            const int blue_add = yuv_blue_add[cb[sample]];
+            storeRgb565Pair(
+                output0 + output_x + luma_x,
+                compactYuvToRgb565(
+                    y0[luma_x], red_add, green_add, blue_add),
+                compactYuvToRgb565(
+                    y0[luma_x + 1], red_add, green_add, blue_add));
+            storeRgb565Pair(
+                output1 + output_x + luma_x,
+                compactYuvToRgb565(
+                    y1[luma_x], red_add, green_add, blue_add),
+                compactYuvToRgb565(
+                    y1[luma_x + 1], red_add, green_add, blue_add));
+        }
+    }
+}
+#undef COMPACT_YUV_RGB565_ATTR
+#endif
+
 void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, int first_source_x,
                     uint16_t *output, int output_width) {
@@ -3597,6 +3856,15 @@ bool renderMpegFrame(const plm_frame_t *frame) {
 #endif
     const int rows_per_transfer =
         cyd_display_rows_per_transfer(&display);
+#if COMPACT_YUV_RGB565_VERIFY
+    static bool reported_render_path = false;
+    if (!reported_render_path) {
+        esp_rom_printf(
+            "CRF,%d,%d,%u,%u\n", rows_per_transfer,
+            frame->storage_mode, frame->width, frame->height);
+        reported_render_path = true;
+    }
+#endif
     mpeg_cached_chroma_y = -1;
     if (PLAYER_SCALE_VIDEO_TO_DISPLAY) {
         int cached_source_y = -1;
@@ -3664,7 +3932,51 @@ bool renderMpegFrame(const plm_frame_t *frame) {
             (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
 #endif
         if (!pixels) return false;
-        for (int row = 0; row < rows; ++row) {
+        int row = 0;
+#if COMPACT_YUV_RGB565_FAST_PATH
+        for (; row + 1 < rows; row += 2) {
+            const int row_source_y = source_y + y0 + row;
+#if COMPACT_YUV_RGB565_VERIFY
+            ++compact_yuv_attempted_pairs;
+#endif
+            if (!canConvertCompactYuvRows2(
+                    frame, row_source_y, source_x, width)) {
+                break;
+            }
+#if MPEG1_RENDER_PROFILE
+            profile_start = esp_cpu_get_cycle_count();
+#endif
+            convertCompactYuvRows2(
+                frame, row_source_y, source_x,
+                pixels + row * width,
+                pixels + (row + 1) * width, width);
+#if COMPACT_YUV_RGB565_VERIFY
+            convertMpegRow(
+                frame, row_source_y, false, source_x,
+                compact_yuv_reference_row0, width);
+            convertMpegRow(
+                frame, row_source_y + 1, false, source_x,
+                compact_yuv_reference_row1, width);
+            if (memcmp(
+                    pixels + row * width, compact_yuv_reference_row0,
+                    (size_t)width * sizeof(uint16_t)) != 0 ||
+                memcmp(
+                    pixels + (row + 1) * width, compact_yuv_reference_row1,
+                    (size_t)width * sizeof(uint16_t)) != 0) {
+                ESP_LOGE(
+                    kTag, "compact RGB565 mismatch at source row %d",
+                    row_source_y);
+                return false;
+            }
+            ++compact_yuv_verified_pairs;
+#endif
+#if MPEG1_RENDER_PROFILE
+            mpeg_render_profile.fused_rgb565_cycles +=
+                (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
+        }
+#endif
+        for (; row < rows; ++row) {
             convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
@@ -4150,6 +4462,14 @@ void finishPresentationDetailed(
     const BpvDecodeBreakdown *bpv_breakdown) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
+#if COMPACT_YUV_RGB565_VERIFY
+    if (decoded_frames == 60U) {
+        esp_rom_printf(
+            "CRV,%u,%u,%u\n", (unsigned)decoded_frames,
+            (unsigned)compact_yuv_attempted_pairs,
+            (unsigned)compact_yuv_verified_pairs);
+    }
+#endif
 #if MPEG1_RENDER_PROFILE
     if (video_codec == VIDEO_CODEC_kMpeg1 && render_us != 0U) {
         mpeg_render_profile.wall_us += render_us;
@@ -4313,7 +4633,7 @@ void finishPresentationDetailed(
             !mpeg_render_profile.printed) {
             const uint32_t frames = mpeg_render_profile.frames;
             esp_rom_printf(
-                "MRP,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
+                "MRP,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
                 (unsigned)frames,
                 (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
                 (unsigned long long)(
@@ -4331,6 +4651,8 @@ void finishPresentationDetailed(
                                      frames),
                 (unsigned long long)(mpeg_render_profile.rgb565_cycles /
                                      frames),
+                (unsigned long long)(
+                    mpeg_render_profile.fused_rgb565_cycles / frames),
                 (unsigned long long)(mpeg_render_profile.submit_cycles /
                                      frames),
                 (unsigned)(mpeg_render_profile.transfers / frames));

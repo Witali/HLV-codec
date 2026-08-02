@@ -16,6 +16,14 @@ set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
 set(MPEG1_RENDER_PROFILE OFF CACHE BOOL
     "Measure MPEG-1 render phases and emit one MRP record after 60 frames")
+set(COMPACT_YUV_RGB565_FAST_PATH ON CACHE BOOL
+    "Fuse aligned compact Y6/U5/V5 unpacking with RGB565 conversion")
+set(COMPACT_YUV_RGB565_CLAMP_TABLES ON CACHE BOOL
+    "Use branch-free clamp-and-pack tables in the fused compact converter")
+set(COMPACT_YUV_RGB565_HOT_IRAM ON CACHE BOOL
+    "Place the fused compact YUV-to-RGB565 converter in IRAM")
+set(COMPACT_YUV_RGB565_VERIFY OFF CACHE BOOL
+    "Compare fused compact conversion with the reference row renderer")
 set(mjpeg_stream_dir
     "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
@@ -371,6 +379,26 @@ endif()
 if(MPEG1_RENDER_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         MPEG1_RENDER_PROFILE=1)
+endif()
+if(COMPACT_YUV_RGB565_FAST_PATH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        COMPACT_YUV_RGB565_FAST_PATH=1)
+    if(COMPACT_YUV_RGB565_CLAMP_TABLES)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_RGB565_CLAMP_TABLES=1)
+    endif()
+    if(COMPACT_YUV_RGB565_HOT_IRAM)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_RGB565_HOT_IRAM=1)
+    endif()
+endif()
+if(COMPACT_YUV_RGB565_VERIFY)
+    if(NOT COMPACT_YUV_RGB565_FAST_PATH)
+        message(FATAL_ERROR
+            "COMPACT_YUV_RGB565_VERIFY requires the compact fast path")
+    endif()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        COMPACT_YUV_RGB565_VERIFY=1)
 endif()
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
