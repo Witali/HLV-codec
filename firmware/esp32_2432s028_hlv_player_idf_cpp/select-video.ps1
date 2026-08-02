@@ -7,8 +7,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$') {
-    throw "Name must be a safe /HLV base filename of at most 48 bytes."
+if ($Name -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9._ -]{0,109}[A-Za-z0-9._-])?$' -or
+    $Name.Contains("..")) {
+    throw "Name must be a safe /HLV base filename of at most 111 bytes."
 }
 
 $temporary = [IO.Path]::Combine(

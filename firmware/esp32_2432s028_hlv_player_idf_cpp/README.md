@@ -274,7 +274,7 @@ full-file CRC-verified protocol as a normal video.
 
 Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg`, `.3gp` or
 `.txt`,
-and are at most 48
+and are at most 111
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
 
