@@ -56,6 +56,10 @@
 #define COMPACT_YUV_RGB565_HOT_IRAM 0
 #endif
 
+#ifndef COMPACT_YUV_Q4_LUT
+#define COMPACT_YUV_Q4_LUT 0
+#endif
+
 #ifndef COMPACT_YUV_RGB565_VERIFY
 #define COMPACT_YUV_RGB565_VERIFY 0
 #endif
@@ -414,6 +418,25 @@ static int32_t yuv_red_add[256];
 static int32_t yuv_green_u_add[256];
 static int32_t yuv_green_v_add[256];
 static int32_t yuv_blue_add[256];
+#if COMPACT_YUV_RGB565_FAST_PATH
+enum {
+    kCompactYuvQ4Minimum = -8,
+    kCompactYuvQ4Maximum = 14,
+    kCompactYuvQ4Entries =
+        kCompactYuvQ4Maximum - kCompactYuvQ4Minimum + 1
+};
+static const uint8_t compact_yuv_threshold[4][4] = {
+    {0, 8, 2, 10},
+    {12, 4, 14, 6},
+    {3, 11, 1, 9},
+    {15, 7, 13, 5}
+};
+#if COMPACT_YUV_Q4_LUT
+static int8_t compact_yuv_q4_lut[4][kCompactYuvQ4Entries][4];
+_Static_assert(sizeof compact_yuv_q4_lut == 368,
+               "Compact Q4 correction LUT must remain 368 bytes");
+#endif
+#endif
 #if COMPACT_YUV_RGB565_VERIFY
 static uint16_t compact_yuv_reference_row0[kScreenWidth];
 static uint16_t compact_yuv_reference_row1[kScreenWidth];
@@ -440,6 +463,22 @@ static void initializeYuvTables(void) {
         yuv_green_v_add[sample] = -208 * (sample - 128) + 128;
         yuv_blue_add[sample] = 516 * (sample - 128) + 128;
     }
+#if COMPACT_YUV_RGB565_FAST_PATH && COMPACT_YUV_Q4_LUT
+    for (int phase = 0; phase < 4; ++phase) {
+        for (int q4 = kCompactYuvQ4Minimum;
+             q4 <= kCompactYuvQ4Maximum; ++q4) {
+            const unsigned biased = (unsigned)(q4 + 128);
+            const int whole = (int)(biased >> 4) - 8;
+            const int fraction = (int)(biased & 15U);
+            int8_t *correction =
+                compact_yuv_q4_lut[phase][q4 - kCompactYuvQ4Minimum];
+            for (int sample = 0; sample < 4; ++sample) {
+                correction[sample] = (int8_t)(
+                    whole + (compact_yuv_threshold[phase][sample] < fraction));
+            }
+        }
+    }
+#endif
 #if COMPACT_YUV_RGB565_CLAMP_TABLES
     for (int value = kYuvRgbMinimum; value <= kYuvRgbMaximum; ++value) {
         const int clamped = value < 0 ? 0 : value > 255 ? 255 : value;
@@ -3546,38 +3585,37 @@ static inline uint8_t compactYuvCorrectSample(
     return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
 }
 
-static inline void compactYuvCorrection4(
-    const plm_plane_t *plane, int x, int y, int correction[4]) {
-    static const uint8_t threshold[4][4] = {
-        {0, 8, 2, 10},
-        {12, 4, 14, 6},
-        {3, 11, 1, 9},
-        {15, 7, 13, 5}
-    };
+static inline const int8_t *compactYuvCorrection4(
+    const plm_plane_t *plane, int x, int y, int8_t fallback[4]) {
+    static const int8_t no_correction[4] = {0, 0, 0, 0};
     if (!plane->correction) {
-        correction[0] = 0;
-        correction[1] = 0;
-        correction[2] = 0;
-        correction[3] = 0;
-        return;
+        return no_correction;
     }
     const int q4 = plane->correction[
         (size_t)(y >> 3) * plane->correction_stride + (size_t)(x >> 3)];
+#if COMPACT_YUV_Q4_LUT
+    if (q4 >= kCompactYuvQ4Minimum && q4 <= kCompactYuvQ4Maximum) {
+        return compact_yuv_q4_lut[(unsigned)y & 3U]
+                                 [q4 - kCompactYuvQ4Minimum];
+    }
+#endif
     const unsigned biased = (unsigned)(q4 + 128);
     const int whole = (int)(biased >> 4) - 8;
     const int fraction = (int)(biased & 15U);
-    const uint8_t *row = threshold[(unsigned)y & 3U];
-    correction[0] = whole + (row[0] < fraction);
-    correction[1] = whole + (row[1] < fraction);
-    correction[2] = whole + (row[2] < fraction);
-    correction[3] = whole + (row[3] < fraction);
+    const uint8_t *row = compact_yuv_threshold[(unsigned)y & 3U];
+    fallback[0] = (int8_t)(whole + (row[0] < fraction));
+    fallback[1] = (int8_t)(whole + (row[1] < fraction));
+    fallback[2] = (int8_t)(whole + (row[2] < fraction));
+    fallback[3] = (int8_t)(whole + (row[3] < fraction));
+    return fallback;
 }
 
 static inline void compactYuvUnpackLuma8(
     const plm_plane_t *plane, const uint8_t *packed, int x, int y,
     uint8_t output[8]) {
-    int correction[4];
-    compactYuvCorrection4(plane, x, y, correction);
+    int8_t correction_fallback[4];
+    const int8_t *correction =
+        compactYuvCorrection4(plane, x, y, correction_fallback);
     output[0] = compactYuvCorrectSample(
         (packed[0] & 0x3fU) << 2, correction[0]);
     output[1] = compactYuvCorrectSample(
@@ -3603,8 +3641,9 @@ static inline void compactYuvUnpackLuma8(
 static inline void compactYuvUnpackChroma8(
     const plm_plane_t *plane, const uint8_t *packed, int x, int y,
     uint8_t output[8]) {
-    int correction[4];
-    compactYuvCorrection4(plane, x, y, correction);
+    int8_t correction_fallback[4];
+    const int8_t *correction =
+        compactYuvCorrection4(plane, x, y, correction_fallback);
     output[0] = compactYuvCorrectSample(
         (packed[0] & 0x1fU) << 3, correction[0]);
     output[1] = compactYuvCorrectSample(

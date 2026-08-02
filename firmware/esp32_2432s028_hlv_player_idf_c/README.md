@@ -417,12 +417,17 @@ rows, reuses chroma for both YUV420 rows, and preserves the reference Q4
 correction pattern bit for bit. Scaled or unaligned pictures automatically use
 the reference row renderer.
 
-Three build-time CMake options default to `ON`:
+Four build-time CMake options default to `ON`:
 
 - `COMPACT_YUV_RGB565_FAST_PATH` enables the fused tile renderer.
 - `COMPACT_YUV_RGB565_CLAMP_TABLES` enables its branch-free clamp-and-pack
   tables. The reference converter deliberately does not use these tables.
 - `COMPACT_YUV_RGB565_HOT_IRAM` places the 3 KiB fused kernel in IRAM.
+- `COMPACT_YUV_Q4_LUT` replaces four ordered-dither comparisons per compact
+  eight-sample group with a shared 368-byte correction table. Its dimensions
+  are four row phases by 23 encoder-produced Q4 values by four signed-byte
+  corrections; the same table serves Y, U and V. Values outside the encoder's
+  `-8..14` range retain the exact calculated fallback.
 
 `COMPACT_YUV_RGB565_VERIFY` defaults to `OFF`. When enabled, it renders each
 eligible row pair through both implementations, compares the RGB565 bytes and

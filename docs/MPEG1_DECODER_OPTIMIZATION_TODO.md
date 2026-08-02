@@ -88,6 +88,32 @@ compared every output row: all 5,400 row pairs from 60 complete 320x180 frames
 matched bit for bit. The test restored the original 43-byte `play.txt` with
 CRC32 `ebbae2ae`; the final 52-entry SD listing contained no test-only files.
 
+### Compact Q4 correction LUT — 2026-08-02
+
+The fused renderer now shares one `int8_t[4][23][4]` correction LUT between
+the Y, U and V planes. Its 368-byte size is enforced by a C99 static assertion
+and confirmed as `0x170` bytes in the ESP32 linker map. Each lookup selects
+four ordered-dither corrections using the row phase and the encoder's bounded
+Q4 value. An exact calculated fallback remains available for Q4 values outside
+`-8..14`. `COMPACT_YUV_Q4_LUT` controls the optimization at build time and
+defaults to `ON`.
+
+Independent medians from three 60-frame physical runs, with every other build
+option held equal, were:
+
+| Metric | Q4 calculation | 368-byte LUT | Change |
+| --- | ---: | ---: | ---: |
+| Complete renderer | 25.813 ms | 25.640 ms | -0.173 ms (-0.67%) |
+| Fused compact-to-RGB565 phase | 23.726 ms | 23.366 ms | -0.361 ms (-1.52%) |
+| Static DRAM | baseline | baseline + 368 bytes | +368 bytes |
+
+The verification build compared the optimized path with the reference
+renderer on the same board. All 5,400 row pairs from 60 complete 320x180
+frames matched bit for bit (`CRV,60,5400,5400`). Both A/B runs had zero frame
+gaps, display skips, audio rebuffer events and audio underruns. The original
+43-byte `play.txt` was restored byte for byte (CRC32 `ebbae2ae` and matching
+SHA-256), and a fresh listing contained the same 52 persistent SD files.
+
 ## Completed work
 
 - [x] Restore the SD bus to 40 MHz after the reliability test.

@@ -22,6 +22,8 @@ set(COMPACT_YUV_RGB565_CLAMP_TABLES ON CACHE BOOL
     "Use branch-free clamp-and-pack tables in the fused compact converter")
 set(COMPACT_YUV_RGB565_HOT_IRAM ON CACHE BOOL
     "Place the fused compact YUV-to-RGB565 converter in IRAM")
+set(COMPACT_YUV_Q4_LUT ON CACHE BOOL
+    "Use a shared 368-byte compact YUV Q4 correction lookup table")
 set(COMPACT_YUV_RGB565_VERIFY OFF CACHE BOOL
     "Compare fused compact conversion with the reference row renderer")
 set(mjpeg_stream_dir
@@ -390,6 +392,10 @@ if(COMPACT_YUV_RGB565_FAST_PATH)
     if(COMPACT_YUV_RGB565_HOT_IRAM)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE
             COMPACT_YUV_RGB565_HOT_IRAM=1)
+    endif()
+    if(COMPACT_YUV_Q4_LUT)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_Q4_LUT=1)
     endif()
 endif()
 if(COMPACT_YUV_RGB565_VERIFY)
