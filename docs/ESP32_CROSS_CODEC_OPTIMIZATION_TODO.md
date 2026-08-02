@@ -304,6 +304,28 @@ average decode time from 39.542 to 38.509 ms (2.61%), with P50 improving
 2.73%. The ordinary Player was rebuilt, flashed and verified decoding the
 320x240, 30 fps MJPEG stream after the A/B run.
 
+## Player RAM reduction candidates
+
+ELF analysis identified several cross-codec allocations that remain live even
+when the active decoder does not use them. Treat each reduction as a separate
+physical-board A/B experiment because saving RAM may add initialization work,
+cache misses or render-time computation.
+
+- [ ] Make the approximately 8.3 KiB BPV state and palette storage conditional
+      on BPV playback instead of retaining it while MPEG4SP and other codecs
+      are active. Measure decoder switching, heap fragmentation and BPV render
+      speed before retaining the change.
+- [ ] Reduce or conditionally materialize the approximately 9 KiB of shared
+      YUV and LUT tables. Compare Flash/DRAM placement, initialization cost and
+      YUV-to-RGB565 render speed on every decoder that uses the common path.
+- [ ] A/B-test reducing the 4 KiB audio stream buffer. Verify repeated decoder
+      open/close cycles and require zero rebuffers, missing samples, inserted
+      silence and SD read regressions on the physical ESP32.
+- [x] Reserve one 512-byte SD DMA sector early and keep it for the lifetime of
+      the mounted card. This eliminated the repeated-playback SD failure
+      without changing the decoder or renderer hot path; do not replace it
+      with a late temporary allocation merely to recover these 512 bytes.
+
 ## Priority order
 
 1. Selective IRAM placement for DivX, MPEG-1 and H.263.
