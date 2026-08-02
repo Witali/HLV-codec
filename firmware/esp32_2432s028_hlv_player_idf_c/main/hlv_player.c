@@ -100,6 +100,10 @@ enum {
     kAudioDmaSamples = 256,
     kAudioDmaBufferBytes = kAudioDmaSamples * 2,
     kAudioDmaDescriptors = 6,
+    kSdDmaMinimumBlockBytes = 512,
+    kAudioDmaMinimumFreeBytes =
+        kAudioDmaDescriptors * kAudioDmaBufferBytes +
+        2 * kSdDmaMinimumBlockBytes,
     kAudioReadAheadBytes = 512,
     kAudioReadChunkBytes = 512,
     kAudioReaderStackBytes = 6144,
@@ -448,6 +452,7 @@ __attribute__((aligned(4))) uint8_t audio_read_chunk[kAudioReadChunkBytes];
 __attribute__((aligned(4))) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
 __attribute__((aligned(4))) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
 sdmmc_card_t *sd_card = NULL;
+void *sd_dma_aligned_buffer = NULL;
 bool sd_bus_initialized = false;
 bool sd_mounted = false;
 uint32_t consecutive_sd_read_failures = 0;
@@ -1440,6 +1445,21 @@ bool mountSdCard() {
     host.flags &= ~SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC;
     host.slot = SPI3_HOST;
     host.max_freq_khz = PLAYER_SD_CLOCK_KHZ;
+    if (sd_dma_aligned_buffer == NULL) {
+        sd_dma_aligned_buffer =
+            heap_caps_malloc(kSdDmaMinimumBlockBytes, MALLOC_CAP_DMA);
+        if (sd_dma_aligned_buffer == NULL) {
+            ESP_LOGE(kTag, "Cannot reserve %u-byte SD DMA buffer",
+                     (unsigned)kSdDmaMinimumBlockBytes);
+            return false;
+        }
+    }
+    /*
+     * FatFs can submit unaligned buffers. Keep one sector reserved so SDSPI
+     * never has to allocate a temporary DMA bounce buffer while a decoder is
+     * using nearly all internal RAM. The host is copied into sd_card.
+     */
+    host.dma_aligned_buffer = sd_dma_aligned_buffer;
 
     sdspi_device_config_t device = SDSPI_DEVICE_CONFIG_DEFAULT();
     device.host_id = SPI3_HOST;
@@ -2007,6 +2027,22 @@ bool prepareAudio(HLV1Header header) {
     config.offset = 0;
     config.clk_src = DAC_DIGI_CLK_SRC_APLL;
     config.chan_mode = DAC_CHANNEL_MODE_SIMUL;
+    const size_t dma_free =
+        heap_caps_get_free_size(MALLOC_CAP_DMA);
+    const size_t dma_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    if (dma_free < kAudioDmaMinimumFreeBytes ||
+        dma_largest < kAudioDmaBufferBytes) {
+        ESP_LOGW(
+            kTag,
+            "Audio DMA unavailable: free=%u largest=%u, need free>=%u "
+            "largest>=%u; using timer clock",
+            (unsigned)dma_free, (unsigned)dma_largest,
+            (unsigned)kAudioDmaMinimumFreeBytes,
+            (unsigned)kAudioDmaBufferBytes);
+        stopAudio();
+        return false;
+    }
     if (dac_continuous_new_channels(&config, &audio_dac) != ESP_OK ||
         dac_continuous_enable(audio_dac) != ESP_OK) {
         stopAudio();
@@ -4156,6 +4192,21 @@ void failPlayback(const char *title, int result) {
 }
 
 void failSdCardRead(const char *detail) {
+    const size_t dma_free =
+        heap_caps_get_free_size(MALLOC_CAP_DMA);
+    const size_t dma_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+    if (sd_dma_aligned_buffer == NULL &&
+        dma_largest < kSdDmaMinimumBlockBytes) {
+        ESP_LOGE(
+            kTag,
+            "SD read could not allocate DMA memory: free=%u largest=%u: %s",
+            (unsigned)dma_free, (unsigned)dma_largest, detail);
+        showStatus("OUT OF MEMORY", "SD DMA buffer unavailable");
+        closeVideo();
+        last_retry_ms = millisNow();
+        return;
+    }
     if (consecutive_sd_read_failures < UINT32_MAX) {
         ++consecutive_sd_read_failures;
     }
