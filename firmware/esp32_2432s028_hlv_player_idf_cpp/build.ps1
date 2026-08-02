@@ -36,7 +36,9 @@ if (Test-Path -LiteralPath $cache) {
             [IO.Path]::GetFullPath($toolchainProject).TrimEnd("\", "/") +
             [IO.Path]::DirectorySeparatorChar
         $cachedPythonPath = [IO.Path]::GetFullPath($cachedPython)
-        if (-not $cachedPythonPath.StartsWith(
+        if (-not (Test-Path -LiteralPath $cachedPythonPath -PathType Leaf)) {
+            $staleReason = "missing Python $cachedPythonPath"
+        } elseif (-not $cachedPythonPath.StartsWith(
                 $expectedToolRoot, [StringComparison]::OrdinalIgnoreCase)) {
             $staleReason = "toolchain $cachedPythonPath"
         }
