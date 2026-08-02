@@ -163,7 +163,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Change the ESP32 player's UART control baud rate"
     )
     parser.add_argument("--port", required=True)
-    parser.add_argument("--from-baud", type=int, default=1_000_000,
+    parser.add_argument("--from-baud", type=int, default=460_800,
                         choices=SUPPORTED_BAUDS)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--to-baud", type=int, choices=SUPPORTED_BAUDS)

@@ -204,7 +204,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--length", type=int,
                         help="number of bytes; omitted means through EOF")
-    parser.add_argument("--data-baud", type=int, default=1_000_000,
+    parser.add_argument("--data-baud", type=int, default=460_800,
                         choices=SUPPORTED_DATA_BAUDS)
     parser.add_argument("--timeout", type=float, default=15.0,
                         help="maximum idle time in seconds")
