@@ -1,0 +1,40 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&i2c0 {
+	status = "disabled";
+};
+
+&wifi {
+	status = "disabled";
+};
+
+&esp32_bt_hci {
+	status = "disabled";
+};
+
+/*
+ * ESP32-2432S028 microSD connector:
+ * SCK=18, MOSI=23, MISO=19 and CS=5. The DevKitC SPI3 pinctrl already
+ * describes the three data pins; only the board-specific chip select is
+ * supplied here.
+ *
+ * Zephyr's SD SPI stack sends CMD59 to enable card-side CRC, verifies CRC16
+ * after every block read, and emits/checks CRC responses for block writes.
+ */
+&spi3 {
+	status = "okay";
+	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>;
+
+	sdspi: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <40000000>;
+
+		sdcard: mmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
