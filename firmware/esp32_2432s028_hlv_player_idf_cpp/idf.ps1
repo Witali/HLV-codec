@@ -37,10 +37,14 @@ $savedPath = $env:Path
 $savedIdfPath = $env:IDF_PATH
 $savedIdfToolsPath = $env:IDF_TOOLS_PATH
 $savedPythonNoUserSite = $env:PYTHONNOUSERSITE
+$savedPythonIoEncoding = $env:PYTHONIOENCODING
+$savedPythonUtf8 = $env:PYTHONUTF8
 $savedEsptoolConfig = $env:ESPTOOL_CFGFILE
 try {
     $env:IDF_TOOLS_PATH = $idfTools
     $env:PYTHONNOUSERSITE = "1"
+    $env:PYTHONIOENCODING = "utf-8"
+    $env:PYTHONUTF8 = "1"
     $env:ESPTOOL_CFGFILE = Join-Path $project "esptool.cfg"
     $env:Path = "$python;$python\Scripts;$env:Path"
     . (Join-Path $idf "export.ps1")
@@ -77,5 +81,7 @@ try {
     $env:IDF_PATH = $savedIdfPath
     $env:IDF_TOOLS_PATH = $savedIdfToolsPath
     $env:PYTHONNOUSERSITE = $savedPythonNoUserSite
+    $env:PYTHONIOENCODING = $savedPythonIoEncoding
+    $env:PYTHONUTF8 = $savedPythonUtf8
     $env:ESPTOOL_CFGFILE = $savedEsptoolConfig
 }
