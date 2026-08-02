@@ -33,6 +33,16 @@ constexpr bool kScaleVideoToDisplay = false;
 // compact v14 reference representation.
 constexpr bool kUseCompactHlvReference = true;
 
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+// ESP-IDF's FreeRTOS scheduler acts as a small microkernel. app_main owns
+// control, I/O and rendering on CPU0; one ordered decoder worker owns CPU1.
+constexpr bool kUseDualCorePipeline = true;
+constexpr bool kEnableAudio = false;
+constexpr bool kEnableUartControl = false;
+constexpr bool kUseBootButtonTask = false;
+constexpr bool kEnableBpvV7StreamingTask = false;
+constexpr bool kLogFrameTimings = false;
+#else
 // Decode frame N on CPU1 while CPU0 converts and queues frame N-1 to the
 // display. Predictive decoding itself remains ordered between frames.
 constexpr bool kUseDualCorePipeline = true;
@@ -41,6 +51,11 @@ constexpr bool kUseDualCorePipeline = true;
 // sample counter as the video clock. false (and files without audio) use the
 // monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;
+constexpr bool kEnableUartControl = true;
+constexpr bool kUseBootButtonTask = true;
+constexpr bool kEnableBpvV7StreamingTask = true;
+constexpr bool kLogFrameTimings = true;
+#endif
 
 // Retain the 4 KiB static queue, but wait for this many file-defined frame
 // intervals of PCM before playback and after an underrun. Four intervals cover
@@ -54,12 +69,6 @@ constexpr unsigned kMaxConsecutiveVideoSkips = 2;
 // Keep playback tied to fps_num/fps_den from the HLV header. The hybrid mode
 // bounds visible frame skips while preserving every source audio sample.
 constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropThenLoopAudio;
-
-// Emit one compact CSV record per decoded frame. Timestamps are captured
-// before UART output so formatting/transmission is excluded from the reported
-// values. Normal ESP-IDF logs are restricted to errors in sdkconfig.defaults
-// while this measurement mode is enabled.
-constexpr bool kLogFrameTimings = true;
 
 constexpr uint32_t kBootButtonPollMs = 10;
 constexpr uint32_t kBootButtonDebounceMs = 30;

@@ -362,6 +362,10 @@ else()
 endif()
 
 target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
+if(HLV_PLAYER_BARE_METAL_STYLE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV_PLAYER_BARE_METAL_STYLE=1)
+endif()
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3
     -ffunction-sections

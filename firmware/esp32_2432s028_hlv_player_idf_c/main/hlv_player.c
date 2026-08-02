@@ -325,6 +325,8 @@ H263AviPcmReader *h263_avi_audio_reader = NULL;
 uart_file_upload_t uart_upload = {0};
 QueueHandle_t boot_button_event_queue = NULL;
 TaskHandle_t boot_button_task_handle = NULL;
+boot_button_state_t cooperative_boot_button_state = {0};
+uint32_t cooperative_boot_button_next_poll_ms = 0;
 HLV1Header sequence_header = {0};
 VideoCodec video_codec = VIDEO_CODEC_kNone;
 const char *active_video_path = NULL;
@@ -510,6 +512,18 @@ static bool initializeBootButton(void) {
     };
     if (gpio_config(&config) != ESP_OK) return false;
 
+    if (!PLAYER_USE_BOOT_BUTTON_TASK) {
+        const uint32_t now_ms = (uint32_t)millisNow();
+        boot_button_state_init(
+            &cooperative_boot_button_state,
+            gpio_get_level(BOARD_BOOT_BUTTON) == 0, now_ms,
+            PLAYER_BOOT_BUTTON_DEBOUNCE_MS,
+            PLAYER_BOOT_BUTTON_LONG_PRESS_MS);
+        cooperative_boot_button_next_poll_ms =
+            now_ms + PLAYER_BOOT_BUTTON_POLL_MS;
+        return true;
+    }
+
     boot_button_event_queue =
         xQueueCreate(4, sizeof(boot_button_event_t));
     if (!boot_button_event_queue) return false;
@@ -628,6 +642,9 @@ void endHlvRowPipeline() {
 void decodeTask(void *opaque) {
     (void)opaque;
     DecodeRequest request = {0};
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    esp_rom_printf("HLVBARE 1 DECODER_CPU %d\n", xPortGetCoreID());
+#endif
     for (;;) {
         if (xQueueReceive(decode_request_queue, &request,
                           portMAX_DELAY) != pdTRUE) {
@@ -1354,6 +1371,8 @@ bool mountSdCard() {
     }
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    /* Require CMD59 and CRC16 verification for SD SPI data transfers. */
+    host.flags &= ~SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC;
     host.slot = SPI3_HOST;
     host.max_freq_khz = PLAYER_SD_CLOCK_KHZ;
 
@@ -1387,6 +1406,9 @@ bool mountSdCard() {
     }
     ESP_LOGI(kTag, "microSD: SPI3 at %d kHz with DMA",
              PLAYER_SD_CLOCK_KHZ);
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    esp_rom_printf("HLVBARE 1 SD_CRC ENABLED\n");
+#endif
     if (!PLAYER_LOG_FRAME_TIMINGS) {
         sdmmc_card_print_info(stdout, sd_card);
     }
@@ -3122,6 +3144,13 @@ bool openVideo() {
                  (unsigned)(
                      bpv_esp32_decoder_packet_capacity(&bpv_decoder)));
         if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
+            !PLAYER_ENABLE_BPV_V7_STREAMING_TASK) {
+            showStatus("BPV version unsupported",
+                       "v7 requires the streaming worker");
+            closeVideo();
+            return false;
+        }
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
             !startBpvInputPrefetch()) {
             showStatus("BPV input init failed",
                        "cannot create CPU1 stream buffer");
@@ -3295,6 +3324,13 @@ bool openVideo() {
             "[,bpv_input_us,bpv_block_us,bpv_reference_us,"
             "bpv_input_calls,bpv_input_bytes]\n");
     }
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    esp_rom_printf(
+        "HLVBARE 1 OPEN %u %ux%u %u/%u %u\n",
+        (unsigned)(video_codec), sequence_header.width,
+        sequence_header.height, sequence_header.fps_num,
+        sequence_header.fps_den, (unsigned)(sequence_header.frame_count));
+#endif
     return true;
 }
 
@@ -3323,6 +3359,21 @@ static void handleBootButtonEvent(boot_button_event_t event) {
 }
 
 static void processBootButtonEvents(void) {
+    if (!PLAYER_USE_BOOT_BUTTON_TASK) {
+        const uint32_t now_ms = (uint32_t)millisNow();
+        if ((int32_t)(now_ms - cooperative_boot_button_next_poll_ms) < 0) {
+            return;
+        }
+        cooperative_boot_button_next_poll_ms =
+            now_ms + PLAYER_BOOT_BUTTON_POLL_MS;
+        const boot_button_event_t event = boot_button_state_update(
+            &cooperative_boot_button_state,
+            gpio_get_level(BOARD_BOOT_BUTTON) == 0, now_ms);
+        if (event != BOOT_BUTTON_EVENT_NONE) {
+            handleBootButtonEvent(event);
+        }
+        return;
+    }
     if (!boot_button_event_queue) return;
     boot_button_event_t event = BOOT_BUTTON_EVENT_NONE;
     while (xQueueReceive(boot_button_event_queue, &event, 0) == pdTRUE) {
@@ -3978,6 +4029,26 @@ void finishPresentationDetailed(
     const BpvDecodeBreakdown *bpv_breakdown) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    if (decoded_frames == 1U && !state.seeking) {
+        esp_rom_printf("HLVBARE 1 FIRST_FRAME %u\n",
+                       (unsigned)(decoded_frames));
+    } else if (decoded_frames == 300U && !state.seeking) {
+        esp_rom_printf("HLVBARE 1 FRAME %u\n",
+                       (unsigned)(decoded_frames));
+        const uint32_t heap_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+        esp_rom_printf(
+            "HLVBARE 1 RAM free=%u minimum=%u largest=%u "
+            "control_stack_free=%u decoder_stack_free=%u\n",
+            (unsigned)heap_caps_get_free_size(heap_caps),
+            (unsigned)heap_caps_get_minimum_free_size(heap_caps),
+            (unsigned)heap_caps_get_largest_free_block(heap_caps),
+            (unsigned)uxTaskGetStackHighWaterMark(NULL),
+            decode_task_handle
+                ? (unsigned)uxTaskGetStackHighWaterMark(decode_task_handle)
+                : 0U);
+    }
+#endif
 
     if (state.seeking && audio_enabled && audio_stream) {
         const uint64_t target_samples = frameAudioTarget(decoded_frames);
@@ -4987,6 +5058,11 @@ void playOneFramePipelined() {
 
 void app_main(void) {
     initializeYuvTables();
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    esp_rom_printf("HLVBARE 1 MICROKERNEL cores=%d control_cpu=%d "
+                   "decoder_target=1\n",
+                   CONFIG_FREERTOS_NUMBER_OF_CORES, xPortGetCoreID());
+#endif
     ESP_LOGI(kTag, "Multi-codec ESP-IDF SD player starting");
     const esp_err_t display_result = cyd_display_init(&display);
     if (display_result != ESP_OK) {
@@ -4997,11 +5073,13 @@ void app_main(void) {
     if (!initializeBootButton()) {
         ESP_LOGE(kTag, "BOOT button initialization failed");
     }
-    const esp_err_t uart_result = uart_file_upload_begin(
-        &uart_upload, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
-    if (uart_result != ESP_OK) {
-        ESP_LOGE(kTag, "UART upload initialization failed: %s",
-                 esp_err_to_name(uart_result));
+    if (PLAYER_ENABLE_UART_CONTROL) {
+        const esp_err_t uart_result = uart_file_upload_begin(
+            &uart_upload, CONFIG_ESP_CONSOLE_UART_BAUDRATE);
+        if (uart_result != ESP_OK) {
+            ESP_LOGE(kTag, "UART upload initialization failed: %s",
+                     esp_err_to_name(uart_result));
+        }
     }
     showStatus("Multi-codec SD player", "mounting microSD");
 
@@ -5014,6 +5092,7 @@ void app_main(void) {
 
     for (;;) {
         processBootButtonEvents();
+        if (PLAYER_ENABLE_UART_CONTROL) {
         uart_upload_request_t upload_request = {0};
         if (uart_file_upload_poll_request(&uart_upload,
                                           &upload_request)) {
@@ -5239,6 +5318,7 @@ void app_main(void) {
                 }
                 continue;
             }
+        }
         }
         if (file_browser_active) {
             vTaskDelay(pdMS_TO_TICKS(20));

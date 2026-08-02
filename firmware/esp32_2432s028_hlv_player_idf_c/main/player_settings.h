@@ -25,18 +25,31 @@ typedef enum {
    local-average corrections. */
 #define PLAYER_USE_COMPACT_HLV_REFERENCE 1
 
+/* The bare-metal-style build keeps only the minimal two-core task topology.
+   ESP-IDF's FreeRTOS scheduler acts as a microkernel: app_main owns control,
+   I/O and rendering on CPU0, while one ordered decoder worker runs on CPU1. */
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+#define PLAYER_USE_DUAL_CORE_PIPELINE 1
+#define PLAYER_ENABLE_AUDIO 0
+#define PLAYER_ENABLE_UART_CONTROL 0
+#define PLAYER_USE_BOOT_BUTTON_TASK 0
+#define PLAYER_ENABLE_BPV_V7_STREAMING_TASK 0
+#define PLAYER_LOG_FRAME_TIMINGS 0
+#else
 /* Decode frame N on CPU1 while CPU0 renders frame N-1. */
 #define PLAYER_USE_DUAL_CORE_PIPELINE 1
 
 /* Play supported mono audio through the ESP32 DAC on GPIO26. */
 #define PLAYER_ENABLE_AUDIO 1
+#define PLAYER_ENABLE_UART_CONTROL 1
+#define PLAYER_USE_BOOT_BUTTON_TASK 1
+#define PLAYER_ENABLE_BPV_V7_STREAMING_TASK 1
+#define PLAYER_LOG_FRAME_TIMINGS 1
+#endif
 
 #define PLAYER_AUDIO_PREROLL_FRAMES 4U
 #define PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS 2U
 #define PLAYER_AV_SYNC_MODE PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO
-
-/* Emit one compact CSV record per decoded frame. */
-#define PLAYER_LOG_FRAME_TIMINGS 1
 
 #define PLAYER_BOOT_BUTTON_POLL_MS 10U
 #define PLAYER_BOOT_BUTTON_DEBOUNCE_MS 30U
