@@ -409,6 +409,36 @@ The last three cumulative fields separately measure `plm_decode_audio()` and
 the subsequent float-to-mono-PCM_U8 conversion. The collector reports both
 averages per MP2 frame; non-MPEG formats leave these fields at zero.
 
+### Optional MPEG-1 render-phase profile
+
+`MPEG1_RENDER_PROFILE` is a build-time CMake option and defaults to `OFF`.
+When enabled, CMake defines `MPEG1_RENDER_PROFILE=1` only for the `main`
+component. All counters, CCOUNT reads and their static storage are compiled
+out of an ordinary build. Create a separate diagnostic build with:
+
+```powershell
+.\idf.ps1 -IdfArguments @(
+    "-B", "build-mpeg1-render-profile",
+    "-D", "SDKCONFIG=build-mpeg1-render-profile/sdkconfig",
+    "-D", "MPEG1_RENDER_PROFILE=ON",
+    "build"
+)
+```
+
+After 60 rendered MPEG-1 frames the firmware emits one record and the metrics
+collector passes it through to stdout:
+
+```text
+MRP,frames,cpu_mhz,render_avg_us,whole_avg_cycles,acquire_avg_cycles,y_unpack_avg_cycles,uv_unpack_avg_cycles,chroma_avg_cycles,rgb565_avg_cycles,submit_avg_cycles,transfers_per_frame
+```
+
+The phase fields are average CPU cycles per rendered frame. Divide them by
+`cpu_mhz` to obtain microseconds. `acquire` measures waiting for a reusable LCD
+DMA strip, and `submit` measures the CPU/software cost of queuing strips; the
+fixed-rate SPI transfer itself overlaps conversion and can continue after the
+last strip is queued. `whole` covers the complete renderer call, so the
+difference between it and the named phases is loop/control overhead.
+
 The local collector resets the application without entering the ROM
 bootloader, rejects frame-sequence gaps, and fails if any rebuffer or missing
 audio sample is reported:

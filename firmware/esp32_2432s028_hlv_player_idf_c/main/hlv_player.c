@@ -40,6 +40,14 @@
 #include "pl_mpeg.h"
 #include "uart_file_upload.h"
 
+#ifndef MPEG1_RENDER_PROFILE
+#define MPEG1_RENDER_PROFILE 0
+#endif
+
+#if MPEG1_RENDER_PROFILE
+#include "esp_cpu.h"
+#endif
+
 static const char kTag[] = "hlv-player";
 enum {
     kScreenWidth = CYD_DISPLAY_WIDTH,
@@ -354,6 +362,23 @@ uint32_t seek_requested_ms = 0;
 uint64_t seek_discarded_audio_samples = 0;
 uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
+#if MPEG1_RENDER_PROFILE
+typedef struct MpegRenderProfile {
+    uint64_t whole_cycles;
+    uint64_t acquire_cycles;
+    uint64_t y_unpack_cycles;
+    uint64_t uv_unpack_cycles;
+    uint64_t chroma_cycles;
+    uint64_t rgb565_cycles;
+    uint64_t submit_cycles;
+    uint64_t wall_us;
+    uint32_t frames;
+    uint32_t wall_frames;
+    uint32_t transfers;
+    bool printed;
+} MpegRenderProfile;
+MpegRenderProfile mpeg_render_profile = {0};
+#endif
 uint16_t scaled_rgb_row[kScreenWidth];
 uint16_t bpv_rgb_row[kScreenWidth];
 uint16_t bpv_rgb565_palette[BPV1_MAX_PALETTE_COLORS];
@@ -3242,6 +3267,9 @@ bool openVideo() {
     frame_period_phase = 0;
     next_present_us = microsNow();
     decoded_frames = 0;
+#if MPEG1_RENDER_PROFILE
+    memset(&mpeg_render_profile, 0, sizeof(mpeg_render_profile));
+#endif
 #if defined(HLV_PLAYER_BARE_METAL_STYLE)
     bare_benchmark_frames = 0;
     bare_benchmark_read_us = 0;
@@ -3457,6 +3485,9 @@ bool renderFrame(const HLV1Frame *frame) {
 void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, int first_source_x,
                     uint16_t *output, int output_width) {
+#if MPEG1_RENDER_PROFILE
+    uint32_t profile_start;
+#endif
     const uint8_t *y_row =
         frame->y.data + (size_t)(source_y) * frame->y.stride;
     const int chroma_y = source_y >> 1;
@@ -3469,23 +3500,40 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
     const int chroma_width =
         ((int)(frame->width) + 1) >> 1;
     if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
+#if MPEG1_RENDER_PROFILE
+        profile_start = esp_cpu_get_cycle_count();
+#endif
         plm_plane_unpack_compact_samples(
             &frame->y, 0, source_y, 6, native_y_row,
             (int)(frame->width));
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.y_unpack_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
         y_row = native_y_row;
     }
 
     if (chroma_y != mpeg_cached_chroma_y) {
         if (frame->storage_mode == PLM_FRAME_STORAGE_Y6_U5_V5) {
+#if MPEG1_RENDER_PROFILE
+            profile_start = esp_cpu_get_cycle_count();
+#endif
             plm_plane_unpack_compact_samples(
                 &frame->cb, 0, chroma_y, 5,
                 native_u_row, chroma_width);
             plm_plane_unpack_compact_samples(
                 &frame->cr, 0, chroma_y, 5,
                 native_v_row, chroma_width);
+#if MPEG1_RENDER_PROFILE
+            mpeg_render_profile.uv_unpack_cycles +=
+                (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
             cb_row = native_u_row;
             cr_row = native_v_row;
         }
+#if MPEG1_RENDER_PROFILE
+        profile_start = esp_cpu_get_cycle_count();
+#endif
         for (int chroma_x = 0; chroma_x < chroma_width; ++chroma_x) {
             const uint8_t cb = cb_row[chroma_x];
             const uint8_t cr = cr_row[chroma_x];
@@ -3494,10 +3542,17 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
                 yuv_green_u_add[cb] + yuv_green_v_add[cr];
             mpeg_blue_add[chroma_x] = yuv_blue_add[cb];
         }
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.chroma_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
         mpeg_cached_chroma_y = chroma_y;
     }
 
     if (!scaled) {
+#if MPEG1_RENDER_PROFILE
+        profile_start = esp_cpu_get_cycle_count();
+#endif
         for (int output_x = 0; output_x < output_width; output_x += 2) {
             const int source_x = first_source_x + output_x;
             const int chroma_x = source_x >> 1;
@@ -3511,9 +3566,16 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
                     y_row[source_x + 1], red_add, green_add, blue_add);
             }
         }
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.rgb565_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
         return;
     }
 
+#if MPEG1_RENDER_PROFILE
+    profile_start = esp_cpu_get_cycle_count();
+#endif
     for (int destination_x = 0;
          destination_x < output_width; ++destination_x) {
         const int source_x = scaled_x_map[destination_x];
@@ -3522,10 +3584,17 @@ void convertMpegRow(const plm_frame_t *frame, int source_y,
             y_row[source_x], mpeg_red_add[chroma_x],
             mpeg_green_add[chroma_x], mpeg_blue_add[chroma_x]);
     }
+#if MPEG1_RENDER_PROFILE
+    mpeg_render_profile.rgb565_cycles +=
+        (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
 }
 
 bool renderMpegFrame(const plm_frame_t *frame) {
     if (!frame) return false;
+#if MPEG1_RENDER_PROFILE
+    const uint32_t whole_start = esp_cpu_get_cycle_count();
+#endif
     const int rows_per_transfer =
         cyd_display_rows_per_transfer(&display);
     mpeg_cached_chroma_y = -1;
@@ -3535,7 +3604,14 @@ bool renderMpegFrame(const plm_frame_t *frame) {
              y0 += rows_per_transfer) {
             const int rows =
                 MIN(rows_per_transfer, kScreenHeight - y0);
+#if MPEG1_RENDER_PROFILE
+            uint32_t profile_start = esp_cpu_get_cycle_count();
+#endif
             uint16_t *pixels = cyd_display_acquire_buffer(&display);
+#if MPEG1_RENDER_PROFILE
+            mpeg_render_profile.acquire_cycles +=
+                (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
             if (!pixels) return false;
             for (int row = 0; row < rows; ++row) {
                 const int source_y = scaled_y_map[y0 + row];
@@ -3548,11 +3624,24 @@ bool renderMpegFrame(const plm_frame_t *frame) {
                     pixels + row * kScreenWidth, scaled_rgb_row,
                     sizeof(uint16_t) * kScreenWidth);
             }
+#if MPEG1_RENDER_PROFILE
+            profile_start = esp_cpu_get_cycle_count();
+#endif
             if (cyd_display_draw_bitmap(
                     &display, 0, y0, kScreenWidth, rows, pixels) != ESP_OK) {
                 return false;
             }
+#if MPEG1_RENDER_PROFILE
+            mpeg_render_profile.submit_cycles +=
+                (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+            ++mpeg_render_profile.transfers;
+#endif
         }
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.whole_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - whole_start);
+        ++mpeg_render_profile.frames;
+#endif
         return true;
     }
 
@@ -3566,18 +3655,38 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     const int y_offset = (kScreenHeight - height) / 2;
     for (int y0 = 0; y0 < height; y0 += rows_per_transfer) {
         const int rows = MIN(rows_per_transfer, height - y0);
+#if MPEG1_RENDER_PROFILE
+        uint32_t profile_start = esp_cpu_get_cycle_count();
+#endif
         uint16_t *pixels = cyd_display_acquire_buffer(&display);
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.acquire_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+#endif
         if (!pixels) return false;
         for (int row = 0; row < rows; ++row) {
             convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
+#if MPEG1_RENDER_PROFILE
+        profile_start = esp_cpu_get_cycle_count();
+#endif
         if (cyd_display_draw_bitmap(
                 &display, x_offset, y_offset + y0, width, rows,
                 pixels) != ESP_OK) {
             return false;
         }
+#if MPEG1_RENDER_PROFILE
+        mpeg_render_profile.submit_cycles +=
+            (uint32_t)(esp_cpu_get_cycle_count() - profile_start);
+        ++mpeg_render_profile.transfers;
+#endif
     }
+#if MPEG1_RENDER_PROFILE
+    mpeg_render_profile.whole_cycles +=
+        (uint32_t)(esp_cpu_get_cycle_count() - whole_start);
+    ++mpeg_render_profile.frames;
+#endif
     return true;
 }
 
@@ -4041,6 +4150,12 @@ void finishPresentationDetailed(
     const BpvDecodeBreakdown *bpv_breakdown) {
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
+#if MPEG1_RENDER_PROFILE
+    if (video_codec == VIDEO_CODEC_kMpeg1 && render_us != 0U) {
+        mpeg_render_profile.wall_us += render_us;
+        ++mpeg_render_profile.wall_frames;
+    }
+#endif
 #if defined(HLV_PLAYER_BARE_METAL_STYLE)
     if (!state.seeking) {
         ++bare_benchmark_frames;
@@ -4192,6 +4307,36 @@ void finishPresentationDetailed(
                 (unsigned)(mpeg_audio_decode_us),
                 (unsigned)(mpeg_audio_convert_us));
         }
+#if MPEG1_RENDER_PROFILE
+        if (video_codec == VIDEO_CODEC_kMpeg1 &&
+            mpeg_render_profile.frames >= 60U &&
+            !mpeg_render_profile.printed) {
+            const uint32_t frames = mpeg_render_profile.frames;
+            esp_rom_printf(
+                "MRP,%u,%u,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%u\n",
+                (unsigned)frames,
+                (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+                (unsigned long long)(
+                    mpeg_render_profile.wall_us /
+                    mpeg_render_profile.wall_frames),
+                (unsigned long long)(mpeg_render_profile.whole_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.acquire_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.y_unpack_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.uv_unpack_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.chroma_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.rgb565_cycles /
+                                     frames),
+                (unsigned long long)(mpeg_render_profile.submit_cycles /
+                                     frames),
+                (unsigned)(mpeg_render_profile.transfers / frames));
+            mpeg_render_profile.printed = true;
+        }
+#endif
     }
 }
 

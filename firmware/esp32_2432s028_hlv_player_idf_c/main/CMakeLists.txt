@@ -14,6 +14,8 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
+set(MPEG1_RENDER_PROFILE OFF CACHE BOOL
+    "Measure MPEG-1 render phases and emit one MRP record after 60 frames")
 set(mjpeg_stream_dir
     "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
@@ -365,6 +367,10 @@ target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
 if(HLV_PLAYER_BARE_METAL_STYLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         HLV_PLAYER_BARE_METAL_STYLE=1)
+endif()
+if(MPEG1_RENDER_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        MPEG1_RENDER_PROFILE=1)
 endif()
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -O3

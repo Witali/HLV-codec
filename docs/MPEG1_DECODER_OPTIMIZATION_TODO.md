@@ -36,6 +36,31 @@ from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
 86,000 to 120,000 integer multiplications per frame, depending on whether the
 240x180 picture is rendered at native size or scaled to 320x240.
 
+### IDF C renderer phase profile — 2026-08-02
+
+`MPEG1_RENDER_PROFILE=1` measured the first 60 frames of
+`BigBuckBunny_320x180_24fps_MPEG1_41dB.mpg` on the physical
+ESP32-D0WD-V3 revision 3.1 at 240 MHz. The figures below are independent
+per-phase medians from three runs. The complete renderer median was 27.462 ms,
+within 0.19% of the preceding uninstrumented 27.515 ms result.
+
+| Render phase | Median per frame | Share |
+| --- | ---: | ---: |
+| Wait for a reusable LCD DMA strip | 0.017 ms | 0.1% |
+| Unpack compact Y6 | 8.489 ms | 30.9% |
+| Unpack compact U5/V5 | 4.350 ms | 15.8% |
+| Build cached chroma contribution rows | 1.380 ms | 5.0% |
+| LUT, clamp and pack RGB565 pixels | 11.224 ms | 40.9% |
+| Queue 12 LCD strip transactions | 1.829 ms | 6.7% |
+| Row-loop and control remainder | 0.173 ms | 0.6% |
+
+The full 320x180 RGB565 payload needs 11.520 ms of wire time at the configured
+80 MHz LCD SPI clock, but this runs concurrently with CPU conversion. The
+measured DMA-strip wait is only 0.017 ms, showing that unpacking and RGB565
+preparation, not LCD bandwidth, determine the renderer wall time. The final
+queued transactions can also finish after `renderMpegFrame()` returns and are
+therefore not charged to `render_us`.
+
 ## Completed work
 
 - [x] Restore the SD bus to 40 MHz after the reliability test.
