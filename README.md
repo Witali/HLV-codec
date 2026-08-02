@@ -112,7 +112,7 @@ On Windows, run the repository setup first:
 ```
 
 It verifies or installs the Visual Studio C++ workload and places FFmpeg,
-Python 3.11 plus the benchmark packages, and the complete ESP32 toolchain
+Python 3.12 plus the benchmark packages, and the complete ESP32 toolchain
 inside this repository. Re-running it is safe. To prohibit automatic Visual
 Studio installation while still checking for an existing compiler, pass
 `-SkipVisualStudioInstall`.

@@ -20,7 +20,7 @@ Run the complete build, one-time flash, and automatic sweep from the repository
 root with the Python environment pinned by the production C firmware:
 
 ```powershell
-.\firmware\esp32_2432s028_hlv_player_idf_c\.tools\espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe `
+.\firmware\esp32_2432s028_hlv_player_idf_c\.tools\espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe `
     .\scripts\sweep_esp32_uart_baud.py --port COM8
 ```
 

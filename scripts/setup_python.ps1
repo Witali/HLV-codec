@@ -4,8 +4,8 @@ param([switch]$ForceInstall)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $repo = Split-Path $PSScriptRoot -Parent
-$version = "3.11.9"
-$pythonSha256 = "009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B"
+$version = "3.12.10"
+$pythonSha256 = "4ACBED6DD1C744B0376E3B1CF57CE906F9DC9E95E68824584C8099A63025A3C3"
 $pipVersion = "26.1.2"
 $pipSha256 = "382FF9F685EE3BC25864F820AA50505825F10F5458FFFF07E30A6D96E5715CAB"
 $localTools = Join-Path $repo "local_tools"
@@ -47,10 +47,18 @@ function Get-VerifiedDownload {
 }
 
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
-if (-not (Test-Path -LiteralPath $python)) {
+$installedVersion = if (Test-Path -LiteralPath $python) {
+    (& $python -c "import platform; print(platform.python_version())" |
+        Select-Object -First 1)
+} else { $null }
+if ($installedVersion -ne $version) {
     Get-VerifiedDownload -Url $pythonUrl -Destination $pythonArchive `
         -ExpectedSha256 $pythonSha256
 
+    if (Test-Path -LiteralPath $pythonDirectory) {
+        Write-Host "Replacing portable Python $installedVersion with $version"
+        Remove-Item -LiteralPath $pythonDirectory -Recurse -Force
+    }
     Write-Host "Extracting portable Python $version into $pythonDirectory"
     New-Item -ItemType Directory -Force -Path $pythonDirectory | Out-Null
     Expand-Archive -LiteralPath $pythonArchive -DestinationPath $pythonDirectory -Force
@@ -58,7 +66,7 @@ if (-not (Test-Path -LiteralPath $python)) {
 
 # The embeddable distribution is isolated by default. Enable site initialization
 # and explicitly add the repository-local package directory.
-$pth = Join-Path $pythonDirectory "python311._pth"
+$pth = Join-Path $pythonDirectory "python312._pth"
 if (-not (Test-Path -LiteralPath $pth)) {
     throw "Portable Python path configuration is missing: $pth"
 }
@@ -71,7 +79,7 @@ Set-Content -LiteralPath $pth -Value $pthLines -Encoding ascii
 New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
 
 $requirementsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirements).Hash
-$setupKey = "$requirementsHash pip=$pipVersion"
+$setupKey = "$requirementsHash python=$version pip=$pipVersion"
 $installedHash = if (Test-Path -LiteralPath $marker) {
     (Get-Content -LiteralPath $marker -ErrorAction SilentlyContinue |
         Select-Object -First 1)

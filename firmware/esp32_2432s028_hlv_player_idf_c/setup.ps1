@@ -8,7 +8,7 @@ $project = $PSScriptRoot
 $tools = Join-Path $project ".tools"
 $cache = Join-Path $tools "cache"
 $idfVersion = "5.5.5"
-$pythonVersion = "3.11.9"
+$pythonVersion = "3.12.10"
 $idf = Join-Path $tools "esp-idf-v$idfVersion"
 $idfTools = Join-Path $tools "espressif"
 $python = Join-Path $tools "python"
@@ -22,7 +22,7 @@ $projectMarker = "Project=$projectPath"
 # SHA-256 values are for the official release files. Keeping them in source
 # makes repeated setup deterministic and catches interrupted downloads.
 $idfSha256 = "48FFFE90304573EF366BDA06E38C92FD65C6F3636D785CE103FF82E4647964C8"
-$pythonSha256 = "5EE42C4EEE1E6B4464BB23722F90B45303F79442DF63083F05322F1785F5FDDE"
+$pythonSha256 = "67B5635E80EA51072B87941312D00EC8927C4DB9BA18938F7AD2D27B328B95FB"
 $idfArchive = Join-Path $cache "esp-idf-v$idfVersion.zip"
 $pythonInstaller = Join-Path $cache "python-$pythonVersion-amd64.exe"
 $idfUrl = "https://dl.espressif.com/github_assets/espressif/esp-idf/releases/download/v$idfVersion/esp-idf-v$idfVersion.zip"
@@ -55,12 +55,14 @@ function Get-VerifiedDownload {
 
 if (Test-Path -LiteralPath $marker) {
     $markerLines = @(Get-Content -LiteralPath $marker)
-    if ($markerLines -contains $projectMarker) {
+    $pythonMarker = "Python=$pythonVersion"
+    if (($markerLines -contains $projectMarker) -and
+        ($markerLines -contains $pythonMarker)) {
         Write-Host "Project-local ESP-IDF v$idfVersion is ready."
         return
     }
 
-    Write-Host "The firmware directory moved; rebuilding the ESP-IDF Python environment."
+    Write-Host "The firmware path or Python version changed; rebuilding the ESP-IDF Python environment."
     $pythonEnvironment = Join-Path $idfTools "python_env"
     if (Test-Path -LiteralPath $pythonEnvironment) {
         Remove-Item -LiteralPath $pythonEnvironment -Recurse -Force
@@ -70,9 +72,18 @@ if (Test-Path -LiteralPath $marker) {
 
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
 
-if (-not (Test-Path -LiteralPath (Join-Path $python "python.exe"))) {
+$pythonExecutable = Join-Path $python "python.exe"
+$installedPythonVersion = if (Test-Path -LiteralPath $pythonExecutable) {
+    (& $pythonExecutable -c "import platform; print(platform.python_version())" |
+        Select-Object -First 1)
+} else { $null }
+if ($installedPythonVersion -ne $pythonVersion) {
     Get-VerifiedDownload -Url $pythonUrl -Destination $pythonInstaller `
         -ExpectedSha256 $pythonSha256
+    if (Test-Path -LiteralPath $python) {
+        Write-Host "Replacing project-local Python $installedPythonVersion with $pythonVersion"
+        Remove-Item -LiteralPath $python -Recurse -Force
+    }
     Write-Host "Installing project-local Python $pythonVersion"
     $arguments = @(
         "/quiet", "InstallAllUsers=0", "TargetDir=$python",
