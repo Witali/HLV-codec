@@ -29,8 +29,10 @@ successfully enable CRC with CMD59 before playback starts.
 
 For physical acceptance the firmware emits short `HLVBARE` records when a
 card mounts with CRC enabled, when a file opens, and after frames 1 and 300.
-They are outside the hot decode/render measurements and produce no continuous
-UART traffic.
+The frame-300 record also reports average SD-read, decode and render time,
+plus decode-only and total-work throughput in milli-frames per second. The
+counters add no per-frame I/O; records are emitted after the measured work and
+produce no continuous UART traffic.
 
 This minimizes scheduler activity and application stack allocations while
 retaining decode/render overlap. One-time `HLVBARE` records report both actual
@@ -53,9 +55,31 @@ heap reported 51,388 bytes free, a 47,800-byte historical minimum and a
 the control task and 1,252 bytes for the decoder task.
 
 The linker map uses 102,447 bytes of IRAM (78.16%) and 43,372 bytes of static
-DRAM (24.00%). The application image is 650,672 bytes; these static figures do
+DRAM (24.00%). The application image before adding the speed counters was
+650,672 bytes; these static figures do
 not include heap allocations made while a codec is open, which is why the
 runtime heap reading above is the useful operating headroom.
+
+### HLV decode-speed comparison
+
+The stripped and full C99 profiles were each measured three times for the
+first 300 frames of the same SD-resident
+`BigBuckBunny_320x180_24fps_HLVv14_42dB.hlv` file. The table reports the median
+run on the same board; decoder throughput excludes rendering, while total-work
+throughput includes measured read, decode and render work.
+
+| Profile | Decode average | Decoder throughput | Render average | Total-work throughput |
+| --- | ---: | ---: | ---: | ---: |
+| Full ESP-IDF C99 | 36,211.1 us | 27.616 fps | 26,625.6 us | 15.914 fps |
+| Bare-metal-style | 37,922 us | 26.369 fps | 26,313 us | 15.567 fps |
+
+The bare-metal-style profile used 4.72% more decode time and delivered 4.52%
+less decode-only throughput; its total-work throughput was 2.18% lower. The
+full profile kept 16 kHz audio and per-frame UART telemetry enabled, while the
+stripped profile disabled both. These numbers therefore compare the deployed
+profiles, not an isolated scheduler microbenchmark. The speed-instrumented
+bare application image is 651,120 bytes, 448 bytes larger than the preceding
+acceptance image.
 
 The project shares the pinned ESP-IDF 5.5.5 installation and downloaded
 component from `../esp32_2432s028_hlv_player_idf_c`; generated files stay under

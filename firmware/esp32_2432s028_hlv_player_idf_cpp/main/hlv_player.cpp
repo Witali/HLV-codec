@@ -337,6 +337,12 @@ uint32_t frame_period_remainder = 0;
 uint32_t frame_period_phase = 0;
 int64_t next_present_us = 0;
 uint32_t decoded_frames = 0;
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+uint32_t bare_benchmark_frames = 0;
+uint64_t bare_benchmark_read_us = 0;
+uint64_t bare_benchmark_decode_us = 0;
+uint64_t bare_benchmark_render_us = 0;
+#endif
 bool seek_fast_forward = false;
 uint32_t seek_target_frame = 0;
 uint32_t seek_requested_ms = 0;
@@ -3063,6 +3069,12 @@ bool openVideo() {
     frame_period_phase = 0;
     next_present_us = microsNow();
     decoded_frames = 0;
+#if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    bare_benchmark_frames = 0;
+    bare_benchmark_read_us = 0;
+    bare_benchmark_decode_us = 0;
+    bare_benchmark_render_us = 0;
+#endif
     dropped_deadlines = 0;
     skipped_presentations = 0;
     consecutive_skipped_presentations = 0;
@@ -3850,6 +3862,12 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
     ++decoded_frames;
     consecutive_sd_read_failures = 0;
 #if defined(HLV_PLAYER_BARE_METAL_STYLE)
+    if (!state.seeking) {
+        ++bare_benchmark_frames;
+        bare_benchmark_read_us += read_us;
+        bare_benchmark_decode_us += decode_us;
+        bare_benchmark_render_us += render_us;
+    }
     if (decoded_frames == 1U && !state.seeking) {
         esp_rom_printf("HLVBARE 1 FIRST_FRAME %u\n",
                        static_cast<unsigned>(decoded_frames));
@@ -3870,6 +3888,38 @@ void finishPresentation(const PresentationState &state, uint32_t read_us,
             decode_task_handle
                 ? static_cast<unsigned>(
                       uxTaskGetStackHighWaterMark(decode_task_handle))
+                : 0U);
+        const uint64_t total_work_us =
+            bare_benchmark_read_us + bare_benchmark_decode_us +
+            bare_benchmark_render_us;
+        esp_rom_printf(
+            "HLVBARE 1 SPEED frames=%u read_avg_us=%u "
+            "decode_avg_us=%u render_avg_us=%u "
+            "decoder_fps_milli=%u work_fps_milli=%u\n",
+            static_cast<unsigned>(bare_benchmark_frames),
+            bare_benchmark_frames
+                ? static_cast<unsigned>(bare_benchmark_read_us /
+                                        bare_benchmark_frames)
+                : 0U,
+            bare_benchmark_frames
+                ? static_cast<unsigned>(bare_benchmark_decode_us /
+                                        bare_benchmark_frames)
+                : 0U,
+            bare_benchmark_frames
+                ? static_cast<unsigned>(bare_benchmark_render_us /
+                                        bare_benchmark_frames)
+                : 0U,
+            bare_benchmark_decode_us
+                ? static_cast<unsigned>(
+                      (static_cast<uint64_t>(bare_benchmark_frames) *
+                       1000000000ULL) /
+                      bare_benchmark_decode_us)
+                : 0U,
+            total_work_us
+                ? static_cast<unsigned>(
+                      (static_cast<uint64_t>(bare_benchmark_frames) *
+                       1000000000ULL) /
+                      total_work_us)
                 : 0U);
     }
 #endif
