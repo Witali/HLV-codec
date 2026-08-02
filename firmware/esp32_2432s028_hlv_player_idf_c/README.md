@@ -411,11 +411,14 @@ averages per MP2 frame; non-MPEG formats leave these fields at zero.
 
 ### Compact YUV-to-RGB565 fast path
 
-The native, aligned Y6/U5/V5 renderer processes 16x2 luma tiles and writes
-RGB565 pairs directly into the LCD DMA strip. It avoids complete unpacked Y/U/V
-rows, reuses chroma for both YUV420 rows, and preserves the reference Q4
-correction pattern bit for bit. Scaled or unaligned pictures automatically use
-the reference row renderer.
+The native, aligned Y6/U5/V5 renderer in
+`codecs/common/src/y6u5v5_rgb565.c` processes 16x2 luma tiles and writes RGB565
+pairs directly into the LCD DMA strip. MPEG-1, DivX 3 and MPEG-4 Simple Profile
+all adapt their compact planes to this one implementation. Baseline H.263
+currently produces ordinary YUV420 and keeps its reference row renderer. The
+fused path avoids complete unpacked Y/U/V rows, reuses chroma for both YUV420
+rows, and preserves the reference Q4 correction pattern bit for bit. Scaled or
+unaligned pictures automatically use the reference row renderer.
 
 Four build-time CMake options default to `ON`:
 
@@ -431,8 +434,10 @@ Four build-time CMake options default to `ON`:
 
 `COMPACT_YUV_RGB565_VERIFY` defaults to `OFF`. When enabled, it renders each
 eligible row pair through both implementations, compares the RGB565 bytes and
-emits `CRG`, `CRF` and `CRV` diagnostics. It is a correctness build and must
-not be used for performance measurements. For example:
+emits `CRG`, `CRF` and `CRV` diagnostics. `CRV` is reported after the first
+frame and again after frame 60, allowing memory-constrained codecs to validate
+one complete frame. It is a correctness build and must not be used for
+performance measurements. For example:
 
 ```powershell
 .\idf.ps1 -IdfArguments @(

@@ -402,6 +402,22 @@ The last three cumulative fields separately measure `plm_decode_audio()` and
 the subsequent float-to-mono-PCM_U8 conversion. The collector reports both
 averages per MP2 frame; non-MPEG formats leave these fields at zero.
 
+### Compact YUV-to-RGB565 fast path
+
+The native, aligned Y6/U5/V5 renderer in
+`codecs/common/src/y6u5v5_rgb565.c` processes 16x2 luma tiles and writes RGB565
+pairs directly into the LCD DMA strip. MPEG-1, DivX 3 and MPEG-4 Simple Profile
+all adapt their compact planes to this one C implementation. Baseline H.263
+currently produces ordinary YUV420 and keeps its reference row renderer. The
+fused path avoids complete unpacked Y/U/V rows, reuses chroma for both YUV420
+rows, and preserves the reference Q4 correction pattern bit for bit. Scaled or
+unaligned pictures automatically use the reference row renderer.
+
+`COMPACT_YUV_RGB565_FAST_PATH`, `COMPACT_YUV_RGB565_CLAMP_TABLES`,
+`COMPACT_YUV_RGB565_HOT_IRAM` and `COMPACT_YUV_Q4_LUT` default to `ON`. The Q4
+table is shared by Y, U and V and remains 368 bytes; values outside the
+encoder-produced `-8..14` range retain the exact calculated fallback.
+
 The local collector resets the application without entering the ROM
 bootloader, rejects frame-sequence gaps, and fails if any rebuffer or missing
 audio sample is reported:

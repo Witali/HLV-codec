@@ -63,6 +63,28 @@ The two skipped MJPEG files repeatedly produced
 `Invalid video.avi: unsupported AVI/MJPEG format` before the first frame. Per
 the test rule, they were not allowed to stop the remaining corpus.
 
+## Shared Y6/U5/V5 renderer regression
+
+The common 368-byte-Q4-LUT Y6/U5/V5-to-RGB565 renderer was checked on the same
+physical board and SD files in an `-O3` release build. Each result covers the
+first 60 consecutive frames with zero display skips.
+
+| Codec | SD file | Previous decode ms | Current decode ms | Previous render ms | Current render ms | Render change | Observed/source fps |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| MPEG-1 | `BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg` | 16.486 | 16.117 | 31.939 | 29.598 | -7.33% | 24.200/24 |
+| DivX 3 | `BigBuckBunny_320x240_12fps_DivX3_41dB.avi` | 31.542 | 31.558 | 34.796 | 31.960 | -8.15% | 12.026/12 |
+| MPEG-4 SP | `BigBuckBunny_320x240_24fps_MPEG4SP_35dB.avi` | 21.264 | 21.956 | 31.886 | 29.742 | -6.72% | 24.360/24 |
+
+The renderer therefore has no measured speed regression: RGB565 render time
+improved by 6.72-8.15%, while complete playback cadence remained at the source
+rate. A direct 320x180 MPEG-1 rerun also remained stable at 24.052/24 fps with
+14.621 ms decode and 25.374 ms average render time.
+
+Pixel verification compared every eligible fused row pair with the reference
+converter on-device. It matched 7200/7200 pairs for MPEG-1, 7200/7200 for
+DivX 3 and 120/120 on the first MPEG-4 SP frame. Baseline H.263 remains on its
+planar YUV420 path and passed its separate host regression suite.
+
 ## Summary
 
 - BPV v5-v7 is the fastest and every tested BPV file maintains its source

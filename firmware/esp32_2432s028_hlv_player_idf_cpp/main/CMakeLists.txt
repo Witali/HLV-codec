@@ -14,6 +14,19 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
+set(COMPACT_YUV_RGB565_FAST_PATH ON CACHE BOOL
+    "Fuse aligned compact Y6/U5/V5 unpacking with RGB565 conversion")
+set(COMPACT_YUV_RGB565_CLAMP_TABLES ON CACHE BOOL
+    "Use branch-free clamp-and-pack tables in the fused compact converter")
+set(COMPACT_YUV_RGB565_HOT_IRAM ON CACHE BOOL
+    "Place the fused compact YUV-to-RGB565 converter in IRAM")
+set(COMPACT_YUV_Q4_LUT ON CACHE BOOL
+    "Use a shared 368-byte compact YUV Q4 correction lookup table")
+set(compact_yuv_rgb565_sources)
+if(COMPACT_YUV_RGB565_FAST_PATH)
+    list(APPEND compact_yuv_rgb565_sources
+        "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/src/y6u5v5_rgb565.c")
+endif()
 set(mjpeg_stream_dir
     "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
@@ -298,10 +311,12 @@ else()
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
             ${mjpeg_stream_sources}
+            ${compact_yuv_rgb565_sources}
         INCLUDE_DIRS "." "${mjpeg_stream_dir}"
         REQUIRES
             amrnb_3gp
             bpv1
+            compact_yuv420
             divx3
             h263_3gp
             hlv1
@@ -349,6 +364,22 @@ target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 if(HLV_PLAYER_BARE_METAL_STYLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         HLV_PLAYER_BARE_METAL_STYLE=1)
+endif()
+if(COMPACT_YUV_RGB565_FAST_PATH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        COMPACT_YUV_RGB565_FAST_PATH=1)
+    if(COMPACT_YUV_RGB565_CLAMP_TABLES)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_RGB565_CLAMP_TABLES=1)
+    endif()
+    if(COMPACT_YUV_RGB565_HOT_IRAM)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_RGB565_HOT_IRAM=1)
+    endif()
+    if(COMPACT_YUV_Q4_LUT)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            COMPACT_YUV_Q4_LUT=1)
+    endif()
 endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

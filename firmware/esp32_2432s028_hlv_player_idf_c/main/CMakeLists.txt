@@ -26,6 +26,11 @@ set(COMPACT_YUV_Q4_LUT ON CACHE BOOL
     "Use a shared 368-byte compact YUV Q4 correction lookup table")
 set(COMPACT_YUV_RGB565_VERIFY OFF CACHE BOOL
     "Compare fused compact conversion with the reference row renderer")
+set(compact_yuv_rgb565_sources)
+if(COMPACT_YUV_RGB565_FAST_PATH)
+    list(APPEND compact_yuv_rgb565_sources
+        "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/src/y6u5v5_rgb565.c")
+endif()
 set(mjpeg_stream_dir
     "${CMAKE_CURRENT_LIST_DIR}/../../common/esp_new_jpeg_stream")
 set(mjpeg_idct_sources)
@@ -326,10 +331,12 @@ else()
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
             ${mjpeg_stream_sources}
+            ${compact_yuv_rgb565_sources}
         INCLUDE_DIRS "." "${mjpeg_stream_dir}"
         REQUIRES
             amrnb_3gp
             bpv1
+            compact_yuv420
             divx3
             h263_3gp
             hlv1

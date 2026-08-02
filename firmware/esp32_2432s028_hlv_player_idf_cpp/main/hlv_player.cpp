@@ -40,6 +40,11 @@
 #include "player_settings.hpp"
 #include "pl_mpeg.h"
 #include "uart_file_upload.hpp"
+#include "y6u5v5_rgb565.h"
+
+#ifndef COMPACT_YUV_RGB565_FAST_PATH
+#define COMPACT_YUV_RGB565_FAST_PATH 0
+#endif
 
 namespace {
 
@@ -382,6 +387,11 @@ constexpr auto yuv_red_add = makeChromaTable(409, 128);
 constexpr auto yuv_green_u_add = makeChromaTable(-100, 0);
 constexpr auto yuv_green_v_add = makeChromaTable(-208, 128);
 constexpr auto yuv_blue_add = makeChromaTable(516, 128);
+#if COMPACT_YUV_RGB565_FAST_PATH
+const y6u5v5_rgb565_color_tables_t y6u5v5_color_tables{
+    yuv_luma.data(), yuv_red_add.data(), yuv_green_u_add.data(),
+    yuv_green_v_add.data(), yuv_blue_add.data()};
+#endif
 int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
@@ -3281,6 +3291,38 @@ bool renderFrame(const HLV1Frame *frame) {
     return true;
 }
 
+#if COMPACT_YUV_RGB565_FAST_PATH
+y6u5v5_frame_t makeY6U5V5Frame(const plm_frame_t *frame) {
+    return {
+        {frame->y.width, frame->y.height, frame->y.stride, frame->y.data,
+         frame->y.correction_stride, frame->y.correction},
+        {frame->cb.width, frame->cb.height, frame->cb.stride, frame->cb.data,
+         frame->cb.correction_stride, frame->cb.correction},
+        {frame->cr.width, frame->cr.height, frame->cr.stride, frame->cr.data,
+         frame->cr.correction_stride, frame->cr.correction}};
+}
+
+bool canConvertCompactYuvRows2(
+    const plm_frame_t *frame, int source_y, int first_source_x,
+    int output_width) {
+    if (!frame || frame->storage_mode != PLM_FRAME_STORAGE_Y6_U5_V5) {
+        return false;
+    }
+    const y6u5v5_frame_t adapted = makeY6U5V5Frame(frame);
+    return y6u5v5_rgb565_can_convert_rows2(
+               &adapted, source_y, first_source_x, output_width) != 0;
+}
+
+void convertCompactYuvRows2(
+    const plm_frame_t *frame, int source_y, int first_source_x,
+    uint16_t *output0, uint16_t *output1, int output_width) {
+    const y6u5v5_frame_t adapted = makeY6U5V5Frame(frame);
+    y6u5v5_rgb565_convert_rows2(
+        &adapted, &y6u5v5_color_tables, source_y, first_source_x,
+        output0, output1, output_width);
+}
+#endif
+
 void convertMpegRow(const plm_frame_t *frame, int source_y,
                     bool scaled, int first_source_x,
                     uint16_t *output, int output_width) {
@@ -3394,7 +3436,21 @@ bool renderMpegFrame(const plm_frame_t *frame) {
         const int rows = std::min(rows_per_transfer, height - y0);
         uint16_t *pixels = display.acquireBuffer();
         if (!pixels) return false;
-        for (int row = 0; row < rows; ++row) {
+        int row = 0;
+#if COMPACT_YUV_RGB565_FAST_PATH
+        for (; row + 1 < rows; row += 2) {
+            const int row_source_y = source_y + y0 + row;
+            if (!canConvertCompactYuvRows2(
+                    frame, row_source_y, source_x, width)) {
+                break;
+            }
+            convertCompactYuvRows2(
+                frame, row_source_y, source_x,
+                pixels + row * width,
+                pixels + (row + 1) * width, width);
+        }
+#endif
+        for (; row < rows; ++row) {
             convertMpegRow(frame, source_y + y0 + row, false, source_x,
                            pixels + row * width, width);
         }
@@ -3466,7 +3522,21 @@ bool renderH263Frame(const H2633gpFrame *frame) {
             endH263RowPipeline();
             return false;
         }
-        for (int row = 0; row < rows; ++row) {
+        int row = 0;
+#if COMPACT_YUV_RGB565_FAST_PATH
+        for (; row + 1 < rows; row += 2) {
+            const int row_source_y = source_y + y0 + row;
+            if (!canConvertCompactYuvRows2(
+                    &adapted, row_source_y, source_x, width)) {
+                break;
+            }
+            convertCompactYuvRows2(
+                &adapted, row_source_y, source_x,
+                pixels + row * width,
+                pixels + (row + 1) * width, width);
+        }
+#endif
+        for (; row < rows; ++row) {
             convertMpegRow(
                 &adapted, source_y + y0 + row, false, source_x,
                 pixels + row * width, width);
@@ -4906,6 +4976,9 @@ void playOneFramePipelined() {
 }  // namespace
 
 extern "C" void app_main(void) {
+#if COMPACT_YUV_RGB565_FAST_PATH
+    y6u5v5_rgb565_initialize();
+#endif
 #if defined(HLV_PLAYER_BARE_METAL_STYLE)
     esp_rom_printf("HLVBARE 1 MICROKERNEL cores=%d control_cpu=%d "
                    "decoder_target=1\n",
