@@ -94,15 +94,17 @@ position and the DAC sample counter is the master clock. Without audio, the
 ESP timer advances by the quotient and remainder of
 `1,000,000 * fps_den / fps_num`, so fractional rates do not accumulate
 microsecond-rounding drift. The current `kDropLateVideoFrames` mode makes audio
-the uninterrupted master clock. Every predictive frame is decoded in order,
-but a frame that has missed its presentation interval omits its display
-transfer. The DAC never replays an already consumed block to wait for video.
+the uninterrupted master clock. A frame that has missed its presentation
+interval omits its display transfer. The DAC never replays an already consumed
+block to wait for video.
 The static 4 KiB audio queue is filled completely before playback and after an
 underrun, providing 128 ms of preroll at 32 kHz, 256 ms at 16 kHz and 512 ms at
-8 kHz. After three consecutive late presentation intervals, predictive display
-transfers are suppressed until the next keyframe. The compressed pictures are
-still decoded in order to keep prediction references valid, but only the next
-independently decodable picture is shown while recovering from a large lag.
+8 kHz. After three consecutive late presentation intervals, compressed
+predictive pictures are discarded without reconstruction until the next
+keyframe. That keyframe is decoded and shown even if video is still behind.
+This fast catch-up path is used by HLV, packet-based BPV, DivX 3, MPEG-1,
+H.263 and MPEG-4 Simple Profile. MJPEG pictures are all independently
+decodable; the BPV v7 direct-stream path retains ordered decoding.
 
 The previous hybrid mode was verified on the physical ESP32 with the `320x180`, `24/1`
 v13 test file. Two 900-frame runs measured 23.894 and 23.953 decoded frames/s.

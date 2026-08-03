@@ -314,6 +314,7 @@ typedef struct DecodeRequest {
     long divx3_next_offset;
     FILE *bpv_file;
     bool bpv_prefetch;
+    bool skip_predictive;
 } DecodeRequest;
 
 typedef struct DecodeResult {
@@ -326,6 +327,8 @@ typedef struct DecodeResult {
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
     bool keyframe;
+    bool skipped;
+    uint32_t compressed_skips;
     uint32_t decode_us;
 #if HLV1_ENABLE_STAGE_PROFILE
     HLV1StageProfile hlv_profile;
@@ -525,6 +528,7 @@ uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
 bool video_waiting_for_keyframe = false;
 uint32_t keyframe_catchups = 0;
+uint32_t compressed_predictive_skips = 0;
 int upload_progress_pixels = -1;
 int upload_progress_percent = -1;
 int upload_progress_scale = kUploadPercentScale;
@@ -722,8 +726,14 @@ void decodeTask(void *opaque) {
         result.codec = request.codec;
         const int64_t start = microsNow();
         if (request.codec == VIDEO_CODEC_kMpeg1) {
-            plm_frame_t *frame =
-                mpeg_video ? plm_decode_video(mpeg_video) : NULL;
+            unsigned skipped = 0;
+            plm_frame_t *frame = mpeg_video
+                                     ? (request.skip_predictive
+                                            ? plm_decode_video_keyframe(
+                                                  mpeg_video, &skipped)
+                                            : plm_decode_video(mpeg_video))
+                                     : NULL;
+            result.compressed_skips = skipped;
             if (frame) {
                 result.mpeg_frame = *frame;
                 result.has_mpeg_frame = true;
@@ -734,28 +744,52 @@ void decodeTask(void *opaque) {
                     : HLV1_OK;
         } else if (request.codec == VIDEO_CODEC_kHlv) {
             HLV1Packet packet_info = {0};
-            result.result = hlv_esp32_decoder_decode_next(
+            result.result = hlv_esp32_decoder_decode_next_catchup(
                 &decoder, request.hlv_file, &result.hlv_frame, &packet_info,
 #if HLV1_ENABLE_STAGE_PROFILE
-                &result.hlv_profile);
+                &result.hlv_profile,
 #else
-                NULL);
+                NULL,
 #endif
+                request.skip_predictive, &result.skipped);
             result.keyframe =
                 packet_info.frame_type == HLV1_FRAME_KEY;
         } else if (request.codec == VIDEO_CODEC_kBpv) {
-            result.result = bpv_esp32_decoder_decode(
-                &bpv_decoder, request.bpv_packet, &result.bpv_frame);
+            if (request.skip_predictive && request.bpv_packet &&
+                !request.bpv_packet->info.keyframe) {
+                result.result = BPV1_OK;
+                result.skipped = true;
+            } else {
+                result.result = bpv_esp32_decoder_decode(
+                    &bpv_decoder, request.bpv_packet, &result.bpv_frame);
+            }
         } else if (request.codec == VIDEO_CODEC_kDivx3) {
-            result.result =
-                divx3_decoder && request.divx3_file &&
-                        request.divx3_packet_size &&
-                        request.divx3_next_offset >= 0
-                    ? divx3_decoder_decode_stream(
-                          divx3_decoder, request.divx3_packet_size,
-                          readDivx3Stream, request.divx3_file,
-                          &result.divx3_frame)
-                    : DIVX3_ERR_ARGUMENT;
+            int intra = 0;
+            long payload_offset = request.divx3_file
+                                      ? ftell(request.divx3_file)
+                                      : -1;
+            if (request.skip_predictive && payload_offset >= 0) {
+                uint8_t prefix = 0;
+                if (fread(&prefix, 1, 1, request.divx3_file) == 1 &&
+                    fseek(request.divx3_file, payload_offset, SEEK_SET) == 0 &&
+                    divx3_packet_probe_intra(&prefix, 1, &intra) ==
+                        DIVX3_OK &&
+                    !intra) {
+                    result.result = DIVX3_OK;
+                    result.skipped = true;
+                }
+            }
+            if (!result.skipped) {
+                result.result =
+                    divx3_decoder && request.divx3_file &&
+                            request.divx3_packet_size &&
+                            request.divx3_next_offset >= 0
+                        ? divx3_decoder_decode_stream(
+                              divx3_decoder, request.divx3_packet_size,
+                              readDivx3Stream, request.divx3_file,
+                              &result.divx3_frame)
+                        : DIVX3_ERR_ARGUMENT;
+            }
             if (request.divx3_file &&
                 request.divx3_next_offset >= 0 &&
                 divx3_avi_finish_video_packet(
@@ -765,11 +799,14 @@ void decodeTask(void *opaque) {
                 result.result = DIVX3_ERR_BITSTREAM;
             }
         } else if (isPacketVideoCodec(request.codec)) {
-            result.result =
-                h263_decoder && video_file
-                    ? h263_3gp_decoder_decode_next(
-                          h263_decoder, video_file, &result.h263_frame)
-                    : H263_3GP_ERR_ARGUMENT;
+            int skipped = 0;
+            result.result = h263_decoder && video_file
+                                ? h263_3gp_decoder_decode_next_catchup(
+                                      h263_decoder, video_file,
+                                      &result.h263_frame,
+                                      request.skip_predictive, &skipped)
+                                : H263_3GP_ERR_ARGUMENT;
+            result.skipped = skipped != 0;
         } else {
             result.result = HLV1_ERR_ARGUMENT;
         }
@@ -845,6 +882,7 @@ bool submitDecode(FILE *file) {
     DecodeRequest request = {0};
     request.codec = VIDEO_CODEC_kHlv;
     request.hlv_file = file;
+    request.skip_predictive = video_waiting_for_keyframe;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -854,6 +892,7 @@ bool submitMpegDecode() {
     if (!decode_task_handle || decode_in_flight || !mpeg_video) return false;
     DecodeRequest request = {0};
     request.codec = VIDEO_CODEC_kMpeg1;
+    request.skip_predictive = video_waiting_for_keyframe;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -870,6 +909,7 @@ bool submitDivx3Decode(
     request.divx3_file = file;
     request.divx3_packet_size = packet_size;
     request.divx3_next_offset = next_offset;
+    request.skip_predictive = video_waiting_for_keyframe;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE)
         return false;
     decode_in_flight = true;
@@ -883,6 +923,7 @@ bool submitH263Decode() {
     }
     DecodeRequest request = {0};
     request.codec = video_codec;
+    request.skip_predictive = video_waiting_for_keyframe;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -896,6 +937,7 @@ bool submitBpvDecode(const BPV1Packet *packet, FILE *file,
     request.bpv_packet = packet;
     request.bpv_file = file;
     request.bpv_prefetch = prefetch;
+    request.skip_predictive = video_waiting_for_keyframe;
     if (xQueueSend(decode_request_queue, &request, 0) != pdTRUE) return false;
     decode_in_flight = true;
     return true;
@@ -2118,6 +2160,7 @@ void closeVideo() {
     pending_decode_us = 0;
     video_waiting_for_keyframe = false;
     keyframe_catchups = 0;
+    compressed_predictive_skips = 0;
     stopAudio();
     hlv_esp32_decoder_end(&decoder);
     mjpeg_avi_decoder_end(&mjpeg_decoder);
@@ -4606,6 +4649,19 @@ bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
                                read_us, decode_us);
 }
 
+void finishCompressedPredictiveSkip(uint32_t read_us, uint32_t skip_us) {
+    PresentationState state = {microsNow(), false, false, true};
+    ++skipped_presentations;
+    ++compressed_predictive_skips;
+    finishPresentation(state, read_us, skip_us, 0);
+}
+
+void finishCompressedPredictiveSkips(uint32_t count, uint32_t skip_us) {
+    for (uint32_t index = 0; index < count; ++index) {
+        finishCompressedPredictiveSkip(0, index == 0 ? skip_us : 0);
+    }
+}
+
 bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
     return presentDecodedFrame(
         frame, renderMpegOpaque,
@@ -4664,21 +4720,25 @@ void finishVideoLoop() {
     ESP_LOGI(kTag,
              "Loop: %u frames, %u late, %u skipped, %u rebuffers, "
              "%u missing audio samples, %u silence chunks, "
-             "%u keyframe catch-ups, audio DMA repeats disabled",
+             "%u keyframe catch-ups, %u compressed P skips, "
+             "audio DMA repeats disabled",
              decoded_frames, dropped_deadlines, skipped_presentations,
              (unsigned)(audio_rebuffers),
              (unsigned)(audio_underrun_samples),
              (unsigned)(audio_silence_chunks),
-             (unsigned)(keyframe_catchups));
+             (unsigned)(keyframe_catchups),
+             (unsigned)(compressed_predictive_skips));
     if (!openVideo()) last_retry_ms = millisNow();
 }
 
 void playOneFrameSequential() {
     const HLV1Frame *frame = NULL;
     HLV1Packet packet_info = {0};
+    bool skipped = false;
     const int64_t decode_start = microsNow();
-    const int decode_result = hlv_esp32_decoder_decode_next(
-        &decoder, video_file, &frame, &packet_info, NULL);
+    const int decode_result = hlv_esp32_decoder_decode_next_catchup(
+        &decoder, video_file, &frame, &packet_info, NULL,
+        video_waiting_for_keyframe, &skipped);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (decode_result == HLV1_EOF) {
@@ -4693,6 +4753,10 @@ void playOneFrameSequential() {
         failPlayback("Decode error", decode_result);
         return;
     }
+    if (skipped) {
+        finishCompressedPredictiveSkip(0, decode_us);
+        return;
+    }
 
     if (!presentFrame(frame,
                       packet_info.frame_type == HLV1_FRAME_KEY,
@@ -4703,9 +4767,14 @@ void playOneFrameSequential() {
 
 void playOneMpegFrameSequential() {
     const int64_t decode_start = microsNow();
-    plm_frame_t *frame = plm_decode_video(mpeg_video);
+    unsigned compressed_skips = 0;
+    plm_frame_t *frame = video_waiting_for_keyframe
+                             ? plm_decode_video_keyframe(
+                                   mpeg_video, &compressed_skips)
+                             : plm_decode_video(mpeg_video);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
+    finishCompressedPredictiveSkips(compressed_skips, decode_us);
     if (!frame) {
         if (video_file && ferror(video_file)) {
             failSdCardRead("cannot read MPEG video");
@@ -4721,9 +4790,11 @@ void playOneMpegFrameSequential() {
 
 void playOneH263Frame() {
     H2633gpFrame frame = {0};
+    int skipped = 0;
     const int64_t decode_start = microsNow();
-    const int result =
-        h263_3gp_decoder_decode_next(h263_decoder, video_file, &frame);
+    const int result = h263_3gp_decoder_decode_next_catchup(
+        h263_decoder, video_file, &frame,
+        video_waiting_for_keyframe, &skipped);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (result == H263_3GP_EOF) {
@@ -4736,6 +4807,10 @@ void playOneH263Frame() {
     }
     if (result != H263_3GP_OK) {
         failPlayback(packetVideoDecodeErrorTitle(video_codec), result);
+        return;
+    }
+    if (skipped) {
+        finishCompressedPredictiveSkip(0, decode_us);
         return;
     }
     if (!presentH263Frame(&frame, decode_us)) {
@@ -4767,6 +4842,10 @@ void playOneH263FramePipelined() {
         if (first.result != H263_3GP_OK) {
             failPlayback(packetVideoDecodeErrorTitle(video_codec),
                          first.result);
+            return;
+        }
+        if (first.skipped) {
+            finishCompressedPredictiveSkip(0, first.decode_us);
             return;
         }
         pending_h263_frame = first.h263_frame;
@@ -4814,7 +4893,9 @@ void playOneH263FramePipelined() {
         failPlayback(packetVideoDecodeErrorTitle(video_codec), next.result);
         return;
     }
-    if (next.result == H263_3GP_OK) {
+    if (next.result == H263_3GP_OK && next.skipped) {
+        finishCompressedPredictiveSkip(0, next.decode_us);
+    } else if (next.result == H263_3GP_OK) {
         pending_h263_frame = next.h263_frame;
         pending_h263_decode_us = next.decode_us;
         pending_h263_frame_valid = true;
@@ -4842,6 +4923,8 @@ void playOneMpegFramePipelined() {
             failPlayback("MPEG-1 decode error", first.result);
             return;
         }
+        finishCompressedPredictiveSkips(
+            first.compressed_skips, first.decode_us);
         if (!first.has_mpeg_frame) {
             finishVideoLoop();
             return;
@@ -4878,6 +4961,8 @@ void playOneMpegFramePipelined() {
         failPlayback("MPEG-1 decode error", next.result);
         return;
     }
+    finishCompressedPredictiveSkips(
+        next.compressed_skips, next.decode_us);
     if (next.has_mpeg_frame) {
         pending_mpeg_frame = next.mpeg_frame;
         pending_mpeg_decode_us = next.decode_us;
@@ -5032,6 +5117,32 @@ void playOneDivx3Frame() {
         return;
     }
 
+    if (video_waiting_for_keyframe) {
+        const long payload_offset = ftell(video_file);
+        uint8_t prefix = 0;
+        int intra = 0;
+        const int64_t skip_start = microsNow();
+        if (payload_offset >= 0 &&
+            fread(&prefix, 1, 1, video_file) == 1 &&
+            fseek(video_file, payload_offset, SEEK_SET) == 0 &&
+            divx3_packet_probe_intra(&prefix, 1, &intra) == DIVX3_OK &&
+            !intra) {
+            if (divx3_avi_finish_video_packet(
+                    video_file, next_offset) != DIVX3_AVI_OK) {
+                failSdCardRead("cannot skip DivX 3 video packet");
+                return;
+            }
+            finishCompressedPredictiveSkip(
+                read_us, (uint32_t)(microsNow() - skip_start));
+            return;
+        }
+        if (payload_offset < 0 ||
+            fseek(video_file, payload_offset, SEEK_SET) != 0) {
+            failSdCardRead("cannot probe DivX 3 video packet");
+            return;
+        }
+    }
+
     Divx3Frame decoded = {0};
     const int64_t decode_start = microsNow();
     int decode_result = divx3_decoder_decode_stream(
@@ -5139,6 +5250,10 @@ void playOneDivx3FramePipelined() {
     if (result.codec != VIDEO_CODEC_kDivx3 ||
         result.result != DIVX3_OK) {
         failPlayback("DivX 3 decode error", result.result);
+        return;
+    }
+    if (result.skipped) {
+        finishCompressedPredictiveSkip(read_us, result.decode_us);
         return;
     }
     pending_divx3_frame = result.divx3_frame;
@@ -5326,6 +5441,11 @@ void playOneBpvFrameSequential() {
         return;
     }
 
+    if (video_waiting_for_keyframe && !packet.info.keyframe) {
+        finishCompressedPredictiveSkip(read_us, 0);
+        return;
+    }
+
     PresentationState presentation = beginPresentation();
     applyKeyframeCatchup(&presentation, packet.info.keyframe != 0);
     const BPV1Frame *frame = NULL;
@@ -5434,15 +5554,11 @@ void playOneBpvFramePipelined() {
         return;
     }
     if (result.codec != VIDEO_CODEC_kBpv ||
-        result.result != BPV1_OK || !result.bpv_frame) {
+        result.result != BPV1_OK ||
+        (!result.skipped && !result.bpv_frame)) {
         failPlayback("BPV1 decode error", result.result);
         return;
     }
-    pending_bpv_frame = *result.bpv_frame;
-    pending_read_us = read_us;
-    pending_decode_us = result.decode_us;
-    pending_bpv_frame_valid = true;
-
     if (result.bpv_read_result == BPV1_OK) {
         ready_bpv_packet = result.bpv_next_packet;
         ready_bpv_read_us = result.bpv_read_us;
@@ -5454,6 +5570,14 @@ void playOneBpvFramePipelined() {
     } else {
         failPlayback("BPV1 packet error", result.bpv_read_result);
     }
+    if (result.skipped) {
+        finishCompressedPredictiveSkip(read_us, result.decode_us);
+        return;
+    }
+    pending_bpv_frame = *result.bpv_frame;
+    pending_read_us = read_us;
+    pending_decode_us = result.decode_us;
+    pending_bpv_frame_valid = true;
 }
 
 void playOneFramePipelined() {
@@ -5493,6 +5617,10 @@ void playOneFramePipelined() {
     }
     if (result.result == HLV1_ERR_IO) {
         failSdCardRead("cannot read HLV video");
+        return;
+    }
+    if (result.result == HLV1_OK && result.skipped) {
+        finishCompressedPredictiveSkip(0, result.decode_us);
         return;
     }
     if (result.result != HLV1_OK || !result.hlv_frame) {

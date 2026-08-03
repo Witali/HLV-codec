@@ -125,6 +125,9 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);
 int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
                                  H2633gpFrame *frame);
+int h263_3gp_decoder_decode_next_catchup(
+    H2633gpDecoder *decoder, FILE *file, H2633gpFrame *frame,
+    int skip_predictive, int *skipped);
 
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder);
 const H263DecodeProfile *h263_3gp_decoder_decode_profile(

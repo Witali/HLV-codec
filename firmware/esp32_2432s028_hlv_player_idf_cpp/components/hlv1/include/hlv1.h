@@ -319,6 +319,9 @@ const char *hlv1_strerror(int result);
 int hlv1_header_write(FILE *file, const HLV1Header *header);
 int hlv1_header_read(FILE *file, HLV1Header *header);
 int hlv1_packet_write(FILE *file, const HLV1Packet *packet);
+int hlv1_packet_header_parse(
+    const uint8_t header[HLV1_FRAME_HEADER_SIZE],
+    HLV1Packet *packet, uint32_t *expected_crc);
 int hlv1_packet_read(FILE *file, HLV1Packet *packet);
 /* Read into caller-owned, reusable fixed-size blocks.  Blocks are not freed by
  * hlv1_packet_free().  This avoids a large contiguous allocation and per-frame

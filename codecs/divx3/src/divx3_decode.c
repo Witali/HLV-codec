@@ -1677,6 +1677,20 @@ int divx3_decoder_decode_stream(
     return decode_with_reader(decoder, reader, frame);
 }
 
+int divx3_packet_probe_intra(const uint8_t *prefix, size_t prefix_size,
+                             int *intra) {
+    unsigned picture_type;
+    unsigned quantizer;
+    if (!prefix || !prefix_size || !intra)
+        return DIVX3_ERR_ARGUMENT;
+    picture_type = prefix[0] >> 6;
+    quantizer = (prefix[0] >> 1) & 31U;
+    if (!quantizer) return DIVX3_ERR_BITSTREAM;
+    if (picture_type > 1U) return DIVX3_ERR_UNSUPPORTED;
+    *intra = picture_type == 0U;
+    return DIVX3_OK;
+}
+
 size_t divx3_decoder_memory_bytes(const Divx3Decoder *decoder) {
     return decoder ? decoder->memory_bytes : 0;
 }

@@ -81,6 +81,12 @@ int divx3_decoder_decode_stream(
     Divx3Decoder *decoder, size_t packet_size,
     Divx3ReadFunction read, void *read_context, Divx3Frame *frame);
 
+/* Inspect the seven-bit picture header available in the first packet byte
+ * without changing decoder state.  This lets a player discard a late
+ * predictive packet and resume decoding at the next independent I-picture. */
+int divx3_packet_probe_intra(const uint8_t *prefix, size_t prefix_size,
+                             int *intra);
+
 size_t divx3_decoder_memory_bytes(const Divx3Decoder *decoder);
 const char *divx3_strerror(int result);
 

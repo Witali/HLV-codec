@@ -494,6 +494,10 @@ void plm_decode(plm_t *self, double seconds);
 
 plm_frame_t *plm_decode_video(plm_t *self);
 
+// Discard compressed non-intra pictures without reconstructing them, decode
+// and return the next I-picture, and report how many pictures were skipped.
+plm_frame_t *plm_decode_video_keyframe(plm_t *self, unsigned *skipped);
+
 
 // Decode and return one audio frame. Returns NULL if no frame could be decoded
 // (either because the source ended or data is corrupt). If you only want to 
@@ -799,6 +803,8 @@ int plm_video_has_ended(plm_video_t *self);
 // plm_video_decode() or until the video decoder is destroyed.
 
 plm_frame_t *plm_video_decode(plm_video_t *self);
+plm_frame_t *plm_video_decode_keyframe(plm_video_t *self,
+                                       unsigned *skipped);
 
 
 // Convert the YCrCb data of a frame into interleaved R G B data. The stride
@@ -1290,6 +1296,21 @@ plm_frame_t *plm_decode_video(plm_t *self) {
 	}
 
 	plm_frame_t *frame = plm_video_decode(self->video_decoder);
+	if (frame) {
+		self->time = frame->time;
+	}
+	else if (plm_demux_has_ended(self->demux)) {
+		plm_handle_end(self);
+	}
+	return frame;
+}
+
+plm_frame_t *plm_decode_video_keyframe(plm_t *self, unsigned *skipped) {
+	if (!plm_init_decoders(self) || !self->video_packet_type) {
+		return NULL;
+	}
+	plm_frame_t *frame =
+		plm_video_decode_keyframe(self->video_decoder, skipped);
 	if (frame) {
 		self->time = frame->time;
 	}
@@ -3046,6 +3067,7 @@ void plm_video_compact_store_macroblock(plm_video_t *self);
 void plm_video_compact_store_block(plm_video_t *self, int block);
 #endif
 void plm_video_decode_picture(plm_video_t *self);
+void plm_video_decode_picture_body(plm_video_t *self);
 void plm_video_decode_slice(plm_video_t *self, int slice);
 void plm_video_decode_macroblock(plm_video_t *self);
 void plm_video_decode_motion_vectors(plm_video_t *self);
@@ -3221,6 +3243,56 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	self->time = (double)self->frames_decoded / self->framerate;
 	
 	return frame;
+}
+
+plm_frame_t *plm_video_decode_keyframe(plm_video_t *self,
+	unsigned *skipped) {
+	if (skipped) {
+		*skipped = 0;
+	}
+	if (!plm_video_has_header(self)) {
+		return NULL;
+	}
+	for (;;) {
+		if (self->start_code != PLM_START_PICTURE) {
+			self->start_code =
+				plm_buffer_find_start_code(self->buffer, PLM_START_PICTURE);
+			if (self->start_code == -1) {
+				return NULL;
+			}
+		}
+#ifndef PLM_VIDEO_STREAMING_PICTURES
+		if (
+			plm_buffer_has_start_code(self->buffer, PLM_START_PICTURE) == -1 &&
+			!plm_buffer_has_ended(self->buffer)
+		) {
+			return NULL;
+		}
+#endif
+		plm_buffer_discard_read_bytes(self->buffer);
+		plm_buffer_skip(self->buffer, 10);
+		self->picture_type = plm_buffer_read(self->buffer, 3);
+		if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA) {
+			plm_video_decode_picture_body(self);
+			plm_frame_t *frame = &self->frame_forward;
+			frame->time = self->time;
+			frame->picture_type = self->picture_type;
+			self->frames_decoded++;
+			self->time = (double)self->frames_decoded / self->framerate;
+			return frame;
+		}
+
+		self->start_code =
+			plm_buffer_find_start_code(self->buffer, PLM_START_PICTURE);
+		self->frames_decoded++;
+		self->time = (double)self->frames_decoded / self->framerate;
+		if (skipped) {
+			(*skipped)++;
+		}
+		if (self->start_code == -1) {
+			return NULL;
+		}
+	}
 }
 
 int plm_video_has_header(plm_video_t *self) {
@@ -3513,6 +3585,10 @@ void plm_video_init_row_frame(
 void plm_video_decode_picture(plm_video_t *self) {
 	plm_buffer_skip(self->buffer, 10); // skip temporalReference
 	self->picture_type = plm_buffer_read(self->buffer, 3);
+	plm_video_decode_picture_body(self);
+}
+
+void plm_video_decode_picture_body(plm_video_t *self) {
 	plm_buffer_skip(self->buffer, 16); // skip vbv_delay
 
 	// D frames or unknown coding type

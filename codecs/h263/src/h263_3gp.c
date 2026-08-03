@@ -1706,10 +1706,38 @@ int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
     return H263_3GP_OK;
 }
 
-int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
-                                 H2633gpFrame *frame) {
-    if (!decoder || !file || !frame || !decoder->pv_ready)
+static void advanceVideoSample(H2633gpDecoder *decoder, uint32_t size,
+                               uint32_t duration, int frame_type) {
+    if (decoder->info.container != H263_CONTAINER_AVI) {
+        decoder->sample_offset += size;
+        ++decoder->sample_in_chunk;
+        if (decoder->sample_in_chunk == decoder->samples_in_chunk) {
+            decoder->sample_in_chunk = 0;
+            ++decoder->chunk_index;
+        }
+        if (--decoder->stts_remaining == 0 &&
+            decoder->stts_index + 1 < decoder->stts_count) {
+            ++decoder->stts_index;
+            decoder->stts_remaining =
+                decoder->stts[decoder->stts_index].sample_count;
+        }
+    }
+    ++decoder->sample_index;
+    decoder->timestamp += duration;
+    H263_PROFILE_COUNT(decoder, frames, 1);
+    if (frame_type == MP4_I_FRAME) {
+        H263_PROFILE_COUNT(decoder, i_frames, 1);
+    } else if (frame_type == MP4_P_FRAME) {
+        H263_PROFILE_COUNT(decoder, p_frames, 1);
+    }
+}
+
+int h263_3gp_decoder_decode_next_catchup(
+    H2633gpDecoder *decoder, FILE *file, H2633gpFrame *frame,
+    int skip_predictive, int *skipped) {
+    if (!decoder || !file || !frame || !skipped || !decoder->pv_ready)
         return H263_3GP_ERR_ARGUMENT;
+    *skipped = 0;
     if (decoder->sample_index >= decoder->info.frame_count)
         return H263_3GP_EOF;
     H263_PROFILE_START(total_start);
@@ -1784,6 +1812,17 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
         decoder->stream_file = NULL;
         return H263_3GP_ERR_UNSUPPORTED;
     }
+    const uint32_t duration =
+        decoder->info.container == H263_CONTAINER_AVI
+            ? decoder->info.fps_den
+            : decoder->stts[decoder->stts_index].sample_delta;
+    if (skip_predictive && header.frameType != MP4_I_FRAME) {
+        decoder->stream_file = NULL;
+        advanceVideoSample(decoder, size, duration, header.frameType);
+        H263_PROFILE_ADD(decoder, total_cycles, total_start);
+        *skipped = 1;
+        return H263_3GP_OK;
+    }
     PVSetCurrentYUVPlanes(
         &decoder->controls,
         decoder->output_y[output_index],
@@ -1833,10 +1872,6 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
             &decoder->controls, &decoder->compact_reference);
     }
 
-    const uint32_t duration =
-        decoder->info.container == H263_CONTAINER_AVI
-            ? decoder->info.fps_den
-            : decoder->stts[decoder->stts_index].sample_delta;
     frame->storage_mode =
         decoder->compact_reference_enabled
             ? H263_FRAME_STORAGE_Y6_U5_V5
@@ -1862,30 +1897,16 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     frame->index = decoder->sample_index;
     frame->intra = header.frameType == MP4_I_FRAME;
 
-    if (decoder->info.container != H263_CONTAINER_AVI) {
-        decoder->sample_offset += size;
-        ++decoder->sample_in_chunk;
-        if (decoder->sample_in_chunk == decoder->samples_in_chunk) {
-            decoder->sample_in_chunk = 0;
-            ++decoder->chunk_index;
-        }
-        if (--decoder->stts_remaining == 0 &&
-            decoder->stts_index + 1 < decoder->stts_count) {
-            ++decoder->stts_index;
-            decoder->stts_remaining =
-                decoder->stts[decoder->stts_index].sample_count;
-        }
-    }
-    ++decoder->sample_index;
-    decoder->timestamp += duration;
-    H263_PROFILE_COUNT(decoder, frames, 1);
-    if (header.frameType == MP4_I_FRAME) {
-        H263_PROFILE_COUNT(decoder, i_frames, 1);
-    } else if (header.frameType == MP4_P_FRAME) {
-        H263_PROFILE_COUNT(decoder, p_frames, 1);
-    }
+    advanceVideoSample(decoder, size, duration, header.frameType);
     H263_PROFILE_ADD(decoder, total_cycles, total_start);
     return H263_3GP_OK;
+}
+
+int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
+                                 H2633gpFrame *frame) {
+    int skipped = 0;
+    return h263_3gp_decoder_decode_next_catchup(
+        decoder, file, frame, 0, &skipped);
 }
 
 size_t h263_3gp_decoder_memory_bytes(const H2633gpDecoder *decoder) {

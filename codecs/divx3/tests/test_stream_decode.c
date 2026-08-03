@@ -136,6 +136,7 @@ int main(int argc, char **argv) {
         size_t packet_size = 0;
         uint64_t contiguous_checksum;
         uint64_t stream_checksum;
+        int probed_intra = 0;
         result = divx3_avi_read_video_packet(
             input, &info, packet, info.max_video_packet_size,
             &packet_size);
@@ -153,6 +154,13 @@ int main(int argc, char **argv) {
         if (result != DIVX3_OK) {
             fprintf(stderr, "contiguous frame %u failed: %s\n",
                     frames, divx3_strerror(result));
+            return 1;
+        }
+        result = divx3_packet_probe_intra(
+            packet, packet_size, &probed_intra);
+        if (result != DIVX3_OK ||
+            probed_intra != (contiguous_frame.intra != 0)) {
+            fprintf(stderr, "frame %u picture probe mismatch\n", frames);
             return 1;
         }
         reader.data = packet;

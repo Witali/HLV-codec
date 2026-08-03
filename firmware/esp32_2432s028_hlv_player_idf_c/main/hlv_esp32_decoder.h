@@ -42,6 +42,10 @@ int hlv_esp32_decoder_decode_next(hlv_esp32_decoder_t *decoder,
                                   const HLV1Frame **frame,
                                   HLV1Packet *packet_info,
                                   HLV1StageProfile *profile);
+int hlv_esp32_decoder_decode_next_catchup(
+    hlv_esp32_decoder_t *decoder, FILE *file,
+    const HLV1Frame **frame, HLV1Packet *packet_info,
+    HLV1StageProfile *profile, bool skip_predictive, bool *skipped);
 
 #ifdef __cplusplus
 }

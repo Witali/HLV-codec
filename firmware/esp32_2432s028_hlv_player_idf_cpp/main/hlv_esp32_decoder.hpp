@@ -24,6 +24,10 @@ public:
     int decodeNext(FILE *file, const HLV1Frame **frame,
                    HLV1Packet *packet_info = nullptr,
                    HLV1StageProfile *profile = nullptr);
+    int decodeNextCatchup(FILE *file, const HLV1Frame **frame,
+                          HLV1Packet *packet_info,
+                          HLV1StageProfile *profile,
+                          bool skip_predictive, bool *skipped);
 
 private:
     HLV1Decoder *decoder_ = nullptr;

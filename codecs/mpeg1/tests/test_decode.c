@@ -37,6 +37,33 @@ static uint64_t checksum_plane(uint64_t checksum,
     return checksum;
 }
 
+static int test_keyframe_catchup(const char *path) {
+    plm_t *mpeg = plm_create_with_filename(path);
+    unsigned skipped = 0;
+    plm_frame_t *frame;
+    if (!mpeg) return 0;
+    plm_set_audio_enabled(mpeg, 0);
+    frame = plm_decode_video(mpeg);
+    if (!frame ||
+        frame->picture_type != PLM_VIDEO_PICTURE_TYPE_INTRA) {
+        plm_destroy(mpeg);
+        return 0;
+    }
+    frame = plm_decode_video_keyframe(mpeg, &skipped);
+    if (!frame || !skipped ||
+        frame->picture_type != PLM_VIDEO_PICTURE_TYPE_INTRA) {
+        plm_destroy(mpeg);
+        return 0;
+    }
+    frame = plm_decode_video(mpeg);
+    if (!frame) {
+        plm_destroy(mpeg);
+        return 0;
+    }
+    plm_destroy(mpeg);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3 ||
         (strcmp(argv[2], "plain") && strcmp(argv[2], "compact"))) {
@@ -60,6 +87,11 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "invalid MPEG metadata: width=%d height=%d duration=%.6f\n",
                 width, height, duration);
+        plm_destroy(mpeg);
+        return 1;
+    }
+    if (!test_keyframe_catchup(argv[1])) {
+        fprintf(stderr, "MPEG keyframe catch-up regression failed\n");
         plm_destroy(mpeg);
         return 1;
     }

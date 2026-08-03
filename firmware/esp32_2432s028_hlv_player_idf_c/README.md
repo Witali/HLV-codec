@@ -892,9 +892,12 @@ but not physical SD or display DMA timing.
   sequential file cursor skips compressed video and prefetches only PCM packet
   tails, or decodes MP2 with its video stream disabled. The DAC sample count is
   the master video clock. Frame targets are
-  calculated from `fps_num/fps_den` in the HLV header. The current real-time
-  mode keeps audio continuous and omits the display transfer of a late frame;
-  predictive decoding still runs so subsequent P-frames remain valid.
+  calculated from `fps_num/fps_den` in the active container. The current
+  real-time mode keeps audio continuous and omits the display transfer of a
+  late frame. After sustained lag, HLV, packet-based BPV, DivX 3, MPEG-1,
+  H.263 and MPEG-4 SP discard compressed predictive pictures until the next
+  independently decodable picture. MJPEG is all-keyframe; the BPV v7 direct
+  stream retains ordered decoding.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 H.263 CIF scaling has been removed. The player starts the visible area at
@@ -927,6 +930,7 @@ silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector
 compatibility. Audio is always the uninterrupted master clock and an already
 consumed DMA block is never replayed. A frame that has missed its presentation
 interval omits its display transfer. After three consecutive late intervals,
-predictive display transfers remain suppressed until the next keyframe; that
-keyframe is shown even if video is still behind. Predictive decoding itself
-continues in order so reference state remains valid.
+compressed predictive pictures are discarded without reconstruction until the
+next keyframe; that keyframe is decoded and shown even if video is still
+behind. Each compressed skip advances the presentation timeline and is counted
+separately in the playback summary.
