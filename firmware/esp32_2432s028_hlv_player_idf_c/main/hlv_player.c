@@ -34,6 +34,7 @@
 #include "divx3_avi.h"
 #include "h263_3gp.h"
 #include "hlv1.h"
+#include "ima_adpcm.h"
 #include "hlv_esp32_decoder.h"
 #include "mjpeg_avi_decoder.h"
 #include "player_settings.h"
@@ -523,7 +524,7 @@ uint32_t consecutive_sd_read_failures = 0;
 StreamBufferHandle_t audio_stream = NULL;
 StaticStreamBuffer_t audio_stream_state = {0};
 __attribute__((aligned(4))) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
-__attribute__((aligned(4))) uint8_t audio_dma_samples[kAudioDmaSamples];
+__attribute__((aligned(4))) uint8_t audio_dma_samples[kAudioDmaBufferBytes];
 i2s_chan_handle_t audio_pdm = NULL;
 TaskHandle_t audio_reader_task_handle = NULL;
 void *audio_dma_buffer_keys[kAudioDmaDescriptors] = {0};
@@ -548,6 +549,7 @@ volatile uint32_t amrnb_audio_decode_frames = 0;
 volatile uint32_t amrnb_audio_decode_us = 0;
 volatile uint32_t amrnb_audio_convert_us = 0;
 size_t audio_preroll_bytes = 0;
+uint8_t audio_output_codec = HLV1_AUDIO_NONE;
 QueueHandle_t decode_request_queue = NULL;
 QueueHandle_t decode_result_queue = NULL;
 TaskHandle_t decode_task_handle = NULL;
@@ -1614,26 +1616,80 @@ uint32_t readLe32(const uint8_t *bytes) {
            ((uint32_t)(bytes[3]) << 24);
 }
 
+int queueAudioBytes(const uint8_t *bytes, size_t size) {
+    size_t sent = 0;
+    while (sent < size && !audio_reader_stop_requested) {
+        sent += xStreamBufferSend(
+            audio_stream, bytes + sent, size - sent, pdMS_TO_TICKS(20));
+        if (audio_rebuffering &&
+            xStreamBufferBytesAvailable(audio_stream) >= audio_preroll_bytes) {
+            audio_rebuffering = false;
+        }
+    }
+    return HLV1_OK;
+}
+
 int prefetchAudioBytes(size_t remaining) {
     while (remaining && !audio_reader_stop_requested) {
         const size_t chunk = MIN(remaining, sizeof audio_read_chunk);
         if (fread(audio_read_chunk, 1, chunk, audio_file) != chunk) {
             return HLV1_ERR_IO;
         }
-        size_t sent = 0;
-        while (sent < chunk && !audio_reader_stop_requested) {
-            sent += xStreamBufferSend(
-                audio_stream, audio_read_chunk + sent, chunk - sent,
-                pdMS_TO_TICKS(20));
-            if (audio_rebuffering &&
-                xStreamBufferBytesAvailable(audio_stream) >=
-                    audio_preroll_bytes) {
-                audio_rebuffering = false;
-            }
-        }
+        queueAudioBytes(audio_read_chunk, chunk);
         remaining -= chunk;
     }
     return HLV1_OK;
+}
+
+/* IMA packets are independently decodable but can exceed the 512-byte stdio
+   refill. Only a 128-byte compressed chunk is retained while decoded PCM is
+   emitted incrementally into the fixed-capacity audio stream. */
+int prefetchImaAudioBlock(size_t block_bytes) {
+    uint8_t header[IMA_ADPCM_BLOCK_HEADER_SIZE];
+    uint8_t compressed[128];
+    IMAADPCMState state;
+    uint16_t sample_count = 0;
+    size_t remaining_samples;
+    size_t remaining_bytes;
+    uint8_t first_sample[2];
+    if (block_bytes < sizeof header ||
+        fread(header, 1, sizeof header, audio_file) != sizeof header ||
+        ima_adpcm_block_header_read(header, sizeof header, &state,
+                                    &sample_count) ||
+        ima_adpcm_block_size(sample_count) != block_bytes) {
+        return HLV1_ERR_FORMAT;
+    }
+    first_sample[0] = (uint8_t)state.predictor;
+    first_sample[1] = (uint8_t)((uint16_t)(int16_t)state.predictor >> 8);
+    queueAudioBytes(first_sample, sizeof first_sample);
+    remaining_samples = (size_t)sample_count - 1U;
+    remaining_bytes = block_bytes - sizeof header;
+    while (remaining_bytes) {
+        const size_t chunk = MIN(remaining_bytes, sizeof compressed);
+        size_t input;
+        size_t output = 0;
+        if (fread(compressed, 1, chunk, audio_file) != chunk)
+            return HLV1_ERR_IO;
+        for (input = 0; input < chunk && remaining_samples; ++input) {
+            int16_t decoded = ima_adpcm_decode_nibble(
+                &state, compressed[input] & 15U);
+            audio_read_chunk[output++] = (uint8_t)decoded;
+            audio_read_chunk[output++] =
+                (uint8_t)((uint16_t)decoded >> 8);
+            --remaining_samples;
+            if (remaining_samples) {
+                decoded = ima_adpcm_decode_nibble(
+                    &state, compressed[input] >> 4);
+                audio_read_chunk[output++] = (uint8_t)decoded;
+                audio_read_chunk[output++] =
+                    (uint8_t)((uint16_t)decoded >> 8);
+                --remaining_samples;
+            }
+        }
+        queueAudioBytes(audio_read_chunk, output);
+        remaining_bytes -= chunk;
+    }
+    return remaining_samples ? HLV1_ERR_FORMAT : HLV1_OK;
 }
 
 int prefetchHlvAudioPacket() {
@@ -1661,7 +1717,10 @@ int prefetchHlvAudioPacket() {
         return HLV1_ERR_IO;
     }
 
-    return prefetchAudioBytes(payload_size - video_bytes);
+    const size_t audio_bytes = payload_size - video_bytes;
+    return audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+        ? prefetchImaAudioBlock(audio_bytes)
+        : prefetchAudioBytes(audio_bytes);
 }
 
 int prefetchMjpegAudioChunk() {
@@ -1702,7 +1761,9 @@ int prefetchBpvAudioPacket() {
                    SEEK_CUR)) {
         return BPV1_ERR_IO;
     }
-    return prefetchAudioBytes(info.audio_bytes);
+    return audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+        ? prefetchImaAudioBlock(info.audio_bytes)
+        : prefetchAudioBytes(info.audio_bytes);
 }
 
 int prefetchMpegAudioFrame() {
@@ -1865,9 +1926,12 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
 
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
+    const size_t sample_bytes =
+        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ? 2U : 1U;
+    const size_t requested_bytes = kAudioDmaSamples * sample_bytes;
     if (audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
-            audio_stream, audio_dma_samples, sizeof audio_dma_samples,
+            audio_stream, audio_dma_samples, requested_bytes,
             &task_woken);
         if (!received && !audio_prefetch_eof &&
             audio_reader_result >= HLV1_OK) {
@@ -1875,16 +1939,17 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
             audio_rebuffers = audio_rebuffers + 1;
         }
     }
-    if (received < sizeof audio_dma_samples) {
-        memset(audio_dma_samples + received, 128,
-                    sizeof audio_dma_samples - received);
+    if (received < requested_bytes) {
+        memset(audio_dma_samples + received,
+               sample_bytes == 2U ? 0 : 128,
+               requested_bytes - received);
         if (audio_started) {
             audio_silence_chunks = audio_silence_chunks + 1;
             if (!audio_prefetch_eof) {
                 audio_underrun_samples =
                     audio_underrun_samples +
                     (uint32_t)(
-                        sizeof audio_dma_samples - received);
+                        (requested_bytes - received) / sample_bytes);
             }
         }
     }
@@ -1893,15 +1958,20 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
         audio_output_failed = true;
     } else {
         int16_t *pcm = (int16_t *)(event->dma_buf);
-        for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
-            pcm[sample] = (int16_t)(
-                ((int32_t)audio_dma_samples[sample] - 128) * 256);
+        if (sample_bytes == 2U) {
+            memcpy(pcm, audio_dma_samples, kAudioDmaBufferBytes);
+        } else {
+            for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
+                pcm[sample] = (int16_t)(
+                    ((int32_t)audio_dma_samples[sample] - 128) * 256);
+            }
         }
     }
     if (dma_slot < kAudioDmaDescriptors) {
-        audio_dma_valid_samples[dma_slot] = (uint16_t)(received);
+        audio_dma_valid_samples[dma_slot] =
+            (uint16_t)(received / sample_bytes);
         audio_pending_samples =
-            audio_pending_samples + (uint32_t)(received);
+            audio_pending_samples + (uint32_t)(received / sample_bytes);
     }
     return task_woken == pdTRUE;
 }
@@ -1968,6 +2038,7 @@ void stopAudio() {
     amrnb_audio_convert_us = 0;
     amrnb_audio_info = (AmrNb3gpInfo){0};
     audio_preroll_bytes = 0;
+    audio_output_codec = HLV1_AUDIO_NONE;
     consecutive_late_presentations = 0;
     memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     memset(audio_dma_valid_samples, 0,
@@ -1986,8 +2057,11 @@ bool prepareAudio(HLV1Header header) {
         return true;
     }
 
+    audio_output_codec = header.audio_codec;
+    const size_t audio_sample_bytes =
+        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ? 2U : 1U;
     audio_stream = xStreamBufferCreateStatic(
-        sizeof audio_stream_storage, kAudioDmaSamples,
+        sizeof audio_stream_storage, kAudioDmaSamples * audio_sample_bytes,
         audio_stream_storage, &audio_stream_state);
     if (!audio_stream) return false;
 
@@ -2112,7 +2186,9 @@ bool prepareAudio(HLV1Header header) {
             audio_header.fps_den != header.fps_den ||
             audio_header.frame_count != header.frame_count ||
             audio_header.audio_sample_rate != header.audio_sample_rate ||
-            audio_header.audio_codec != BPV1_AUDIO_PCM_U8 ||
+            audio_header.audio_codec != bpv_header.audio_codec ||
+            (audio_header.audio_codec != BPV1_AUDIO_PCM_U8 &&
+             audio_header.audio_codec != BPV1_AUDIO_IMA_ADPCM) ||
             audio_header.audio_channels != 1) {
             stopAudio();
             return false;
@@ -2126,7 +2202,9 @@ bool prepareAudio(HLV1Header header) {
             audio_header.fps_den != header.fps_den ||
             audio_header.frame_count != header.frame_count ||
             audio_header.audio_sample_rate != header.audio_sample_rate ||
-            audio_header.audio_codec != HLV1_AUDIO_PCM_U8 ||
+            audio_header.audio_codec != header.audio_codec ||
+            (audio_header.audio_codec != HLV1_AUDIO_PCM_U8 &&
+             audio_header.audio_codec != HLV1_AUDIO_IMA_ADPCM) ||
             audio_header.audio_channels != 1) {
             stopAudio();
             return false;
@@ -2256,9 +2334,11 @@ bool prepareAudio(HLV1Header header) {
     i2s_chan_info_t channel_info = {0};
     i2s_channel_get_info(audio_pdm, &channel_info);
     ESP_LOGI(kTag,
-             "Audio: PCM_U8 mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
+             "Audio: %s mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
              "%u Hz carrier, high-SNR divider 13, static %u-byte queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
+             audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+                 ? "IMA_ADPCM" : "PCM_U8",
              header.audio_sample_rate, BOARD_AUDIO_PDM_DATA,
              BOARD_AUDIO_PDM_CLOCK, (unsigned)(channel_info.bclk_hz),
              (unsigned)(kAudioStreamBytes),
@@ -3401,9 +3481,12 @@ bool openVideo() {
         sequence_header.gop = bpv_header.keyframe_interval;
         sequence_header.version = bpv_header.version;
         sequence_header.search_radius = bpv_header.search_radius;
-        if (bpv_header.audio_codec == BPV1_AUDIO_PCM_U8) {
+        if (bpv_header.audio_codec == BPV1_AUDIO_PCM_U8 ||
+            bpv_header.audio_codec == BPV1_AUDIO_IMA_ADPCM) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_codec =
+                bpv_header.audio_codec == BPV1_AUDIO_IMA_ADPCM
+                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 bpv_header.audio_sample_rate;
             sequence_header.audio_channels = bpv_header.audio_channels;

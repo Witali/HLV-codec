@@ -53,6 +53,7 @@ extern "C" {
 /* Audio samples are interleaved into the tail of each video packet. */
 #define HLV1_AUDIO_NONE   0
 #define HLV1_AUDIO_PCM_U8 1
+#define HLV1_AUDIO_IMA_ADPCM 2
 
 /* Frame types.  Decoding order is identical to display order; HLV-1 has no
  * B-frames or future-frame dependencies. */

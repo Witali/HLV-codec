@@ -332,12 +332,14 @@ else()
             "hlv_esp32_decoder.cpp"
             "mjpeg_avi_decoder.cpp"
             "uart_file_upload.cpp"
+            "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/src/ima_adpcm.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
             ${mjpeg_stream_sources}
             ${compact_yuv_rgb565_sources}
         INCLUDE_DIRS "." "${mjpeg_stream_dir}"
+            "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/include"
         REQUIRES
             amrnb_3gp
             bpv1
