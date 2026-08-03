@@ -727,10 +727,12 @@ Its modeled-device inventory and known accuracy limits are recorded in
   workspace is reused, so no full byte-planar MPEG-4 frame is allocated.
   At 320x240 the QEMU decoder reports 193,880 bytes including PacketVideo
   tables, the 4 KiB refill buffer and container state.
-- Scheduling: one 4 KiB CPU1 decoder task, one 3 KiB high-priority CPU0 audio
-  reader and two one-entry decode queues for HLV, BPV, MPEG-1, H.263 or DivX
-  3. MJPEG uses the sequential CPU0 path. Only frame descriptors cross cores
-  in the pipelined paths, so no frame or packet payload is copied.
+- Scheduling: one 4 KiB CPU1 decoder task, one high-priority CPU0 audio reader
+  with a measured 4 KiB stack for HLV PCM or 6 KiB for the other container and
+  compressed-audio paths, and two one-entry decode queues for HLV, BPV,
+  MPEG-1, H.263 or DivX 3. MJPEG uses the sequential CPU0 path. Only frame
+  descriptors cross cores in the pipelined paths, so no frame or packet
+  payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
   256-sample DAC DMA descriptors directly from the completion ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet

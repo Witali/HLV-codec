@@ -106,6 +106,9 @@ enum {
         2 * kSdDmaMinimumBlockBytes,
     kAudioReadAheadBytes = 512,
     kAudioReadChunkBytes = 512,
+    /* HLV PCM peaked below 1.9 KiB on hardware. Four KiB preserves more than
+       2 KiB of headroom while fitting beside the HLV decoder and DAC heap. */
+    kHlvAudioReaderStackBytes = 4096,
     kAudioReaderStackBytes = 6144,
     kAudioReaderStopTimeoutMs = 500,
     kAudioPrerollTimeoutMs = 3000,
@@ -2095,8 +2098,12 @@ bool prepareAudio(HLV1Header header) {
     audio_reader_stop_requested = false;
     audio_prefetch_eof = false;
     audio_reader_result = HLV1_OK;
+    const uint32_t audio_reader_stack_bytes =
+        video_codec == VIDEO_CODEC_kHlv
+            ? kHlvAudioReaderStackBytes
+            : kAudioReaderStackBytes;
     if (xTaskCreatePinnedToCore(
-            audioReaderTask, "video-audio-read", kAudioReaderStackBytes,
+            audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
             NULL, 3, &audio_reader_task_handle, 0) != pdPASS) {
         stopAudio();
         return false;

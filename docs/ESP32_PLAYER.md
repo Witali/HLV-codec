@@ -77,9 +77,11 @@ The application and decoder components are compiled with `-O3`.
 
 The current build sets `kEnableAudio = true` in the same settings file. Its
 4 KiB FreeRTOS audio stream is statically allocated, while DAC descriptors and
-the audio task are created only after the large decoder frames and stream buffer.
-Periodic logs report queued audio bytes and underruns so starvation can be
-distinguished from a DAC failure or reset.
+the audio task are created only after the large decoder frames and stream
+buffer. HLV's bounded PCM packet reader uses a measured 4 KiB task stack;
+compressed-audio and container readers retain 6 KiB. Periodic logs report
+queued audio bytes and underruns so starvation can be distinguished from a DAC
+failure or reset.
 
 The MPEG-1 decoder has a separate compact path. It keeps two packed
 Y6/U5/V5 reference frames, uses one 8-bit macroblock row for reconstruction,
