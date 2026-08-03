@@ -42,9 +42,10 @@ constexpr bool kEnableBpvV7StreamingTask = true;
 constexpr bool kLogFrameTimings = true;
 #endif
 
-// After this many consecutive late presentation intervals, suppress
-// predictive display transfers until the next independently decodable frame.
-constexpr unsigned kKeyframeCatchupSkips = 3;
+// After this many consecutive late presentations, skip future compressed
+// predictive packets before decode until the next independently decodable
+// frame. Already decoded frames remain eligible for display.
+constexpr unsigned kKeyframeCatchupLateFrames = 3;
 
 constexpr uint32_t kBootButtonPollMs = 10;
 constexpr uint32_t kBootButtonDebounceMs = 30;

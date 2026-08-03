@@ -33,9 +33,10 @@
 #define PLAYER_LOG_FRAME_TIMINGS 1
 #endif
 
-/* After this many consecutive late presentation intervals, suppress
-   predictive display transfers until the next independently decodable frame. */
-#define PLAYER_KEYFRAME_CATCHUP_SKIPS 3U
+/* After this many consecutive late presentations, skip future compressed
+   predictive packets before decode until the next independently decodable
+   frame. Already decoded frames remain eligible for display. */
+#define PLAYER_KEYFRAME_CATCHUP_LATE_FRAMES 3U
 
 #define PLAYER_BOOT_BUTTON_POLL_MS 10U
 #define PLAYER_BOOT_BUTTON_DEBOUNCE_MS 30U

@@ -212,8 +212,8 @@ constexpr uint8_t kStatusFont[95][5] = {
 static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
                   !player_settings::kUseDualCorePipeline,
               "Dual-core playback requires a two-core FreeRTOS build");
-static_assert(player_settings::kKeyframeCatchupSkips > 0,
-              "Keyframe catch-up must permit at least one video skip");
+static_assert(player_settings::kKeyframeCatchupLateFrames > 0,
+              "Keyframe catch-up needs a positive late-frame threshold");
 
 enum class VideoCodec {
     kNone,
@@ -478,7 +478,7 @@ uint32_t pending_read_us = 0;
 uint32_t pending_decode_us = 0;
 long pending_hlv_packet_offset = -1;
 uint32_t skipped_presentations = 0;
-uint32_t consecutive_skipped_presentations = 0;
+uint32_t consecutive_late_presentations = 0;
 bool video_waiting_for_keyframe = false;
 uint32_t keyframe_catchups = 0;
 uint32_t compressed_predictive_skips = 0;
@@ -1841,7 +1841,7 @@ void stopAudio() {
     amrnb_audio_convert_us = 0;
     amrnb_audio_info = {};
     audio_preroll_bytes = 0;
-    consecutive_skipped_presentations = 0;
+    consecutive_late_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     std::memset(audio_dma_valid_samples, 0,
                 sizeof audio_dma_valid_samples);
@@ -3193,7 +3193,7 @@ bool openVideo() {
 #endif
     dropped_deadlines = 0;
     skipped_presentations = 0;
-    consecutive_skipped_presentations = 0;
+    consecutive_late_presentations = 0;
     ESP_ERROR_CHECK(display.clear(0x0000));
 
     if (player_settings::kScaleVideoToDisplay) {
@@ -4004,51 +4004,57 @@ PresentationState beginPresentation() {
                     kAudioDmaSamples;
                 const uint64_t latest_on_time_sample =
                     target_samples + frame_samples;
-                if (estimated_position > latest_on_time_sample) {
-                    state.render = false;
+                if (estimated_position > latest_on_time_sample)
                     state.late = true;
-                }
             }
         }
     }
 
-    if (video_waiting_for_keyframe) state.render = false;
     if (!audio_enabled) waitUntil(next_present_us);
     return state;
 }
 
-void applyKeyframeCatchup(PresentationState &state, bool keyframe) {
+void applyKeyframeCatchupWithLookahead(
+    PresentationState &state, bool keyframe, bool next_keyframe) {
     if (state.seeking) return;
+
+    if (state.late && !keyframe && next_keyframe) {
+        // BPV exposes the next packet's keyframe flag before decode. Prefer
+        // spending the remaining display time on that I-frame.
+        state.render = false;
+        video_waiting_for_keyframe = true;
+        consecutive_late_presentations = 0;
+        ++skipped_presentations;
+        return;
+    }
 
     if (video_waiting_for_keyframe) {
         if (keyframe) {
             video_waiting_for_keyframe = false;
-            state.render = true;
-            consecutive_skipped_presentations = 0;
+            consecutive_late_presentations = 0;
             ++keyframe_catchups;
-        } else {
-            state.render = false;
         }
-    } else if (!state.render && state.late) {
-        const uint32_t skipped =
-            consecutive_skipped_presentations + 1U;
-        if (keyframe && skipped >=
-                            player_settings::kKeyframeCatchupSkips) {
-            state.render = true;
-            consecutive_skipped_presentations = 0;
-            ++keyframe_catchups;
+        return;
+    }
+
+    if (state.late) {
+        if (keyframe) {
+            consecutive_late_presentations = 0;
         } else {
-            consecutive_skipped_presentations = skipped;
-            if (!keyframe && skipped >=
-                                 player_settings::kKeyframeCatchupSkips) {
+            const uint32_t late = consecutive_late_presentations + 1U;
+            consecutive_late_presentations = late;
+            if (late >=
+                    player_settings::kKeyframeCatchupLateFrames) {
                 video_waiting_for_keyframe = true;
             }
         }
-    } else if (state.render) {
-        consecutive_skipped_presentations = 0;
+    } else {
+        consecutive_late_presentations = 0;
     }
+}
 
-    if (!state.render) ++skipped_presentations;
+void applyKeyframeCatchup(PresentationState &state, bool keyframe) {
+    applyKeyframeCatchupWithLookahead(state, keyframe, false);
 }
 
 void finishPresentation(const PresentationState &state, uint32_t read_us,
@@ -4231,11 +4237,13 @@ void finishCompressedPredictiveSkips(uint32_t count, uint32_t skip_us) {
     }
 }
 
-bool presentDecodedFrame(const void *frame, RenderFunction render_function,
-                         bool keyframe, uint32_t read_us,
-                         uint32_t decode_us) {
+bool presentDecodedFrameWithLookahead(
+    const void *frame, RenderFunction render_function,
+    bool keyframe, bool next_keyframe, uint32_t read_us,
+    uint32_t decode_us) {
     PresentationState state = beginPresentation();
-    applyKeyframeCatchup(state, keyframe);
+    applyKeyframeCatchupWithLookahead(
+        state, keyframe, next_keyframe);
     uint32_t render_us = 0;
     if (state.render) {
         const int64_t render_start = microsNow();
@@ -4244,6 +4252,13 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
     }
     finishPresentation(state, read_us, decode_us, render_us);
     return true;
+}
+
+bool presentDecodedFrame(const void *frame, RenderFunction render_function,
+                         bool keyframe, uint32_t read_us,
+                         uint32_t decode_us) {
+    return presentDecodedFrameWithLookahead(
+        frame, render_function, keyframe, false, read_us, decode_us);
 }
 
 bool presentFrame(const HLV1Frame *frame, bool keyframe,
@@ -4259,6 +4274,14 @@ bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
                      uint32_t decode_us) {
     return presentDecodedFrame(frame, renderBpvOpaque, frame->keyframe != 0,
                                read_us, decode_us);
+}
+
+bool presentBpvFrameWithLookahead(
+    const BPV1Frame *frame, bool next_keyframe,
+    uint32_t read_us, uint32_t decode_us) {
+    return presentDecodedFrameWithLookahead(
+        frame, renderBpvOpaque, frame->keyframe != 0,
+        next_keyframe, read_us, decode_us);
 }
 
 bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
@@ -5099,9 +5122,9 @@ void playOneBpvFramePipelined() {
     // storage: CPU0 reads the previous array while CPU1 writes the current one.
     if (pending_bpv_frame_valid && packet.info.keyframe &&
         bpv_header.version >= BPV1_ACTIVE_PALETTE_VERSION) {
-        rendered =
-            presentBpvFrame(&pending_bpv_frame, pending_read_us,
-                            pending_decode_us);
+        rendered = presentBpvFrameWithLookahead(
+            &pending_bpv_frame, true,
+            pending_read_us, pending_decode_us);
         pending_bpv_frame_valid = false;
     }
 
@@ -5112,9 +5135,9 @@ void playOneBpvFramePipelined() {
     }
 
     if (rendered && pending_bpv_frame_valid) {
-        rendered =
-            presentBpvFrame(&pending_bpv_frame, pending_read_us,
-                            pending_decode_us);
+        rendered = presentBpvFrameWithLookahead(
+            &pending_bpv_frame, packet.info.keyframe != 0,
+            pending_read_us, pending_decode_us);
         pending_bpv_frame_valid = false;
     }
 

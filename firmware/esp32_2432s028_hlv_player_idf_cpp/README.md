@@ -391,8 +391,8 @@ F,1,540,18320,26740,45600,108220
 The `V` record comes from the active HLV, AVI, DivX 3, BPV or MPEG-1 sequence
 metadata. The collector uses its rational `fps_num/fps_den` value to calculate
 the work budget instead of assuming 15 fps. It also prints the observed
-decoded-frame cadence and counts late display transfers omitted by the
-real-time mode.
+decoded-frame cadence and counts the optional late BPV display transfer
+omitted immediately before a known I-frame.
 
 `work_us` is the sum of packet read, decode and render work. `present_us`
 measures presentation from entry through A/V-clock waiting and display
@@ -748,11 +748,13 @@ Its modeled-device inventory and known accuracy limits are recorded in
   tails, or decodes MP2 with its video stream disabled. The PDM DMA sample count is
   the master video clock. Frame targets are
   calculated from `fps_num/fps_den` in the active container. The current
-  real-time mode keeps audio continuous and omits the display transfer of a
-  late frame. After sustained lag, HLV, packet-based BPV, DivX 3, MPEG-1,
-  H.263 and MPEG-4 SP discard compressed predictive pictures until the next
-  independently decodable picture. MJPEG is all-keyframe; the BPV v7 direct
-  stream retains ordered decoding.
+  real-time mode keeps audio continuous and still displays a late frame once
+  it has been decoded. After sustained lag, HLV, packet-based BPV, DivX 3,
+  MPEG-1, H.263 and MPEG-4 SP discard future compressed predictive pictures
+  before reconstruction until the next independently decodable picture.
+  When BPV already exposes that the next packet is an I-frame, a late pending
+  predecessor may omit its display transfer so the I-frame gets priority.
+  MJPEG is all-keyframe; the BPV v7 direct stream retains ordered decoding.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 H.263 CIF scaling has been removed. The player starts the visible area at
@@ -784,9 +786,11 @@ failed audio reader/PDM output automatically use the monotonic ESP timer as the 
 clock. The periodic log reports queued bytes, controlled rebuffer events and
 silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector
 compatibility. Audio is always the uninterrupted master clock and an already
-consumed DMA block is never replayed. A frame that has missed its presentation
-interval omits its display transfer. After three consecutive late intervals,
-compressed predictive pictures are discarded without reconstruction until the
-next keyframe; that keyframe is decoded and shown even if video is still
-behind. Each compressed skip advances the presentation timeline and is counted
+consumed DMA block is never replayed. An already decoded late frame is still
+sent to the display. After three consecutive late intervals, future compressed
+predictive pictures are discarded without reconstruction until the next
+keyframe; that keyframe is decoded and shown even if video is still behind.
+For pipelined BPV, whose next keyframe flag is known in advance, the one late
+decoded frame immediately before that keyframe may omit its display transfer.
+Each compressed skip advances the presentation timeline and is counted
 separately in the playback summary.
