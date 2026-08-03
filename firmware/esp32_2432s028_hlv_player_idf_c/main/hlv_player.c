@@ -99,16 +99,19 @@ enum {
     kAudioStreamStorageBytes = kAudioStreamBytes + 1,
     kAudioDmaSamples = 256,
     kAudioDmaBufferBytes = kAudioDmaSamples * 2,
-    kAudioDmaDescriptors = 6,
+    kAudioDmaDescriptors = 4,
     kSdDmaMinimumBlockBytes = 512,
     kAudioDmaMinimumFreeBytes =
         kAudioDmaDescriptors * kAudioDmaBufferBytes +
         2 * kSdDmaMinimumBlockBytes,
     kAudioReadAheadBytes = 512,
     kAudioReadChunkBytes = 512,
-    /* HLV PCM peaked below 1.9 KiB on hardware. Four KiB preserves more than
-       2 KiB of headroom while fitting beside the HLV decoder and DAC heap. */
+    /* HLV PCM peaked below 1.9 KiB on hardware, so it keeps four KiB. The
+       compact MP2 task measured below two KiB and uses 2.5 KiB so its
+       proactive compressed refill fits beside the decoder and PDM heap. */
     kHlvAudioReaderStackBytes = 4096,
+    kMpegAudioReaderStackBytes = 2560,
+    kMpegAudioPrefetchThresholdBytes = 4096,
     kAudioReaderStackBytes = 6144,
     kAudioReaderStopTimeoutMs = 500,
     kAudioPrerollTimeoutMs = 3000,
@@ -348,8 +351,17 @@ mjpeg_avi_decoder_t mjpeg_decoder = {0};
 mjpeg_avi_info_t mjpeg_info = {0};
 Divx3Decoder *divx3_decoder = NULL;
 Divx3AviInfo divx3_info = {0};
-bpv_esp32_decoder_t bpv_decoder = {0};
-BPV1Header bpv_header = {0};
+typedef struct {
+    bpv_esp32_decoder_t decoder;
+    BPV1Header header;
+    uint16_t rgb565_palette[BPV1_MAX_PALETTE_COLORS];
+    uint16_t rgb_row[kScreenWidth];
+} BpvRuntime;
+BpvRuntime *bpv_runtime = NULL;
+#define bpv_decoder (bpv_runtime->decoder)
+#define bpv_header (bpv_runtime->header)
+#define bpv_rgb565_palette (bpv_runtime->rgb565_palette)
+#define bpv_rgb_row (bpv_runtime->rgb_row)
 uint8_t bpv_file_version = 0;
 plm_t *mpeg_video = NULL;
 plm_t *mpeg_audio = NULL;
@@ -409,8 +421,6 @@ typedef struct MpegRenderProfile {
 MpegRenderProfile mpeg_render_profile = {0};
 #endif
 uint16_t scaled_rgb_row[kScreenWidth];
-uint16_t bpv_rgb_row[kScreenWidth];
-uint16_t bpv_rgb565_palette[BPV1_MAX_PALETTE_COLORS];
 bool bpv_rgb565_palette_valid = false;
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
@@ -418,14 +428,75 @@ uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
 int hlv_cached_chroma_y = -1;
-int32_t mpeg_red_add[kMaximumH263Width / 2];
-int32_t mpeg_green_add[kMaximumH263Width / 2];
-int32_t mpeg_blue_add[kMaximumH263Width / 2];
-static int32_t yuv_luma[256];
-static int32_t yuv_red_add[256];
-static int32_t yuv_green_u_add[256];
-static int32_t yuv_green_v_add[256];
-static int32_t yuv_blue_add[256];
+typedef union {
+    struct {
+        int32_t red_add[kMaximumH263Width / 2];
+        int32_t green_add[kMaximumH263Width / 2];
+        int32_t blue_add[kMaximumH263Width / 2];
+    } mpeg;
+    uint8_t audio_read_chunk[kAudioReadChunkBytes];
+    uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
+} PlayerScratch;
+PlayerScratch player_scratch = {0};
+#define mpeg_red_add (player_scratch.mpeg.red_add)
+#define mpeg_green_add (player_scratch.mpeg.green_add)
+#define mpeg_blue_add (player_scratch.mpeg.blue_add)
+#define audio_read_chunk (player_scratch.audio_read_chunk)
+#define amrnb_audio_pcm (player_scratch.amrnb_audio_pcm)
+#define YUV_TABLE_VALUES(entry) \
+    entry(0), entry(1), entry(2), entry(3), entry(4), entry(5), entry(6), entry(7), \
+    entry(8), entry(9), entry(10), entry(11), entry(12), entry(13), entry(14), entry(15), \
+    entry(16), entry(17), entry(18), entry(19), entry(20), entry(21), entry(22), entry(23), \
+    entry(24), entry(25), entry(26), entry(27), entry(28), entry(29), entry(30), entry(31), \
+    entry(32), entry(33), entry(34), entry(35), entry(36), entry(37), entry(38), entry(39), \
+    entry(40), entry(41), entry(42), entry(43), entry(44), entry(45), entry(46), entry(47), \
+    entry(48), entry(49), entry(50), entry(51), entry(52), entry(53), entry(54), entry(55), \
+    entry(56), entry(57), entry(58), entry(59), entry(60), entry(61), entry(62), entry(63), \
+    entry(64), entry(65), entry(66), entry(67), entry(68), entry(69), entry(70), entry(71), \
+    entry(72), entry(73), entry(74), entry(75), entry(76), entry(77), entry(78), entry(79), \
+    entry(80), entry(81), entry(82), entry(83), entry(84), entry(85), entry(86), entry(87), \
+    entry(88), entry(89), entry(90), entry(91), entry(92), entry(93), entry(94), entry(95), \
+    entry(96), entry(97), entry(98), entry(99), entry(100), entry(101), entry(102), entry(103), \
+    entry(104), entry(105), entry(106), entry(107), entry(108), entry(109), entry(110), entry(111), \
+    entry(112), entry(113), entry(114), entry(115), entry(116), entry(117), entry(118), entry(119), \
+    entry(120), entry(121), entry(122), entry(123), entry(124), entry(125), entry(126), entry(127), \
+    entry(128), entry(129), entry(130), entry(131), entry(132), entry(133), entry(134), entry(135), \
+    entry(136), entry(137), entry(138), entry(139), entry(140), entry(141), entry(142), entry(143), \
+    entry(144), entry(145), entry(146), entry(147), entry(148), entry(149), entry(150), entry(151), \
+    entry(152), entry(153), entry(154), entry(155), entry(156), entry(157), entry(158), entry(159), \
+    entry(160), entry(161), entry(162), entry(163), entry(164), entry(165), entry(166), entry(167), \
+    entry(168), entry(169), entry(170), entry(171), entry(172), entry(173), entry(174), entry(175), \
+    entry(176), entry(177), entry(178), entry(179), entry(180), entry(181), entry(182), entry(183), \
+    entry(184), entry(185), entry(186), entry(187), entry(188), entry(189), entry(190), entry(191), \
+    entry(192), entry(193), entry(194), entry(195), entry(196), entry(197), entry(198), entry(199), \
+    entry(200), entry(201), entry(202), entry(203), entry(204), entry(205), entry(206), entry(207), \
+    entry(208), entry(209), entry(210), entry(211), entry(212), entry(213), entry(214), entry(215), \
+    entry(216), entry(217), entry(218), entry(219), entry(220), entry(221), entry(222), entry(223), \
+    entry(224), entry(225), entry(226), entry(227), entry(228), entry(229), entry(230), entry(231), \
+    entry(232), entry(233), entry(234), entry(235), entry(236), entry(237), entry(238), entry(239), \
+    entry(240), entry(241), entry(242), entry(243), entry(244), entry(245), entry(246), entry(247), \
+    entry(248), entry(249), entry(250), entry(251), entry(252), entry(253), entry(254), entry(255)
+#define YUV_LUMA_ENTRY(sample) (298 * ((sample) > 16 ? (sample) - 16 : 0))
+#define YUV_RED_ENTRY(sample) (409 * ((sample) - 128) + 128)
+#define YUV_GREEN_U_ENTRY(sample) (-100 * ((sample) - 128))
+#define YUV_GREEN_V_ENTRY(sample) (-208 * ((sample) - 128) + 128)
+#define YUV_BLUE_ENTRY(sample) (516 * ((sample) - 128) + 128)
+static const int32_t yuv_luma[256] = {
+    YUV_TABLE_VALUES(YUV_LUMA_ENTRY)};
+static const int32_t yuv_red_add[256] = {
+    YUV_TABLE_VALUES(YUV_RED_ENTRY)};
+static const int32_t yuv_green_u_add[256] = {
+    YUV_TABLE_VALUES(YUV_GREEN_U_ENTRY)};
+static const int32_t yuv_green_v_add[256] = {
+    YUV_TABLE_VALUES(YUV_GREEN_V_ENTRY)};
+static const int32_t yuv_blue_add[256] = {
+    YUV_TABLE_VALUES(YUV_BLUE_ENTRY)};
+#undef YUV_BLUE_ENTRY
+#undef YUV_GREEN_V_ENTRY
+#undef YUV_GREEN_U_ENTRY
+#undef YUV_RED_ENTRY
+#undef YUV_LUMA_ENTRY
+#undef YUV_TABLE_VALUES
 #if COMPACT_YUV_RGB565_FAST_PATH
 static const y6u5v5_rgb565_color_tables_t y6u5v5_color_tables = {
     yuv_luma, yuv_red_add, yuv_green_u_add,
@@ -436,13 +507,6 @@ static uint32_t compact_yuv_attempted_pairs = 0;
 static uint32_t compact_yuv_verified_pairs = 0;
 #endif
 static void initializeYuvTables(void) {
-    for (int sample = 0; sample < 256; ++sample) {
-        yuv_luma[sample] = 298 * (sample > 16 ? sample - 16 : 0);
-        yuv_red_add[sample] = 409 * (sample - 128) + 128;
-        yuv_green_u_add[sample] = -100 * (sample - 128);
-        yuv_green_v_add[sample] = -208 * (sample - 128) + 128;
-        yuv_blue_add[sample] = 516 * (sample - 128) + 128;
-    }
 #if COMPACT_YUV_RGB565_FAST_PATH
     y6u5v5_rgb565_initialize();
 #endif
@@ -451,9 +515,6 @@ int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = NULL;
 size_t video_read_ahead_size = 0;
 __attribute__((aligned(4))) uint8_t audio_read_ahead[kAudioReadAheadBytes];
-__attribute__((aligned(4))) uint8_t audio_read_chunk[kAudioReadChunkBytes];
-__attribute__((aligned(4))) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
-__attribute__((aligned(4))) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
 sdmmc_card_t *sd_card = NULL;
 void *sd_dma_aligned_buffer = NULL;
 bool sd_bus_initialized = false;
@@ -497,15 +558,24 @@ uint8_t *bpv_input_chunk = NULL;
 volatile bool bpv_input_stop_requested = false;
 volatile bool bpv_input_reader_done = true;
 volatile int bpv_input_reader_result = BPV1_OK;
-HLV1Frame pending_frame = {0};
+typedef union {
+    HLV1Frame hlv;
+    plm_frame_t mpeg;
+    Divx3Frame divx3;
+    H2633gpFrame h263;
+    BPV1Frame bpv;
+} PendingFrameStorage;
+PendingFrameStorage pending_frame_storage = {0};
+#define pending_frame (pending_frame_storage.hlv)
+#define pending_mpeg_frame (pending_frame_storage.mpeg)
+#define pending_divx3_frame (pending_frame_storage.divx3)
+#define pending_h263_frame (pending_frame_storage.h263)
+#define pending_bpv_frame (pending_frame_storage.bpv)
 bool pending_frame_valid = false;
 bool pending_frame_keyframe = false;
-plm_frame_t pending_mpeg_frame = {0};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
-Divx3Frame pending_divx3_frame = {0};
 bool pending_divx3_frame_valid = false;
-H2633gpFrame pending_h263_frame = {0};
 bool pending_h263_frame_valid = false;
 uint32_t pending_h263_decode_us = 0;
 bool h263_dual_buffered = false;
@@ -516,7 +586,6 @@ uint32_t h263_row_guard_wait_us = 0;
 int hlv_rendered_source_rows = INT_MAX;
 int hlv_row_pipeline_active = 0;
 uint32_t hlv_row_guard_wait_us = 0;
-BPV1Frame pending_bpv_frame = {0};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet = {0};
 bool ready_bpv_packet_valid = false;
@@ -1121,13 +1190,6 @@ bool mpegFpsRational(double fps, uint16_t *numerator,
     return false;
 }
 
-uint8_t mpegSampleToU8(float left, float right) {
-    const float mono = CLAMP((left + right) * 0.5f, -1.0f, 1.0f);
-    return (uint8_t)(CLAMP(
-        (int)(128.5f + mono * 127.0f),
-        0, 255));
-}
-
 static inline uint16_t yuvToRgb565(
     int y, int red_add, int green_add, int blue_add) {
     const int luma = yuv_luma[(uint8_t)(y)];
@@ -1656,25 +1718,20 @@ int prefetchMpegAudioFrame() {
     }
     mpeg_audio_decode_frames = mpeg_audio_decode_frames + 1;
     mpeg_audio_decode_us = mpeg_audio_decode_us + decode_us;
-    const int64_t convert_start = microsNow();
-    for (unsigned index = 0; index < samples->count; ++index) {
-        mpeg_audio_pcm[index] = mpegSampleToU8(
-            samples->interleaved[index * 2U],
-            samples->interleaved[index * 2U + 1U]);
-    }
-    mpeg_audio_convert_us =
-        mpeg_audio_convert_us +
-        (uint32_t)(microsNow() - convert_start);
     size_t sent = 0;
     while (sent < samples->count && !audio_reader_stop_requested) {
         sent += xStreamBufferSend(
-            audio_stream, mpeg_audio_pcm + sent,
+            audio_stream, samples->mono_u8 + sent,
             samples->count - sent, pdMS_TO_TICKS(20));
         if (audio_rebuffering &&
             xStreamBufferBytesAvailable(audio_stream) >=
                 audio_preroll_bytes) {
             audio_rebuffering = false;
         }
+    }
+    if (!plm_prefetch_audio(
+            mpeg_audio, kMpegAudioPrefetchThresholdBytes)) {
+        return HLV1_ERR_MEMORY;
     }
     return HLV1_OK;
 }
@@ -1759,15 +1816,19 @@ void audioReaderTask(void *opaque) {
     while (!audio_reader_stop_requested) {
         result = prefetchAudioPacket();
         if (result != HLV1_OK) break;
-        /*
-         * The reader runs above the player task's priority.  A refill that
-         * remains slower than the DAC drain rate must still give the player
-         * task bounded CPU time instead of monopolizing core 0 forever.
-         */
+        /* The reader shares core 1 with video decode at higher priority.
+           Yield after each refill so sustained slow storage cannot starve
+           the video decoder. */
         vTaskDelay(1);
     }
     audio_reader_result = result;
     audio_prefetch_eof = result == HLV1_EOF;
+    ESP_LOGI(kTag,
+             "Audio reader stopped: result=%d MP2 frames=%u, "
+             "stack headroom=%u bytes",
+             result, (unsigned)mpeg_audio_decode_frames,
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) *
+                        sizeof(StackType_t)));
     audio_reader_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -1941,13 +2002,35 @@ bool prepareAudio(HLV1Header header) {
     if (video_codec == VIDEO_CODEC_kMpeg1) {
         mpeg_audio = plm_create_with_file(audio_file, 0);
         if (!mpeg_audio) {
+            ESP_LOGE(kTag,
+                     "MPEG audio decoder allocation failed: heap=%u "
+                     "largest=%u",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(
+                         MALLOC_CAP_8BIT));
             stopAudio();
             return false;
         }
         plm_set_video_enabled(mpeg_audio, 0);
-        if (plm_get_num_audio_streams(mpeg_audio) < 1 ||
-            plm_get_samplerate(mpeg_audio) !=
-                header.audio_sample_rate) {
+        const int audio_streams = plm_get_num_audio_streams(mpeg_audio);
+        const int audio_rate = plm_get_samplerate(mpeg_audio);
+        if (audio_streams < 1 || audio_rate == 0) {
+            ESP_LOGE(kTag,
+                     "MPEG audio decoder initialization failed: "
+                     "streams=%d rate=%d, heap=%u largest=%u",
+                     audio_streams, audio_rate,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(
+                         MALLOC_CAP_8BIT));
+            stopAudio();
+            return false;
+        }
+        if (audio_rate != header.audio_sample_rate) {
+            ESP_LOGE(kTag,
+                     "MPEG audio metadata mismatch: streams=%d rate=%d, "
+                     "expected rate=%u",
+                     audio_streams, audio_rate,
+                     (unsigned)header.audio_sample_rate);
             stopAudio();
             return false;
         }
@@ -2072,11 +2155,14 @@ bool prepareAudio(HLV1Header header) {
     channel_config.dma_frame_num = kAudioDmaSamples;
     channel_config.auto_clear_after_cb = false;
     channel_config.auto_clear_before_cb = false;
-    if (i2s_new_channel(&channel_config, &audio_pdm, NULL) != ESP_OK) {
+    esp_err_t audio_result =
+        i2s_new_channel(&channel_config, &audio_pdm, NULL);
+    if (audio_result != ESP_OK) {
+        ESP_LOGE(kTag, "I2S PDM channel allocation failed: %s",
+                 esp_err_to_name(audio_result));
         stopAudio();
         return false;
     }
-
     i2s_pdm_tx_config_t pdm_config = {
         .clk_cfg =
             I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(header.audio_sample_rate),
@@ -2090,11 +2176,13 @@ bool prepareAudio(HLV1Header header) {
             },
         },
     };
-    if (i2s_channel_init_pdm_tx_mode(audio_pdm, &pdm_config) != ESP_OK) {
+    audio_result = i2s_channel_init_pdm_tx_mode(audio_pdm, &pdm_config);
+    if (audio_result != ESP_OK) {
+        ESP_LOGE(kTag, "I2S PDM mode initialization failed: %s",
+                 esp_err_to_name(audio_result));
         stopAudio();
         return false;
     }
-
     i2s_event_callbacks_t callbacks = {0};
     callbacks.on_sent = onAudioPdmSent;
     if (i2s_channel_register_event_callback(
@@ -2133,10 +2221,18 @@ bool prepareAudio(HLV1Header header) {
     const uint32_t audio_reader_stack_bytes =
         video_codec == VIDEO_CODEC_kHlv
             ? kHlvAudioReaderStackBytes
-            : kAudioReaderStackBytes;
+            : video_codec == VIDEO_CODEC_kMpeg1
+                  ? kMpegAudioReaderStackBytes
+                  : kAudioReaderStackBytes;
     if (xTaskCreatePinnedToCore(
             audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
-            NULL, 3, &audio_reader_task_handle, 0) != pdPASS) {
+            NULL, 3, &audio_reader_task_handle, 1) != pdPASS) {
+        ESP_LOGE(kTag,
+                 "Audio reader task allocation failed: stack=%u, "
+                 "heap=%u largest=%u",
+                 (unsigned)audio_reader_stack_bytes,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         stopAudio();
         return false;
     }
@@ -2211,8 +2307,11 @@ void closeVideo() {
     divx3_decoder_destroy(divx3_decoder);
     divx3_decoder = NULL;
     divx3_info = (Divx3AviInfo){0};
-    bpv_esp32_decoder_end(&bpv_decoder);
-    bpv_header = (BPV1Header){0};
+    if (bpv_runtime) {
+        bpv_esp32_decoder_end(&bpv_decoder);
+        heap_caps_free(bpv_runtime);
+        bpv_runtime = NULL;
+    }
     if (mpeg_video) {
         plm_destroy(mpeg_video);
         mpeg_video = NULL;
@@ -3270,6 +3369,13 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VIDEO_CODEC_kBpv) {
+        bpv_runtime = (BpvRuntime *)heap_caps_calloc(
+            1, sizeof *bpv_runtime, MALLOC_CAP_8BIT);
+        if (!bpv_runtime) {
+            showStatus("Not enough RAM", "BPV runtime allocation failed");
+            closeVideo();
+            return false;
+        }
         const int result =
             bpv_esp32_decoder_begin(&bpv_decoder, video_file, &bpv_header);
         if (result != BPV1_OK) {
@@ -3389,7 +3495,7 @@ bool openVideo() {
     }
     // Allocate predictive frames, bounded packet/stream storage and the
     // decoder task before the
-    // smaller DAC descriptors and audio task stack. This keeps the large
+    // smaller PDM descriptors and audio task stack. This keeps the large
     // internal-RAM allocations immune to audio heap fragmentation.
     if (!prepareAudio(sequence_header)) {
         ESP_LOGW(kTag,

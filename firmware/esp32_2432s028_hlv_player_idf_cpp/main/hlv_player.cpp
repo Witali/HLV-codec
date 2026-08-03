@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -78,16 +79,19 @@ constexpr size_t kAudioStreamBytes = 4096;
 constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
 constexpr size_t kAudioDmaSamples = 256;
 constexpr size_t kAudioDmaBufferBytes = kAudioDmaSamples * 2;
-constexpr size_t kAudioDmaDescriptors = 6;
+constexpr size_t kAudioDmaDescriptors = 4;
 constexpr size_t kSdDmaMinimumBlockBytes = 512;
 constexpr size_t kAudioDmaMinimumFreeBytes =
     kAudioDmaDescriptors * kAudioDmaBufferBytes +
     2 * kSdDmaMinimumBlockBytes;
 constexpr size_t kAudioReadAheadBytes = 512;
 constexpr size_t kAudioReadChunkBytes = 512;
-// HLV PCM peaked below 1.9 KiB on hardware. Four KiB preserves more than
-// 2 KiB of headroom while fitting beside the HLV decoder and DAC heap.
+// HLV PCM peaked below 1.9 KiB on hardware, so it keeps four KiB. The compact
+// MP2 task measured below two KiB and uses 2.5 KiB so its proactive
+// compressed refill fits beside the decoder and PDM heap.
 constexpr uint32_t kHlvAudioReaderStackBytes = 4096;
+constexpr uint32_t kMpegAudioReaderStackBytes = 2560;
+constexpr size_t kMpegAudioPrefetchThresholdBytes = 4096;
 constexpr uint32_t kAudioReaderStackBytes = 6144;
 constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
@@ -319,8 +323,17 @@ MjpegAviDecoder mjpeg_decoder;
 MjpegAviInfo mjpeg_info{};
 Divx3Decoder *divx3_decoder = nullptr;
 Divx3AviInfo divx3_info{};
-BpvEsp32Decoder bpv_decoder;
-BPV1Header bpv_header{};
+struct BpvRuntime {
+    BpvEsp32Decoder decoder;
+    BPV1Header header{};
+    uint16_t rgb565_palette[BPV1_MAX_PALETTE_COLORS]{};
+    uint16_t rgb_row[kScreenWidth]{};
+};
+BpvRuntime *bpv_runtime = nullptr;
+#define bpv_decoder (bpv_runtime->decoder)
+#define bpv_header (bpv_runtime->header)
+#define bpv_rgb565_palette (bpv_runtime->rgb565_palette)
+#define bpv_rgb_row (bpv_runtime->rgb_row)
 uint8_t bpv_file_version = 0;
 plm_t *mpeg_video = nullptr;
 plm_t *mpeg_audio = nullptr;
@@ -362,8 +375,6 @@ uint64_t seek_discarded_audio_samples = 0;
 uint32_t dropped_deadlines = 0;
 int64_t last_retry_ms = 0;
 uint16_t scaled_rgb_row[kScreenWidth];
-uint16_t bpv_rgb_row[kScreenWidth];
-uint16_t bpv_rgb565_palette[BPV1_MAX_PALETTE_COLORS];
 bool bpv_rgb565_palette_valid = false;
 uint16_t scaled_x_map[kScreenWidth];
 uint16_t scaled_y_map[kScreenHeight];
@@ -371,9 +382,21 @@ uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
 int hlv_cached_chroma_y = -1;
-int32_t mpeg_red_add[kMaximumH263Width / 2];
-int32_t mpeg_green_add[kMaximumH263Width / 2];
-int32_t mpeg_blue_add[kMaximumH263Width / 2];
+union PlayerScratch {
+    struct {
+        int32_t red_add[kMaximumH263Width / 2];
+        int32_t green_add[kMaximumH263Width / 2];
+        int32_t blue_add[kMaximumH263Width / 2];
+    } mpeg;
+    alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
+    alignas(4) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
+};
+PlayerScratch player_scratch{};
+#define mpeg_red_add (player_scratch.mpeg.red_add)
+#define mpeg_green_add (player_scratch.mpeg.green_add)
+#define mpeg_blue_add (player_scratch.mpeg.blue_add)
+#define audio_read_chunk (player_scratch.audio_read_chunk)
+#define amrnb_audio_pcm (player_scratch.amrnb_audio_pcm)
 constexpr std::array<int32_t, 256> makeLumaTable() {
     std::array<int32_t, 256> values{};
     for (int sample = 0; sample < 256; ++sample)
@@ -403,9 +426,6 @@ int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
 alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
-alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
-alignas(4) uint8_t mpeg_audio_pcm[PLM_AUDIO_SAMPLES_PER_FRAME];
-alignas(4) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
 sdmmc_card_t *sd_card = nullptr;
 void *sd_dma_aligned_buffer = nullptr;
 bool sd_bus_initialized = false;
@@ -449,15 +469,24 @@ uint8_t *bpv_input_chunk = nullptr;
 volatile bool bpv_input_stop_requested = false;
 volatile bool bpv_input_reader_done = true;
 volatile int bpv_input_reader_result = BPV1_OK;
-HLV1Frame pending_frame{};
+union PendingFrameStorage {
+    HLV1Frame hlv;
+    plm_frame_t mpeg;
+    Divx3Frame divx3;
+    H2633gpFrame h263;
+    BPV1Frame bpv;
+};
+PendingFrameStorage pending_frame_storage{};
+#define pending_frame (pending_frame_storage.hlv)
+#define pending_mpeg_frame (pending_frame_storage.mpeg)
+#define pending_divx3_frame (pending_frame_storage.divx3)
+#define pending_h263_frame (pending_frame_storage.h263)
+#define pending_bpv_frame (pending_frame_storage.bpv)
 bool pending_frame_valid = false;
 bool pending_frame_keyframe = false;
-plm_frame_t pending_mpeg_frame{};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
-Divx3Frame pending_divx3_frame{};
 bool pending_divx3_frame_valid = false;
-H2633gpFrame pending_h263_frame{};
 bool pending_h263_frame_valid = false;
 uint32_t pending_h263_decode_us = 0;
 bool h263_dual_buffered = false;
@@ -468,7 +497,6 @@ uint32_t h263_row_guard_wait_us = 0;
 int hlv_rendered_source_rows = INT_MAX;
 int hlv_row_pipeline_active = 0;
 uint32_t hlv_row_guard_wait_us = 0;
-BPV1Frame pending_bpv_frame{};
 bool pending_bpv_frame_valid = false;
 BPV1Packet ready_bpv_packet{};
 bool ready_bpv_packet_valid = false;
@@ -1066,13 +1094,6 @@ bool mpegFpsRational(double fps, uint16_t *numerator,
     return false;
 }
 
-uint8_t mpegSampleToU8(float left, float right) {
-    const float mono = std::clamp((left + right) * 0.5f, -1.0f, 1.0f);
-    return static_cast<uint8_t>(std::clamp(
-        static_cast<int>(128.5f + mono * 127.0f),
-        0, 255));
-}
-
 uint16_t yuvToRgb565(int y, int red_add, int green_add, int blue_add) {
     const int luma = yuv_luma[static_cast<uint8_t>(y)];
     const int red = clamp8((luma + red_add) >> 8);
@@ -1593,25 +1614,20 @@ int prefetchMpegAudioFrame() {
     }
     mpeg_audio_decode_frames = mpeg_audio_decode_frames + 1;
     mpeg_audio_decode_us = mpeg_audio_decode_us + decode_us;
-    const int64_t convert_start = microsNow();
-    for (unsigned index = 0; index < samples->count; ++index) {
-        mpeg_audio_pcm[index] = mpegSampleToU8(
-            samples->interleaved[index * 2U],
-            samples->interleaved[index * 2U + 1U]);
-    }
-    mpeg_audio_convert_us =
-        mpeg_audio_convert_us +
-        static_cast<uint32_t>(microsNow() - convert_start);
     size_t sent = 0;
     while (sent < samples->count && !audio_reader_stop_requested) {
         sent += xStreamBufferSend(
-            audio_stream, mpeg_audio_pcm + sent,
+            audio_stream, samples->mono_u8 + sent,
             samples->count - sent, pdMS_TO_TICKS(20));
         if (audio_rebuffering &&
             xStreamBufferBytesAvailable(audio_stream) >=
                 audio_preroll_bytes) {
             audio_rebuffering = false;
         }
+    }
+    if (!plm_prefetch_audio(
+            mpeg_audio, kMpegAudioPrefetchThresholdBytes)) {
+        return HLV1_ERR_MEMORY;
     }
     return HLV1_OK;
 }
@@ -1695,12 +1711,19 @@ void audioReaderTask(void *) {
     while (!audio_reader_stop_requested) {
         result = prefetchAudioPacket();
         if (result != HLV1_OK) break;
-        // This task runs above the player task's priority.  Cooperatively
-        // delay after each refill so an underflow cannot starve core 0.
+        // This task shares core 1 with video decode at higher priority.
+        // Yield after each refill so sustained slow storage cannot starve
+        // the video decoder.
         vTaskDelay(1);
     }
     audio_reader_result = result;
     audio_prefetch_eof = result == HLV1_EOF;
+    ESP_LOGI(kTag,
+             "Audio reader stopped: result=%d MP2 frames=%u, "
+             "stack headroom=%u bytes",
+             result, static_cast<unsigned>(mpeg_audio_decode_frames),
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) *
+                                   sizeof(StackType_t)));
     audio_reader_task_handle = nullptr;
     vTaskDelete(nullptr);
 }
@@ -1875,13 +1898,37 @@ bool prepareAudio(const HLV1Header &header) {
     if (video_codec == VideoCodec::kMpeg1) {
         mpeg_audio = plm_create_with_file(audio_file, 0);
         if (!mpeg_audio) {
+            ESP_LOGE(kTag,
+                     "MPEG audio decoder allocation failed: heap=%u "
+                     "largest=%u",
+                     static_cast<unsigned>(
+                         heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                     static_cast<unsigned>(
+                         heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
             stopAudio();
             return false;
         }
         plm_set_video_enabled(mpeg_audio, 0);
-        if (plm_get_num_audio_streams(mpeg_audio) < 1 ||
-            plm_get_samplerate(mpeg_audio) !=
-                header.audio_sample_rate) {
+        const int audio_streams = plm_get_num_audio_streams(mpeg_audio);
+        const int audio_rate = plm_get_samplerate(mpeg_audio);
+        if (audio_streams < 1 || audio_rate == 0) {
+            ESP_LOGE(kTag,
+                     "MPEG audio decoder initialization failed: "
+                     "streams=%d rate=%d, heap=%u largest=%u",
+                     audio_streams, audio_rate,
+                     static_cast<unsigned>(
+                         heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                     static_cast<unsigned>(
+                         heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+            stopAudio();
+            return false;
+        }
+        if (audio_rate != header.audio_sample_rate) {
+            ESP_LOGE(kTag,
+                     "MPEG audio metadata mismatch: streams=%d rate=%d, "
+                     "expected rate=%u",
+                     audio_streams, audio_rate,
+                     static_cast<unsigned>(header.audio_sample_rate));
             stopAudio();
             return false;
         }
@@ -2006,7 +2053,11 @@ bool prepareAudio(const HLV1Header &header) {
     channel_config.dma_frame_num = kAudioDmaSamples;
     channel_config.auto_clear_after_cb = false;
     channel_config.auto_clear_before_cb = false;
-    if (i2s_new_channel(&channel_config, &audio_pdm, nullptr) != ESP_OK) {
+    esp_err_t audio_result =
+        i2s_new_channel(&channel_config, &audio_pdm, nullptr);
+    if (audio_result != ESP_OK) {
+        ESP_LOGE(kTag, "I2S PDM channel allocation failed: %s",
+                 esp_err_to_name(audio_result));
         stopAudio();
         return false;
     }
@@ -2024,7 +2075,10 @@ bool prepareAudio(const HLV1Header &header) {
             },
         },
     };
-    if (i2s_channel_init_pdm_tx_mode(audio_pdm, &pdm_config) != ESP_OK) {
+    audio_result = i2s_channel_init_pdm_tx_mode(audio_pdm, &pdm_config);
+    if (audio_result != ESP_OK) {
+        ESP_LOGE(kTag, "I2S PDM mode initialization failed: %s",
+                 esp_err_to_name(audio_result));
         stopAudio();
         return false;
     }
@@ -2067,10 +2121,20 @@ bool prepareAudio(const HLV1Header &header) {
     const uint32_t audio_reader_stack_bytes =
         video_codec == VideoCodec::kHlv
             ? kHlvAudioReaderStackBytes
-            : kAudioReaderStackBytes;
+            : video_codec == VideoCodec::kMpeg1
+                  ? kMpegAudioReaderStackBytes
+                  : kAudioReaderStackBytes;
     if (xTaskCreatePinnedToCore(
             audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
-            nullptr, 3, &audio_reader_task_handle, 0) != pdPASS) {
+            nullptr, 3, &audio_reader_task_handle, 1) != pdPASS) {
+        ESP_LOGE(kTag,
+                 "Audio reader task allocation failed: stack=%u, "
+                 "heap=%u largest=%u",
+                 static_cast<unsigned>(audio_reader_stack_bytes),
+                 static_cast<unsigned>(
+                     heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                 static_cast<unsigned>(
+                     heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
         stopAudio();
         return false;
     }
@@ -2146,8 +2210,11 @@ void closeVideo() {
     divx3_decoder_destroy(divx3_decoder);
     divx3_decoder = nullptr;
     divx3_info = {};
-    bpv_decoder.end();
-    bpv_header = {};
+    if (bpv_runtime) {
+        bpv_decoder.end();
+        delete bpv_runtime;
+        bpv_runtime = nullptr;
+    }
     if (mpeg_video) {
         plm_destroy(mpeg_video);
         mpeg_video = nullptr;
@@ -3057,6 +3124,12 @@ bool openVideo() {
             return false;
         }
     } else if (video_codec == VideoCodec::kBpv) {
+        bpv_runtime = new (std::nothrow) BpvRuntime{};
+        if (!bpv_runtime) {
+            showStatus("Not enough RAM", "BPV runtime allocation failed");
+            closeVideo();
+            return false;
+        }
         const int result = bpv_decoder.begin(video_file, &bpv_header);
         if (result != BPV1_OK) {
             showStatus("Invalid video.bpv1", bpv1_strerror(result));
@@ -3168,7 +3241,7 @@ bool openVideo() {
     }
     // Allocate predictive frames, bounded packet/stream storage and the
     // decoder task before the
-    // smaller DAC descriptors and audio task stack. This keeps the large
+    // smaller PDM descriptors and audio task stack. This keeps the large
     // internal-RAM allocations immune to audio heap fragmentation.
     if (!prepareAudio(sequence_header)) {
         ESP_LOGW(kTag,
