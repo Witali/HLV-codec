@@ -262,8 +262,8 @@ function Invoke-BpvQualityTrial {
     )
     if ($PreparedAudio) {
         $arguments += @(
-            "--audio-u8", $PreparedAudio,
-            "--audio-rate", 16000
+            "--audio-ima-s16le", $PreparedAudio,
+            "--audio-rate", 32000
         )
     }
     if ($ActivePalettes) {
@@ -389,9 +389,9 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
                 throw "FFprobe audio inspection failed."
             }
             if ($audioStreams) {
-                $preparedAudio = Join-Path $workingDirectory "audio.u8"
+                $preparedAudio = Join-Path $workingDirectory "audio.s16le"
                 $audioConversion = (
-                    "aformat=channel_layouts=mono,aresample=16000"
+                    "aformat=channel_layouts=mono,aresample=32000"
                 )
                 $audioLevelCurve = (
                     "acompressor=threshold=-20dB:ratio=1.6:" +
@@ -404,7 +404,7 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
                 )
                 $analysisOutput = & $ffmpeg -hide_banner -nostats `
                     -i $source -map 0:a:0 -vn `
-                    -af $analysisFilter -ac 1 -ar 16000 `
+                    -af $analysisFilter -ac 1 -ar 32000 `
                     -f null NUL 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     throw "FFmpeg audio analysis failed."
@@ -440,8 +440,8 @@ for ($inputIndex = 0; $inputIndex -lt $InputFile.Count; $inputIndex++) {
                 )
                 & $ffmpeg -y -hide_banner -loglevel error `
                     -i $source -map 0:a:0 -vn `
-                    -af $audioFilter -ac 1 -ar 16000 `
-                    -f u8 $preparedAudio
+                    -af $audioFilter -ac 1 -ar 32000 `
+                    -f s16le $preparedAudio
                 if ($LASTEXITCODE -ne 0) {
                     throw "FFmpeg audio conversion failed."
                 }

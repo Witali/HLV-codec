@@ -63,8 +63,9 @@ block modes, one-byte exact block motion, a full-block dictionary and unified
 eight-thread C11 encoder, automatic palette training, encoder-side
 rate-distortion selection, streaming validation, Y4M adapters and the supplied
 60-second reference measurements. The same portable C decoder is linked into
-the native Windows and ESP32 players. BPV1 v6 can carry PCM_U8 mono audio;
-video-only files use the players' frame timer.
+the native Windows and ESP32 players. BPV1 v6/v7 can carry legacy PCM_U8 or
+independent IMA ADPCM mono blocks; production transcodes use IMA at 32 kHz.
+Video-only files use the players' frame timer.
 
 ## HLV v15 stable format
 
@@ -165,8 +166,8 @@ with letterboxing, uses I/P pictures only and PCM_U8 mono audio at 16 kHz.
 The desktop build produces `build\msvc\hlvplay.exe`, a native
 HLV/BPV/MPEG-1/H.263 player
 that uses Windows D3D11 with an automatic GDI fallback and `waveOut`; FFmpeg
-and external codec packs are not needed at runtime. It plays embedded HLV
-PCM_U8 mono, preserves the video aspect ratio, and supports pause/resume,
+and external codec packs are not needed at runtime. It plays embedded HLV/BPV
+PCM_U8 or PCM16-decoded IMA ADPCM mono, preserves the video aspect ratio, and supports pause/resume,
 keyframe-aware timeline seeking, native-size centred display and drag-and-drop:
 
 ```powershell
@@ -187,8 +188,9 @@ headless full-file validation mode.
 The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, DivX 3/AVI, BPV1,
 the constrained MPEG-1/MP2 profile, or the bounded 3GP/AVI H.263 profiles
 from a FAT32 microSD card over an independent SPI3/VSPI DMA bus and displays
-it on the 320x240 ST7789 over SPI2 DMA. HLV/MJPEG/DivX 3 PCM_U8 and decoded
-MPEG MP2 play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
+it on the 320x240 ST7789 over SPI2 DMA. HLV/BPV IMA ADPCM is decoded directly
+to PCM16; legacy PCM_U8 and decoded MPEG MP2 share the same bounded queue and
+play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
 amplifier; GPIO22 carries the required PDM clock. AVI/H.263 PCM S16LE is
 converted to PCM_U8 while streaming. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row

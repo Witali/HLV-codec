@@ -74,7 +74,7 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Constant-quality Q6 is the default; use `VideoQuality=1..31` to override it or pass zero for bitrate control. |
 | `encode_mpeg4_simple_avi.ps1` | Encodes bounded MPEG-4 Part 2 Simple Profile at `320x240` in M4S2 AVI, with I/P pictures only, full source rate up to 30 fps, and optional PCM S16LE mono 8 kHz audio. The default Q5 profile is the accepted `35dB` quality profile. `-Preset Esp32Speed` is an explicit lower-quality decoder-speed trade-off that uses zero/integer motion vectors and stronger coefficient elimination. |
 | `analyze_mpeg4_simple.ps1` | Completely decodes an MPEG-4 SP AVI with a profiling Windows build and reports skip/CBP-zero rates, residual sparsity, motion-vector interpolation classes, and average I/P packet sizes as JSON. |
-| `encode_bpv.ps1` | Encodes BPV with native frame rate and PCM_U8 mono 16 kHz audio. CUDA is the default backend; use `-Device Auto` or `-Device Cpu` for fallback. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, frame limit, and opt-in BPV v7 `-PixelMotion`. |
+| `encode_bpv.ps1` | Encodes BPV with native frame rate and IMA ADPCM mono 32 kHz audio. CUDA is the default backend; use `-Device Auto` or `-Device Cpu` for fallback. It exposes dimensions, GOP, lambda, palette search controls, active/fixed palettes, threads, frame limit, and opt-in BPV v7 `-PixelMotion`. |
 | `encode_bpv_target_quality.ps1` | Encodes one or more videos to BPV v6 with CUDA by default and searches lambda independently for the requested RGB PSNR. `-PixelMotion` emits v7. It supports an explicit FPS override and writes per-video reports plus a combined JSON summary. |
 | `encode_bpv_from_yaml.ps1` | Reads `out/source/bpv-transcode.yaml` (or `-ConfigFile`) and runs every BPV v6/v7 profile with its own source, resolution, FPS, format and target quality. Select v7 with `codec: BPVv7` or `pixelMotion: true`. It inherits the default CUDA backend. |
 
@@ -97,8 +97,8 @@ select the production parameters and output directory automatically:
 
 | Wrapper | Fixed production rules |
 | --- | --- |
-| `transcode_hlv15.ps1` | Stable syntax v15, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, PCM_U8 mono 16 kHz. |
-| `transcode_bpv6.ps1` | Stable BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48. `-PixelMotion` opts into experimental BPV v7. |
+| `transcode_hlv15.ps1` | Stable syntax v15, slow preset, adaptive 35–42 dB, five CQ trials, GOP 45, IMA ADPCM mono 32 kHz. |
+| `transcode_bpv6.ps1` | Stable BPV v6 with CUDA by default, source FPS, target RGB PSNR 40 dB, lambda 0–4096, active GOP palettes, GOP 48, IMA ADPCM mono 32 kHz. `-PixelMotion` opts into experimental BPV v7. |
 | `transcode_h263.ps1` | CIF/AVI only, macroblock-aligned visible 320x240 area at `(16,16)`, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_mpeg4_simple.ps1` | `320x240` M4S2 AVI, MPEG-4 Simple Profile, GOP 30, I/P pictures only, full source FPS up to 30. The default accepted 35 dB profile uses Q5 and produces a `_MPEG4SP_35dB` filename; `-Preset Esp32Speed` is separately named, defaults to Q7, and produces `_MPEG4SP_SPEED_q7`. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
@@ -108,8 +108,9 @@ select the production parameters and output directory automatically:
 Every audio-enabled production wrapper uses the same peak-safe normalization:
 convert to the profile's mono sample rate, apply the primary gentle compressor,
 measure the complete processed source, and set compressor makeup so the
-pre-encode peak reaches -0.1 dBFS. HLV, BPV, DivX 3 and MJPEG use 16 kHz;
-H.263 and MPEG-4 Simple Profile use 8 kHz; MPEG-1 uses 32 kHz. Inputs without
+pre-encode peak reaches -0.1 dBFS. HLV and BPV use IMA ADPCM at 32 kHz;
+DivX 3 and MJPEG use PCM_U8 at 16 kHz; H.263 and MPEG-4 Simple Profile use
+PCM S16LE at 8 kHz; MPEG-1 uses MP2 at 32 kHz. Inputs without
 an audio stream remain video-only, and `-NoAudio` continues to bypass audio
 processing where that option is supported.
 

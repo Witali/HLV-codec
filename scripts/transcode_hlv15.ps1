@@ -58,7 +58,7 @@ $OutputFile = Get-TranscodeOutputFile `
     -CodecDirectory "HLV" `
     -FileName (
         "$($info.BaseName)_${Width}x${Height}_${fpsText}fps_" +
-        "HLVv15_adaptive35-42dB.hlv"
+        "HLVv15_adaptive35-42dB_IMAADPCM.hlv"
     )
 Assert-TranscodeOutput -OutputFile $OutputFile -Force:$Force
 
@@ -67,7 +67,7 @@ $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) (
 )
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
 $temporaryVideo = Join-Path $temporaryDirectory "video.y4m"
-$temporaryAudio = Join-Path $temporaryDirectory "audio.u8"
+$temporaryAudio = Join-Path $temporaryDirectory "audio.s16le"
 $cqLog = [IO.Path]::ChangeExtension($OutputFile, ".cq.csv")
 
 try {
@@ -103,7 +103,7 @@ try {
             $audioNormalization = Get-PeakSafeAudioFilter `
                 -Ffmpeg $ffmpeg `
                 -InputFile $info.InputFile `
-                -Rate 16000
+                -Rate 32000
             $audioArguments = @(
                 "-y", "-hide_banner", "-loglevel", "error",
                 "-i", $info.InputFile,
@@ -111,7 +111,7 @@ try {
                 "-vn",
                 "-af", $audioNormalization.Filter,
                 "-ac", "1",
-                "-ar", "16000"
+                "-ar", "32000"
             )
             if ($MaxFrames) {
                 $duration = $MaxFrames / $info.Fps
@@ -121,7 +121,7 @@ try {
                 )
                 $audioArguments += @("-t", $durationText)
             }
-            $audioArguments += @("-f", "u8", $temporaryAudio)
+            $audioArguments += @("-f", "s16le", $temporaryAudio)
             & $ffmpeg @audioArguments
             if ($LASTEXITCODE -ne 0) {
                 throw "HLV source audio preparation failed."
@@ -147,8 +147,8 @@ try {
     }
     if ($haveAudio) {
         $encoderArguments += @(
-            "--audio-u8", $temporaryAudio,
-            "--audio-rate", "16000"
+            "--audio-ima-s16le", $temporaryAudio,
+            "--audio-rate", "32000"
         )
     }
     & $encoder @encoderArguments
@@ -179,7 +179,7 @@ try {
         psnrMaxDb = 42.0
         cqTrials = 5
         threads = 1
-        audio = if ($haveAudio) { "PCM_U8 mono 16000 Hz" } else { $null }
+        audio = if ($haveAudio) { "IMA_ADPCM mono 32000 Hz" } else { $null }
         audioNormalization = if ($haveAudio) {
             [ordered]@{
                 curve = "primary-compressor-peak"

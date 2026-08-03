@@ -115,12 +115,12 @@ New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
 New-Item -ItemType Directory -Force -Path $reportParent | Out-Null
 $identifier = [guid]::NewGuid().ToString("N")
 $temporaryVideo = Join-Path $temporaryDirectory "bpv1-$identifier.y4m"
-$temporaryAudio = Join-Path $temporaryDirectory "bpv1-$identifier.u8"
+$temporaryAudio = Join-Path $temporaryDirectory "bpv1-$identifier.s16le"
 
 # This is the project's primary audio level curve: no EQ, loudness filter,
 # standalone volume stage or limiter. The gentle compressor raises quiet
 # material, and its measured makeup gain brings the resulting peak to -0.1 dBFS.
-$audioConversion = "aformat=channel_layouts=mono,aresample=16000"
+$audioConversion = "aformat=channel_layouts=mono,aresample=32000"
 $audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
     "attack=0.01:release=250:knee=8:" +
     "link=maximum:detection=peak"
@@ -148,7 +148,7 @@ try {
     )
     $analysisOutput = & $ffmpeg -hide_banner -nostats -i $InputFile `
         -map 0:a:0 -vn -af $analysisFilter `
-        -ac 1 -ar 16000 -f null NUL 2>&1
+        -ac 1 -ar 32000 -f null NUL 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "FFmpeg audio analysis failed with exit code $LASTEXITCODE."
     }
@@ -181,13 +181,13 @@ try {
         "makeup=${curveMakeupText}dB"
     )
     $audioStatusMessage = (
-        "Preparing PCM_U8 mono 16 kHz: curve peak {0:N2} dBFS, " +
+        "Preparing IMA ADPCM source PCM16 mono 32 kHz: curve peak {0:N2} dBFS, " +
         "makeup {1} dB, target {2:N1} dBFS..."
     ) -f $curvePeakDb, $curveMakeupText, $audioPeakTargetDb
     Write-Host $audioStatusMessage
     & $ffmpeg -y -hide_banner -loglevel error -i $InputFile `
         -map 0:a:0 -vn -af $audioFilter `
-        -ac 1 -ar 16000 -f u8 $temporaryAudio
+        -ac 1 -ar 32000 -f s16le $temporaryAudio
     if ($LASTEXITCODE -ne 0) {
         throw "FFmpeg audio conversion failed with exit code $LASTEXITCODE."
     }
@@ -234,8 +234,8 @@ try {
         "--block-iterations", $BlockIterations,
         "--color-iterations", $ColorIterations,
         "--colors-per-cluster", $ColorsPerCluster,
-        "--audio-u8", $temporaryAudio,
-        "--audio-rate", 16000,
+        "--audio-ima-s16le", $temporaryAudio,
+        "--audio-rate", 32000,
         "--report", $ReportFile,
         "--force"
     )
@@ -257,7 +257,7 @@ try {
     }
     Write-Host (
         "Encoding BPV1 v${bpvVersion}: ${Width}x${Height}, native FPS, " +
-        "PCM_U8 mono 16 kHz, lambda $Lambda, GOP $MinGop..$Gop, " +
+        "IMA_ADPCM mono 32 kHz, lambda $Lambda, GOP $MinGop..$Gop, " +
         "scene threshold $SceneThreshold, " +
         "$paletteMode, " +
         "$CandidatePalettes candidate palettes, $SampleBlocks training " +

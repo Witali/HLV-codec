@@ -163,13 +163,13 @@ try {
         Join-Path $work "hlv15.json"
     ) -Raw | ConvertFrom-Json
     if ($hlvReport.syntax -ne 15 -or
-        $hlvReport.audio -ne "PCM_U8 mono 16000 Hz" -or
+        $hlvReport.audio -ne "IMA_ADPCM mono 32000 Hz" -or
         $hlvReport.audioNormalization.curve -ne
             "primary-compressor-peak" -or
         [Math]::Abs(
             $hlvReport.audioNormalization.targetPeakDb - (-0.1)
         ) -gt 0.000001) {
-        throw "HLV wrapper did not record normalized 16 kHz audio."
+        throw "HLV wrapper did not record normalized 32 kHz IMA audio."
     }
     $bpvFiles = @(Get-ChildItem -LiteralPath (Join-Path $work "BPV") `
         -Filter "*.bpv1")
@@ -180,7 +180,8 @@ try {
         $bpvFiles[0].FullName --json | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or
         $bpvInfo.version -ne 6 -or
-        $bpvInfo.audioSampleRate -ne 16000 -or
+        $bpvInfo.audioCodec -ne 2 -or
+        $bpvInfo.audioSampleRate -ne 32000 -or
         $bpvInfo.audioChannels -ne 1 -or
         $bpvInfo.audioBytes -le 0 -or
         $bpvInfo.maxPatternDictionary -ne 0 -or
