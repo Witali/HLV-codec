@@ -100,8 +100,9 @@ The common v14/v15 syntax also includes:
 - the original simple 4×4 integer WHT reconstruction.
 
 The container can also carry unsigned 8-bit mono PCM in each video frame
-packet. At the ESP32 default of 16 kHz it costs 16 KB/s and can be sent
-directly to the chip's DAC. See [`docs/AUDIO_FORMAT.md`](docs/AUDIO_FORMAT.md).
+packet. At the ESP32 default of 16 kHz it costs 16 KB/s; the player converts
+it to signed PCM16 for the chip's I2S0 PCM-to-PDM output. See
+[`docs/AUDIO_FORMAT.md`](docs/AUDIO_FORMAT.md).
 
 ## Build and verify
 
@@ -187,8 +188,9 @@ The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, DivX 3/AVI, BPV1,
 the constrained MPEG-1/MP2 profile, or the bounded 3GP/AVI H.263 profiles
 from a FAT32 microSD card over an independent SPI3/VSPI DMA bus and displays
 it on the 320x240 ST7789 over SPI2 DMA. HLV/MJPEG/DivX 3 PCM_U8 and decoded
-MPEG MP2 play through DAC GPIO26 DMA and the onboard amplifier. AVI/H.263
-PCM S16LE is converted to PCM_U8 while streaming. The BPV1 path keeps
+MPEG MP2 play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
+amplifier; GPIO22 carries the required PDM clock. AVI/H.263 PCM S16LE is
+converted to PCM_U8 while streaming. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
 DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX

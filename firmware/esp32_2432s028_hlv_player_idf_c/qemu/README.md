@@ -127,18 +127,18 @@ specified in
 The dedicated demo launcher builds a production flash image when it is
 missing and opens the ST7789 window with the default demo card. Use
 `-Rebuild` to rebuild the flash image or `-Headless` to suppress the window.
-It uses DirectSound for the ESP32 GPIO26 DAC and accepts `-Volume 0..100`
+It uses DirectSound for the reconstructed ESP32 audio stream and accepts `-Volume 0..100`
 (default 70) as a QEMU-side volume control independent of the guest.
 Both launchers enable multi-thread TCG so the two emulated ESP32 cores can
 continue servicing timer and watchdog interrupts while the other core is in
 a long polling SDSPI transfer.
 
 The ESP32 audio model implements the I2S0 TX registers, linked DMA descriptors
-and interrupt subset exercised by ESP-IDF `dac_continuous`. Samples are the
-high byte of each 16-bit DMA slot, matching
-`CONFIG_DAC_DMA_AUTO_16BIT_ALIGN`. A small analog-I2C bridge retains APLL
-register writes and returns `APLL CAL_END`, allowing the same 8 kHz APLL
-configuration used on the physical board. `dac-rate` defaults to 8000 and
+and interrupt subset exercised by ESP-IDF continuous-DAC and PCM-to-PDM
+drivers. It maps either unsigned DAC slots or signed PCM-to-PDM slots back to
+unsigned 8-bit samples for DirectSound; it does not emulate the physical PDM
+carrier or analog filter. A small analog-I2C bridge retains APLL register
+writes and returns `APLL CAL_END`. `dac-rate` defaults to 8000 and
 `dac-volume` defaults to 70 when the machine is invoked directly.
 
 The SPI SD adapter preserves the standard command responses. In particular,

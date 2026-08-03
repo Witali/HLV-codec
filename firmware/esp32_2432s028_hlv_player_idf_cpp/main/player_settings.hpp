@@ -32,7 +32,7 @@ constexpr bool kLogFrameTimings = false;
 // display. Predictive decoding itself remains ordered between frames.
 constexpr bool kUseDualCorePipeline = true;
 
-// Play the HLV PCM_U8 mono track through the ESP32 DAC on GPIO26 and use its
+// Play supported mono audio through I2S0 PCM-to-PDM on GPIO26 and use its
 // sample counter as the video clock. false (and files without audio) use the
 // monotonic ESP timer instead.
 constexpr bool kEnableAudio = true;

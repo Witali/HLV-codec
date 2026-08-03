@@ -1,10 +1,10 @@
 /*
- * ESP32 I2S0 TX DMA and built-in DAC output.
+ * ESP32 I2S0 TX DMA audio output.
  *
  * This implements the register and descriptor subset used by the ESP-IDF
- * dac_continuous driver.  GPIO26 is DAC channel 1 on the physical
- * ESP32-2432S028 board; the I2S DMA stream contains unsigned 8-bit samples in
- * the high byte of each 16-bit word.
+ * continuous-DAC and PCM-to-PDM drivers.  It forwards the reconstructed
+ * unsigned 8-bit stream to QEMU's audio backend instead of emulating the
+ * physical board's analog filter and amplifier.
  */
 
 #include "qemu/osdep.h"
@@ -27,6 +27,7 @@
 #define I2S_OUT_LINK_REG           0x30
 #define I2S_OUT_EOF_DES_ADDR_REG   0x38
 #define I2S_LC_CONF_REG            0x60
+#define I2S_PDM_CONF_REG           0xb4
 
 #define I2S_CONF_TX_RESET          BIT(0)
 #define I2S_CONF_TX_START          BIT(4)
@@ -40,6 +41,8 @@
 #define I2S_LC_OUT_RESET           BIT(1)
 #define I2S_LC_OUT_AUTO_WRBACK     BIT(6)
 #define I2S_LC_CHECK_OWNER         BIT(12)
+#define I2S_TX_PDM_EN              BIT(0)
+#define I2S_PCM2PDM_CONV_EN        BIT(2)
 
 #define DMA_DESCRIPTOR_PREFIX      0x3ff00000U
 #define DMA_DESCRIPTOR_MAX_BYTES   4092U
@@ -160,8 +163,14 @@ static void esp32_i2s_dac_dma_timer(void *opaque)
     }
 
     cpu_physical_memory_read(buffer, data, length);
+    const uint32_t pdm_conf = s->regs[I2S_PDM_CONF_REG / 4];
+    const bool pcm_to_pdm =
+        (pdm_conf & (I2S_TX_PDM_EN | I2S_PCM2PDM_CONV_EN)) ==
+        (I2S_TX_PDM_EN | I2S_PCM2PDM_CONV_EN);
     for (uint32_t offset = 1; offset < length; offset += 2) {
-        esp32_i2s_dac_push_sample(s, data[offset]);
+        const uint8_t sample =
+            pcm_to_pdm ? data[offset] ^ 0x80 : data[offset];
+        esp32_i2s_dac_push_sample(s, sample);
     }
 
     if (s->regs[I2S_LC_CONF_REG / 4] & I2S_LC_OUT_AUTO_WRBACK) {

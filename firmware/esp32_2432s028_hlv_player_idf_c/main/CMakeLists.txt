@@ -365,7 +365,7 @@ else()
             divx3
             h263_3gp
             hlv1
-            esp_driver_dac
+            esp_driver_i2s
             esp_driver_gpio
             esp_driver_sdspi
             esp_driver_spi

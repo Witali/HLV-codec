@@ -25,7 +25,7 @@
 /* Decode frame N on CPU1 while CPU0 renders frame N-1. */
 #define PLAYER_USE_DUAL_CORE_PIPELINE 1
 
-/* Play supported mono audio through the ESP32 DAC on GPIO26. */
+/* Play supported mono audio through I2S0 PCM-to-PDM on GPIO26. */
 #define PLAYER_ENABLE_AUDIO 1
 #define PLAYER_ENABLE_UART_CONTROL 1
 #define PLAYER_USE_BOOT_BUTTON_TASK 1

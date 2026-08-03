@@ -25,7 +25,7 @@ proportional to the number of samples.
 
 The only application components are:
 
-- `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, continuous DAC audio and player;
+- `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, I2S PDM audio and player;
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`;
 - `divx3`: the shared portable Microsoft MPEG-4 v3 decoder and AVI reader;
@@ -742,9 +742,10 @@ Its modeled-device inventory and known accuracy limits are recorded in
   descriptors cross cores in the pipelined paths, so no frame or packet
   payload is copied.
 - Audio: a static 4 KiB stream buffer feeding a permanent ring of six
-  256-sample DAC DMA descriptors directly from the completion ISR. A second
+  256-sample signed-PCM I2S PDM DMA descriptors directly from the completion
+  ISR. A second
   sequential file cursor skips compressed video and prefetches only PCM packet
-  tails, or decodes MP2 with its video stream disabled. The DAC sample count is
+  tails, or decodes MP2 with its video stream disabled. The PDM DMA sample count is
   the master video clock. Frame targets are
   calculated from `fps_num/fps_den` in the active container. The current
   real-time mode keeps audio continuous and omits the display transfer of a
@@ -773,12 +774,13 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
-`kEnableAudio` enables PCM_U8 playback through DAC GPIO26. The current test
+`kEnableAudio` enables PCM_U8 playback through I2S0 PCM-to-PDM on GPIO26 data
+and GPIO22 clock. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated. Playback starts, and resumes after an underrun, only after that
 queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or
 512 ms at 8 kHz. Files without audio, an explicitly disabled output, or a
-failed audio reader/DAC automatically use the monotonic ESP timer as the video
+failed audio reader/PDM output automatically use the monotonic ESP timer as the video
 clock. The periodic log reports queued bytes, controlled rebuffer events and
 silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector
 compatibility. Audio is always the uninterrupted master clock and an already

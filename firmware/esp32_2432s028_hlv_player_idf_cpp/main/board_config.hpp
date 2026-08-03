@@ -16,7 +16,8 @@ constexpr gpio_num_t kSdMosi = GPIO_NUM_23;
 constexpr gpio_num_t kSdMiso = GPIO_NUM_19;
 constexpr gpio_num_t kSdCs = GPIO_NUM_5;
 
-constexpr gpio_num_t kAudioDac = GPIO_NUM_26;
+constexpr gpio_num_t kAudioPdmData = GPIO_NUM_26;
+constexpr gpio_num_t kAudioPdmClock = GPIO_NUM_22;
 constexpr gpio_num_t kBootButton = GPIO_NUM_0;
 
 }  // namespace board

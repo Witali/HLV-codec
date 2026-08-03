@@ -8,7 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "driver/dac_continuous.h"
+#include "driver/i2s_pdm.h"
 #include "driver/gpio.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_master.h"
@@ -241,8 +241,6 @@ static const uint8_t kStatusFont[95][5] = {
 _Static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
                   !PLAYER_USE_DUAL_CORE_PIPELINE,
               "Dual-core playback requires a two-core FreeRTOS build");
-_Static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
-              "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
 _Static_assert(PLAYER_KEYFRAME_CATCHUP_SKIPS > 0,
               "Keyframe catch-up must permit at least one video skip");
 
@@ -465,13 +463,13 @@ StreamBufferHandle_t audio_stream = NULL;
 StaticStreamBuffer_t audio_stream_state = {0};
 __attribute__((aligned(4))) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
 __attribute__((aligned(4))) uint8_t audio_dma_samples[kAudioDmaSamples];
-dac_continuous_handle_t audio_dac = NULL;
+i2s_chan_handle_t audio_pdm = NULL;
 TaskHandle_t audio_reader_task_handle = NULL;
 void *audio_dma_buffer_keys[kAudioDmaDescriptors] = {0};
 uint16_t audio_dma_valid_samples[kAudioDmaDescriptors] = {0};
 bool audio_enabled = false;
 volatile bool audio_started = false;
-bool audio_async_started = false;
+bool audio_pdm_enabled = false;
 volatile bool audio_reader_stop_requested = false;
 volatile bool audio_prefetch_eof = false;
 volatile bool audio_rebuffering = false;
@@ -1774,12 +1772,13 @@ void audioReaderTask(void *opaque) {
     vTaskDelete(NULL);
 }
 
-bool onAudioConvertDone(dac_continuous_handle_t handle,
-                        const dac_event_data_t *event, void *opaque) {
+bool onAudioPdmSent(i2s_chan_handle_t handle,
+                    i2s_event_data_t *event, void *opaque) {
+    (void)handle;
     (void)opaque;
     size_t dma_slot = kAudioDmaDescriptors;
     for (size_t slot = 0; slot < kAudioDmaDescriptors; ++slot) {
-        if (audio_dma_buffer_keys[slot] == event->buf) {
+        if (audio_dma_buffer_keys[slot] == event->dma_buf) {
             dma_slot = slot;
             break;
         }
@@ -1790,7 +1789,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
     }
     if (dma_slot < kAudioDmaDescriptors &&
         !audio_dma_buffer_keys[dma_slot]) {
-        audio_dma_buffer_keys[dma_slot] = event->buf;
+        audio_dma_buffer_keys[dma_slot] = event->dma_buf;
     }
 
     if (dma_slot < kAudioDmaDescriptors) {
@@ -1829,12 +1828,14 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
         }
     }
 
-    size_t loaded = 0;
-    const esp_err_t result = dac_continuous_write_asynchronously(
-        handle, (uint8_t *)(event->buf), event->buf_size,
-        audio_dma_samples, sizeof audio_dma_samples, &loaded);
-    if (result != ESP_OK || loaded != sizeof audio_dma_samples) {
+    if (event->size != kAudioDmaBufferBytes || !event->dma_buf) {
         audio_output_failed = true;
+    } else {
+        int16_t *pcm = (int16_t *)(event->dma_buf);
+        for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
+            pcm[sample] = (int16_t)(
+                ((int32_t)audio_dma_samples[sample] - 128) * 256);
+        }
     }
     if (dma_slot < kAudioDmaDescriptors) {
         audio_dma_valid_samples[dma_slot] = (uint16_t)(received);
@@ -1859,14 +1860,13 @@ void stopAudio() {
             audio_reader_task_handle = NULL;
         }
     }
-    if (audio_dac) {
-        if (audio_async_started) {
-            dac_continuous_stop_async_writing(audio_dac);
-            audio_async_started = false;
+    if (audio_pdm) {
+        if (audio_pdm_enabled) {
+            i2s_channel_disable(audio_pdm);
+            audio_pdm_enabled = false;
         }
-        dac_continuous_disable(audio_dac);
-        dac_continuous_del_channels(audio_dac);
-        audio_dac = NULL;
+        i2s_del_channel(audio_pdm);
+        audio_pdm = NULL;
     }
     if (audio_file) {
         if (mpeg_audio) {
@@ -2050,14 +2050,6 @@ bool prepareAudio(HLV1Header header) {
         }
     }
 
-    dac_continuous_config_t config = {0};
-    config.chan_mask = DAC_CHANNEL_MASK_CH1;
-    config.desc_num = kAudioDmaDescriptors;
-    config.buf_size = kAudioDmaBufferBytes;
-    config.freq_hz = header.audio_sample_rate;
-    config.offset = 0;
-    config.clk_src = DAC_DIGI_CLK_SRC_APLL;
-    config.chan_mode = DAC_CHANNEL_MODE_SIMUL;
     const size_t dma_free =
         heap_caps_get_free_size(MALLOC_CAP_DMA);
     const size_t dma_largest =
@@ -2074,21 +2066,61 @@ bool prepareAudio(HLV1Header header) {
         stopAudio();
         return false;
     }
-    if (dac_continuous_new_channels(&config, &audio_dac) != ESP_OK ||
-        dac_continuous_enable(audio_dac) != ESP_OK) {
+    i2s_chan_config_t channel_config =
+        I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    channel_config.dma_desc_num = kAudioDmaDescriptors;
+    channel_config.dma_frame_num = kAudioDmaSamples;
+    channel_config.auto_clear_after_cb = false;
+    channel_config.auto_clear_before_cb = false;
+    if (i2s_new_channel(&channel_config, &audio_pdm, NULL) != ESP_OK) {
         stopAudio();
         return false;
     }
 
-    dac_event_callbacks_t callbacks = {0};
-    callbacks.on_convert_done = onAudioConvertDone;
-    if (dac_continuous_register_event_callback(
-            audio_dac, &callbacks, NULL) != ESP_OK ||
-        dac_continuous_start_async_writing(audio_dac) != ESP_OK) {
+    i2s_pdm_tx_config_t pdm_config = {
+        .clk_cfg =
+            I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(header.audio_sample_rate),
+        .slot_cfg = I2S_PDM_TX_SLOT_DEFAULT_CONFIG(
+            I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .clk = BOARD_AUDIO_PDM_CLOCK,
+            .dout = BOARD_AUDIO_PDM_DATA,
+            .invert_flags = {
+                .clk_inv = false,
+            },
+        },
+    };
+    if (i2s_channel_init_pdm_tx_mode(audio_pdm, &pdm_config) != ESP_OK) {
         stopAudio();
         return false;
     }
-    audio_async_started = true;
+
+    i2s_event_callbacks_t callbacks = {0};
+    callbacks.on_sent = onAudioPdmSent;
+    if (i2s_channel_register_event_callback(
+            audio_pdm, &callbacks, NULL) != ESP_OK) {
+        stopAudio();
+        return false;
+    }
+
+    memset(audio_read_chunk, 0, kAudioDmaBufferBytes);
+    for (size_t descriptor = 0;
+         descriptor < kAudioDmaDescriptors;
+         ++descriptor) {
+        size_t loaded = 0;
+        if (i2s_channel_preload_data(
+                audio_pdm, audio_read_chunk, kAudioDmaBufferBytes,
+                &loaded) != ESP_OK ||
+            loaded != kAudioDmaBufferBytes) {
+            stopAudio();
+            return false;
+        }
+    }
+    if (i2s_channel_enable(audio_pdm) != ESP_OK) {
+        stopAudio();
+        return false;
+    }
+    audio_pdm_enabled = true;
     audio_enabled = true;
 
     /* Audio is the master clock. Fill the complete bounded PCM queue before
@@ -2125,10 +2157,14 @@ bool prepareAudio(HLV1Header header) {
         return false;
     }
 
+    i2s_chan_info_t channel_info = {0};
+    i2s_channel_get_info(audio_pdm, &channel_info);
     ESP_LOGI(kTag,
-             "Audio: PCM_U8 mono %u Hz on DAC GPIO%d, static %u-byte queue, "
+             "Audio: PCM_U8 mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
+             "%u Hz carrier, high-SNR divider 13, static %u-byte queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
-             header.audio_sample_rate, BOARD_AUDIO_DAC,
+             header.audio_sample_rate, BOARD_AUDIO_PDM_DATA,
+             BOARD_AUDIO_PDM_CLOCK, (unsigned)(channel_info.bclk_hz),
              (unsigned)(kAudioStreamBytes),
              (unsigned)(kAudioDmaDescriptors),
              (unsigned)(kAudioDmaSamples),
