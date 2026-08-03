@@ -94,10 +94,10 @@ void app_main(void) {
     i2s_chan_handle_t tx = NULL;
     ESP_ERROR_CHECK(i2s_new_channel(&channel_config, &tx, NULL));
 
+    /* Espressif's analog-output clock profile keeps the 6.144 MHz carrier
+       while using the lower-noise BCLK divider (13 instead of codec mode 8). */
     i2s_pdm_tx_clk_config_t clock_config =
-        I2S_PDM_TX_CLK_DEFAULT_CONFIG(kToneSampleRate);
-    clock_config.up_sample_fp = 960;
-    clock_config.up_sample_fs = kToneSampleRate / 100;
+        I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(kToneSampleRate);
 
     i2s_pdm_tx_config_t pdm_config = {
         .clk_cfg = clock_config,
@@ -116,8 +116,9 @@ void app_main(void) {
     i2s_chan_info_t channel_info = {0};
     ESP_ERROR_CHECK(i2s_channel_get_info(tx, &channel_info));
     esp_rom_printf(
-        "PDM TONE 1 READY: SD/display/SPI/DAC disabled, GPIO26 data, "
-        "GPIO22 clock, %u Hz sine, %u s ramp, PDM clock %u Hz\n",
+        "PDM TONE 2 READY: SD/display/SPI/DAC disabled, GPIO26 data, "
+        "GPIO22 clock, %u Hz sine, %u s ramp, PDM clock %u Hz, "
+        "analog high-SNR divider 13\n",
         (unsigned)kToneFrequency, (unsigned)kToneRampSeconds,
         (unsigned)channel_info.bclk_hz);
 
