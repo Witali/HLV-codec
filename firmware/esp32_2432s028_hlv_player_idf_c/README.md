@@ -123,6 +123,24 @@ has no task-side refills, descriptor-chain stops or DMA restarts. UART is used
 only for one startup line before the tone begins. Reflash the regular player
 with `.\flash.ps1 -Port COM8` when the noise comparison is complete.
 
+### SD-free I2S PDM sine-ramp diagnostic
+
+To replace the internal DAC path with the ESP32 I2S0 PCM-to-PDM converter,
+build and flash the independent `build-pdm-tone` image:
+
+```powershell
+.\pdm-tone-test.ps1 -Port COM8
+```
+
+PDM data is routed to GPIO26 and its required clock is routed to otherwise
+unused GPIO22. The onboard analog amplifier is connected only to GPIO26; GPIO22
+does not need an external connection for this comparison. The firmware feeds
+32 kHz signed PCM to the hardware PDM converter, whose output carrier is about
+6.144 MHz. It retains the 1 kHz, 20-second full-scale ramp and uses six exact-
+cycle DMA buffers. After the ramp, all buffers contain the same full-scale
+waveform and repeat without task-side refills. SD, display, SPI, Wi-Fi and the
+internal DAC remain disabled.
+
 ## Uploading videos to microSD over UART
 
 Prepare the validated DivX 3 profile from the approved 1080p Big Buck Bunny

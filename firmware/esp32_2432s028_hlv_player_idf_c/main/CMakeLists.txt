@@ -18,6 +18,8 @@ set(MPEG1_RENDER_PROFILE OFF CACHE BOOL
     "Measure MPEG-1 render phases and emit one MRP record after 60 frames")
 set(TONE_TEST OFF CACHE BOOL
     "Build the SD-free GPIO26 DAC sine-ramp diagnostic firmware")
+set(PDM_TONE_TEST OFF CACHE BOOL
+    "Build the SD-free GPIO26 I2S PDM sine-ramp diagnostic firmware")
 set(COMPACT_YUV_RGB565_FAST_PATH ON CACHE BOOL
     "Fuse aligned compact Y6/U5/V5 unpacking with RGB565 conversion")
 set(COMPACT_YUV_RGB565_CLAMP_TABLES ON CACHE BOOL
@@ -160,7 +162,18 @@ function(schedule_mjpeg_hot_iram component_target)
     endif()
 endfunction()
 
-if(TONE_TEST)
+if(PDM_TONE_TEST)
+    idf_component_register(
+        SRCS
+            "${CMAKE_CURRENT_LIST_DIR}/../../common/esp32_pdm_tone_test.c"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_driver_gpio
+            esp_driver_i2s
+            esp_rom
+            freertos
+    )
+elseif(TONE_TEST)
     idf_component_register(
         SRCS
             "${CMAKE_CURRENT_LIST_DIR}/../../common/esp32_tone_test.c"
