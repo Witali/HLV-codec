@@ -31,6 +31,9 @@ extern "C" {
 
 #define BPV1_AUDIO_NONE 0
 #define BPV1_AUDIO_PCM_U8 1
+#define BPV1_AUDIO_IMA_ADPCM 2
+#define BPV1_ADPCM_BLOCK_HEADER_BYTES 6U
+#define BPV1_MAX_AUDIO_BLOCK_SAMPLES 4096U
 
 enum {
     BPV1_OK = 0,

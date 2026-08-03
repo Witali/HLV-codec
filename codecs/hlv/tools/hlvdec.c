@@ -5,6 +5,7 @@
  * it composes safely with FFmpeg and ffplay pipes.
  */
 #include "hlv1.h"
+#include "ima_adpcm.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -35,11 +36,36 @@ static void close_if_file(FILE *f, FILE *standard) {
 
 static void usage(const char *p) {
     fprintf(stderr,
-            "Usage: %s input.hlv|- output.y4m|- [--audio-out audio.u8|-]\n"
+            "Usage: %s input.hlv|- output.y4m|- [--audio-out audio.raw|-]\n"
+            "Audio output is PCM_U8 for codec 1 and PCM_S16LE for codec 2.\n"
             "Example: %s input.hlv - | ffplay -f yuv4mpegpipe -i -\n",
             p, p);
 }
 static double now_sec(void) { return (double)clock() / CLOCKS_PER_SEC; }
+
+static int write_audio_packet(FILE *output, uint8_t codec,
+                              const uint8_t *data, size_t size) {
+    if (!size) return 0;
+    if (codec == HLV1_AUDIO_PCM_U8)
+        return fwrite(data, 1, size, output) == size ? 0 : -1;
+    if (codec == HLV1_AUDIO_IMA_ADPCM) {
+        int16_t samples[IMA_ADPCM_MAX_BLOCK_SAMPLES];
+        uint8_t pcm[IMA_ADPCM_MAX_BLOCK_SAMPLES * 2U];
+        size_t sample_count = 0;
+        size_t sample;
+        if (ima_adpcm_decode_block(data, size, samples,
+                                   IMA_ADPCM_MAX_BLOCK_SAMPLES,
+                                   &sample_count))
+            return -2;
+        for (sample = 0; sample < sample_count; ++sample) {
+            const uint16_t value = (uint16_t)samples[sample];
+            pcm[sample * 2U] = (uint8_t)value;
+            pcm[sample * 2U + 1U] = (uint8_t)(value >> 8);
+        }
+        return fwrite(pcm, 2U, sample_count, output) == sample_count ? 0 : -1;
+    }
+    return -2;
+}
 
 int main(int argc, char **argv) {
     binary_stdio();
@@ -79,8 +105,11 @@ int main(int argc, char **argv) {
         if (audio) {
             size_t audio_size = hlv1_packet_audio_size(&p);
             const uint8_t *audio_data = hlv1_packet_audio_data(&p);
-            if (audio_size && fwrite(audio_data, 1, audio_size, audio) != audio_size) {
-                fprintf(stderr, "Audio write failed\n");
+            const int audio_result = write_audio_packet(
+                audio, h.audio_codec, audio_data, audio_size);
+            if (audio_result) {
+                fprintf(stderr, "%s\n", audio_result == -2
+                    ? "Invalid IMA ADPCM audio block" : "Audio write failed");
                 hlv1_packet_free(&p);
                 return 1;
             }

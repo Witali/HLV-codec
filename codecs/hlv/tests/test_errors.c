@@ -97,6 +97,15 @@ int main(void) {
           got.audio_channels == h.audio_channels);
     fclose(f);
 
+    h.audio_codec = HLV1_AUDIO_IMA_ADPCM;
+    f = tmpfile();
+    CHECK(f != NULL);
+    CHECK(hlv1_header_write(f, &h) == HLV1_OK);
+    rewind(f);
+    CHECK(hlv1_header_read(f, &got) == HLV1_OK);
+    CHECK(got.audio_codec == HLV1_AUDIO_IMA_ADPCM);
+    fclose(f);
+
     HLV1Header invalid_audio = test_header();
     invalid_audio.flags = HLV1_FLAG_AUDIO;
     invalid_audio.audio_codec = HLV1_AUDIO_PCM_U8;

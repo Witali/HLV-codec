@@ -42,6 +42,7 @@ $player = Join-Path $hlv "tools\hlvplay_win32.cpp"
 $common = Join-Path $hlv "src\hlv1_common.c"
 $decoder = Join-Path $hlv "src\hlv1_decode.c"
 $bpvDecoder = Join-Path $bpv "src\bpv1_decode.c"
+$imaAdpcm = Join-Path $repo "codecs\common\src\ima_adpcm.c"
 $mpegDecoder = Join-Path $mpeg "src\pl_mpeg.c"
 $h263Sources = @(
     (Join-Path $h263 "src\h263_3gp.c")
@@ -50,6 +51,7 @@ $h263Sources = @(
 $h263SourceArguments = ($h263Sources | ForEach-Object {
     '"{0}"' -f $_
 }) -join " "
+$h263SourceArguments = ('"{0}" {1}' -f $imaAdpcm, $h263SourceArguments)
 $amrAdapter = Join-Path $amrnb "src\amrnb_3gp.c"
 $amrSources = @(Get-ChildItem -LiteralPath (Join-Path $amrPv "common\src") `
         -Filter "*.c" |

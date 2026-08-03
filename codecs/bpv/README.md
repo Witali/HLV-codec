@@ -224,8 +224,9 @@ in `/HLV` on the microSD card. The decoder expands adaptive file records into
 two simple 9-byte block-record frames and renders RGB565 rows directly into
 the display's existing DMA strips. A 320x240 keyframe has a conservative
 47,472-byte packet bound when every block uses direct RAW; ordinary adaptive
-RAW records remain shorter. It uses the same PCM_U8 DAC/audio-clock pipeline
-as HLV; files without audio remain timer-clocked.
+RAW records remain shorter. It supports legacy PCM_U8 and the same independent
+IMA ADPCM mono blocks as HLV; production profiles use 32 kHz IMA decoded to
+PCM16. Files without audio remain timer-clocked.
 
 ## Reference measurement
 

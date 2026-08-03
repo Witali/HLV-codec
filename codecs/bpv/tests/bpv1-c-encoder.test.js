@@ -98,6 +98,9 @@ try {
   const audio = path.join(temporary, "audio.u8");
   const outputAudio = path.join(temporary, "output-audio.bpv1");
   const reportAudio = path.join(temporary, "report-audio.json");
+  const imaAudio = path.join(temporary, "audio.s16le");
+  const outputImaAudio = path.join(temporary, "output-ima-audio.bpv1");
+  const reportImaAudio = path.join(temporary, "report-ima-audio.json");
   const outputFixed = path.join(temporary, "output-fixed.bpv1");
   const reportFixed = path.join(temporary, "report-fixed.json");
   const activePaletteFile = path.join(temporary, "active-palettes.rgb");
@@ -136,10 +139,28 @@ try {
   fs.writeFileSync(audio, Buffer.from(
     Array.from({ length: 4000 }, (_, index) => index & 255),
   ));
+  const imaSamples = Buffer.alloc(8000 * 2);
+  for (let sample = 0; sample < 8000; sample += 1) {
+    imaSamples.writeInt16LE(
+      Math.round(Math.sin(sample * 2 * Math.PI * 440 / 32000) * 24000),
+      sample * 2,
+    );
+  }
+  fs.writeFileSync(imaAudio, imaSamples);
 
   runEncoder(input, output1, report1, 1);
   runEncoder(input, output4, report4, 4);
   runEncoder(input, outputAudio, reportAudio, 4, audio);
+  runEncoder(
+    input,
+    outputImaAudio,
+    reportImaAudio,
+    4,
+    null,
+    true,
+    null,
+    ["--audio-ima-s16le", imaAudio, "--audio-rate", "32000"],
+  );
   runEncoder(input, outputFixed, reportFixed, 1, null, false);
   runEncoder(
     input,
@@ -277,6 +298,31 @@ try {
   assert.deepEqual(
     Buffer.concat(audioFrames.map((samples) => Buffer.from(samples))),
     fs.readFileSync(audio),
+  );
+
+  const imaFrames = [];
+  const imaInfo = bpv.walkFrames(
+    fs.readFileSync(outputImaAudio),
+    (frame) => imaFrames.push(Buffer.from(frame.audio)),
+  );
+  assert.equal(imaInfo.version, 6);
+  assert.equal(imaInfo.audioCodec, 2);
+  assert.equal(imaInfo.audioSampleRate, 32000);
+  assert.equal(imaInfo.audioChannels, 1);
+  let imaDecodedSamples = 0;
+  for (const block of imaFrames) {
+    assert.ok(block.length > 512, "IMA packet must exceed the refill buffer");
+    assert.ok(block[2] <= 88);
+    assert.equal(block[3], 0);
+    const sampleCount = block.readUInt16LE(4);
+    assert.ok(sampleCount > 0 && sampleCount <= 4096);
+    assert.equal(block.length, 6 + Math.floor(sampleCount / 2));
+    imaDecodedSamples += sampleCount;
+  }
+  assert.equal(imaDecodedSamples, 8000);
+  assert.equal(
+    JSON.parse(fs.readFileSync(reportImaAudio, "utf8")).audioCodec,
+    "ima_adpcm",
   );
 
   const fixedInfo = bpv.walkFrames(fs.readFileSync(outputFixed));

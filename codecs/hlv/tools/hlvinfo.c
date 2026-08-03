@@ -25,6 +25,9 @@ int main(int argc, char **argv) {
            h.frame_count,packets,keys,h.gop,h.quality,h.search_radius,
            video_payload,audio_payload,payload);
     if (h.flags & HLV1_FLAG_AUDIO)
-        printf("Audio: PCM_U8 mono %u Hz\n", h.audio_sample_rate);
+        printf("Audio: %s mono %u Hz\n",
+               h.audio_codec == HLV1_AUDIO_IMA_ADPCM
+                   ? "IMA_ADPCM" : "PCM_U8",
+               h.audio_sample_rate);
     fclose(f); return 0;
 }

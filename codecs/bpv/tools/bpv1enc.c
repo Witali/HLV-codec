@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
+#include "ima_adpcm.h"
 #include <time.h>
 
 #include "bpv1_cuda.h"
@@ -24,6 +25,8 @@
 #define RECORD_BYTES 9
 #define PATTERN_BYTES 4
 #define MAX_CANDIDATE_PALETTES PALETTE_COUNT
+#define AUDIO_PCM_U8 1
+#define AUDIO_IMA_ADPCM 2
 #define PALETTE_INDEX_CHANNEL_BITS 4
 #define PALETTE_INDEX_CHANNEL_BINS (1U << PALETTE_INDEX_CHANNEL_BITS)
 #define PALETTE_INDEX_BIN_COUNT \
@@ -115,6 +118,7 @@ typedef struct {
     int progress;
     const char *audio_path;
     int audio_rate;
+    int audio_codec;
     int active_palettes;
     const char *active_palette_path;
     int device_mode;
@@ -125,6 +129,7 @@ typedef struct {
 typedef struct {
     FILE *file;
     uint32_t sample_rate;
+    uint8_t codec;
     uint64_t phase;
     uint64_t bytes;
 } AudioInput;
@@ -199,7 +204,8 @@ static void usage(FILE *stream) {
         "  --max-block-dictionary N       block dictionary entries (default 256)\n"
         "  --max-frames N                 encode a leading test fragment\n"
         "  --audio-u8 FILE                mux unsigned 8-bit mono raw PCM\n"
-        "  --audio-rate N                 PCM sample rate (default 16000)\n"
+        "  --audio-ima-s16le FILE         encode signed 16-bit LE mono PCM as IMA ADPCM\n"
+        "  --audio-rate N                 audio sample rate (default 16000)\n"
         "  --active-palettes              train/transmit one bank per GOP (default)\n"
         "  --active-palette-file FILE     use consecutive 64x16 RGB banks per GOP\n"
         "  --fixed-palettes               use one legacy bank for the whole file\n"
@@ -2085,7 +2091,7 @@ static int write_bpv_header(
         write_u16(output, (uint16_t)options->max_block_dictionary) ||
         write_u16(output, 0) ||
         write_u8(output, (uint8_t)options->search_radius) ||
-        write_u8(output, has_audio ? 1 : 0) ||
+        write_u8(output, has_audio ? (uint8_t)options->audio_codec : 0) ||
         write_u16(output,
                   (uint16_t)(has_audio ? options->audio_rate : 0)) ||
         write_u8(output, has_audio ? 1 : 0) ||
@@ -2104,9 +2110,9 @@ static int write_audio_frame(
 ) {
     uint64_t step;
     uint64_t sample_count;
-    uint8_t samples[4096];
     size_t offset = *consumed;
-    size_t remaining;
+    size_t audio_bytes = 0;
+    uint8_t *packet_audio = NULL;
     if (offset > encoded_size || encoded_size - offset < 9U) return -1;
     const uint32_t frame_bytes =
         (uint32_t)encoded[offset + 1U] |
@@ -2126,26 +2132,69 @@ static int write_audio_frame(
     }
     if (sample_count > UINT32_MAX) return -1;
 
+    if (sample_count) {
+        if (!audio || !audio->file) return -1;
+        if (audio->codec == AUDIO_PCM_U8) {
+            size_t got;
+            packet_audio = (uint8_t *)malloc((size_t)sample_count);
+            if (!packet_audio) return -1;
+            got = fread(packet_audio, 1, (size_t)sample_count, audio->file);
+            if (got < sample_count) {
+                if (ferror(audio->file)) { free(packet_audio); return -1; }
+                memset(packet_audio + got, 128, (size_t)sample_count - got);
+            }
+            audio_bytes = (size_t)sample_count;
+        } else if (audio->codec == AUDIO_IMA_ADPCM) {
+            const size_t block_size = ima_adpcm_block_size((size_t)sample_count);
+            uint8_t *pcm_bytes;
+            int16_t *pcm;
+            size_t got;
+            size_t sample;
+            size_t adpcm_size = 0;
+            if (!block_size || sample_count > SIZE_MAX / 2U) return -1;
+            pcm_bytes = (uint8_t *)malloc((size_t)sample_count * 2U);
+            pcm = (int16_t *)malloc((size_t)sample_count * sizeof *pcm);
+            packet_audio = (uint8_t *)malloc(block_size);
+            if (!pcm_bytes || !pcm || !packet_audio) {
+                free(pcm_bytes); free(pcm); free(packet_audio); return -1;
+            }
+            got = fread(pcm_bytes, 1, (size_t)sample_count * 2U, audio->file);
+            if (got < sample_count * 2U) {
+                if (ferror(audio->file)) {
+                    free(pcm_bytes); free(pcm); free(packet_audio); return -1;
+                }
+                memset(pcm_bytes + got, 0, (size_t)sample_count * 2U - got);
+            }
+            for (sample = 0; sample < sample_count; ++sample) {
+                pcm[sample] = (int16_t)((uint16_t)pcm_bytes[sample * 2U] |
+                    ((uint16_t)pcm_bytes[sample * 2U + 1U] << 8));
+            }
+            if (ima_adpcm_encode_block(pcm, (size_t)sample_count,
+                                       packet_audio, block_size,
+                                       &adpcm_size)) {
+                free(pcm_bytes); free(pcm); free(packet_audio); return -1;
+            }
+            free(pcm_bytes); free(pcm);
+            audio_bytes = adpcm_size;
+        } else {
+            return -1;
+        }
+    }
+
     if (fwrite(encoded + offset, 1, 9, output) != 9 ||
-        write_u32(output, (uint32_t)sample_count) ||
+        write_u32(output, (uint32_t)audio_bytes) ||
         fwrite(encoded + offset + 9U, 1, frame_bytes, output) !=
             frame_bytes) {
+        free(packet_audio);
         return -1;
     }
-    remaining = (size_t)sample_count;
-    while (remaining) {
-        const size_t chunk =
-            remaining < sizeof samples ? remaining : sizeof samples;
-        const size_t got = fread(samples, 1, chunk, audio->file);
-        if (got < chunk) {
-            if (ferror(audio->file)) return -1;
-            memset(samples + got, 128, chunk - got);
-        }
-        if (fwrite(samples, 1, chunk, output) != chunk) return -1;
-        remaining -= chunk;
+    if (audio_bytes && fwrite(packet_audio, 1, audio_bytes, output) != audio_bytes) {
+        free(packet_audio);
+        return -1;
     }
-    if (audio) audio->bytes += sample_count;
-    *written_bytes += 13U + frame_bytes + sample_count;
+    free(packet_audio);
+    if (audio) audio->bytes += audio_bytes;
+    *written_bytes += 13U + frame_bytes + audio_bytes;
     *consumed = offset + 9U + frame_bytes;
     return 0;
 }
@@ -2461,7 +2510,10 @@ static int write_report(
         file_bytes * 8.0 / duration / 1000.0,
         file_bytes * 8.0 /
             ((double)info->width * info->height * frame_count),
-        options->audio_path ? "pcm_u8" : "none",
+        options->audio_path
+            ? (options->audio_codec == AUDIO_IMA_ADPCM
+                ? "ima_adpcm" : "pcm_u8")
+            : "none",
         options->audio_path ? options->audio_rate : 0,
         options->audio_path ? 1 : 0,
         options->threads, options->gop, options->minimum_gop,
@@ -2503,7 +2555,7 @@ static int write_report(
 int main(int argc, char **argv) {
     Options options = {
         8, 48, 12, 0.35, 64.0, 8, 2, 256, 32768, 256,
-        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 1, NULL,
+        10, 10, 8192, 0, NULL, 0, 1, NULL, 16000, 0, 1, NULL,
         DEFAULT_DEVICE_MODE, 0, 0
     };
     const char *input_path = NULL;
@@ -2603,7 +2655,14 @@ int main(int argc, char **argv) {
             options.max_frames = (uint32_t)parsed;
             index++;
         } else if (!strcmp(argument, "--audio-u8") && value) {
+            if (options.audio_path) goto bad_option;
             options.audio_path = value;
+            options.audio_codec = AUDIO_PCM_U8;
+            index++;
+        } else if (!strcmp(argument, "--audio-ima-s16le") && value) {
+            if (options.audio_path) goto bad_option;
+            options.audio_path = value;
+            options.audio_codec = AUDIO_IMA_ADPCM;
             index++;
         } else if (!strcmp(argument, "--audio-rate") && value) {
             if (parse_int_option(value, 1000, 65535,
@@ -2714,6 +2773,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
         audio.sample_rate = (uint32_t)options.audio_rate;
+        audio.codec = (uint8_t)options.audio_codec;
     }
     output = fopen(partial_path, "wb");
     if (!output || write_bpv_header(
@@ -2753,7 +2813,8 @@ int main(int argc, char **argv) {
     write_report(stderr, input_path, output_path, &info, &options, &stats,
         frame_count, &gop_plan, file_bytes, wall_seconds() - started);
     if (audio.file)
-        fprintf(stderr, "BPV1 audio: PCM_U8 mono %u Hz, %.3f MiB\n",
+        fprintf(stderr, "BPV1 audio: %s mono %u Hz, %.3f MiB\n",
+                audio.codec == AUDIO_IMA_ADPCM ? "IMA_ADPCM" : "PCM_U8",
                 audio.sample_rate, audio.bytes / 1048576.0);
     exit_code = 0;
     goto cleanup;

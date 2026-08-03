@@ -148,13 +148,19 @@ static int multiply_size(size_t left, size_t right, size_t *result) {
 
 static size_t maximum_audio_bytes(const BPV1Header *header) {
     uint64_t numerator;
+    size_t samples;
     if (!header || header->version < BPV1_AUDIO_VERSION ||
         header->audio_codec == BPV1_AUDIO_NONE) {
         return 0;
     }
     numerator = (uint64_t)header->audio_sample_rate * header->fps_den;
-    return (size_t)((numerator + header->fps_num - 1U) /
-                    header->fps_num) * header->audio_channels;
+    samples = (size_t)((numerator + header->fps_num - 1U) /
+                       header->fps_num) * header->audio_channels;
+    if (header->audio_codec == BPV1_AUDIO_IMA_ADPCM) {
+        if (!samples || samples > BPV1_MAX_AUDIO_BLOCK_SAMPLES) return 0;
+        return BPV1_ADPCM_BLOCK_HEADER_BYTES + samples / 2U;
+    }
+    return samples;
 }
 
 static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
@@ -183,7 +189,8 @@ static int header_layout(const BPV1Header *header, uint32_t *blocks_x,
         (header->version >= BPV1_AUDIO_VERSION &&
          !((header->audio_codec == BPV1_AUDIO_NONE &&
             !header->audio_sample_rate && !header->audio_channels) ||
-           (header->audio_codec == BPV1_AUDIO_PCM_U8 &&
+           ((header->audio_codec == BPV1_AUDIO_PCM_U8 ||
+             header->audio_codec == BPV1_AUDIO_IMA_ADPCM) &&
             header->audio_sample_rate && header->audio_channels == 1))) ||
         (header->version < BPV1_AUDIO_VERSION &&
          (header->audio_codec != BPV1_AUDIO_NONE ||

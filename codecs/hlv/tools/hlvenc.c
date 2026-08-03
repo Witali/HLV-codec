@@ -6,6 +6,7 @@
  * control, reconstruction logging, and streaming header finalization.
  */
 #include "hlv1.h"
+#include "ima_adpcm.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -49,6 +50,7 @@ static void close_if_file(FILE *f, FILE *standard) {
 typedef struct AudioInput {
     FILE *file;
     uint32_t sample_rate;
+    uint8_t codec;
     uint64_t phase;
     uint64_t bytes;
 } AudioInput;
@@ -274,8 +276,10 @@ static double encoder_primitive_operations(const HLV1EncoderWork *w) {
            3.0 * w->bitwriter_bulk_shift_bytes;
 }
 
-/* Attach exactly one video-frame interval of unsigned 8-bit mono PCM.  The
- * rational accumulator alternates sample counts without long-term A/V drift. */
+/* Attach exactly one video-frame interval of mono audio. The rational
+ * accumulator alternates sample counts without long-term A/V drift. IMA uses
+ * an independent block per packet so a seek or dropped video frame cannot
+ * invalidate later audio. */
 static int append_audio_interval(AudioInput *audio, int fps_num, int fps_den,
                                  HLV1Packet *packet) {
     if (!audio || !audio->file) return HLV1_OK;
@@ -287,21 +291,62 @@ static int append_audio_interval(AudioInput *audio, int fps_num, int fps_den,
     if (sample_count > SIZE_MAX) return HLV1_ERR_RANGE;
     size_t size = (size_t)sample_count;
     if (!size) return HLV1_OK;
-
-    uint8_t *samples = (uint8_t *)malloc(size);
-    if (!samples) return HLV1_ERR_MEMORY;
-    size_t got = fread(samples, 1, size, audio->file);
-    if (got < size) {
-        if (ferror(audio->file)) {
-            free(samples);
-            return HLV1_ERR_IO;
+    if (audio->codec == HLV1_AUDIO_PCM_U8) {
+        uint8_t *samples = (uint8_t *)malloc(size);
+        int result;
+        if (!samples) return HLV1_ERR_MEMORY;
+        size_t got = fread(samples, 1, size, audio->file);
+        if (got < size) {
+            if (ferror(audio->file)) {
+                free(samples);
+                return HLV1_ERR_IO;
+            }
+            memset(samples + got, 128, size - got);
         }
-        memset(samples + got, 128, size - got);
+        result = hlv1_packet_append_audio(packet, samples, size);
+        free(samples);
+        if (result >= 0) audio->bytes += size;
+        return result;
     }
-    int result = hlv1_packet_append_audio(packet, samples, size);
-    free(samples);
-    if (result >= 0) audio->bytes += size;
-    return result;
+    if (audio->codec == HLV1_AUDIO_IMA_ADPCM) {
+        const size_t block_size = ima_adpcm_block_size(size);
+        uint8_t *pcm_bytes;
+        int16_t *samples;
+        uint8_t *encoded;
+        size_t encoded_size = 0;
+        size_t got;
+        size_t sample;
+        int result;
+        if (!block_size || size > SIZE_MAX / 2U) return HLV1_ERR_RANGE;
+        pcm_bytes = (uint8_t *)malloc(size * 2U);
+        samples = (int16_t *)malloc(size * sizeof *samples);
+        encoded = (uint8_t *)malloc(block_size);
+        if (!pcm_bytes || !samples || !encoded) {
+            free(pcm_bytes); free(samples); free(encoded);
+            return HLV1_ERR_MEMORY;
+        }
+        got = fread(pcm_bytes, 1, size * 2U, audio->file);
+        if (got < size * 2U) {
+            if (ferror(audio->file)) {
+                free(pcm_bytes); free(samples); free(encoded);
+                return HLV1_ERR_IO;
+            }
+            memset(pcm_bytes + got, 0, size * 2U - got);
+        }
+        for (sample = 0; sample < size; ++sample) {
+            samples[sample] = (int16_t)(
+                (uint16_t)pcm_bytes[sample * 2U] |
+                ((uint16_t)pcm_bytes[sample * 2U + 1U] << 8));
+        }
+        result = ima_adpcm_encode_block(samples, size, encoded, block_size,
+                                        &encoded_size)
+            ? HLV1_ERR_RANGE
+            : hlv1_packet_append_audio(packet, encoded, encoded_size);
+        free(pcm_bytes); free(samples); free(encoded);
+        if (result >= 0) audio->bytes += encoded_size;
+        return result;
+    }
+    return HLV1_ERR_ARGUMENT;
 }
 
 static void usage(const char *p) {
@@ -340,7 +385,8 @@ static void usage(const char *p) {
         "  --max-frames N    stop after N frames\n"
         "  --recon FILE.y4m  write encoder reconstruction\n"
         "  --audio-u8 FILE   mux unsigned 8-bit mono raw PCM\n"
-        "  --audio-rate N    PCM sample rate in Hz (default 16000)\n"
+        "  --audio-ima-s16le FILE encode signed 16-bit LE mono PCM as IMA ADPCM\n"
+        "  --audio-rate N    audio sample rate in Hz (default 16000)\n"
         "\n"
         "Examples:\n"
         "  ffmpeg -i input.mp4 -vf scale=320:240,fps=15,format=yuv420p "
@@ -818,6 +864,7 @@ int main(int argc, char **argv) {
     const char *preset = "balanced";
     const char *recon_path = NULL;
     const char *audio_path = NULL;
+    int audio_codec = HLV1_AUDIO_NONE;
     int audio_rate = 16000;
     const char *cq_log_path = NULL;
     const char *two_pass_log_path = NULL;
@@ -858,7 +905,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--max-frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--recon") && i + 1 < argc) recon_path = argv[++i];
-        else if (!strcmp(argv[i], "--audio-u8") && i + 1 < argc) audio_path = argv[++i];
+        else if (!strcmp(argv[i], "--audio-u8") && i + 1 < argc) {
+            if (audio_path) { usage(argv[0]); return 2; }
+            audio_path = argv[++i]; audio_codec = HLV1_AUDIO_PCM_U8;
+        }
+        else if (!strcmp(argv[i], "--audio-ima-s16le") && i + 1 < argc) {
+            if (audio_path) { usage(argv[0]); return 2; }
+            audio_path = argv[++i]; audio_codec = HLV1_AUDIO_IMA_ADPCM;
+        }
         else if (!strcmp(argv[i], "--audio-rate") && i + 1 < argc) audio_rate = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--preset") && i + 1 < argc) preset = argv[++i];
         else { usage(argv[0]); return 2; }
@@ -920,6 +974,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         audio.sample_rate = (uint32_t)audio_rate;
+        audio.codec = (uint8_t)audio_codec;
     }
 
     int output_seekable = 0;
@@ -973,7 +1028,7 @@ int main(int argc, char **argv) {
                     0, (uint16_t)gop, (uint8_t)quality, (uint8_t)search, 0, (uint8_t)syntax};
     if (audio.file) {
         h.flags |= HLV1_FLAG_AUDIO;
-        h.audio_codec = HLV1_AUDIO_PCM_U8;
+        h.audio_codec = audio.codec;
         h.audio_sample_rate = (uint16_t)audio.sample_rate;
         h.audio_channels = 1;
     }
@@ -1509,7 +1564,8 @@ int main(int argc, char **argv) {
             parallel_gop_mode ? threads : 1,
             hlv1_encoder_simd_enabled(enc) ? "SSE2" : "scalar");
     if (audio.file)
-        fprintf(stderr, "Audio: PCM_U8 mono %u Hz, %.3f MiB\n",
+        fprintf(stderr, "Audio: %s mono %u Hz, %.3f MiB\n",
+                audio.codec == HLV1_AUDIO_IMA_ADPCM ? "IMA_ADPCM" : "PCM_U8",
                 audio.sample_rate, audio.bytes / 1048576.0);
     fprintf(stderr, "RDO: chroma-scale %.3f, luma-weight %d, lambda-scale %.3f, decode-cycle-weight %.3f, AC-deadzone %.3f, motion-candidates %d",
             chroma_scale, rd_luma_weight, rd_lambda_scale,

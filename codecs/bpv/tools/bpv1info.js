@@ -35,7 +35,7 @@ function main() {
       `Duration: ${summary.durationSeconds.toFixed(3)} s`,
       `File: ${summary.fileBytes} bytes`,
       summary.audioCodec
-        ? `Audio: PCM_U8 mono ${summary.audioSampleRate} Hz, ${summary.audioBytes} bytes`
+        ? `Audio: ${summary.audioCodec === 2 ? "IMA_ADPCM" : "PCM_U8"} mono ${summary.audioSampleRate} Hz, ${summary.audioBytes} bytes`
         : "Audio: none",
       `Keyframes: ${summary.keyframes} (configured interval ${summary.keyframeInterval})`,
       `Active palette updates: ${summary.paletteUpdates}`,

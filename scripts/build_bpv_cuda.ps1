@@ -10,6 +10,8 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $hostSource = Join-Path $repo "codecs\bpv\tools\bpv1enc.c"
 $cudaSource = Join-Path $repo "codecs\bpv\tools\bpv1_cuda.cu"
+$commonInclude = Join-Path $repo "codecs\common\include"
+$adpcmSource = Join-Path $repo "codecs\common\src\ima_adpcm.c"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $nvccCommand = Get-Command nvcc -ErrorAction SilentlyContinue
 
@@ -33,17 +35,20 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $output = Join-Path $OutputDirectory "bpv1enc_cuda.exe"
 $hostObject = Join-Path $OutputDirectory "bpv1enc_cuda_host.obj"
 $cudaObject = Join-Path $OutputDirectory "bpv1_cuda.obj"
+$adpcmObject = Join-Path $OutputDirectory "ima_adpcm_cuda.obj"
 $nvcc = $nvccCommand.Source
 
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && ' +
-    'cl /nologo /O2 /W4 /std:c11 /DBPV1_WITH_CUDA /c ' +
-    '"{1}" /Fo:"{2}" && ' +
-    '"{3}" -O3 -std=c++17 -arch={4} -DBPV1_WITH_CUDA -c ' +
-    '"{5}" -o "{6}" && ' +
-    '"{3}" -arch={4} "{2}" "{6}" -o "{7}"'
+    'cl /nologo /O2 /W4 /std:c11 /DBPV1_WITH_CUDA /I"{1}" /c ' +
+    '"{2}" /Fo:"{3}" && ' +
+    'cl /nologo /O2 /W4 /std:c11 /I"{1}" /c ' +
+    '"{4}" /Fo:"{5}" && ' +
+    '"{6}" -O3 -std=c++17 -arch={7} -DBPV1_WITH_CUDA -c ' +
+    '"{8}" -o "{9}" && ' +
+    '"{6}" -arch={7} "{3}" "{5}" "{9}" -o "{10}"'
 $command = $commandTemplate -f `
-    $devcmd, $hostSource, $hostObject, $nvcc, $CudaArchitecture, `
-    $cudaSource, $cudaObject, $output
+    $devcmd, $commonInclude, $hostSource, $hostObject, $adpcmSource, `
+    $adpcmObject, $nvcc, $CudaArchitecture, $cudaSource, $cudaObject, $output
 
 Write-Host (
     "Building BPV1 CUDA encoder for architecture " +

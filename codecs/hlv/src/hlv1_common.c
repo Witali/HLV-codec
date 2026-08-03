@@ -209,7 +209,8 @@ int hlv1_header_write(FILE *file, const HLV1Header *h) {
     if (h->flags & (uint8_t)~HLV1_FLAG_AUDIO)
         return HLV1_ERR_ARGUMENT;
     if (h->flags & HLV1_FLAG_AUDIO) {
-        if (h->audio_codec != HLV1_AUDIO_PCM_U8 ||
+        if ((h->audio_codec != HLV1_AUDIO_PCM_U8 &&
+             h->audio_codec != HLV1_AUDIO_IMA_ADPCM) ||
             !h->audio_sample_rate || h->audio_channels != 1)
             return HLV1_ERR_ARGUMENT;
     } else if (h->audio_codec != HLV1_AUDIO_NONE ||
@@ -262,7 +263,8 @@ int hlv1_header_read(FILE *file, HLV1Header *h) {
         (h->flags & (uint8_t)~HLV1_FLAG_AUDIO))
         return HLV1_ERR_FORMAT;
     if (h->flags & HLV1_FLAG_AUDIO) {
-        if (h->audio_codec != HLV1_AUDIO_PCM_U8 ||
+        if ((h->audio_codec != HLV1_AUDIO_PCM_U8 &&
+             h->audio_codec != HLV1_AUDIO_IMA_ADPCM) ||
             !h->audio_sample_rate || h->audio_channels != 1)
             return HLV1_ERR_FORMAT;
     } else if (h->audio_codec != HLV1_AUDIO_NONE ||

@@ -51,6 +51,7 @@ extern "C" {
 /* Audio samples are interleaved into the tail of each video packet. */
 #define HLV1_AUDIO_NONE   0
 #define HLV1_AUDIO_PCM_U8 1
+#define HLV1_AUDIO_IMA_ADPCM 2
 
 /* Frame types.  Decoding order is identical to display order; HLV-1 has no
  * B-frames or future-frame dependencies. */
@@ -106,7 +107,7 @@ typedef struct HLV1Header {
     uint8_t version;         /**< Zero selects the current v15 syntax. */
     uint16_t audio_sample_rate; /**< Audio samples per second; zero without audio. */
     uint8_t audio_codec;     /**< HLV1_AUDIO_* value. */
-    uint8_t audio_channels;  /**< Interleaved channels; PCM_U8 currently requires 1. */
+    uint8_t audio_channels;  /**< Interleaved channels; supported codecs require mono. */
 } HLV1Header;
 
 /** One compressed frame packet, excluding its on-disk 20-byte packet header. */

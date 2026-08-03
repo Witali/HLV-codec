@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include "hlv1.h"
+#include "ima_adpcm.h"
 #include "amrnb_3gp.h"
 #include "bpv1.h"
 #include "h263_3gp.h"
@@ -711,15 +712,16 @@ class AudioOutput {
 public:
     ~AudioOutput() { close(); }
 
-    bool open(unsigned sample_rate, std::wstring &error) {
+    bool open(unsigned sample_rate, unsigned bits_per_sample,
+              std::wstring &error) {
         close();
         WAVEFORMATEX format = {};
         format.wFormatTag = WAVE_FORMAT_PCM;
         format.nChannels = 1;
         format.nSamplesPerSec = sample_rate;
-        format.wBitsPerSample = 8;
-        format.nBlockAlign = 1;
-        format.nAvgBytesPerSec = sample_rate;
+        format.wBitsPerSample = static_cast<WORD>(bits_per_sample);
+        format.nBlockAlign = static_cast<WORD>(bits_per_sample / 8U);
+        format.nAvgBytesPerSec = sample_rate * format.nBlockAlign;
 
         MMRESULT result = waveOutOpen(&handle_, WAVE_MAPPER, &format,
                                       0, 0, CALLBACK_NULL);
@@ -816,6 +818,29 @@ private:
     std::array<AudioBuffer, kAudioBufferCount> buffers_ = {};
 };
 
+bool submit_packet_audio(AudioOutput &output, uint8_t codec,
+                         const uint8_t *encoded, size_t encoded_size,
+                         std::wstring &error) {
+    if (!encoded_size) return true;
+    if (codec != HLV1_AUDIO_IMA_ADPCM)
+        return output.submit(encoded, encoded_size, error);
+    IMAADPCMState state{};
+    uint16_t count = 0;
+    if (ima_adpcm_block_header_read(encoded, encoded_size, &state, &count)) {
+        error = L"Invalid IMA ADPCM block header";
+        return false;
+    }
+    std::vector<int16_t> samples(count);
+    size_t decoded_count = 0;
+    if (ima_adpcm_decode_block(encoded, encoded_size, samples.data(),
+                               samples.size(), &decoded_count)) {
+        error = L"Invalid IMA ADPCM audio block";
+        return false;
+    }
+    return output.submit(reinterpret_cast<const uint8_t *>(samples.data()),
+                         decoded_count * sizeof samples[0], error);
+}
+
 struct SeekIndexEntry {
     __int64 packet_offset = 0;
     uint64_t keyframe_index = 0;
@@ -868,9 +893,12 @@ public:
             header_.gop = bpv_header_.keyframe_interval;
             header_.version = bpv_header_.version;
             header_.search_radius = bpv_header_.search_radius;
-            if (bpv_header_.audio_codec == BPV1_AUDIO_PCM_U8) {
+            if (bpv_header_.audio_codec == BPV1_AUDIO_PCM_U8 ||
+                bpv_header_.audio_codec == BPV1_AUDIO_IMA_ADPCM) {
                 header_.flags |= HLV1_FLAG_AUDIO;
-                header_.audio_codec = HLV1_AUDIO_PCM_U8;
+                header_.audio_codec =
+                    bpv_header_.audio_codec == BPV1_AUDIO_IMA_ADPCM
+                        ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
                 header_.audio_sample_rate = bpv_header_.audio_sample_rate;
                 header_.audio_channels = bpv_header_.audio_channels;
             }
@@ -1039,7 +1067,10 @@ public:
 
         if (header_.flags & HLV1_FLAG_AUDIO) {
             std::wstring audio_error;
-            if (!audio_.open(header_.audio_sample_rate, audio_error)) {
+            if (!audio_.open(
+                    header_.audio_sample_rate,
+                    header_.audio_codec == HLV1_AUDIO_IMA_ADPCM ? 16U : 8U,
+                    audio_error)) {
                 audio_warning_ = L"Audio is disabled: " + audio_error;
             }
         }
@@ -1577,7 +1608,10 @@ private:
         audio_warning_.clear();
         if (!(header_.flags & HLV1_FLAG_AUDIO)) return true;
         std::wstring audio_error;
-        if (audio_.open(header_.audio_sample_rate, audio_error)) return true;
+        if (audio_.open(
+                header_.audio_sample_rate,
+                header_.audio_codec == HLV1_AUDIO_IMA_ADPCM ? 16U : 8U,
+                audio_error)) return true;
         audio_warning_ = L"Audio is disabled: " + audio_error;
         return true;
     }
@@ -1961,7 +1995,9 @@ private:
                 const uint8_t *audio_data =
                     bpv1_packet_audio_data(&packet);
                 std::wstring audio_error;
-                if (!audio_.submit(audio_data, audio_size, audio_error)) {
+                if (!submit_packet_audio(audio_, header_.audio_codec,
+                                         audio_data, audio_size,
+                                         audio_error)) {
                     audio_warning_ = L"Audio stopped: " + audio_error;
                     audio_.close();
                 }
@@ -2005,7 +2041,8 @@ private:
             const size_t audio_size = hlv1_packet_audio_size(&packet);
             const uint8_t *audio_data = hlv1_packet_audio_data(&packet);
             std::wstring audio_error;
-            if (!audio_.submit(audio_data, audio_size, audio_error)) {
+            if (!submit_packet_audio(audio_, header_.audio_codec,
+                                     audio_data, audio_size, audio_error)) {
                 audio_warning_ = L"Audio stopped: " + audio_error;
                 audio_.close();
             }

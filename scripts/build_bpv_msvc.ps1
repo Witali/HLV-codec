@@ -11,6 +11,8 @@ $source = Join-Path $repo "codecs\bpv\tools\bpv1enc.c"
 $decoderSource = Join-Path $repo "codecs\bpv\src\bpv1_decode.c"
 $decoderTest = Join-Path $repo "codecs\bpv\tests\test_bpv1_decoder.c"
 $include = Join-Path $repo "codecs\bpv\include"
+$commonInclude = Join-Path $repo "codecs\common\include"
+$adpcmSource = Join-Path $repo "codecs\common\src\ima_adpcm.c"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not (Test-Path -LiteralPath $vswhere)) {
@@ -28,12 +30,12 @@ $devcmd = Join-Path $vs "Common7\Tools\VsDevCmd.bat"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $output = Join-Path $OutputDirectory "bpv1enc.exe"
-$object = Join-Path $OutputDirectory "bpv1enc.obj"
 
 $commandTemplate = 'call "{0}" -no_logo -arch=x64 && ' +
-    'cl /nologo /O2 /W4 /std:c11 ' +
-    '"{1}" /Fo:"{2}" /Fe:"{3}"'
-$command = $commandTemplate -f $devcmd, $source, $object, $output
+    'cl /nologo /O2 /W4 /std:c11 /I"{1}" ' +
+    '"{2}" "{3}" /Fe:"{4}"'
+$command = $commandTemplate -f $devcmd, $commonInclude, $source, `
+    $adpcmSource, $output
 
 Write-Host "Building BPV1 C encoder..."
 & cmd.exe /d /c $command

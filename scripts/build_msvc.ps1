@@ -6,6 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
 $hlv = Join-Path $repo "codecs\hlv"
+$common = Join-Path $repo "codecs\common"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
 if (-not (Test-Path -LiteralPath $vswhere)) {
@@ -27,7 +28,8 @@ $librarySources = @(
     (Join-Path $hlv "src\hlv1_common.c"),
     (Join-Path $hlv "src\hlv1_y4m.c"),
     (Join-Path $hlv "src\hlv1_encode.c"),
-    (Join-Path $hlv "src\hlv1_decode.c")
+    (Join-Path $hlv "src\hlv1_decode.c"),
+    (Join-Path $common "src\ima_adpcm.c")
 )
 
 function Invoke-CBuild {
@@ -38,9 +40,10 @@ function Invoke-CBuild {
     $output = Join-Path $OutputDirectory "$Name.exe"
     $commandTemplate = 'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
         'cl /nologo /O2 /W4 /std:c11 /D_CRT_SECURE_NO_WARNINGS ' +
-        '/I"{2}" {3} /Fe:"{4}"'
+        '/I"{2}" /I"{3}" {4} /Fe:"{5}"'
     $command = $commandTemplate -f $devcmd, $OutputDirectory, `
-        (Join-Path $hlv "include"), $quotedSources, $output
+        (Join-Path $hlv "include"), (Join-Path $common "include"), `
+        $quotedSources, $output
 
     Write-Host "Building $Name..."
     & cmd.exe /d /c $command

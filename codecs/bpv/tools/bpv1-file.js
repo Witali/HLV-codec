@@ -10,6 +10,9 @@ const ACTIVE_PALETTE_VERSION = 4;
 const LEGACY_VERSION = 1;
 const AUDIO_NONE = 0;
 const AUDIO_PCM_U8 = 1;
+const AUDIO_IMA_ADPCM = 2;
+const ADPCM_BLOCK_HEADER_BYTES = 6;
+const MAX_AUDIO_BLOCK_SAMPLES = 4096;
 const PALETTE_COUNT = 64;
 const LEGACY_PALETTE_COUNT = 16;
 const COLORS_PER_PALETTE = 16;
@@ -73,7 +76,7 @@ function parseHeader(input) {
     reserved = readU8(bytes, offset); offset += 1;
     if (!((audioCodec === AUDIO_NONE &&
            audioSampleRate === 0 && audioChannels === 0) ||
-          (audioCodec === AUDIO_PCM_U8 &&
+          ((audioCodec === AUDIO_PCM_U8 || audioCodec === AUDIO_IMA_ADPCM) &&
            audioSampleRate > 0 && audioChannels === 1))) {
       throw new RangeError("Unsupported BPV1 audio format");
     }
@@ -158,12 +161,19 @@ function walkFrames(input, onFrame) {
       ? readU32(bytes, offset)
       : 0;
     if (header.version >= AUDIO_VERSION) offset += 4;
-    const maximumAudioBytes = header.audioCodec === AUDIO_PCM_U8
+    const maximumAudioSamples = header.audioCodec !== AUDIO_NONE
       ? Math.ceil(
         header.audioSampleRate * header.fpsDenominator /
         header.fpsNumerator,
       ) * header.audioChannels
       : 0;
+    if (header.audioCodec === AUDIO_IMA_ADPCM &&
+        maximumAudioSamples > MAX_AUDIO_BLOCK_SAMPLES) {
+      throw new RangeError(`Oversized BPV1 ADPCM block in frame ${frameIndex}`);
+    }
+    const maximumAudioBytes = header.audioCodec === AUDIO_IMA_ADPCM
+      ? ADPCM_BLOCK_HEADER_BYTES + Math.floor(maximumAudioSamples / 2)
+      : maximumAudioSamples;
     if (audioBytes > maximumAudioBytes) {
       throw new RangeError(`Invalid BPV1 audio length in frame ${frameIndex}`);
     }
@@ -904,6 +914,7 @@ module.exports = {
   constants: {
     AUDIO_NONE,
     AUDIO_PCM_U8,
+    AUDIO_IMA_ADPCM,
     AUDIO_VERSION,
     ACTIVE_PALETTE_VERSION,
     BLOCK_SIZE,

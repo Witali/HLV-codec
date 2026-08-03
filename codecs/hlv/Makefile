@@ -3,22 +3,26 @@ AR ?= ar
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Wpedantic
 THREADFLAGS ?= -pthread
 CFLAGS += $(THREADFLAGS)
-CPPFLAGS += -Iinclude
+CPPFLAGS += -Iinclude -I../common/include
 LDLIBS += -lm $(THREADFLAGS)
 
 LIBSRC = src/hlv1_common.c src/hlv1_y4m.c src/hlv1_encode.c src/hlv1_decode.c
 LIBOBJ = $(LIBSRC:.c=.o)
 TOOLS = hlvenc hlvdec hlvinfo hlvbenchdec hlvpeakdec
+IMAOBJ = ima_adpcm.o
 
 all: libhlv1.a $(TOOLS)
 
 libhlv1.a: $(LIBOBJ)
 	$(AR) rcs $@ $^
 
-hlvenc: tools/hlvenc.o libhlv1.a
+ima_adpcm.o: ../common/src/ima_adpcm.c ../common/include/ima_adpcm.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+hlvenc: tools/hlvenc.o $(IMAOBJ) libhlv1.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-hlvdec: tools/hlvdec.o libhlv1.a
+hlvdec: tools/hlvdec.o $(IMAOBJ) libhlv1.a
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 hlvinfo: tools/hlvinfo.o libhlv1.a
@@ -55,6 +59,6 @@ sanitize:
 	./test_errors_san
 
 clean:
-	rm -f $(LIBOBJ) tools/*.o tests/*.o libhlv1.a $(TOOLS) test_roundtrip test_errors test_roundtrip_san test_errors_san
+	rm -f $(LIBOBJ) $(IMAOBJ) tools/*.o tests/*.o libhlv1.a $(TOOLS) test_roundtrip test_errors test_roundtrip_san test_errors_san
 
 .PHONY: all test test-windowed-rate test-threaded sanitize clean
