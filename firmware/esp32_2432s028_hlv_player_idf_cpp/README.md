@@ -99,6 +99,10 @@ monitor this C++ project:
 .\monitor.ps1 -Port COM8
 ```
 
+The shared `TONE_TEST` CMake mode also builds the SD-free 1 kHz GPIO26 DAC
+sine-ramp diagnostic. Use the primary C firmware's `tone-test.ps1` wrapper as
+the supported build-and-flash entry point for this hardware test.
+
 ## Uploading videos to microSD over UART
 
 Prepare the validated DivX 3 profile from the approved 1080p Big Buck Bunny

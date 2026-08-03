@@ -104,6 +104,22 @@ All generated dependencies are placed below this directory in `.tools`:
 .\monitor.ps1 -Port COM8
 ```
 
+### SD-free sine-ramp diagnostic
+
+To separate DAC/amplifier noise from SD-card and display-bus activity, build
+and flash the minimal tone image in its independent `build-tone` directory:
+
+```powershell
+.\tone-test.ps1 -Port COM8
+```
+
+This image does not initialize the SD card, SPI buses, display, Wi-Fi or video
+decoder. It outputs a 1 kHz sine on DAC GPIO26 at 32 kHz. Amplitude rises
+linearly from silence to the full unsigned 8-bit DAC range over 20 seconds and
+then remains at full scale. UART is used only for one startup line before the
+tone begins. Reflash the regular player with `.\flash.ps1 -Port COM8` when the
+noise comparison is complete.
+
 ## Uploading videos to microSD over UART
 
 Prepare the validated DivX 3 profile from the approved 1080p Big Buck Bunny

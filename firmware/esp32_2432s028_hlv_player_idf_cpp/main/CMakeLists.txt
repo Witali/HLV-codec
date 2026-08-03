@@ -14,6 +14,8 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
+set(TONE_TEST OFF CACHE BOOL
+    "Build the SD-free GPIO26 DAC sine-ramp diagnostic firmware")
 set(COMPACT_YUV_RGB565_FAST_PATH ON CACHE BOOL
     "Fuse aligned compact Y6/U5/V5 unpacking with RGB565 conversion")
 set(COMPACT_YUV_RGB565_CLAMP_TABLES ON CACHE BOOL
@@ -154,7 +156,17 @@ function(schedule_mjpeg_hot_iram component_target)
     endif()
 endfunction()
 
-if(MJPEG_QEMU_BENCHMARK)
+if(TONE_TEST)
+    idf_component_register(
+        SRCS
+            "${CMAKE_CURRENT_LIST_DIR}/../../common/esp32_tone_test.c"
+        INCLUDE_DIRS "."
+        REQUIRES
+            esp_driver_dac
+            esp_rom
+            freertos
+    )
+elseif(MJPEG_QEMU_BENCHMARK)
     set(MJPEG_QEMU_FRAME_LIMIT 12 CACHE STRING
         "Number of embedded MJPEG frames decoded by the QEMU benchmark")
     idf_component_register(
