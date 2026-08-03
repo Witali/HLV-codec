@@ -3,20 +3,6 @@
 
 #include "sdkconfig.h"
 
-typedef enum {
-    /* Keep audio continuous and omit only display transfers that arrive more
-       than one frame late. Predictive decoding still runs. */
-    PLAYER_AV_SYNC_DROP_LATE_VIDEO_FRAMES,
-
-    /* Present every video frame. When video falls behind, cyclically replay
-       the DAC DMA ring until it catches up. */
-    PLAYER_AV_SYNC_LOOP_AUDIO_FOR_LATE_VIDEO,
-
-    /* Omit at most PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS late transfers, then
-       replay the DAC DMA ring until video catches up. */
-    PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO,
-} player_av_sync_mode_t;
-
 /* H.263 CIF ignores this setting and copies the 320x240 coded area at (16,16)
    pixel-for-pixel. */
 #define PLAYER_SCALE_VIDEO_TO_DISPLAY 0
@@ -47,9 +33,9 @@ typedef enum {
 #define PLAYER_LOG_FRAME_TIMINGS 1
 #endif
 
-#define PLAYER_AUDIO_PREROLL_FRAMES 4U
-#define PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS 2U
-#define PLAYER_AV_SYNC_MODE PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO
+/* After this many consecutive late presentation intervals, suppress
+   predictive display transfers until the next independently decodable frame. */
+#define PLAYER_KEYFRAME_CATCHUP_SKIPS 3U
 
 #define PLAYER_BOOT_BUTTON_POLL_MS 10U
 #define PLAYER_BOOT_BUTTON_DEBOUNCE_MS 30U

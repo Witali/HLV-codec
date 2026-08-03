@@ -240,10 +240,8 @@ _Static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
               "Dual-core playback requires a two-core FreeRTOS build");
 _Static_assert(CONFIG_DAC_DMA_AUTO_16BIT_ALIGN,
               "The DAC ring expects ESP-IDF 8-to-16-bit DMA expansion");
-_Static_assert(PLAYER_AUDIO_PREROLL_FRAMES > 0,
-              "Audio preroll must cover at least one video frame");
-_Static_assert(PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS > 0,
-              "Hybrid A/V sync must permit at least one video skip");
+_Static_assert(PLAYER_KEYFRAME_CATCHUP_SKIPS > 0,
+              "Keyframe catch-up must permit at least one video skip");
 
 typedef enum VideoCodec {
     VIDEO_CODEC_kNone,
@@ -327,6 +325,7 @@ typedef struct DecodeResult {
     H2633gpFrame h263_frame;
     plm_frame_t mpeg_frame;
     bool has_mpeg_frame;
+    bool keyframe;
     uint32_t decode_us;
 #if HLV1_ENABLE_STAGE_PROFILE
     HLV1StageProfile hlv_profile;
@@ -477,9 +476,6 @@ volatile uint32_t audio_pending_samples = 0;
 volatile uint32_t audio_rebuffers = 0;
 volatile uint32_t audio_silence_chunks = 0;
 volatile uint32_t audio_underrun_samples = 0;
-volatile bool audio_loop_hold = false;
-volatile uint32_t audio_loop_events = 0;
-volatile uint32_t audio_loop_chunks = 0;
 volatile uint32_t mpeg_audio_decode_frames = 0;
 volatile uint32_t mpeg_audio_decode_us = 0;
 volatile uint32_t mpeg_audio_convert_us = 0;
@@ -499,6 +495,7 @@ volatile bool bpv_input_reader_done = true;
 volatile int bpv_input_reader_result = BPV1_OK;
 HLV1Frame pending_frame = {0};
 bool pending_frame_valid = false;
+bool pending_frame_keyframe = false;
 plm_frame_t pending_mpeg_frame = {0};
 bool pending_mpeg_frame_valid = false;
 uint32_t pending_mpeg_decode_us = 0;
@@ -526,6 +523,8 @@ uint32_t pending_decode_us = 0;
 long pending_hlv_packet_offset = -1;
 uint32_t skipped_presentations = 0;
 uint32_t consecutive_skipped_presentations = 0;
+bool video_waiting_for_keyframe = false;
+uint32_t keyframe_catchups = 0;
 int upload_progress_pixels = -1;
 int upload_progress_percent = -1;
 int upload_progress_scale = kUploadPercentScale;
@@ -734,13 +733,16 @@ void decodeTask(void *opaque) {
                     ? HLV1_ERR_IO
                     : HLV1_OK;
         } else if (request.codec == VIDEO_CODEC_kHlv) {
+            HLV1Packet packet_info = {0};
             result.result = hlv_esp32_decoder_decode_next(
-                &decoder, request.hlv_file, &result.hlv_frame, NULL,
+                &decoder, request.hlv_file, &result.hlv_frame, &packet_info,
 #if HLV1_ENABLE_STAGE_PROFILE
                 &result.hlv_profile);
 #else
                 NULL);
 #endif
+            result.keyframe =
+                packet_info.frame_type == HLV1_FRAME_KEY;
         } else if (request.codec == VIDEO_CODEC_kBpv) {
             result.result = bpv_esp32_decoder_decode(
                 &bpv_decoder, request.bpv_packet, &result.bpv_frame);
@@ -1758,19 +1760,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
 
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
-    const bool repeat_dma_ring = audio_started && audio_loop_hold;
-    if (repeat_dma_ring) {
-        // AUTO_16BIT_ALIGN stores each unsigned 8-bit DAC sample in the high
-        // byte of a 16-bit DMA word. Restore the just-played descriptor into
-        // the driver's 8-bit input buffer and arm that same descriptor again.
-        // No stream bytes are consumed and repeated samples do not advance the
-        // media clock.
-        const uint8_t *completed_dma = (const uint8_t *)(event->buf);
-        for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
-            audio_dma_samples[sample] = completed_dma[sample * 2U + 1U];
-        }
-        audio_loop_chunks = audio_loop_chunks + 1;
-    } else if (audio_started && !audio_rebuffering && audio_stream) {
+    if (audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
             audio_stream, audio_dma_samples, sizeof audio_dma_samples,
             &task_woken);
@@ -1780,7 +1770,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
             audio_rebuffers = audio_rebuffers + 1;
         }
     }
-    if (!repeat_dma_ring && received < sizeof audio_dma_samples) {
+    if (received < sizeof audio_dma_samples) {
         memset(audio_dma_samples + received, 128,
                     sizeof audio_dma_samples - received);
         if (audio_started) {
@@ -1802,8 +1792,7 @@ bool onAudioConvertDone(dac_continuous_handle_t handle,
         audio_output_failed = true;
     }
     if (dma_slot < kAudioDmaDescriptors) {
-        audio_dma_valid_samples[dma_slot] =
-            repeat_dma_ring ? 0 : (uint16_t)(received);
+        audio_dma_valid_samples[dma_slot] = (uint16_t)(received);
         audio_pending_samples =
             audio_pending_samples + (uint32_t)(received);
     }
@@ -1865,9 +1854,6 @@ void stopAudio() {
     audio_rebuffers = 0;
     audio_silence_chunks = 0;
     audio_underrun_samples = 0;
-    audio_loop_hold = false;
-    audio_loop_events = 0;
-    audio_loop_chunks = 0;
     mpeg_audio_decode_frames = 0;
     mpeg_audio_decode_us = 0;
     mpeg_audio_convert_us = 0;
@@ -2060,15 +2046,9 @@ bool prepareAudio(HLV1Header header) {
     audio_async_started = true;
     audio_enabled = true;
 
-    const uint64_t audio_samples_per_frame =
-        ((uint64_t)(header.audio_sample_rate) *
-             header.fps_den +
-         header.fps_num - 1U) /
-        header.fps_num;
-    audio_preroll_bytes = (size_t)(MIN(
-        kAudioStreamBytes,
-        audio_samples_per_frame *
-            PLAYER_AUDIO_PREROLL_FRAMES));
+    /* Audio is the master clock. Fill the complete bounded PCM queue before
+       starting, and require the same full preroll after an underrun. */
+    audio_preroll_bytes = kAudioStreamBytes;
 
     audio_reader_stop_requested = false;
     audio_prefetch_eof = false;
@@ -2119,6 +2099,7 @@ void closeVideo() {
     stopDecodeWorker();
     stopBpvInputPrefetch();
     pending_frame_valid = false;
+    pending_frame_keyframe = false;
     pending_mpeg_frame_valid = false;
     pending_divx3_frame = (Divx3Frame){0};
     pending_divx3_frame_valid = false;
@@ -2135,6 +2116,8 @@ void closeVideo() {
     ready_bpv_read_us = 0;
     pending_read_us = 0;
     pending_decode_us = 0;
+    video_waiting_for_keyframe = false;
+    keyframe_catchups = 0;
     stopAudio();
     hlv_esp32_decoder_end(&decoder);
     mjpeg_avi_decoder_end(&mjpeg_decoder);
@@ -4290,6 +4273,7 @@ typedef struct PresentationState {
     int64_t start_us;
     bool render;
     bool seeking;
+    bool late;
 } PresentationState;
 
 typedef struct BpvDecodeBreakdown {
@@ -4301,7 +4285,7 @@ typedef struct BpvDecodeBreakdown {
 } BpvDecodeBreakdown;
 
 PresentationState beginPresentation() {
-    PresentationState state = {microsNow(), true, false};
+    PresentationState state = {microsNow(), true, false, false};
     if (seek_fast_forward && decoded_frames < seek_target_frame) {
         state.render = false;
         state.seeking = true;
@@ -4323,57 +4307,61 @@ PresentationState beginPresentation() {
                  sequence_header.fps_den +
              sequence_header.fps_num - 1U) /
             sequence_header.fps_num;
-        const player_av_sync_mode_t av_sync_mode = PLAYER_AV_SYNC_MODE;
-        const bool loop_every_late_frame =
-            av_sync_mode ==
-            PLAYER_AV_SYNC_LOOP_AUDIO_FOR_LATE_VIDEO;
-        const bool hybrid_sync =
-            av_sync_mode ==
-            PLAYER_AV_SYNC_DROP_THEN_LOOP_AUDIO;
         if (audio_output_failed || audio_reader_result < HLV1_OK) {
             fallBackToTimerClock("Audio clock stopped");
         } else {
-            uint64_t estimated_position =
-                (uint64_t)(audio_played_samples) +
-                kAudioDmaSamples;
-            const uint64_t latest_on_time_sample =
-                target_samples + frame_samples;
-
-            if (audio_loop_hold &&
-                estimated_position <= latest_on_time_sample) {
-                audio_loop_hold = false;
-                consecutive_skipped_presentations = 0;
-            }
-
-            if (!audio_loop_hold &&
-                !waitForAudioTarget(target_samples)) {
+            if (!waitForAudioTarget(target_samples)) {
                 fallBackToTimerClock("Audio clock stopped");
-            } else if (audio_enabled && !audio_loop_hold) {
-                estimated_position =
+            } else if (audio_enabled) {
+                const uint64_t estimated_position =
                     (uint64_t)(audio_played_samples) +
                     kAudioDmaSamples;
+                const uint64_t latest_on_time_sample =
+                    target_samples + frame_samples;
                 if (estimated_position > latest_on_time_sample) {
-                    if (loop_every_late_frame ||
-                        (hybrid_sync &&
-                         consecutive_skipped_presentations >=
-                             PLAYER_MAX_CONSECUTIVE_VIDEO_SKIPS)) {
-                        audio_loop_hold = true;
-                        audio_loop_events = audio_loop_events + 1;
-                        consecutive_skipped_presentations = 0;
-                    } else {
-                        state.render = false;
-                        ++skipped_presentations;
-                        ++consecutive_skipped_presentations;
-                    }
-                } else {
-                    consecutive_skipped_presentations = 0;
+                    state.render = false;
+                    state.late = true;
                 }
             }
         }
     }
 
+    if (video_waiting_for_keyframe) state.render = false;
     if (!audio_enabled) waitUntil(next_present_us);
     return state;
+}
+
+void applyKeyframeCatchup(PresentationState *state, bool keyframe) {
+    if (!state || state->seeking) return;
+
+    if (video_waiting_for_keyframe) {
+        if (keyframe) {
+            video_waiting_for_keyframe = false;
+            state->render = true;
+            consecutive_skipped_presentations = 0;
+            ++keyframe_catchups;
+        } else {
+            state->render = false;
+        }
+    } else if (!state->render && state->late) {
+        const uint32_t skipped =
+            consecutive_skipped_presentations + 1U;
+        if (keyframe && skipped >= PLAYER_KEYFRAME_CATCHUP_SKIPS) {
+            state->render = true;
+            consecutive_skipped_presentations = 0;
+            ++keyframe_catchups;
+        } else {
+            consecutive_skipped_presentations = skipped;
+            if (!keyframe &&
+                skipped >= PLAYER_KEYFRAME_CATCHUP_SKIPS) {
+                video_waiting_for_keyframe = true;
+            }
+        }
+    } else if (state->render) {
+        consecutive_skipped_presentations = 0;
+    }
+
+    if (!state->render) ++skipped_presentations;
 }
 
 void finishPresentationDetailed(
@@ -4541,8 +4529,8 @@ void finishPresentationDetailed(
                 (unsigned)(audio_rebuffers),
                 (unsigned)(audio_underrun_samples),
                 (unsigned)(audio_silence_chunks),
-                (unsigned)(audio_loop_events),
-                (unsigned)(audio_loop_chunks),
+                0U,
+                0U,
                 (unsigned)(mpeg_audio_decode_frames),
                 (unsigned)(mpeg_audio_decode_us),
                 (unsigned)(mpeg_audio_convert_us));
@@ -4589,8 +4577,10 @@ void finishPresentation(PresentationState state, uint32_t read_us,
 }
 
 bool presentDecodedFrame(const void *frame, RenderFunction render_function,
-                         uint32_t read_us, uint32_t decode_us) {
-    const PresentationState state = beginPresentation();
+                         bool keyframe, uint32_t read_us,
+                         uint32_t decode_us) {
+    PresentationState state = beginPresentation();
+    applyKeyframeCatchup(&state, keyframe);
     uint32_t render_us = 0;
     if (state.render) {
         const int64_t render_start = microsNow();
@@ -4601,26 +4591,31 @@ bool presentDecodedFrame(const void *frame, RenderFunction render_function,
     return true;
 }
 
-bool presentFrame(const HLV1Frame *frame, uint32_t read_us,
-                  uint32_t decode_us) {
+bool presentFrame(const HLV1Frame *frame, bool keyframe,
+                  uint32_t read_us, uint32_t decode_us) {
     const bool result =
-        presentDecodedFrame(frame, renderHlvOpaque, read_us, decode_us);
+        presentDecodedFrame(frame, renderHlvOpaque, keyframe,
+                            read_us, decode_us);
     endHlvRowPipeline();
     return result;
 }
 
 bool presentBpvFrame(const BPV1Frame *frame, uint32_t read_us,
                      uint32_t decode_us) {
-    return presentDecodedFrame(frame, renderBpvOpaque, read_us, decode_us);
+    return presentDecodedFrame(frame, renderBpvOpaque, frame->keyframe != 0,
+                               read_us, decode_us);
 }
 
 bool presentMpegFrame(const plm_frame_t *frame, uint32_t decode_us) {
     return presentDecodedFrame(
-        frame, renderMpegOpaque, 0, decode_us);
+        frame, renderMpegOpaque,
+        frame->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA,
+        0, decode_us);
 }
 
 bool presentH263Frame(const H2633gpFrame *frame, uint32_t decode_us) {
-    const PresentationState state = beginPresentation();
+    PresentationState state = beginPresentation();
+    applyKeyframeCatchup(&state, frame->intra != 0);
     uint32_t render_us = 0;
     if (state.render) {
         const int64_t render_start = microsNow();
@@ -4653,9 +4648,6 @@ void finishVideoLoop() {
             (unsigned)(decoded_frames));
     }
     if (audio_enabled) {
-        // A held DMA ring never drains by itself. Release it so the remaining
-        // queued PCM can finish before the file is reopened.
-        audio_loop_hold = false;
         const int64_t deadline =
             millisNow() + kAudioClockWaitTimeoutMs;
         while (!audio_output_failed &&
@@ -4672,21 +4664,21 @@ void finishVideoLoop() {
     ESP_LOGI(kTag,
              "Loop: %u frames, %u late, %u skipped, %u rebuffers, "
              "%u missing audio samples, %u silence chunks, "
-             "%u audio loops (%u DMA chunks)",
+             "%u keyframe catch-ups, audio DMA repeats disabled",
              decoded_frames, dropped_deadlines, skipped_presentations,
              (unsigned)(audio_rebuffers),
              (unsigned)(audio_underrun_samples),
              (unsigned)(audio_silence_chunks),
-             (unsigned)(audio_loop_events),
-             (unsigned)(audio_loop_chunks));
+             (unsigned)(keyframe_catchups));
     if (!openVideo()) last_retry_ms = millisNow();
 }
 
 void playOneFrameSequential() {
     const HLV1Frame *frame = NULL;
+    HLV1Packet packet_info = {0};
     const int64_t decode_start = microsNow();
     const int decode_result = hlv_esp32_decoder_decode_next(
-        &decoder, video_file, &frame, NULL, NULL);
+        &decoder, video_file, &frame, &packet_info, NULL);
     const uint32_t decode_us =
         (uint32_t)(microsNow() - decode_start);
     if (decode_result == HLV1_EOF) {
@@ -4702,7 +4694,9 @@ void playOneFrameSequential() {
         return;
     }
 
-    if (!presentFrame(frame, 0, decode_us)) {
+    if (!presentFrame(frame,
+                      packet_info.frame_type == HLV1_FRAME_KEY,
+                      0, decode_us)) {
         failPlayback("Display DMA error", HLV1_ERR_IO);
     }
 }
@@ -4931,7 +4925,8 @@ void playOneMjpegFrame() {
         return;
     }
 
-    const PresentationState presentation = beginPresentation();
+    PresentationState presentation = beginPresentation();
+    applyKeyframeCatchup(&presentation, true);
     uint32_t decode_us = 0;
     uint32_t render_us = 0;
     if (presentation.render) {
@@ -5055,7 +5050,8 @@ void playOneDivx3Frame() {
     }
     const plm_frame_t render_frame = makeDivx3RenderFrame(decoded);
     if (!presentDecodedFrame(
-            &render_frame, renderMpegOpaque, read_us, decode_us)) {
+            &render_frame, renderMpegOpaque, decoded.intra != 0,
+            read_us, decode_us)) {
         failPlayback("Display DMA error", DIVX3_ERR_BITSTREAM);
     }
 }
@@ -5090,8 +5086,9 @@ void playOneDivx3FramePipelined() {
             const plm_frame_t render_frame =
                 makeDivx3RenderFrame(pending_divx3_frame);
             const bool rendered = presentDecodedFrame(
-                &render_frame, renderMpegOpaque, pending_read_us,
-                pending_decode_us);
+                &render_frame, renderMpegOpaque,
+                pending_divx3_frame.intra != 0,
+                pending_read_us, pending_decode_us);
             pending_divx3_frame_valid = false;
             if (!rendered) {
                 failPlayback("Display DMA error",
@@ -5122,8 +5119,9 @@ void playOneDivx3FramePipelined() {
         const plm_frame_t render_frame =
             makeDivx3RenderFrame(pending_divx3_frame);
         rendered = presentDecodedFrame(
-            &render_frame, renderMpegOpaque, pending_read_us,
-            pending_decode_us);
+            &render_frame, renderMpegOpaque,
+            pending_divx3_frame.intra != 0,
+            pending_read_us, pending_decode_us);
         pending_divx3_frame_valid = false;
     }
 
@@ -5247,6 +5245,10 @@ void playOneBpvFrameSequential() {
                 failPlayback("Display DMA error", BPV1_ERR_IO);
                 return;
             }
+            if (decode_result == BPV1_OK) {
+                applyKeyframeCatchup(
+                    &presentation, frame->keyframe != 0);
+            }
         } else {
             const int64_t decode_start = microsNow();
             decode_result =
@@ -5256,8 +5258,11 @@ void playOneBpvFrameSequential() {
                     NULL, NULL, NULL, NULL, &frame);
             decode_us =
                 (uint32_t)(microsNow() - decode_start);
-            if (decode_result == BPV1_OK &&
-                presentation.render) {
+            if (decode_result == BPV1_OK) {
+                applyKeyframeCatchup(
+                    &presentation, frame->keyframe != 0);
+            }
+            if (decode_result == BPV1_OK && presentation.render) {
                 const int64_t render_start = microsNow();
                 if (!renderBpvFrame(frame)) {
                     failPlayback("Display DMA error", BPV1_ERR_IO);
@@ -5266,6 +5271,16 @@ void playOneBpvFrameSequential() {
                 render_us =
                     (uint32_t)(microsNow() - render_start);
             }
+        }
+        if (decode_result == BPV1_OK &&
+            !PLAYER_SCALE_VIDEO_TO_DISPLAY &&
+            presentation.render && render_us == 0U) {
+            const int64_t render_start = microsNow();
+            if (!renderBpvFrame(frame)) {
+                failPlayback("Display DMA error", BPV1_ERR_IO);
+                return;
+            }
+            render_us = (uint32_t)(microsNow() - render_start);
         }
         if (decode_result == BPV1_ERR_IO) {
             failSdCardRead("cannot stream BPV1 video");
@@ -5311,7 +5326,8 @@ void playOneBpvFrameSequential() {
         return;
     }
 
-    const PresentationState presentation = beginPresentation();
+    PresentationState presentation = beginPresentation();
+    applyKeyframeCatchup(&presentation, packet.info.keyframe != 0);
     const BPV1Frame *frame = NULL;
     const int64_t decode_start = microsNow();
     const int decode_result =
@@ -5451,9 +5467,10 @@ void playOneFramePipelined() {
 
     bool rendered = true;
     if (pending_frame_valid) {
-        rendered = presentFrame(&pending_frame, pending_read_us,
-                                pending_decode_us);
+        rendered = presentFrame(&pending_frame, pending_frame_keyframe,
+                                pending_read_us, pending_decode_us);
         pending_frame_valid = false;
+        pending_frame_keyframe = false;
     }
 
     DecodeResult result = {0};
@@ -5488,6 +5505,7 @@ void playOneFramePipelined() {
     pending_frame = *result.hlv_frame;
     pending_read_us = 0;
     pending_decode_us = result.decode_us;
+    pending_frame_keyframe = result.keyframe;
     pending_frame_valid = true;
 }
 

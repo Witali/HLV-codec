@@ -6,21 +6,6 @@
 
 namespace player_settings {
 
-enum class AvSyncMode {
-    // Keep audio continuous and omit only the display transfer of video frames
-    // that arrive more than one frame late. Predictive decoding still runs.
-    kDropLateVideoFrames,
-
-    // Present every video frame. When video falls behind, stop consuming new
-    // PCM and cyclically replay the six DAC DMA descriptors until it catches up.
-    kLoopAudioForLateVideo,
-
-    // Keep audio continuous for a short delay by omitting at most
-    // kMaxConsecutiveVideoSkips display transfers. If video is still late,
-    // cyclically replay the DAC DMA ring until the decoded picture catches up.
-    kDropThenLoopAudio,
-};
-
 // false: draw at native resolution in the centre with black borders.
 // true: stretch every frame to the complete 320x240 display.
 // H.263 CIF always ignores this setting and copies the 320x240 area at (16,16)
@@ -57,18 +42,9 @@ constexpr bool kEnableBpvV7StreamingTask = true;
 constexpr bool kLogFrameTimings = true;
 #endif
 
-// Retain the 4 KiB static queue, but wait for this many file-defined frame
-// intervals of PCM before playback and after an underrun. Four intervals cover
-// the 139 ms SD stall measured with the current 24 fps test file.
-constexpr unsigned kAudioPrerollFrames = 4;
-
-// In hybrid mode every predictive frame remains decoded, but at most this many
-// consecutive late frames omit their display transfer before audio is held.
-constexpr unsigned kMaxConsecutiveVideoSkips = 2;
-
-// Keep playback tied to fps_num/fps_den from the HLV header. The hybrid mode
-// bounds visible frame skips while preserving every source audio sample.
-constexpr AvSyncMode kAvSyncMode = AvSyncMode::kDropThenLoopAudio;
+// After this many consecutive late presentation intervals, suppress
+// predictive display transfers until the next independently decodable frame.
+constexpr unsigned kKeyframeCatchupSkips = 3;
 
 constexpr uint32_t kBootButtonPollMs = 10;
 constexpr uint32_t kBootButtonDebounceMs = 30;

@@ -762,18 +762,15 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 changing the HLV file.
 `kEnableAudio` enables PCM_U8 playback through DAC GPIO26. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
-allocated. Preroll is calculated from `kAudioPrerollFrames` and the rational
-frame rate stored in the file; the current four-frame target covers about
-167 ms at 24 fps. Files without audio, an explicitly disabled output, or a
+allocated. Playback starts, and resumes after an underrun, only after that
+queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or
+512 ms at 8 kHz. Files without audio, an explicitly disabled output, or a
 failed audio reader/DAC automatically use the monotonic ESP timer as the video
-clock. The periodic log reports queued bytes, controlled rebuffer events,
-silence DMA chunks and cyclic-repeat activity.
-`kAvSyncMode` selects between `kDropLateVideoFrames`, which keeps audio
-continuous and omits late display transfers; `kLoopAudioForLateVideo`, which
-presents every frame and repeats the six already allocated DMA descriptors
-while video catches up; and `kDropThenLoopAudio`, which omits at most
-`kMaxConsecutiveVideoSkips` display transfers before switching to the same DMA
-repeat. The hybrid mode is enabled with a two-frame skip limit. Predictive
-decoding always continues, repeated samples do not advance the media clock,
-and queued source samples resume without being discarded. No mode allocates
-additional frame or audio buffers.
+clock. The periodic log reports queued bytes, controlled rebuffer events and
+silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector
+compatibility. Audio is always the uninterrupted master clock and an already
+consumed DMA block is never replayed. A frame that has missed its presentation
+interval omits its display transfer. After three consecutive late intervals,
+predictive display transfers remain suppressed until the next keyframe; that
+keyframe is shown even if video is still behind. Predictive decoding itself
+continues in order so reference state remains valid.

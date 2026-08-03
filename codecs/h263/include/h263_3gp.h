@@ -76,6 +76,7 @@ typedef struct H2633gpFrame {
     uint64_t timestamp_ticks;
     uint32_t duration_ticks;
     uint32_t index;
+    uint8_t intra;
 } H2633gpFrame;
 
 typedef struct H2633gpDecoder H2633gpDecoder;

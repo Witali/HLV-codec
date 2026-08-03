@@ -93,15 +93,18 @@ HLV or MJPEG audio, the exact rational frame index is converted to a target PCM 
 position and the DAC sample counter is the master clock. Without audio, the
 ESP timer advances by the quotient and remainder of
 `1,000,000 * fps_den / fps_num`, so fractional rates do not accumulate
-microsecond-rounding drift. The current `kDropThenLoopAudio` mode preserves
-that media time: every predictive frame is decoded, up to two consecutive late
-frames omit only their display transfer, then the existing DAC DMA ring is
-repeated until video catches up. Repeated samples do not advance the media
-clock, and the queued source audio resumes without dropped samples. The static
-4 KiB audio queue uses a four-frame preroll target calculated from the file's
-sample rate and rational frame rate.
+microsecond-rounding drift. The current `kDropLateVideoFrames` mode makes audio
+the uninterrupted master clock. Every predictive frame is decoded in order,
+but a frame that has missed its presentation interval omits its display
+transfer. The DAC never replays an already consumed block to wait for video.
+The static 4 KiB audio queue is filled completely before playback and after an
+underrun, providing 128 ms of preroll at 32 kHz, 256 ms at 16 kHz and 512 ms at
+8 kHz. After three consecutive late presentation intervals, predictive display
+transfers are suppressed until the next keyframe. The compressed pictures are
+still decoded in order to keep prediction references valid, but only the next
+independently decodable picture is shown while recovering from a large lag.
 
-The hybrid mode was verified on the physical ESP32 with the `320x180`, `24/1`
+The previous hybrid mode was verified on the physical ESP32 with the `320x180`, `24/1`
 v13 test file. Two 900-frame runs measured 23.894 and 23.953 decoded frames/s.
 The runs omitted 2 and 6 display transfers respectively and each entered one
 short audio hold (9 and 4 DMA chunks), instead of allowing an unbounded visual
@@ -117,8 +120,10 @@ and rejects decode-sequence gaps, rebuffers and missing samples:
 .\capture-player-metrics.ps1 -Port COM8 -Frames 900 -TimeoutSeconds 120
 ```
 
-The current hybrid build completed two consecutive invocations with 900 frame
-records each and zero rebuffers, underrun samples or silence DMA chunks.
+That hybrid build completed two consecutive invocations with 900 frame records
+each and zero rebuffers, underrun samples or silence DMA chunks. The current
+strict audio-master build must additionally keep both audio-loop counters at
+zero while permitting any number of late display transfers to be omitted.
 
 The same board, card and v13 file were also measured in two 900-frame runs at
 each SD SPI clock. At 40 MHz, SD reads averaged 4.10 and 4.17 ms with p95 of

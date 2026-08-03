@@ -234,11 +234,18 @@ static inline int plm_plane_compact_correction(
 // width and height denote the desired display size of the frame. This may be
 // different from the internal size of the 3 planes.
 
+enum {
+	PLM_VIDEO_PICTURE_TYPE_INTRA = 1,
+	PLM_VIDEO_PICTURE_TYPE_PREDICTIVE = 2,
+	PLM_VIDEO_PICTURE_TYPE_B = 3
+};
+
 typedef struct {
 	double time;
 	unsigned int width;
 	unsigned int height;
 	int storage_mode;
+	int picture_type;
 	plm_plane_t y;
 	plm_plane_t cr;
 	plm_plane_t cb;
@@ -2489,10 +2496,6 @@ plm_packet_t *plm_demux_get_packet(plm_demux_t *self) {
 // Inspired by Java MPEG-1 Video Decoder and Player by Zoltan Korandi 
 // https://sourceforge.net/projects/javampeg1video/
 
-static const int PLM_VIDEO_PICTURE_TYPE_INTRA = 1;
-static const int PLM_VIDEO_PICTURE_TYPE_PREDICTIVE = 2;
-static const int PLM_VIDEO_PICTURE_TYPE_B = 3;
-
 static const int PLM_START_SEQUENCE = 0xB3;
 static const int PLM_START_SLICE_FIRST = 0x01;
 static const int PLM_START_SLICE_LAST = 0xAF;
@@ -3213,6 +3216,7 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	} while (!frame);
 	
 	frame->time = self->time;
+	frame->picture_type = self->picture_type;
 	self->frames_decoded++;
 	self->time = (double)self->frames_decoded / self->framerate;
 	

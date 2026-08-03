@@ -1860,6 +1860,7 @@ int h263_3gp_decoder_decode_next(H2633gpDecoder *decoder, FILE *file,
     frame->timestamp_ticks = decoder->timestamp;
     frame->duration_ticks = duration;
     frame->index = decoder->sample_index;
+    frame->intra = header.frameType == MP4_I_FRAME;
 
     if (decoder->info.container != H263_CONTAINER_AVI) {
         decoder->sample_offset += size;
