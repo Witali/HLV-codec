@@ -6,7 +6,7 @@ application supports HLV-1, standard AVI/MJPEG with mono WAV IMA ADPCM or
 legacy PCM_U8 audio, Microsoft MPEG-4 v3 (`DIV3`/`MP43`) AVI with the same
 optional audio profiles, BPV1 v1 through v6 with PCM_U8 or project IMA ADPCM
 audio, active per-GOP palettes and unified RAW blocks, and the
-constrained MPEG-1 Video/MP2 profile up to 320x240. It also
+standard MPEG-1 Video/MP2 I/P/B profile up to 320x240. It also
 supports baseline H.263 at `176x144` QCIF or intra-only baseline `352x288`
 CIF, with
 optional 8 kHz mono AMR-NB audio in 3GP or WAV IMA ADPCM audio in AVI.
@@ -941,9 +941,10 @@ but not physical SD or display DMA timing.
   320x240). The correction tables add 3,600 bytes and preserve the discarded
   local average to 1/16 sample during prediction and presentation. The player
   also uses bounded 4 KiB read-ahead and elementary buffers plus a separate
-  audio-only PL_MPEG instance. Packed planes use separate allocations. Files
-  larger than 320x240 or containing B pictures are rejected by the saved
-  profile.
+  audio-only PL_MPEG instance. Packed planes use separate allocations. B
+  pictures are non-reference frames and are rendered synchronously from the
+  macroblock-row workspace, avoiding a third full frame. Files larger than
+  320x240 are rejected by the saved profile.
 - H.263: two separately allocated YUV420 outputs in dual-core mode, allowing
   CPU1 to decode frame N+1 while CPU0 presents frame N. The 320x240 pair uses
   230,400 bytes without requiring either frame to be contiguous. If the
@@ -956,9 +957,10 @@ but not physical SD or display DMA timing.
   workspace is reused, so no full byte-planar MPEG-4 frame is allocated.
   At 320x240 the QEMU decoder reports 193,880 bytes including PacketVideo
   tables, the 4 KiB refill buffer and container state.
-- Scheduling: one 4 KiB CPU1 decoder task, one high-priority CPU0 audio reader
-  with a measured 4 KiB stack for HLV PCM or 6 KiB for the other container and
-  compressed-audio paths, and two one-entry decode queues for HLV, BPV,
+- Scheduling: one 4 KiB CPU1 decoder task, one high-priority CPU1 audio reader
+  with a static 2.5 KiB stack for MPEG MP2, a measured 4 KiB stack for HLV PCM
+  or 6 KiB for the other container and compressed-audio paths, and two
+  one-entry decode queues for HLV, BPV,
   MPEG-1, H.263 or DivX 3. MJPEG uses the sequential CPU0 path. Only frame
   descriptors cross cores in the pipelined paths, so no frame or packet
   payload is copied.

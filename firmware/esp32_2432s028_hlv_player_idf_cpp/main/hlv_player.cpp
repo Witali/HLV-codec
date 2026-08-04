@@ -438,6 +438,12 @@ alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
 alignas(4) uint8_t audio_dma_samples[kAudioDmaBufferBytes];
 i2s_chan_handle_t audio_pdm = nullptr;
 TaskHandle_t audio_reader_task_handle = nullptr;
+StaticTask_t mpeg_audio_reader_task_state{};
+StackType_t mpeg_audio_reader_task_stack[
+    (kMpegAudioReaderStackBytes + sizeof(StackType_t) - 1U) /
+    sizeof(StackType_t)]{};
+volatile bool mpeg_audio_reader_task_finished = true;
+volatile bool audio_reader_task_static = false;
 void *audio_dma_buffer_keys[kAudioDmaDescriptors]{};
 uint16_t audio_dma_valid_samples[kAudioDmaDescriptors]{};
 bool audio_enabled = false;
@@ -517,6 +523,10 @@ int upload_progress_pixels = -1;
 int upload_progress_percent = -1;
 int upload_progress_scale = kUploadPercentScale;
 bool uart_diagnostics_quiet = false;
+
+void consumeMpegBFrameRows(
+    plm_video_t *decoder, const plm_frame_t *rows,
+    unsigned first_y, unsigned row_count, void *opaque);
 
 void quietUartDiagnostics() {
     if (uart_diagnostics_quiet) return;
@@ -1884,6 +1894,10 @@ void audioReaderTask(void *) {
              result, static_cast<unsigned>(mpeg_audio_decode_frames),
              static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) *
                                    sizeof(StackType_t)));
+    if (audio_reader_task_static) {
+        mpeg_audio_reader_task_finished = true;
+        vTaskSuspend(nullptr);
+    }
     audio_reader_task_handle = nullptr;
     vTaskDelete(nullptr);
 }
@@ -1980,8 +1994,18 @@ void stopAudio() {
         audio_reader_stop_requested = true;
         const int64_t deadline =
             millisNow() + kAudioReaderStopTimeoutMs;
-        while (audio_reader_task_handle && millisNow() < deadline) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+        if (audio_reader_task_static) {
+            while (!mpeg_audio_reader_task_finished &&
+                   millisNow() < deadline) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
+            TaskHandle_t task = audio_reader_task_handle;
+            audio_reader_task_handle = nullptr;
+            vTaskDelete(task);
+        } else {
+            while (audio_reader_task_handle && millisNow() < deadline) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
         }
         if (audio_reader_task_handle) {
             ESP_LOGW(kTag, "Audio reader did not stop; deleting it");
@@ -1989,6 +2013,8 @@ void stopAudio() {
             audio_reader_task_handle = nullptr;
         }
     }
+    audio_reader_task_static = false;
+    mpeg_audio_reader_task_finished = true;
     if (audio_pdm) {
         if (audio_pdm_enabled) {
             i2s_channel_disable(audio_pdm);
@@ -2343,9 +2369,20 @@ bool prepareAudio(const HLV1Header &header) {
             : video_codec == VideoCodec::kMpeg1
                   ? kMpegAudioReaderStackBytes
                   : kAudioReaderStackBytes;
-    if (xTaskCreatePinnedToCore(
+    audio_reader_task_static = video_codec == VideoCodec::kMpeg1;
+    mpeg_audio_reader_task_finished = !audio_reader_task_static;
+    if (audio_reader_task_static) {
+        audio_reader_task_handle = xTaskCreateStaticPinnedToCore(
             audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
-            nullptr, 3, &audio_reader_task_handle, 1) != pdPASS) {
+            nullptr, 3, mpeg_audio_reader_task_stack,
+            &mpeg_audio_reader_task_state, 1);
+    } else if (xTaskCreatePinnedToCore(
+                   audioReaderTask, "video-audio-read",
+                   audio_reader_stack_bytes, nullptr, 3,
+                   &audio_reader_task_handle, 1) != pdPASS) {
+        audio_reader_task_handle = nullptr;
+    }
+    if (!audio_reader_task_handle) {
         ESP_LOGE(kTag,
                  "Audio reader task allocation failed: stack=%u, "
                  "heap=%u largest=%u",
@@ -3110,6 +3147,10 @@ bool openVideo() {
             return false;
         }
         plm_set_audio_enabled(mpeg_video, 0);
+#if PLM_MPEG_STREAM_B_ROWS
+        plm_set_video_b_frame_row_callback(
+            mpeg_video, consumeMpegBFrameRows, NULL);
+#endif
         const int width = plm_get_width(mpeg_video);
         const int height = plm_get_height(mpeg_video);
         const double fps = plm_get_framerate(mpeg_video);
@@ -3123,10 +3164,19 @@ bool openVideo() {
                 &sequence_header.fps_den)) {
             ESP_LOGE(kTag,
                      "MPEG probe failed: %dx%d fps=%.6f "
-                     "pos=%ld ferror=%d errno=%d",
+                     "pos=%ld ferror=%d errno=%d heap=%u largest=%u",
                      width, height, fps, probe_position,
-                     probe_io_error ? 1 : 0, probe_errno);
-            showStatus("Invalid video.mpg", "unsupported MPEG-1 stream");
+                     probe_io_error ? 1 : 0, probe_errno,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(
+                         MALLOC_CAP_8BIT));
+            showStatus(
+                probe_errno == ENOMEM
+                    ? "Not enough RAM"
+                    : "Invalid video.mpg",
+                probe_errno == ENOMEM
+                    ? "MPEG-1 frame allocation failed"
+                    : "unsupported MPEG-1 stream");
             closeVideo();
             return false;
         }
@@ -3144,7 +3194,7 @@ bool openVideo() {
         plm_rewind(mpeg_video);
         ESP_LOGI(kTag,
                  "MPEG-1/PS: %ux%u, %u/%u fps, streaming frame count, "
-                 "MP2 audio=%u Hz, no-B two-frame decoder",
+                 "MP2 audio=%u Hz, full I/P/B two-reference decoder",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  sequence_header.audio_sample_rate);
@@ -3884,6 +3934,59 @@ bool renderMpegFrame(const plm_frame_t *frame) {
     return true;
 }
 
+bool renderMpegBRows(
+    const plm_frame_t *frame, unsigned first_y, unsigned row_count) {
+    if (!frame || !row_count) return false;
+    mpeg_cached_chroma_y = -1;
+    if (player_settings::kScaleVideoToDisplay) {
+        for (int output_y = 0; output_y < kScreenHeight; ++output_y) {
+            const int source_y = scaled_y_map[output_y];
+            if (source_y < static_cast<int>(first_y) ||
+                source_y >= static_cast<int>(first_y + row_count)) continue;
+            uint16_t *pixels = display.acquireBuffer();
+            if (!pixels) return false;
+            convertMpegRow(
+                frame, source_y - static_cast<int>(first_y), true, 0,
+                pixels, kScreenWidth);
+            if (display.drawBitmap(
+                    0, output_y, kScreenWidth, 1,
+                    pixels) != ESP_OK) return false;
+        }
+        return true;
+    }
+
+    const int source_width = static_cast<int>(frame->width);
+    const int source_height = static_cast<int>(frame->height);
+    const int width = std::min(source_width, kScreenWidth);
+    const int height = std::min(source_height, kScreenHeight);
+    const int source_x = (source_width - width) / 2;
+    const int source_y = (source_height - height) / 2;
+    const int visible_end_y = source_y + height;
+    const int absolute_begin = static_cast<int>(first_y) > source_y
+        ? static_cast<int>(first_y) : source_y;
+    const int absolute_end = std::min(
+        static_cast<int>(first_y + row_count), visible_end_y);
+    const int x_offset = (kScreenWidth - width) / 2;
+    const int y_offset = (kScreenHeight - height) / 2;
+    const int rows_per_transfer = display.rowsPerTransfer();
+    for (int absolute_y = absolute_begin; absolute_y < absolute_end;) {
+        const int rows = std::min(
+            rows_per_transfer, absolute_end - absolute_y);
+        uint16_t *pixels = display.acquireBuffer();
+        if (!pixels) return false;
+        for (int row = 0; row < rows; ++row) {
+            convertMpegRow(
+                frame, absolute_y + row - static_cast<int>(first_y),
+                false, source_x, pixels + row * width, width);
+        }
+        if (display.drawBitmap(
+                x_offset, y_offset + absolute_y - source_y,
+                width, rows, pixels) != ESP_OK) return false;
+        absolute_y += rows;
+    }
+    return true;
+}
+
 bool renderH263Frame(const H2633gpFrame *frame) {
     if (!frame) return false;
     plm_frame_t adapted{};
@@ -4278,6 +4381,12 @@ struct PresentationState {
     bool late = false;
 };
 
+PresentationState mpeg_b_presentation{};
+bool mpeg_b_presentation_active = false;
+bool mpeg_b_render_ok = true;
+uint32_t mpeg_b_render_us = 0;
+uint32_t mpeg_b_callback_us = 0;
+
 struct BpvDecodeBreakdown {
     uint32_t input_us = 0;
     uint32_t block_us = 0;
@@ -4328,6 +4437,29 @@ PresentationState beginPresentation() {
 
     if (!audio_enabled) waitUntil(next_present_us);
     return state;
+}
+
+void consumeMpegBFrameRows(
+    plm_video_t *decoder, const plm_frame_t *rows,
+    unsigned first_y, unsigned row_count, void *opaque) {
+    (void)decoder;
+    (void)opaque;
+    const int64_t callback_start = microsNow();
+    if (!mpeg_b_presentation_active) {
+        mpeg_b_presentation = beginPresentation();
+        mpeg_b_presentation_active = true;
+        mpeg_b_render_ok = true;
+        mpeg_b_render_us = 0;
+    }
+    if (mpeg_b_presentation.render && mpeg_b_render_ok) {
+        const int64_t render_start = microsNow();
+        mpeg_b_render_ok = renderMpegBRows(
+            rows, first_y, row_count);
+        mpeg_b_render_us += static_cast<uint32_t>(
+            microsNow() - render_start);
+    }
+    mpeg_b_callback_us += static_cast<uint32_t>(
+        microsNow() - callback_start);
 }
 
 void applyKeyframeCatchupWithLookahead(
@@ -4840,6 +4972,53 @@ void playOneH263FramePipelined() {
         pending_h263_frame_valid = true;
     } else {
         finishVideoLoop();
+    }
+}
+
+void playOneMpegFrameStreamedRows() {
+    mpeg_b_presentation_active = false;
+    mpeg_b_render_ok = true;
+    mpeg_b_render_us = 0;
+    mpeg_b_callback_us = 0;
+    if (!submitMpegDecode()) {
+        failPlayback("Decode pipeline error", HLV1_ERR_IO);
+        return;
+    }
+    DecodeResult decoded{};
+    if (!waitDecode(&decoded)) {
+        failPlayback("MPEG-1 decode error", HLV1_ERR_BITSTREAM);
+        return;
+    }
+    if (decoded.result == HLV1_ERR_IO) {
+        failSdCardRead("cannot read MPEG video");
+        return;
+    }
+    if (decoded.result != HLV1_OK) {
+        failPlayback("MPEG-1 decode error", decoded.result);
+        return;
+    }
+    finishCompressedPredictiveSkips(
+        decoded.compressed_skips, decoded.decode_us);
+    if (!decoded.has_mpeg_frame) {
+        finishVideoLoop();
+        return;
+    }
+    if (decoded.mpeg_frame.storage_mode ==
+        PLM_FRAME_STORAGE_YUV420_ROWS) {
+        if (!mpeg_b_presentation_active || !mpeg_b_render_ok) {
+            failPlayback("Display DMA error", HLV1_ERR_IO);
+            return;
+        }
+        const uint32_t decode_us = decoded.decode_us - std::min(
+            decoded.decode_us, mpeg_b_callback_us);
+        finishPresentation(
+            mpeg_b_presentation, 0, decode_us,
+            mpeg_b_render_us);
+        mpeg_b_presentation_active = false;
+        return;
+    }
+    if (!presentMpegFrame(&decoded.mpeg_frame, decoded.decode_us)) {
+        failPlayback("Display DMA error", HLV1_ERR_IO);
     }
 }
 
@@ -5797,11 +5976,15 @@ extern "C" void app_main(void) {
         }
         if (video_file && video_codec == VideoCodec::kMpeg1 &&
             mpeg_video) {
+#if PLM_MPEG_STREAM_B_ROWS
+            playOneMpegFrameStreamedRows();
+#else
             if (player_settings::kUseDualCorePipeline) {
                 playOneMpegFramePipelined();
             } else {
                 playOneMpegFrameSequential();
             }
+#endif
             continue;
         }
         if (video_file && isPacketVideoCodec(video_codec) &&

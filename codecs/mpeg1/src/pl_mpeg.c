@@ -13,6 +13,5 @@
 #endif
 #endif
 #define PLM_VIDEO_MAX_FRAME_BYTES (320 * 240 * 3 / 2)
-#define PLM_VIDEO_NO_B_FRAMES
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"

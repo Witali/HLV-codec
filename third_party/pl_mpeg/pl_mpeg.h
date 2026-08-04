@@ -167,6 +167,10 @@ See below for detailed the API documentation.
 #define PLM_MPEG_DCT_SECOND_LEVEL 0
 #endif
 
+#ifndef PLM_MPEG_STREAM_B_ROWS
+#define PLM_MPEG_STREAM_B_ROWS 0
+#endif
+
 #if PLM_MPEG_DECODE_PROFILE
 #include "esp_cpu.h"
 #endif
@@ -251,6 +255,7 @@ static inline int plm_plane_compact_correction(
 // decoders and packs each byte-aligned row little-endian as Y6/U5/V5.
 #define PLM_FRAME_STORAGE_YUV420 0
 #define PLM_FRAME_STORAGE_Y6_U5_V5 1
+#define PLM_FRAME_STORAGE_YUV420_ROWS 2
 
 
 // Decoded Video Frame
@@ -273,6 +278,13 @@ typedef struct {
 	plm_plane_t cr;
 	plm_plane_t cb;
 } plm_frame_t;
+
+// In bounded-memory builds, B pictures can be consumed synchronously one
+// macroblock row at a time. The planes contain rows local to first_y and are
+// valid only for the duration of the callback.
+typedef void(*plm_video_b_frame_row_callback)(
+	plm_video_t *self, const plm_frame_t *rows,
+	unsigned first_y, unsigned row_count, void *user);
 
 typedef struct {
 	uint64_t total_cycles;
@@ -517,6 +529,9 @@ int plm_has_ended(plm_t *self);
 // Parameter will be passed to your callback.
 
 void plm_set_video_decode_callback(plm_t *self, plm_video_decode_callback fp, void *user);
+
+void plm_set_video_b_frame_row_callback(
+	plm_t *self, plm_video_b_frame_row_callback fp, void *user);
 
 
 // Set the callback for decoded audio samples used with plm_decode(). If no 
@@ -831,6 +846,9 @@ int plm_video_get_height(plm_video_t *self);
 // The default is FALSE.
 
 void plm_video_set_no_delay(plm_video_t *self, int no_delay);
+
+void plm_video_set_b_frame_row_callback(
+	plm_video_t *self, plm_video_b_frame_row_callback fp, void *user);
 
 
 // Get the current internal time in seconds.
@@ -1298,6 +1316,14 @@ int plm_has_ended(plm_t *self) {
 void plm_set_video_decode_callback(plm_t *self, plm_video_decode_callback fp, void *user) {
 	self->video_decode_callback = fp;
 	self->video_decode_callback_user_data = user;
+}
+
+void plm_set_video_b_frame_row_callback(
+	plm_t *self, plm_video_b_frame_row_callback fp, void *user
+) {
+	if (plm_init_decoders(self) && self->video_decoder) {
+		plm_video_set_b_frame_row_callback(self->video_decoder, fp, user);
+	}
 }
 
 void plm_set_audio_decode_callback(plm_t *self, plm_audio_decode_callback fp, void *user) {
@@ -3200,7 +3226,11 @@ struct plm_video_t {
 	plm_frame_t frame_backward;
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
 	plm_frame_t frame_compact_current;
+	plm_frame_t frame_compact_storage[3];
 #endif
+	plm_video_b_frame_row_callback b_frame_row_callback;
+	void *b_frame_row_callback_user_data;
+	int has_decoded_reference_frame;
 
 	uint8_t *frames_data;
 
@@ -3256,6 +3286,7 @@ void plm_video_decode_picture(plm_video_t *self);
 void plm_video_decode_picture_body(plm_video_t *self);
 void plm_video_decode_slice(plm_video_t *self, int slice);
 void plm_video_decode_macroblock(plm_video_t *self);
+void plm_video_emit_b_row_if_complete(plm_video_t *self);
 void plm_video_decode_motion_vectors(plm_video_t *self);
 int plm_video_decode_motion_vector(plm_video_t *self, int r_size, int motion);
 void plm_video_predict_macroblock(plm_video_t *self);
@@ -3277,9 +3308,6 @@ plm_video_t * plm_video_create_with_buffer(plm_buffer_t *buffer, int destroy_whe
 	
 	self->buffer = buffer;
 	self->destroy_buffer_when_done = destroy_when_done;
-#ifdef PLM_VIDEO_NO_B_FRAMES
-	self->assume_no_b_frames = TRUE;
-#endif
 
 	// Attempt to decode the sequence header
 	self->start_code = plm_buffer_find_start_code(self->buffer, PLM_START_SEQUENCE);
@@ -3296,14 +3324,12 @@ void plm_video_destroy(plm_video_t *self) {
 
 	if (self->has_sequence_header) {
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-		PLM_FREE(self->frame_forward.y.data);
-		PLM_FREE(self->frame_forward.cr.data);
-		PLM_FREE(self->frame_forward.cb.data);
-		PLM_FREE(self->frame_forward.y.correction);
-		PLM_FREE(self->frame_compact_current.y.data);
-		PLM_FREE(self->frame_compact_current.cr.data);
-		PLM_FREE(self->frame_compact_current.cb.data);
-		PLM_FREE(self->frame_compact_current.y.correction);
+		for (unsigned i = 0; i < 3; ++i) {
+			PLM_FREE(self->frame_compact_storage[i].y.data);
+			PLM_FREE(self->frame_compact_storage[i].cr.data);
+			PLM_FREE(self->frame_compact_storage[i].cb.data);
+			PLM_FREE(self->frame_compact_storage[i].y.correction);
+		}
 #endif
 		PLM_FREE(self->frames_data);
 	}
@@ -3339,6 +3365,13 @@ void plm_video_set_no_delay(plm_video_t *self, int no_delay) {
 	self->assume_no_b_frames = no_delay;
 }
 
+void plm_video_set_b_frame_row_callback(
+	plm_video_t *self, plm_video_b_frame_row_callback fp, void *user
+) {
+	self->b_frame_row_callback = fp;
+	self->b_frame_row_callback_user_data = user;
+}
+
 double plm_video_get_time(plm_video_t *self) {
 	return self->time;
 }
@@ -3353,6 +3386,7 @@ void plm_video_rewind(plm_video_t *self) {
 	self->time = 0;
 	self->frames_decoded = 0;
 	self->has_reference_frame = FALSE;
+	self->has_decoded_reference_frame = FALSE;
 	self->start_code = -1;
 #if PLM_MPEG_DECODE_PROFILE
 	plm_video_reset_decode_profile(self);
@@ -3397,10 +3431,7 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 				if (
 					self->has_reference_frame &&
 					!self->assume_no_b_frames &&
-					plm_buffer_has_ended(self->buffer) && (
-						self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA ||
-						self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE
-					)
+					plm_buffer_has_ended(self->buffer)
 				) {
 					self->has_reference_frame = FALSE;
 					frame = &self->frame_backward;
@@ -3427,14 +3458,14 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 		plm_video_decode_picture(self);
 
 		if (self->assume_no_b_frames) {
-#ifdef PLM_VIDEO_NO_B_FRAMES
-			frame = &self->frame_forward;
-#else
 			frame = &self->frame_backward;
-#endif
 		}
 		else if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+#if defined(PLM_VIDEO_COMPACT_Y6_U5_V5) && !PLM_MPEG_STREAM_B_ROWS
+			frame = &self->frame_compact_current;
+#else
 			frame = &self->frame_current;
+#endif
 		}
 		else if (self->has_reference_frame) {
 			frame = &self->frame_forward;
@@ -3445,7 +3476,6 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	} while (!frame);
 	
 	frame->time = self->time;
-	frame->picture_type = self->picture_type;
 	self->frames_decoded++;
 	self->time = (double)self->frames_decoded / self->framerate;
 #if PLM_MPEG_DECODE_PROFILE
@@ -3486,9 +3516,8 @@ plm_frame_t *plm_video_decode_keyframe(plm_video_t *self,
 		self->picture_type = plm_buffer_read(self->buffer, 3);
 		if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA) {
 			plm_video_decode_picture_body(self);
-			plm_frame_t *frame = &self->frame_forward;
+			plm_frame_t *frame = &self->frame_backward;
 			frame->time = self->time;
-			frame->picture_type = self->picture_type;
 			self->frames_decoded++;
 			self->time = (double)self->frames_decoded / self->framerate;
 			return frame;
@@ -3603,9 +3632,6 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	}
 #endif
 
-#ifdef PLM_VIDEO_NO_B_FRAMES
-	// Constrained streams without B pictures need only the previous reference
-	// and the picture currently being decoded.
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
 	size_t packed_luma_stride = (self->luma_width * 6) >> 3;
 	size_t packed_chroma_stride = (self->chroma_width * 5) >> 3;
@@ -3628,14 +3654,32 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	uint8_t *current_y = (uint8_t*)PLM_MALLOC(packed_luma_size);
 	uint8_t *current_cr = (uint8_t*)PLM_MALLOC(packed_chroma_size);
 	uint8_t *current_cb = (uint8_t*)PLM_MALLOC(packed_chroma_size);
+#if PLM_MPEG_STREAM_B_ROWS
+	uint8_t *backward_y = NULL;
+	uint8_t *backward_cr = NULL;
+	uint8_t *backward_cb = NULL;
+#else
+	uint8_t *backward_y = (uint8_t*)PLM_MALLOC(packed_luma_size);
+	uint8_t *backward_cr = (uint8_t*)PLM_MALLOC(packed_chroma_size);
+	uint8_t *backward_cb = (uint8_t*)PLM_MALLOC(packed_chroma_size);
+#endif
 	int8_t *forward_corrections = (int8_t*)PLM_MALLOC(correction_size);
 	int8_t *current_corrections = (int8_t*)PLM_MALLOC(correction_size);
+#if PLM_MPEG_STREAM_B_ROWS
+	int8_t *backward_corrections = NULL;
+#else
+	int8_t *backward_corrections = (int8_t*)PLM_MALLOC(correction_size);
+#endif
 	self->frames_data = (uint8_t*)PLM_MALLOC(row_frame_size);
 	if (
 		!forward_y || !forward_cr || !forward_cb ||
 		!current_y || !current_cr || !current_cb ||
 		!forward_corrections || !current_corrections ||
 		!self->frames_data
+#if !PLM_MPEG_STREAM_B_ROWS
+		|| !backward_y || !backward_cr || !backward_cb ||
+		!backward_corrections
+#endif
 	) {
 		PLM_FREE(forward_y);
 		PLM_FREE(forward_cr);
@@ -3643,8 +3687,12 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 		PLM_FREE(current_y);
 		PLM_FREE(current_cr);
 		PLM_FREE(current_cb);
+		PLM_FREE(backward_y);
+		PLM_FREE(backward_cr);
+		PLM_FREE(backward_cb);
 		PLM_FREE(forward_corrections);
 		PLM_FREE(current_corrections);
+		PLM_FREE(backward_corrections);
 		PLM_FREE(self->frames_data);
 		self->frames_data = NULL;
 		return FALSE;
@@ -3657,25 +3705,34 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	memset(current_cb, 0, packed_chroma_size);
 	memset(forward_corrections, 0, correction_size);
 	memset(current_corrections, 0, correction_size);
+#if !PLM_MPEG_STREAM_B_ROWS
+	memset(backward_y, 0, packed_luma_size);
+	memset(backward_cr, 0, packed_chroma_size);
+	memset(backward_cb, 0, packed_chroma_size);
+	memset(backward_corrections, 0, correction_size);
+#endif
 	memset(self->frames_data, 0, row_frame_size);
 	plm_video_init_compact_frame(
-		self, &self->frame_forward, forward_y, forward_cr, forward_cb,
+		self, &self->frame_compact_storage[0],
+		forward_y, forward_cr, forward_cb,
 		forward_corrections);
 	plm_video_init_compact_frame(
-		self, &self->frame_compact_current,
+		self, &self->frame_compact_storage[1],
 		current_y, current_cr, current_cb, current_corrections);
-	plm_video_init_row_frame(
-		self, &self->frame_current, self->frames_data);
+#if !PLM_MPEG_STREAM_B_ROWS
+	plm_video_init_compact_frame(
+		self, &self->frame_compact_storage[2],
+		backward_y, backward_cr, backward_cb, backward_corrections);
+#endif
+	self->frame_forward = self->frame_compact_storage[0];
+	self->frame_compact_current = self->frame_compact_storage[1];
+#if PLM_MPEG_STREAM_B_ROWS
 	self->frame_backward = self->frame_forward;
 #else
-	self->frames_data = (uint8_t*)PLM_MALLOC(frame_data_size * 2);
-	if (!self->frames_data) {
-		return FALSE;
-	}
-	plm_video_init_frame(self, &self->frame_current, self->frames_data + frame_data_size * 0);
-	plm_video_init_frame(self, &self->frame_forward, self->frames_data + frame_data_size * 1);
-	self->frame_backward = self->frame_forward;
+	self->frame_backward = self->frame_compact_storage[2];
 #endif
+	plm_video_init_row_frame(
+		self, &self->frame_current, self->frames_data);
 #else
 	self->frames_data = (uint8_t*)PLM_MALLOC(frame_data_size * 3);
 	if (!self->frames_data) {
@@ -3770,7 +3827,11 @@ void plm_video_init_row_frame(
 
 	frame->width = self->width;
 	frame->height = self->height;
+#if PLM_MPEG_STREAM_B_ROWS
+	frame->storage_mode = PLM_FRAME_STORAGE_YUV420_ROWS;
+#else
 	frame->storage_mode = PLM_FRAME_STORAGE_YUV420;
+#endif
 	frame->y.width = self->luma_width;
 	frame->y.height = 16;
 	frame->y.stride = self->luma_width;
@@ -3833,14 +3894,32 @@ void plm_video_decode_picture_body(plm_video_t *self) {
 		self->motion_backward.r_size = f_code - 1;
 	}
 
-#ifndef PLM_VIDEO_NO_B_FRAMES
 	plm_frame_t frame_temp = self->frame_forward;
 	if (
 		self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA ||
 		self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE
 	) {
+#if defined(PLM_VIDEO_COMPACT_Y6_U5_V5) && PLM_MPEG_STREAM_B_ROWS
+		if (self->has_decoded_reference_frame) {
+			self->frame_forward = self->frame_backward;
+			self->frame_compact_current = frame_temp;
+		}
+#else
 		self->frame_forward = self->frame_backward;
+#endif
 	}
+
+#if defined(PLM_VIDEO_COMPACT_Y6_U5_V5) && PLM_MPEG_STREAM_B_ROWS
+	if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+		self->frame_current.picture_type = self->picture_type;
+	}
+	else {
+		self->frame_compact_current.picture_type = self->picture_type;
+	}
+#elif defined(PLM_VIDEO_COMPACT_Y6_U5_V5)
+	self->frame_compact_current.picture_type = self->picture_type;
+#else
+	self->frame_current.picture_type = self->picture_type;
 #endif
 
 
@@ -3860,27 +3939,23 @@ void plm_video_decode_picture_body(plm_video_t *self) {
 		}
 		self->start_code = plm_buffer_next_start_code(self->buffer);
 	}
-
 	// If this is a reference picture rotate the prediction pointers
 	if (
 		self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA ||
 		self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE
 	) {
-#ifdef PLM_VIDEO_NO_B_FRAMES
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-		plm_frame_t frame_temp = self->frame_forward;
-		self->frame_forward = self->frame_compact_current;
-		self->frame_compact_current = frame_temp;
-		self->frame_backward = self->frame_forward;
+		self->frame_backward = self->frame_compact_current;
+#if PLM_MPEG_STREAM_B_ROWS
+		self->frame_compact_current = self->frame_forward;
 #else
-		plm_frame_t frame_temp = self->frame_forward;
-		self->frame_forward = self->frame_current;
-		self->frame_current = frame_temp;
+		self->frame_compact_current = frame_temp;
 #endif
 #else
 		self->frame_backward = self->frame_current;
 		self->frame_current = frame_temp;
 #endif
+		self->has_decoded_reference_frame = TRUE;
 	}
 }
 
@@ -3908,6 +3983,31 @@ void plm_video_decode_slice(plm_video_t *self, int slice) {
 		self->macroblock_address < self->mb_size - 1 &&
 		plm_buffer_peek_non_zero(self->buffer, 23)
 	);
+}
+
+void plm_video_emit_b_row_if_complete(plm_video_t *self) {
+#if defined(PLM_VIDEO_COMPACT_Y6_U5_V5) && PLM_MPEG_STREAM_B_ROWS
+	if (
+		self->picture_type != PLM_VIDEO_PICTURE_TYPE_B ||
+		self->mb_col != self->mb_width - 1
+	) {
+		return;
+	}
+	unsigned first_y = (unsigned)(self->mb_row << 4);
+	unsigned rows = first_y < self->height
+		? self->height - first_y
+		: 0;
+	if (rows > 16) {
+		rows = 16;
+	}
+	if (rows && self->b_frame_row_callback) {
+		self->b_frame_row_callback(
+			self, &self->frame_current, first_y, rows,
+			self->b_frame_row_callback_user_data);
+	}
+#else
+	(void)self;
+#endif
 }
 
 void plm_video_decode_macroblock(plm_video_t *self) {
@@ -3966,9 +4066,17 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 				PLM_VIDEO_PROFILE_CALL(
 					self, motion_cycles,
 					plm_video_predict_macroblock(self));
+#if PLM_MPEG_STREAM_B_ROWS
+				if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+					plm_video_emit_b_row_if_complete(self);
+				}
+				else
+#endif
+				{
 				PLM_VIDEO_PROFILE_CALL(
 					self, compact_cycles,
 					plm_video_compact_store_macroblock(self));
+				}
 			}
 #else
 			PLM_VIDEO_PROFILE_CALL(
@@ -4060,6 +4168,13 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 		mask >>= 1;
 	}
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
+#if PLM_MPEG_STREAM_B_ROWS
+	if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+		plm_video_emit_b_row_if_complete(self);
+	}
+	else
+#endif
+	{
 	if (copy_unchanged_blocks) {
 		for (int block = 0, mask = 0x20; block < 6; block++) {
 			if (cbp & mask) {
@@ -4079,6 +4194,7 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 		PLM_VIDEO_PROFILE_CALL(
 			self, compact_cycles,
 			plm_video_compact_store_macroblock(self));
+	}
 	}
 #endif
 }

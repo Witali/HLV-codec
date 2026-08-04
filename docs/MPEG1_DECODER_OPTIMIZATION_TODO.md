@@ -36,6 +36,8 @@ accepted decoder change must preserve the complete compact decode checksum
 | Fused IDCT row reconstruction | heavy q41 QEMU 2,715,338 -> 2,754,921 cycles (+1.46%); identical hash | rejected before flash; implementation removed |
 | Selective IRAM for compact MC | q41 67.935 -> 62.656 ms (-7.77%); Regression 59.999 -> 55.311 ms (-7.81%); checksums unchanged | accepted; +10,352 bytes IRAM |
 | Compact second-level DCT VLC | q41 62.656 -> 61.141 ms (-2.42%); Regression 55.311 -> 53.879 ms (-2.59%); QEMU -2.26%; hashes unchanged | accepted; +352-byte app, no IRAM/heap change |
+| Bounded standard I/P/B decode | physical 180/180, 7 I / 54 P / 119 B; two compact references; no gaps | accepted; B pictures rendered from the row workspace |
+| Static MPEG audio-reader stack | repeated loop no longer falls to a 1108-byte heap and fails task creation | accepted; fixed 2.5 KiB early reservation |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -247,6 +249,36 @@ skips. Full host q41 decoded 14,315 frames with the unchanged compact checksum
 `e9c4f082df3d933f`; Regression retained `7e90d6fe1e1db56f`. The normal app
 grew by 352 bytes from `0xbcc70` to `0xbcdd0`; `_iram_end` and heap start were
 unchanged.
+
+### Standard I/P/B bounded-memory regression — 2026-08-04
+
+The old ESP build forced a no-B assumption and therefore did not implement
+normal MPEG-1 display reordering. That restriction has been removed. I and P
+pictures rotate through two packed Y6/U5/V5 reference surfaces; B pictures
+use both references but are consumed synchronously in 16-luma-row strips and
+never retained as references.
+
+The generated 320x240/30 fps physical fixture contained 180 pictures: 7 I,
+54 P and 119 B. Host plain, three-surface compact and bounded two-surface
+builds all returned exactly that composition. The bounded callback covered
+all 119 B pictures and exposed only two unique compact luma buffers. The
+physical ESP32 run returned 180/180 records with zero sequence gaps and zero
+display skips; average decode-only time was 69.684 ms and average RGB565/LCD
+presentation time was 21.450 ms.
+
+Repeated playback also exposed a separate tight-memory lifecycle fault. The
+audio reader cleared its task handle immediately before self-deletion, while
+FreeRTOS deferred reclamation of its dynamic stack to an idle task. A new loop
+could then start with only 1108 bytes free and fail task creation, or report a
+decoder allocation failure as `Invalid video.mpg`. MPEG uses a statically
+reserved 2.5 KiB reader stack now, and the task remains synchronizable until
+the controller deletes it. Two consecutive loop boundaries reopened cleanly.
+Allocation failures are reported as `Not enough RAM` instead of an invalid
+stream.
+
+The 320x180/24 fps no-B guard remained faster than its previous physical
+reference: video decode averaged 12.018 ms versus 14.949 ms, MP2 decode
+averaged 2.088 ms, and no audio rebuffer or underrun was observed.
 
 ## Current heavy-clip campaign
 

@@ -20,6 +20,8 @@ set(PLM_MPEG_IRAM_COMPACT_MC ON CACHE BOOL
     "Place compact MPEG-1 motion-compensation kernels in IRAM")
 set(PLM_MPEG_DCT_SECOND_LEVEL ON CACHE BOOL
     "Use compact second-level MPEG-1 DCT coefficient VLC tables")
+set(PLM_MPEG_STREAM_B_ROWS ON CACHE BOOL
+    "Consume MPEG-1 B pictures through a bounded macroblock-row callback")
 if(PLM_MPEG_IRAM_BITREADER)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_IRAM_BITREADER=1
@@ -67,6 +69,16 @@ if(PLM_MPEG_DCT_SECOND_LEVEL)
 else()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_DCT_SECOND_LEVEL=0
+    )
+endif()
+
+if(PLM_MPEG_STREAM_B_ROWS)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC
+        PLM_MPEG_STREAM_B_ROWS=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC
+        PLM_MPEG_STREAM_B_ROWS=0
     )
 endif()
 

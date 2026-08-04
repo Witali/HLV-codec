@@ -88,7 +88,9 @@ Y6/U5/V5 reference frames, uses one 8-bit macroblock row for reconstruction,
 and streams a compressed picture through a bounded 4 KiB elementary buffer.
 At 320x240 those frame allocations total 170,880 bytes. The six packed planes
 are allocated separately to avoid a single large contiguous-heap
-requirement.
+requirement. Standard B pictures are reconstructed and presented directly
+from the macroblock-row workspace; because they never become prediction
+references, no third full frame is retained.
 
 Playback timing comes from `fps_num/fps_den` in the active format header. With
 HLV or MJPEG audio, the exact rational frame index is converted to a target PCM sample

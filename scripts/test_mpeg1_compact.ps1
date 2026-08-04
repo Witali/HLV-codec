@@ -56,6 +56,8 @@ function Build-DecoderTest {
 $plain = Build-DecoderTest -Name "mpeg1_decode_plain"
 $compact = Build-DecoderTest -Name "mpeg1_decode_compact" `
     -Defines "/DPLM_MPEG_EMBEDDED"
+$bounded = Build-DecoderTest -Name "mpeg1_decode_bounded" `
+    -Defines "/DPLM_MPEG_EMBEDDED /DPLM_MPEG_STREAM_B_ROWS=1"
 
 $plainResult = & $plain $InputFile plain
 if ($LASTEXITCODE -ne 0) {
@@ -65,16 +67,38 @@ $compactResult = & $compact $InputFile compact
 if ($LASTEXITCODE -ne 0) {
     throw "Compact MPEG decoder regression failed."
 }
+$boundedResult = & $bounded $InputFile bounded
+if ($LASTEXITCODE -ne 0) {
+    throw "Bounded MPEG B-row decoder regression failed."
+}
 
 $plainFrames = [regex]::Match($plainResult, "frames=(\d+)").Groups[1].Value
 $compactFrames =
     [regex]::Match($compactResult, "frames=(\d+)").Groups[1].Value
-if (-not $plainFrames -or $plainFrames -ne $compactFrames) {
+$boundedFrames =
+    [regex]::Match($boundedResult, "frames=(\d+)").Groups[1].Value
+if (-not $plainFrames -or $plainFrames -ne $compactFrames -or
+    $plainFrames -ne $boundedFrames) {
     throw (
-        "Frame count mismatch: plain=$plainFrames compact=$compactFrames"
+        "Frame count mismatch: plain=$plainFrames compact=$compactFrames " +
+        "bounded=$boundedFrames"
+    )
+}
+
+$plainTypes = [regex]::Match($plainResult, "i=(\d+) p=(\d+) b=(\d+)").Value
+$compactTypes =
+    [regex]::Match($compactResult, "i=(\d+) p=(\d+) b=(\d+)").Value
+$boundedTypes =
+    [regex]::Match($boundedResult, "i=(\d+) p=(\d+) b=(\d+)").Value
+if (-not $plainTypes -or $plainTypes -ne $compactTypes -or
+    $plainTypes -ne $boundedTypes) {
+    throw (
+        "Picture-type mismatch: plain='$plainTypes' " +
+        "compact='$compactTypes' bounded='$boundedTypes'"
     )
 }
 
 Write-Host $plainResult
 Write-Host $compactResult
-Write-Host "MPEG compact regression passed: $compactFrames frames."
+Write-Host $boundedResult
+Write-Host "MPEG compact/bounded regression passed: $boundedFrames frames."

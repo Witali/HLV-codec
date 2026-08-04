@@ -4,9 +4,9 @@ The Windows and ESP32 players accept a standard MPEG Program Stream (`.mpg`
 or `.mpeg`) containing:
 
 - MPEG-1 Video, YUV420, at most 320x240 visible pixels;
-- only I and P pictures (`-bf 0`), with a GOP of 30 by default;
+- standard I, P and B pictures, with a GOP of 30 by default;
 - a standard MPEG frame rate recognized by PL_MPEG;
-- one optional MPEG-1 Audio Layer II stream, decoded to mono PCM_U8 at
+- one optional MPEG-1 Audio Layer II stream, decoded to signed mono PCM16 at
   playback time.
 
 The project does not extend MPEG with custom wrappers or appended/private
@@ -14,12 +14,14 @@ PCM tracks. Device optimization results and rejected experiments are tracked
 in [MPEG1_DECODER_OPTIMIZATION_TODO.md](MPEG1_DECODER_OPTIMIZATION_TODO.md).
 
 The ESP32 limit is deliberate. At 320x240, each packed Y6/U5/V5 reference
-frame occupies 81,600 bytes. The no-B decoder stores two such frames plus one
-7,680-byte 8-bit macroblock-row work area, for 170,880 bytes total. The six
+frame occupies 81,600 bytes. The bounded decoder stores two such reference
+frames plus one 7,680-byte 8-bit macroblock-row work area, for 170,880 bytes
+total. B pictures are never references, so they are presented synchronously
+from that row area instead of requiring a third full frame. The six
 packed planes are separate allocations, so playback does not depend on one
 170 KiB contiguous heap block. Both the stdio read-ahead and PL_MPEG
-elementary-stream buffer are bounded at 4 KiB. Larger pictures and streams
-containing B pictures are outside this profile.
+elementary-stream buffer are bounded at 4 KiB. Larger pictures are outside
+this profile.
 
 The compact reference format is an ESP32 build option; the Windows player
 retains full 8-bit YUV420 references. Y6/U5/V5 rounding can introduce a small
@@ -75,12 +77,12 @@ second file cursor with video disabled. This prevents either task from
 allocating the other stream's decoder.
 
 With `kUseDualCorePipeline=true`, the ordered MPEG-1 decoder runs on CPU1. Its
-two packed buffers alternate between the previous reference and the next
-decode target. CPU0 simultaneously expands a copied descriptor for the
-preceding frame to RGB565 and submits 16-row SPI DMA strips. The payload is
-not copied, and the next picture is not started until both the decode and
-render stages have completed. The MP2 reader remains a high-priority CPU0
-task feeding the existing DAC stream buffer.
+two packed buffers rotate as the past and future I/P references. A B picture
+is reconstructed and converted to RGB565 one macroblock row at a time before
+that workspace is reused. I/P references are presented after decode. The next
+picture is not started until presentation has completed, preserving both
+reference lifetime and coded/display order without a third full frame. The
+MP2 reader remains a higher-priority CPU1 task feeding the static PCM queue.
 
 The physical ESP32 successfully decoded the 120-frame 320x240/30 fps smoke
 file without frame-sequence gaps. The optimized decoder averaged 61.5 ms per
