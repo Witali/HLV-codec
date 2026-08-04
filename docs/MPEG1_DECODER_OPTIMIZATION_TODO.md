@@ -30,6 +30,7 @@ accepted decoder change must preserve the complete compact decode checksum
 | One shared demux and two 4 KiB ES buffers | 18.524 fps; MP2 26,870 / 26,419 us; 196-200 ms video peaks | rejected |
 | YUV-to-RGB565 lookup tables | render 27,770.6 / 27,430.3 us; 19.194 / 19.213 fps | accepted, `bc2fa66` |
 | Non-standard PCM_U8 MPEG wrapper | conflicts with the standard-format rule | not applicable |
+| Cache-safe 23-bit slice-ending peek | q41 decode 67.936 -> 68.041 ms (+0.154%); QEMU 2,715,338 -> 2,711,931 cycles (-0.125%); checksums unchanged | rejected; hardware regressed |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -135,9 +136,9 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
 
 ## Next candidates
 
-- [ ] Make the 23-bit non-zero lookahead cache-safe. The current peek advances
-      the cached bitreader and rewinds only `bit_index`, forcing the following
-      VLC read to refill its local cache.
+- [x] Test a cache-safe 23-bit non-zero lookahead. Three 300-frame q41 runs
+      regressed by 0.154% on the physical ESP32 despite a 0.125% QEMU cycle
+      improvement, so the implementation and build option were removed.
 - [ ] Add a build-time `MPEG1_DECODE_PROFILE` option, defaulting to `OFF`, and
       measure coefficient/VLC parsing, IDCT, motion compensation and packed
       reconstruction independently.
