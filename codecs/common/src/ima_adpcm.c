@@ -199,3 +199,48 @@ int ima_adpcm_decode_block(const uint8_t *encoded, size_t encoded_size,
     *sample_count = count;
     return 0;
 }
+
+size_t ima_adpcm_wav_mono_sample_count(size_t block_size) {
+    if (block_size < IMA_ADPCM_WAV_BLOCK_HEADER_SIZE ||
+        block_size > IMA_ADPCM_WAV_MAX_BLOCK_BYTES) {
+        return 0;
+    }
+    return 1U +
+        (block_size - IMA_ADPCM_WAV_BLOCK_HEADER_SIZE) * 2U;
+}
+
+int ima_adpcm_wav_block_header_read(const uint8_t *header,
+                                    size_t header_size,
+                                    IMAADPCMState *state) {
+    if (!header || header_size < IMA_ADPCM_WAV_BLOCK_HEADER_SIZE ||
+        !state || header[2] > 88U || header[3] != 0U) {
+        return -1;
+    }
+    state->predictor = (int16_t)((uint16_t)header[0] |
+                                 ((uint16_t)header[1] << 8));
+    state->step_index = header[2];
+    return 0;
+}
+
+int ima_adpcm_decode_wav_mono_block(const uint8_t *encoded,
+                                    size_t encoded_size,
+                                    int16_t *samples,
+                                    size_t sample_capacity,
+                                    size_t *sample_count) {
+    IMAADPCMState state;
+    const size_t count = ima_adpcm_wav_mono_sample_count(encoded_size);
+    size_t sample;
+    if (!count || !samples || !sample_count || sample_capacity < count ||
+        ima_adpcm_wav_block_header_read(encoded, encoded_size, &state)) {
+        return -1;
+    }
+    samples[0] = (int16_t)state.predictor;
+    for (sample = 1U; sample < count; ++sample) {
+        const uint8_t packed = encoded[
+            IMA_ADPCM_WAV_BLOCK_HEADER_SIZE + (sample - 1U) / 2U];
+        const uint8_t code = (sample & 1U) ? (packed & 15U) : (packed >> 4);
+        samples[sample] = ima_adpcm_decode_nibble(&state, code);
+    }
+    *sample_count = count;
+    return 0;
+}

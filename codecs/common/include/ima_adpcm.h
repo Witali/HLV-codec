@@ -24,6 +24,12 @@ extern "C" {
 #define IMA_ADPCM_BLOCK_HEADER_SIZE 6U
 #define IMA_ADPCM_MAX_BLOCK_SAMPLES 4096U
 
+/* Microsoft IMA ADPCM mono blocks used by WAVE_FORMAT_IMA_ADPCM in AVI.
+ * Unlike the HLV/BPV block above, the decoded sample count is supplied by
+ * WAVEFORMATEX and follows 1 + 2 * (block_align - 4). */
+#define IMA_ADPCM_WAV_BLOCK_HEADER_SIZE 4U
+#define IMA_ADPCM_WAV_MAX_BLOCK_BYTES 2048U
+
 typedef struct IMAADPCMState {
     int predictor;
     int step_index;
@@ -49,6 +55,18 @@ int ima_adpcm_encode_block(const int16_t *samples, size_t sample_count,
 int ima_adpcm_decode_block(const uint8_t *encoded, size_t encoded_size,
                            int16_t *samples, size_t sample_capacity,
                            size_t *sample_count);
+
+size_t ima_adpcm_wav_mono_sample_count(size_t block_size);
+
+int ima_adpcm_wav_block_header_read(const uint8_t *header,
+                                    size_t header_size,
+                                    IMAADPCMState *state);
+
+int ima_adpcm_decode_wav_mono_block(const uint8_t *encoded,
+                                    size_t encoded_size,
+                                    int16_t *samples,
+                                    size_t sample_capacity,
+                                    size_t *sample_count);
 
 #ifdef __cplusplus
 }

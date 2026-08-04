@@ -122,10 +122,90 @@ static int test_malformed_blocks(void) {
     return 0;
 }
 
+static int test_wav_block_and_streaming_equivalence(void) {
+    enum { block_bytes = 1024, refill_bytes = 127 };
+    enum { sample_count = 1 + (block_bytes - 4) * 2 };
+    int16_t input[sample_count];
+    int16_t contiguous[sample_count];
+    int16_t streamed[sample_count];
+    uint8_t encoded[block_bytes] = {0};
+    IMAADPCMState encode_state = {0, 0};
+    IMAADPCMState stream_state;
+    size_t decoded_count = 0;
+    size_t sample;
+    size_t encoded_offset = IMA_ADPCM_WAV_BLOCK_HEADER_SIZE;
+    size_t output_offset = 1;
+
+    for (sample = 0; sample < sample_count; ++sample) {
+        input[sample] = (int16_t)(sin(
+            2.0 * 3.14159265358979323846 * 440.0 *
+            (double)sample / 32000.0) * 24000.0);
+    }
+    encode_state.predictor = input[0];
+    encoded[0] = (uint8_t)encode_state.predictor;
+    encoded[1] = (uint8_t)((uint16_t)(int16_t)encode_state.predictor >> 8);
+    encoded[2] = (uint8_t)encode_state.step_index;
+    encoded[3] = 0;
+    for (sample = 1; sample < sample_count; ++sample) {
+        const uint8_t code = ima_adpcm_encode_sample(&encode_state,
+                                                     input[sample]);
+        const size_t byte = IMA_ADPCM_WAV_BLOCK_HEADER_SIZE +
+                            (sample - 1U) / 2U;
+        if (sample & 1U) encoded[byte] = code;
+        else encoded[byte] = (uint8_t)(encoded[byte] | (code << 4));
+    }
+
+    CHECK(ima_adpcm_wav_mono_sample_count(block_bytes) == sample_count);
+    CHECK(block_bytes > 512U);
+    CHECK(!ima_adpcm_decode_wav_mono_block(
+        encoded, sizeof encoded, contiguous, sample_count, &decoded_count));
+    CHECK(decoded_count == sample_count);
+
+    CHECK(!ima_adpcm_wav_block_header_read(
+        encoded, IMA_ADPCM_WAV_BLOCK_HEADER_SIZE, &stream_state));
+    streamed[0] = (int16_t)stream_state.predictor;
+    while (encoded_offset < sizeof encoded) {
+        const size_t refill_end = encoded_offset + refill_bytes < sizeof encoded
+            ? encoded_offset + refill_bytes : sizeof encoded;
+        while (encoded_offset < refill_end) {
+            const uint8_t packed = encoded[encoded_offset++];
+            streamed[output_offset++] = ima_adpcm_decode_nibble(
+                &stream_state, packed & 15U);
+            streamed[output_offset++] = ima_adpcm_decode_nibble(
+                &stream_state, packed >> 4);
+        }
+    }
+    CHECK(output_offset == sample_count);
+    CHECK(checksum_samples(streamed, sample_count) ==
+          checksum_samples(contiguous, sample_count));
+    return 0;
+}
+
+static int test_malformed_wav_blocks(void) {
+    uint8_t encoded[8] = {0};
+    int16_t output[9];
+    size_t count = 0;
+    CHECK(ima_adpcm_wav_mono_sample_count(3) == 0);
+    CHECK(ima_adpcm_wav_mono_sample_count(
+        IMA_ADPCM_WAV_MAX_BLOCK_BYTES + 1U) == 0);
+    CHECK(!ima_adpcm_decode_wav_mono_block(
+        encoded, sizeof encoded, output, 9, &count));
+    encoded[2] = 89;
+    CHECK(ima_adpcm_decode_wav_mono_block(
+        encoded, sizeof encoded, output, 9, &count) != 0);
+    encoded[2] = 0;
+    encoded[3] = 1;
+    CHECK(ima_adpcm_decode_wav_mono_block(
+        encoded, sizeof encoded, output, 9, &count) != 0);
+    return 0;
+}
+
 int main(void) {
     CHECK(!test_silence());
     CHECK(!test_large_block_and_streaming_equivalence());
     CHECK(!test_malformed_blocks());
+    CHECK(!test_wav_block_and_streaming_equivalence());
+    CHECK(!test_malformed_wav_blocks());
     puts("IMA ADPCM tests passed");
     return 0;
 }
