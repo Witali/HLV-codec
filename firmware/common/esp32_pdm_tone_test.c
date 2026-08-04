@@ -11,7 +11,6 @@
 
 enum {
     kPdmDataGpio = GPIO_NUM_26,
-    kPdmClockGpio = GPIO_NUM_22,
     kToneSampleRate = 32000,
     kToneFrequency = 1000,
     kToneSamplesPerCycle = kToneSampleRate / kToneFrequency,
@@ -104,7 +103,7 @@ void app_main(void) {
         .slot_cfg = I2S_PDM_TX_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .clk = kPdmClockGpio,
+            .clk = I2S_GPIO_UNUSED,
             .dout = kPdmDataGpio,
             .invert_flags = {
                 .clk_inv = false,
@@ -117,7 +116,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(i2s_channel_get_info(tx, &channel_info));
     esp_rom_printf(
         "PDM TONE 2 READY: SD/display/SPI/DAC disabled, GPIO26 data, "
-        "GPIO22 clock, %u Hz sine, %u s ramp, PDM clock %u Hz, "
+        "external clock unpinned, %u Hz sine, %u s ramp, PDM clock %u Hz, "
         "analog high-SNR divider 13\n",
         (unsigned)kToneFrequency, (unsigned)kToneRampSeconds,
         (unsigned)channel_info.bclk_hz);

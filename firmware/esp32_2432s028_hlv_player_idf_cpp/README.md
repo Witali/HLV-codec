@@ -113,8 +113,8 @@ sine-ramp diagnostic. Use the primary C firmware's `tone-test.ps1` wrapper as
 the supported build-and-flash entry point for this hardware test.
 
 The shared `PDM_TONE_TEST` mode replaces the internal DAC with I2S0 PCM-to-PDM
-data on GPIO26 and clock on GPIO22. Use the primary C firmware's
-`pdm-tone-test.ps1` wrapper as the supported entry point.
+data on GPIO26 while leaving the external clock output unpinned. Use the primary
+C firmware's `pdm-tone-test.ps1` wrapper as the supported entry point.
 
 ## Uploading videos to microSD over UART
 
@@ -830,8 +830,8 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
 `kEnableAudio` enables PCM_U8, PCM_S16LE, directly synthesized signed PCM16 MP2,
-and decoded IMA ADPCM playback through
-I2S0 PCM-to-PDM on GPIO26 data and GPIO22 clock. The current test
+and decoded IMA ADPCM playback through I2S0 PCM-to-PDM on GPIO26 data with the
+external clock output unpinned. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated. Playback starts, and resumes after an underrun, only after that
 queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or

@@ -141,9 +141,9 @@ build and flash the independent `build-pdm-tone` image:
 .\pdm-tone-test.ps1 -Port COM8
 ```
 
-PDM data is routed to GPIO26 and its required clock is routed to otherwise
-unused GPIO22. The onboard analog amplifier is connected only to GPIO26; GPIO22
-does not need an external connection for this comparison. The firmware feeds
+PDM data is routed to GPIO26, while the PDM clock remains internal and is not
+routed to a GPIO. The onboard analog amplifier is connected only to GPIO26.
+The firmware feeds
 32 kHz signed PCM to the hardware PDM converter, whose output carrier is about
 6.144 MHz. The clock uses ESP-IDF's analog-output high-SNR divider of 13 rather
 than the codec-line divider of 8. It retains the 1 kHz, 20-second full-scale
@@ -1016,8 +1016,8 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
 `kEnableAudio` enables PCM_U8, PCM_S16LE, directly synthesized signed PCM16 MP2,
-and decoded IMA ADPCM playback through
-I2S0 PCM-to-PDM on GPIO26 data and GPIO22 clock. The current test
+and decoded IMA ADPCM playback through I2S0 PCM-to-PDM on GPIO26 data with the
+external clock output unpinned. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated. Playback starts, and resumes after an underrun, only after that
 queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or
