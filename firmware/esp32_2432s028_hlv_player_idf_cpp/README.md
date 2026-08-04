@@ -549,7 +549,9 @@ block. The wrapper verifies that the generated embedded clip remains
 `msmpeg4v3`/`DIV3`, 320x240 and contains the requested number of frames.
 
 The MPEG-1 benchmark similarly embeds 60 frames of the validated 320x180
-Program Stream and runs the Player's compact `pl_mpeg` component:
+Program Stream by default and runs the Player's compact `pl_mpeg` component.
+A custom input may use any valid constrained-profile size up to 320x240, so
+the slow maximum-resolution production streams can be used for A/B tests:
 
 ```powershell
 .\qemu-mpeg1-benchmark.ps1

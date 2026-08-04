@@ -33,7 +33,7 @@ if (-not $InputFile) {
     )
 }
 if (-not $InputFile -or -not (Test-Path -LiteralPath $InputFile)) {
-    throw "320x180 MPEG-1 benchmark input is missing."
+    throw "MPEG-1 benchmark input is missing."
 }
 $ffmpeg = Find-WorktreeFile "local_tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Find-WorktreeFile "local_tools\ffmpeg\bin\ffprobe.exe"
@@ -55,7 +55,8 @@ $probe = (
 $video = $probe.streams[0]
 if ($LASTEXITCODE -ne 0 -or
     $video.codec_name -ne "mpeg1video" -or
-    $video.width -ne 320 -or $video.height -ne 180 -or
+    [int]$video.width -le 0 -or [int]$video.width -gt 320 -or
+    [int]$video.height -le 0 -or [int]$video.height -gt 240 -or
     [int]$video.nb_read_frames -ne $Frames) {
     throw "Prepared QEMU clip does not match the MPEG-1 profile."
 }

@@ -86,7 +86,7 @@ void app_main(void) {
 
     width = plm_get_width(mpeg);
     height = plm_get_height(mpeg);
-    if (width != 320 || height != 180) {
+    if (width <= 0 || width > 320 || height <= 0 || height > 240) {
         ESP_LOGE(k_tag, "Unexpected dimensions: %dx%d",
                  width, height);
         finish(2);
