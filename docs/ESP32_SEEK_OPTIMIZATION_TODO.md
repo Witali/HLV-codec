@@ -54,17 +54,42 @@ frame-number gaps, display skips, audio rebuffers or underruns. The pre-existing
 MJPEG selection was restored in `play.txt`; no test asset was added to the SD
 card.
 
-### 2. Sequential H.263 / MPEG-4SP AVI positioning
+### 2. Sequential H.263 / MPEG-4SP AVI positioning (retained)
 
-- [ ] Make `nextAviPayload()` preserve the current cursor when it already
+- [x] Make `nextAviPayload()` preserve the current cursor when it already
       equals the tracked next packet offset.
-- [ ] Consume a one-byte RIFF alignment gap sequentially.
-- [ ] Retain absolute seek for genuine gaps, recovery and non-AVI sample-table
+- [x] Consume a one-byte RIFF alignment gap sequentially.
+- [x] Retain absolute seek for genuine gaps, recovery and non-AVI sample-table
       positioning.
-- [ ] Compare H.263 and MPEG-4SP frame checksums with the existing path.
-- [ ] Test large packets that exceed the compressed refill buffer.
-- [ ] Run heavy H.263 and MPEG-4SP physical-board A/B tests and reject any
-      decode-speed regression.
+- [x] Compare H.263 and MPEG-4SP frame checksums with the existing path.
+- [x] Test large packets that exceed the compressed refill buffer.
+- [x] Run a heavy H.263 physical-board A/B test and reject any decode-speed
+      regression.
+- [ ] Run a heavy MPEG-4SP physical-board A/B after the existing decoder RAM
+      allocation regression is fixed.
+
+Result, 2026-08-04: retained. H.263 host tests pass for standard QCIF and CIF
+at the full source rate. MPEG-4SP fixed-refill and contiguous input produce the
+same 60-frame checksum `6eb395b216a4af06`; its 10,456-byte maximum packet is
+larger than the 4 KiB compressed refill buffer. H.263 and MPEG-4SP QEMU tests
+pass in both the C99 and C++ projects, and both production firmware builds
+complete.
+
+On the physical ESP32, the 600-frame 352x288 24 fps heavy H.263 control run
+measured 53.519 ms average decode, 18.558 ms render, 72.078 ms complete work
+and 17.038 observed fps. Cursor-aware positioning measured 53.359 ms,
+18.556 ms, 71.916 ms and 17.076 fps. Both runs reported 600 consecutive frame
+numbers and zero display skips. The small 0.162 ms average-work reduction is
+0.22%; the p95 difference was within frame-content/run noise.
+
+Physical MPEG-4SP timing remains blocked independently of this patch. The old
+and cursor-aware builds both fail before playback, including on the short
+regression clip, with the correct `Not enough RAM: CPU1 decoder task allocation
+failed` diagnostic. Reserving the 4 KiB decoder stack statically was tested and
+rejected: it moved the earlier failure to `decoder table memory`, proving a
+total-RAM shortage rather than only late heap fragmentation. No static-stack
+candidate code was retained. The original MJPEG `play.txt` selection was
+restored and no test asset was added to the SD card.
 
 ### 3. DivX3 prefix replay
 

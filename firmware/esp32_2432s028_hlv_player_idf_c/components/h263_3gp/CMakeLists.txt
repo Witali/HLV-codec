@@ -40,6 +40,15 @@ idf_component_register(
 
 set(PV_H263_XTENSA_IDCT_DC_INTRA ON CACHE BOOL
     "Use the Xtensa DC-only H.263 intra IDCT output kernel")
+set(H263_AVI_CURSOR_AWARE_POSITION ON CACHE BOOL
+    "Avoid H.263/MPEG4SP AVI seeks when the cursor is already sequential")
+if(H263_AVI_CURSOR_AWARE_POSITION)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        H263_AVI_CURSOR_AWARE_POSITION=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        H263_AVI_CURSOR_AWARE_POSITION=0)
+endif()
 if(PV_H263_XTENSA_IDCT_DC_INTRA)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PV_H263_XTENSA_IDCT_DC_INTRA=1

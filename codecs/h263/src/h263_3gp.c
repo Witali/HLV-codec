@@ -74,6 +74,10 @@ enum {
 #define H263_PACKET_BUFFER_BYTES 4096
 #endif
 
+#ifndef H263_AVI_CURSOR_AWARE_POSITION
+#define H263_AVI_CURSOR_AWARE_POSITION 1
+#endif
+
 static bool isSupportedH263Geometry(uint16_t width, uint16_t height) {
     return (width == 176 && height == 144) ||
            (width == 352 && height == 288);
@@ -129,6 +133,19 @@ static bool tellFile(FILE *file, uint64_t *offset) {
 static bool readExact(FILE *file, void *destination, size_t size) {
     return size == 0 || fread(destination, 1, size, file) == size;
 }
+
+#if H263_AVI_CURSOR_AWARE_POSITION
+static bool positionAviFile(FILE *file, uint64_t offset) {
+    uint64_t current = 0;
+    uint8_t byte;
+    if (!tellFile(file, &current)) return false;
+    if (current == offset) return true;
+    if (current < UINT64_MAX && current + 1U == offset) {
+        return readExact(file, &byte, 1U);
+    }
+    return seekFile(file, offset);
+}
+#endif
 
 static bool readU16(FILE *file, uint16_t *value) {
     uint8_t bytes[2];
@@ -952,7 +969,11 @@ static int nextAviPayload(FILE *file, AviState avi, bool video,
     demux.audio.stream_index = avi.audio_stream;
     demux.movi_start = (long)avi.movi_start;
     demux.movi_end = (long)avi.movi_end;
+#if H263_AVI_CURSOR_AWARE_POSITION
+    if (!positionAviFile(file, *offset)) return H263_3GP_ERR_IO;
+#else
     if (!seekFile(file, *offset)) return H263_3GP_ERR_IO;
+#endif
     result = avi_demux_next_packet(
         file, &demux,
         video ? AVI_DEMUX_PACKET_VIDEO : AVI_DEMUX_PACKET_AUDIO,
