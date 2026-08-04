@@ -37,6 +37,8 @@ $project = $PSScriptRoot
 & (Join-Path $project "setup-qemu.ps1")
 & (Join-Path $project "idf.ps1") -IdfArguments @(
     "-B", "build-qemu-mjpeg",
+    "-D", "SDKCONFIG=$project\build-qemu-mjpeg\sdkconfig.qemu",
+    "-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu.defaults",
     "-D", "MJPEG_QEMU_BENCHMARK=ON",
     "-D", "MJPEG_QEMU_FRAME_LIMIT=$Frames",
     "-D", "MJPEG_STREAMING_INPUT=$StreamingInput",
