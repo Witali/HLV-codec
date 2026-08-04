@@ -140,6 +140,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host (
-    "Windows HLV/BPV/MPEG-1/H.263/MPEG-4 SP/AMR-NB/AVI+PCM player " +
+    "Windows HLV/BPV/MPEG-1/H.263/MPEG-4 SP/AMR-NB/AVI audio player " +
     "is ready: $output"
 )
