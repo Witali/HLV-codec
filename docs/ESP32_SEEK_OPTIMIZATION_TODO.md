@@ -160,6 +160,8 @@ no test asset was added to the SD card.
 
 ### 5. Single AVI AV demuxer
 
+- [x] Add and corpus-test a single-cursor packet walker that returns selected
+      video and audio chunks in their physical `movi` order.
 - [ ] Replace independent video/audio scans with one sequential `movi` walker.
 - [ ] Dispatch bounded compressed video bytes to the selected decoder and
       audio payloads to the selected audio decoder/queue.

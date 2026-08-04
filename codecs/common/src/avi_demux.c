@@ -107,6 +107,18 @@ static int chunk_kind(uint32_t id, uint8_t stream,
     return kind == AVI_DEMUX_PACKET_AUDIO && c2 == 'w' && c3 == 'b';
 }
 
+static AviDemuxPacketKind selected_chunk_kind(
+    uint32_t id, const AviDemuxInfo *info) {
+    if (chunk_kind(id, info->video.stream_index,
+                   AVI_DEMUX_PACKET_VIDEO))
+        return AVI_DEMUX_PACKET_VIDEO;
+    if (info->audio.stream_index != AVI_DEMUX_NO_STREAM &&
+        chunk_kind(id, info->audio.stream_index,
+                   AVI_DEMUX_PACKET_AUDIO))
+        return AVI_DEMUX_PACKET_AUDIO;
+    return (AviDemuxPacketKind)0;
+}
+
 static int parse_stream_list(FILE *file, long end, uint8_t index,
                              AviDemuxInfo *info) {
     AviStreamHeader stream;
@@ -287,17 +299,21 @@ int avi_demux_read_info(FILE *file, AviDemuxInfo *info) {
                                                  : AVI_DEMUX_ERR_IO;
 }
 
-int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
-                          AviDemuxPacketKind kind,
-                          AviDemuxPacket *packet) {
+static int next_packet(FILE *file, const AviDemuxInfo *info,
+                       AviDemuxPacketKind wanted_kind,
+                       AviDemuxPacket *packet) {
     uint8_t wanted_stream;
     if (!file || !info || !packet ||
-        (kind != AVI_DEMUX_PACKET_VIDEO && kind != AVI_DEMUX_PACKET_AUDIO))
+        (wanted_kind != (AviDemuxPacketKind)0 &&
+         wanted_kind != AVI_DEMUX_PACKET_VIDEO &&
+         wanted_kind != AVI_DEMUX_PACKET_AUDIO))
         return AVI_DEMUX_ERR_ARGUMENT;
-    wanted_stream = kind == AVI_DEMUX_PACKET_VIDEO
+    wanted_stream = wanted_kind == AVI_DEMUX_PACKET_VIDEO
                         ? info->video.stream_index
                         : info->audio.stream_index;
-    if (wanted_stream == AVI_DEMUX_NO_STREAM) return AVI_DEMUX_EOF;
+    if (wanted_kind != (AviDemuxPacketKind)0 &&
+        wanted_stream == AVI_DEMUX_NO_STREAM)
+        return AVI_DEMUX_EOF;
     for (;;) {
         long position = ftell(file);
         uint32_t id;
@@ -314,7 +330,10 @@ int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
             if (read_le32(type) == avi_demux_fourcc('r', 'e', 'c', ' '))
                 continue;
         }
-        if (chunk_kind(id, wanted_stream, kind)) {
+        AviDemuxPacketKind actual_kind =
+            selected_chunk_kind(id, info);
+        if (actual_kind &&
+            (!wanted_kind || actual_kind == wanted_kind)) {
             if (!size) {
                 if (!skip_chunk(file, payload, size))
                     return AVI_DEMUX_ERR_IO;
@@ -324,14 +343,29 @@ int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
             packet->chunk_id = id;
             packet->payload_size = size;
             packet->payload_offset = payload;
-            packet->stream_index = wanted_stream;
-            packet->kind = kind;
+            packet->stream_index =
+                actual_kind == AVI_DEMUX_PACKET_VIDEO
+                    ? info->video.stream_index
+                    : info->audio.stream_index;
+            packet->kind = actual_kind;
             if (!padded_end(payload, size, &packet->next_offset))
                 return AVI_DEMUX_ERR_RANGE;
             return AVI_DEMUX_OK;
         }
         if (!skip_chunk(file, payload, size)) return AVI_DEMUX_ERR_IO;
     }
+}
+
+int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
+                          AviDemuxPacketKind kind,
+                          AviDemuxPacket *packet) {
+    return next_packet(file, info, kind, packet);
+}
+
+int avi_demux_next_av_packet(FILE *file, const AviDemuxInfo *info,
+                             AviDemuxPacket *packet) {
+    return next_packet(
+        file, info, (AviDemuxPacketKind)0, packet);
 }
 
 int avi_demux_finish_packet(FILE *file, const AviDemuxPacket *packet) {

@@ -88,6 +88,11 @@ int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
                           AviDemuxPacketKind kind,
                           AviDemuxPacket *packet);
 
+/* Return the next selected video or audio packet in physical movi order.
+ * This is the single-cursor AV path; unrelated streams remain skipped. */
+int avi_demux_next_av_packet(FILE *file, const AviDemuxInfo *info,
+                             AviDemuxPacket *packet);
+
 int avi_demux_finish_packet(FILE *file, const AviDemuxPacket *packet);
 void avi_demux_finish_stats_reset(void);
 void avi_demux_finish_stats_get(AviDemuxFinishStats *stats);

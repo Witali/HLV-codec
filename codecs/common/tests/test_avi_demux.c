@@ -92,6 +92,37 @@ static int scan_packets(FILE *file, const AviDemuxInfo *info,
     }
 }
 
+static int scan_av_packets(FILE *file, const AviDemuxInfo *info,
+                           uint32_t *video_count,
+                           uint32_t *audio_count) {
+    long previous_offset = -1;
+    int result;
+    *video_count = 0;
+    *audio_count = 0;
+    if (fseek(file, info->movi_start, SEEK_SET) != 0)
+        return AVI_DEMUX_ERR_IO;
+    for (;;) {
+        AviDemuxPacket packet;
+        result = avi_demux_next_av_packet(file, info, &packet);
+        if (result == AVI_DEMUX_EOF) return AVI_DEMUX_OK;
+        if (result != AVI_DEMUX_OK) return result;
+        if (packet.payload_offset <= previous_offset ||
+            packet.payload_offset < info->movi_start ||
+            packet.next_offset > info->movi_end ||
+            packet.next_offset <= packet.payload_offset)
+            return AVI_DEMUX_ERR_FORMAT;
+        previous_offset = packet.payload_offset;
+        if (packet.kind == AVI_DEMUX_PACKET_VIDEO)
+            ++*video_count;
+        else if (packet.kind == AVI_DEMUX_PACKET_AUDIO)
+            ++*audio_count;
+        else
+            return AVI_DEMUX_ERR_FORMAT;
+        result = avi_demux_finish_packet(file, &packet);
+        if (result != AVI_DEMUX_OK) return result;
+    }
+}
+
 static int validate_file(const char *path) {
     AviDemuxInfo info;
     FILE *file = fopen(path, "rb");
@@ -99,6 +130,8 @@ static int validate_file(const char *path) {
     uint32_t audio_packets;
     uint32_t maximum_video;
     uint32_t maximum_audio;
+    uint32_t merged_video_packets;
+    uint32_t merged_audio_packets;
     int result;
     if (!file) {
         fprintf(stderr, "%s: cannot open\n", path);
@@ -133,6 +166,19 @@ static int validate_file(const char *path) {
     if (info.video.max_packet_size &&
         info.video.max_packet_size < maximum_video) {
         fprintf(stderr, "%s: declared max video packet is too small\n", path);
+        fclose(file);
+        return 1;
+    }
+    result = scan_av_packets(file, &info, &merged_video_packets,
+                             &merged_audio_packets);
+    if (result != AVI_DEMUX_OK ||
+        merged_video_packets != video_packets ||
+        merged_audio_packets != audio_packets) {
+        fprintf(stderr,
+                "%s: merged AV scan mismatch: video=%" PRIu32
+                "/%" PRIu32 " audio=%" PRIu32 "/%" PRIu32 "\n",
+                path, merged_video_packets, video_packets,
+                merged_audio_packets, audio_packets);
         fclose(file);
         return 1;
     }
