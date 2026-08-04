@@ -106,7 +106,8 @@ if ($curveMakeupDb -lt 0.0) {
 $curveMakeupText = $curveMakeupDb.ToString("0.000", $culture)
 $audioFilter = (
     "$audioConversion,${audioLevelCurve}:" +
-    "makeup=${curveMakeupText}dB"
+    "makeup=${curveMakeupText}dB," +
+    "aformat=sample_fmts=s16:channel_layouts=mono"
 )
 $videoFilter = (
     "scale=${Width}:${Height}:force_original_aspect_ratio=increase:" +
@@ -129,6 +130,7 @@ $arguments = @(
     "-pix_fmt", "yuv420p",
     "-threads", $Threads,
     "-c:a", "mp2",
+    "-sample_fmt", "s16",
     "-b:a", "${AudioBitrateKbps}k",
     "-ac", "1",
     "-ar", "32000",

@@ -452,7 +452,7 @@ A,frame,queued,pending,played,rebuffers,underrun_samples,silence_chunks,loop_eve
 ```
 
 The last three cumulative fields separately measure `plm_decode_audio()` and
-the subsequent float-to-mono-PCM_U8 conversion. The collector reports both
+the subsequent float-to-mono-PCM_S16 conversion. The collector reports both
 averages per MP2 frame; non-MPEG formats leave these fields at zero.
 
 ### Compact YUV-to-RGB565 fast path
@@ -972,13 +972,15 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
-`kEnableAudio` enables PCM_U8, PCM_S16LE and decoded IMA ADPCM playback through
+`kEnableAudio` enables PCM_U8, PCM_S16LE, directly synthesized signed PCM16 MP2,
+and decoded IMA ADPCM playback through
 I2S0 PCM-to-PDM on GPIO26 data and GPIO22 clock. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated. Playback starts, and resumes after an underrun, only after that
 queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or
-512 ms at 8 kHz for one-byte PCM; decoded PCM16 IMA holds about 43 ms at
-48 kHz. Files without audio, an explicitly disabled output, or a
+512 ms at 8 kHz for one-byte PCM; signed PCM16 MP2 holds 64 ms at 32 kHz and
+decoded PCM16 IMA holds about 43 ms at 48 kHz. Files without audio, an
+explicitly disabled output, or a
 failed audio reader/PDM output automatically use the monotonic ESP timer as the video
 clock. The periodic log reports queued bytes, controlled rebuffer events and
 silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector

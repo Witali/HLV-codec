@@ -7,7 +7,7 @@ idf_component_register(
 )
 
 target_compile_definitions(${COMPONENT_LIB} PUBLIC
-    PLM_AUDIO_MONO_U8=1
+    PLM_AUDIO_MONO_S16=1
 )
 
 set(PLM_MPEG_IRAM_BITREADER ON CACHE BOOL

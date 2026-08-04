@@ -35,7 +35,8 @@ The standard [`MPEG-1 profile`](docs/MPEG1_PROFILE.md) uses an MPEG Program
 Stream with MPEG-1 Video and MP2 audio. Its ESP32 memory-bounded variant
 accepts pictures up to 320x240, contains only I/P pictures, and stores two
 packed Y6/U5/V5 reference frames plus one 16-row work area. The same files
-play in the native Windows application with ordinary 8-bit YUV frames.
+play in the native Windows application with ordinary 8-bit YUV frames. The
+production encoder explicitly supplies signed PCM16 mono to the MP2 encoder.
 
 The current [`H.263 encoding profile`](codecs/h263/) uses only baseline H.263
 in AVI at the standard `176x144` QCIF or `352x288` CIF picture size. The
@@ -193,7 +194,8 @@ The pure ESP-IDF CYD2USB firmware reads HLV-1, AVI/MJPEG, DivX 3/AVI, BPV1,
 the constrained MPEG-1/MP2 profile, or the bounded 3GP/AVI H.263 profiles
 from a FAT32 microSD card over an independent SPI3/VSPI DMA bus and displays
 it on the 320x240 ST7789 over SPI2 DMA. HLV/BPV IMA ADPCM is decoded directly
-to PCM16; legacy PCM_U8 and decoded MPEG MP2 share the same bounded queue and
+to PCM16; MPEG MP2 is synthesized directly to signed PCM16, while legacy
+PCM_U8 remains readable. All formats share the same bounded queue and
 play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
 amplifier; GPIO22 carries the required PDM clock. All four AVI video codecs
 use one C99 RIFF/AVI demultiplexer, which routes encoded video and audio chunks

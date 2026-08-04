@@ -281,8 +281,8 @@ typedef void(*plm_video_decode_callback)
 // Decoded Audio Samples
 // Samples are stored as normalized (-1, 1) float either interleaved, or if
 // PLM_AUDIO_SEPARATE_CHANNELS is defined, in two separate arrays. Embedded
-// mono players may define PLM_AUDIO_MONO_U8 to downmix during synthesis and
-// return the final unsigned 8-bit PCM directly, avoiding the stereo float
+// mono players may define PLM_AUDIO_MONO_S16 to downmix during synthesis and
+// return the final signed 16-bit PCM directly, avoiding the stereo float
 // frame buffer.
 // The `count` is always PLM_AUDIO_SAMPLES_PER_FRAME and just there for
 // convenience.
@@ -292,8 +292,8 @@ typedef void(*plm_video_decode_callback)
 typedef struct {
 	double time;
 	unsigned int count;
-	#ifdef PLM_AUDIO_MONO_U8
-		uint8_t mono_u8[PLM_AUDIO_SAMPLES_PER_FRAME];
+	#ifdef PLM_AUDIO_MONO_S16
+		int16_t mono_s16[PLM_AUDIO_SAMPLES_PER_FRAME];
 	#elif defined(PLM_AUDIO_SEPARATE_CHANNELS)
 		float left[PLM_AUDIO_SAMPLES_PER_FRAME];
 		float right[PLM_AUDIO_SAMPLES_PER_FRAME];
@@ -4947,7 +4947,7 @@ struct plm_audio_t {
 	int sample[2][32][3];
 
 	plm_samples_t samples;
-	#ifndef PLM_AUDIO_MONO_U8
+	#ifndef PLM_AUDIO_MONO_S16
 	float D[1024];
 	float V[2][1024];
 	#else
@@ -4978,7 +4978,7 @@ plm_audio_t *plm_audio_create_with_buffer(plm_buffer_t *buffer, int destroy_when
 	self->destroy_buffer_when_done = destroy_when_done;
 	self->samplerate_index = 3; // Indicates 0
 
-	#ifndef PLM_AUDIO_MONO_U8
+	#ifndef PLM_AUDIO_MONO_S16
 		memcpy(self->D, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(float));
 		memcpy(self->D + 512, PLM_AUDIO_SYNTHESIS_WINDOW, 512 * sizeof(float));
 	#endif
@@ -5256,7 +5256,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					self->sample[1][sb][2] = 0;
 				}
 			}
-			#ifdef PLM_AUDIO_MONO_U8
+			#ifdef PLM_AUDIO_MONO_S16
 				if (channels == 2) {
 					for (int sb = 0; sb < 32; ++sb) {
 						for (int p = 0; p < 3; ++p) {
@@ -5277,7 +5277,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->v_pos = (self->v_pos - 64) & 1023;
 
 				for (int ch = 0; ch < synthesis_channels; ch++) {
-					#ifdef PLM_AUDIO_MONO_U8
+					#ifdef PLM_AUDIO_MONO_S16
 						plm_audio_idct36(
 							self->sample[0], p, self->V, self->v_pos);
 					#else
@@ -5292,7 +5292,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					int v_index = (self->v_pos % 128) >> 1;
 					while (v_index < 1024) {
 						for (int i = 0; i < 32; ++i) {
-							#ifdef PLM_AUDIO_MONO_U8
+							#ifdef PLM_AUDIO_MONO_S16
 								self->U[i] +=
 									PLM_AUDIO_SYNTHESIS_WINDOW[d_index++ & 511] *
 									self->V[v_index++];
@@ -5310,7 +5310,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					v_index = (128 - 32 + 1024) - v_index;
 					while (v_index < 1024) {
 						for (int i = 0; i < 32; ++i) {
-							#ifdef PLM_AUDIO_MONO_U8
+							#ifdef PLM_AUDIO_MONO_S16
 								self->U[i] +=
 									PLM_AUDIO_SYNTHESIS_WINDOW[d_index++ & 511] *
 									self->V[v_index++];
@@ -5325,15 +5325,15 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 					}
 
 					// Output samples
-					#ifdef PLM_AUDIO_MONO_U8
+					#ifdef PLM_AUDIO_MONO_S16
 						for (int j = 0; j < 32; ++j) {
 							float sample = self->U[j] / -1090519040.0f;
 							sample = sample < -1.0f
 								? -1.0f
 								: sample > 1.0f ? 1.0f : sample;
-							int pcm = (int)(128.5f + sample * 127.0f);
-							self->samples.mono_u8[out_pos + j] = (uint8_t)(
-								pcm < 0 ? 0 : pcm > 255 ? 255 : pcm);
+							int pcm = (int)(sample * 32768.0f);
+							self->samples.mono_s16[out_pos + j] = (int16_t)(
+								pcm < -32768 ? -32768 : pcm > 32767 ? 32767 : pcm);
 						}
 					#elif defined(PLM_AUDIO_SEPARATE_CHANNELS)
 						float *out_channel = ch == 0

@@ -461,6 +461,7 @@ volatile uint32_t amrnb_audio_decode_us = 0;
 volatile uint32_t amrnb_audio_convert_us = 0;
 size_t audio_preroll_bytes = 0;
 uint8_t audio_output_codec = HLV1_AUDIO_NONE;
+bool audio_output_signed_pcm16 = false;
 QueueHandle_t decode_request_queue = nullptr;
 QueueHandle_t decode_result_queue = nullptr;
 TaskHandle_t decode_task_handle = nullptr;
@@ -1734,11 +1735,14 @@ int prefetchMpegAudioFrame() {
     }
     mpeg_audio_decode_frames = mpeg_audio_decode_frames + 1;
     mpeg_audio_decode_us = mpeg_audio_decode_us + decode_us;
+    const auto *pcm = reinterpret_cast<const uint8_t *>(samples->mono_s16);
+    const size_t pcm_bytes =
+        samples->count * sizeof(samples->mono_s16[0]);
     size_t sent = 0;
-    while (sent < samples->count && !audio_reader_stop_requested) {
+    while (sent < pcm_bytes && !audio_reader_stop_requested) {
         sent += xStreamBufferSend(
-            audio_stream, samples->mono_u8 + sent,
-            samples->count - sent, pdMS_TO_TICKS(20));
+            audio_stream, pcm + sent, pcm_bytes - sent,
+            pdMS_TO_TICKS(20));
         if (audio_rebuffering &&
             xStreamBufferBytesAvailable(audio_stream) >=
                 audio_preroll_bytes) {
@@ -1892,7 +1896,10 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
     const size_t sample_bytes =
-        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ? 2U : 1U;
+        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ||
+                audio_output_signed_pcm16
+            ? 2U
+            : 1U;
     const size_t requested_bytes = kAudioDmaSamples * sample_bytes;
     if (audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
@@ -2006,6 +2013,7 @@ void stopAudio() {
     amrnb_audio_info = {};
     audio_preroll_bytes = 0;
     audio_output_codec = HLV1_AUDIO_NONE;
+    audio_output_signed_pcm16 = false;
     consecutive_late_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     std::memset(audio_dma_valid_samples, 0,
@@ -2033,8 +2041,12 @@ bool prepareAudio(const HLV1Header &header) {
     }
 
     audio_output_codec = header.audio_codec;
+    audio_output_signed_pcm16 = video_codec == VideoCodec::kMpeg1;
     const size_t audio_sample_bytes =
-        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ? 2U : 1U;
+        audio_output_codec == HLV1_AUDIO_IMA_ADPCM ||
+                audio_output_signed_pcm16
+            ? 2U
+            : 1U;
     audio_stream = xStreamBufferCreateStatic(
         sizeof audio_stream_storage, kAudioDmaSamples * audio_sample_bytes,
         audio_stream_storage, &audio_stream_state);
@@ -2348,8 +2360,11 @@ bool prepareAudio(const HLV1Header &header) {
              "Audio: %s mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
              "%u Hz carrier, high-SNR divider 13, static %u-byte/%u-ms queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
-             audio_output_codec == HLV1_AUDIO_IMA_ADPCM
-                 ? "IMA_ADPCM" : "PCM_U8",
+             audio_output_signed_pcm16
+                 ? "PCM_S16"
+                 : audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+                       ? "IMA_ADPCM"
+                       : "PCM_U8",
              header.audio_sample_rate, board::kAudioPdmData,
              board::kAudioPdmClock,
              static_cast<unsigned>(channel_info.bclk_hz),
@@ -3096,9 +3111,8 @@ bool openVideo() {
         sequence_header.frame_count = 0;
         if (audio_sample_rate > 0 && audio_sample_rate <= UINT16_MAX) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec =
-                h263_info.audio_format_tag == 0x11
-                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
+            // MPEG PS audio is MP2; this legacy field only marks audio present.
+            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 static_cast<uint16_t>(audio_sample_rate);
             sequence_header.audio_channels = 1;
