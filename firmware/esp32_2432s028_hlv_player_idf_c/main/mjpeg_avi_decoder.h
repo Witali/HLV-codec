@@ -113,6 +113,7 @@ size_t mjpeg_avi_decoder_strip_buffer_bytes(
 int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
                                   FILE *file,
                                   mjpeg_avi_packet_t *packet);
+int mjpeg_avi_decoder_skip_packet(const mjpeg_avi_packet_t *packet);
 int mjpeg_avi_decoder_decode(mjpeg_avi_decoder_t *decoder,
                              const mjpeg_avi_packet_t *packet,
                              mjpeg_avi_strip_output_t output,

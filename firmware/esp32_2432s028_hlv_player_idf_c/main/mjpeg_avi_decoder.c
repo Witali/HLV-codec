@@ -721,9 +721,8 @@ int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
 #ifdef MJPEG_STREAMING_INPUT
     next_position =
         (uint64_t)payload_start + size + (size & 1U);
-    if (next_position > LONG_MAX ||
-        !seek_absolute(file, (long)next_position)) {
-        ESP_LOGE(k_tag, "Packet %u padding seek failed after %ld",
+    if (next_position > LONG_MAX) {
+        ESP_LOGE(k_tag, "Packet %u end exceeds the file range after %ld",
                  (unsigned)decoder->packet_index, payload_start);
         return MJPEG_AVI_ERR_IO;
     }
@@ -774,6 +773,21 @@ int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
 #endif
     ++decoder->packet_index;
     return MJPEG_AVI_OK;
+}
+
+int mjpeg_avi_decoder_skip_packet(const mjpeg_avi_packet_t *packet) {
+#ifdef MJPEG_STREAMING_INPUT
+    if (packet == NULL || packet->file == NULL ||
+        packet->next_offset < 0) {
+        return MJPEG_AVI_ERR_ARGUMENT;
+    }
+    return seek_absolute(packet->file, packet->next_offset)
+               ? MJPEG_AVI_OK
+               : MJPEG_AVI_ERR_IO;
+#else
+    (void)packet;
+    return MJPEG_AVI_OK;
+#endif
 }
 
 #ifdef MJPEG_STREAMING_INPUT
@@ -851,7 +865,10 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
         return MJPEG_AVI_ERR_ARGUMENT;
     }
 #ifdef MJPEG_STREAMING_INPUT
-    if (!seek_absolute(packet->file, packet->payload_offset)) {
+    const long current_offset = ftell(packet->file);
+    if (current_offset < 0 ||
+        (current_offset != packet->payload_offset &&
+         !seek_absolute(packet->file, packet->payload_offset))) {
         return MJPEG_AVI_ERR_IO;
     }
     initial_bytes = min_size(

@@ -560,8 +560,7 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
 #ifdef MJPEG_STREAMING_INPUT
     const uint64_t next_position =
         static_cast<uint64_t>(payload_start) + size + (size & 1U);
-    if (next_position > LONG_MAX ||
-        !seekAbsolute(file, static_cast<long>(next_position))) {
+    if (next_position > LONG_MAX) {
         return MJPEG_AVI_ERR_IO;
     }
     packet->file = file;
@@ -607,6 +606,19 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
 #endif
     ++packet_index_;
     return MJPEG_AVI_OK;
+}
+
+int MjpegAviDecoder::skipPacket(const MjpegAviPacket &packet) {
+#ifdef MJPEG_STREAMING_INPUT
+    if (!packet.file || packet.next_offset < 0)
+        return MJPEG_AVI_ERR_ARGUMENT;
+    return seekAbsolute(packet.file, packet.next_offset)
+               ? MJPEG_AVI_OK
+               : MJPEG_AVI_ERR_IO;
+#else
+    (void)packet;
+    return MJPEG_AVI_OK;
+#endif
 }
 
 int MjpegAviDecoder::decode(const MjpegAviPacket &packet,
@@ -670,7 +682,10 @@ int MjpegAviDecoder::decodeImpl(
     jpeg_dec_io_t io{};
     jpeg_dec_header_info_t header{};
 #ifdef MJPEG_STREAMING_INPUT
-    if (!seekAbsolute(packet.file, packet.payload_offset))
+    const long current_offset = std::ftell(packet.file);
+    if (current_offset < 0 ||
+        (current_offset != packet.payload_offset &&
+         !seekAbsolute(packet.file, packet.payload_offset)))
         return MJPEG_AVI_ERR_IO;
     const size_t initial_bytes =
         std::min(compressed_capacity_, packet.jpeg_size);

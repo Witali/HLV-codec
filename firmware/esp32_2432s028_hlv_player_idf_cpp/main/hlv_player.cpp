@@ -5198,6 +5198,9 @@ void playOneMjpegFrame() {
             failPlayback("JPEG output error", MJPEG_AVI_ERR_DECODE);
             return;
         }
+    } else if (mjpeg_decoder.skipPacket(packet) != MJPEG_AVI_OK) {
+        failSdCardRead("cannot skip MJPEG video");
+        return;
     }
     finishPresentation(presentation, read_us, decode_us, render_us);
 }

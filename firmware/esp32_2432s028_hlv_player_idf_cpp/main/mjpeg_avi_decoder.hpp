@@ -87,6 +87,7 @@ public:
     }
 
     int readPacket(FILE *file, MjpegAviPacket *packet);
+    int skipPacket(const MjpegAviPacket &packet);
     int decode(const MjpegAviPacket &packet, MjpegAviStripOutput output,
                void *output_context);
     int decodeDirect(const MjpegAviPacket &packet,
