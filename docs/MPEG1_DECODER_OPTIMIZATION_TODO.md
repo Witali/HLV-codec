@@ -7,6 +7,23 @@ Program Stream profile. The test clip is
 accepted decoder change must preserve the complete compact decode checksum
 `6bc59309b0d7dc23`.
 
+## Quality acceptance gate
+
+Playback speed must not be gained by reducing decoded quality. A performance
+change is accepted only when the same input and storage mode produce
+bit-identical reconstructed-frame and RGB565 output, with the same frame types,
+frame count and presentation order. Reducing IDCT or motion-compensation
+precision, reducing component precision or chroma resolution, changing the
+encoder quality target, or skipping additional decoded or presented frames is
+not a performance optimization and must be rejected.
+
+The existing packed Y6/U5/V5 reference surfaces are a separately documented
+memory-capacity compromise, not an acceptable source of further speed gains.
+Their speed must not be credited when comparing an optimization with full
+8-bit YUV storage, and future changes must not increase their existing quality
+gap or predictive drift. A change of storage precision requires a separate
+quality decision and cannot pass this speed campaign on timing alone.
+
 ## Format constraint
 
 - Keep MPEG files standard MPEG Program Streams.
@@ -309,7 +326,9 @@ For each candidate:
    checking frame sequence, keyframe recovery, SD CRC, audio underruns and
    playback errors.
 4. Retain a change only when the heavy-clip median improves repeatably and no
-   correctness, memory or light-clip regression is observed. Otherwise remove
+   correctness, decoded-quality, memory or light-clip regression is observed.
+   In particular, require bit-identical reconstructed-frame and RGB565 hashes
+   for the same storage mode and unchanged frame presentation. Otherwise remove
    its implementation and record the rejected result here.
 5. Record any test-only SD filenames before upload. Delete exactly those files
    after the run, obtain a fresh directory listing, and preserve `play.txt`,
