@@ -135,18 +135,70 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
 
 ## Next candidates
 
-- [ ] Profile coefficient parsing and IDCT separately with cycle counters so
-      the next transform experiment targets measured hot cases.
-- [ ] Add small, generated fast tables for the most frequent DCT coefficient
-      VLC prefixes, retaining the existing tree as the fallback.
+- [ ] Make the 23-bit non-zero lookahead cache-safe. The current peek advances
+      the cached bitreader and rewinds only `bit_index`, forcing the following
+      VLC read to refill its local cache.
+- [ ] Add a build-time `MPEG1_DECODE_PROFILE` option, defaulting to `OFF`, and
+      measure coefficient/VLC parsing, IDCT, motion compensation and packed
+      reconstruction independently.
+- [ ] Fuse the IDCT row pass with destination put/add/clamp so the general
+      residual path does not write, reread and then clear all 64 coefficients.
 - [ ] Specialize motion compensation by the four half-pixel modes at the
       16x16/8x8 macroblock level, avoiding a per-pixel mode branch while
       retaining the current full-row path.
-- [ ] Evaluate an IDCT DC-only fast path if coefficient telemetry shows enough
-      eligible blocks. The previous generic sparse row/column checks were too
-      expensive.
+- [ ] Test selective IRAM placement only for the measured motion-compensation
+      hot kernels; reject it if the speed gain does not justify IRAM use.
+- [ ] Add a compact generated second-level table for only the unresolved
+      six-bit DCT coefficient prefixes, retaining the existing VLC tree as the
+      fallback. Do not replace it with a large generic FFmpeg-style table
+      unless a separate flash/cache A/B supports that choice.
+- [ ] Compile out remaining B-picture/backward-prediction decisions in the
+      constrained no-B profile and replace repeated macroblock address
+      division/modulo only if profiling shows a measurable benefit.
+- [x] Keep the existing DC-only IDCT fast path. `plm_video_decode_block()`
+      already handles `n == 1`; the previous TODO item was stale.
 - [x] Reduce display-side packed-sample unpack work while preserving the
       Y6/U5/V5 correction table bit for bit.
+
+## Current heavy-clip campaign
+
+The speed decision for every new candidate is made on the physical
+ESP32-D0WD-V3 at 240 MHz with the existing 40 MHz SD configuration. The
+primary corpus deliberately uses the slowest retained 320x240 MPEG-1 files:
+
+| Clip | Previous decode average | Purpose |
+| --- | ---: | --- |
+| `Danila_320x240_30fps_MPEG1_44dB.mpg` | 86.491 ms | highest coefficient/load case |
+| `Danila_320x240_30fps_MPEG1_41dB.mpg` | 71.746 ms | second production quality point |
+| `VideoFormatRegression_320x240_30fps_MPEG1_q3.mpg` | 57.874 ms | independent content/regression case |
+
+`BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg` is not a speed acceptance clip:
+its previous 16.117 ms decode time is too light to expose small hot-path
+changes. It remains a guard against a broad performance or playback
+regression.
+
+For each candidate:
+
+1. Run the complete host compact decoder and preserve the expected frame
+   count and checksum. Exercise a compressed frame larger than the refill
+   buffer and compare it with contiguous input where the test supports both.
+2. Run the IDF C MPEG-1 QEMU benchmark and require identical decoded frame
+   checksums between A and B. Build the preserved IDF C++ variant as well.
+3. Flash A and B to the physical board and collect at least three comparable
+   runs per variant on the heavy clips. Use the median decode time, while also
+   checking frame sequence, keyframe recovery, SD CRC, audio underruns and
+   playback errors.
+4. Retain a change only when the heavy-clip median improves repeatably and no
+   correctness, memory or light-clip regression is observed. Otherwise remove
+   its implementation and record the rejected result here.
+5. Record any test-only SD filenames before upload. Delete exactly those files
+   after the run, obtain a fresh directory listing, and preserve `play.txt`,
+   `crc32.txt` and all pre-existing assets.
+
+The hardware gate is mandatory: host or QEMU timing can reject an obviously
+bad candidate but cannot accept one. At the start of this campaign on
+2026-08-04 Windows reported no serial ports, so no candidate is considered
+accepted until the board is connected and the physical A/B is complete.
 
 ## Test commands
 
