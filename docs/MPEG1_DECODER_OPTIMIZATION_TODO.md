@@ -31,6 +31,7 @@ accepted decoder change must preserve the complete compact decode checksum
 | YUV-to-RGB565 lookup tables | render 27,770.6 / 27,430.3 us; 19.194 / 19.213 fps | accepted, `bc2fa66` |
 | Non-standard PCM_U8 MPEG wrapper | conflicts with the standard-format rule | not applicable |
 | Cache-safe 23-bit slice-ending peek | q41 decode 67.936 -> 68.041 ms (+0.154%); QEMU 2,715,338 -> 2,711,931 cycles (-0.125%); checksums unchanged | rejected; hardware regressed |
+| Build-time MPEG-1 phase profiler | q41 profile repeats within 0.014%; final OFF build 67.936 ms versus 67.936 ms baseline; identical image size | accepted diagnostic; default OFF |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -139,14 +140,15 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
 - [x] Test a cache-safe 23-bit non-zero lookahead. Three 300-frame q41 runs
       regressed by 0.154% on the physical ESP32 despite a 0.125% QEMU cycle
       improvement, so the implementation and build option were removed.
-- [ ] Add a build-time `MPEG1_DECODE_PROFILE` option, defaulting to `OFF`, and
+- [x] Add a build-time `PLM_MPEG_DECODE_PROFILE` option, defaulting to `OFF`, and
       measure coefficient/VLC parsing, IDCT, motion compensation and packed
-      reconstruction independently.
-- [ ] Fuse the IDCT row pass with destination put/add/clamp so the general
-      residual path does not write, reread and then clear all 64 coefficients.
+      reconstruction independently. Two physical q41 profiles repeated within
+      0.014%; the corrected OFF build has no measurable release overhead.
 - [ ] Specialize motion compensation by the four half-pixel modes at the
       16x16/8x8 macroblock level, avoiding a per-pixel mode branch while
       retaining the current full-row path.
+- [ ] Fuse the IDCT row pass with destination put/add/clamp so the general
+      residual path does not write, reread and then clear all 64 coefficients.
 - [ ] Test selective IRAM placement only for the measured motion-compensation
       hot kernels; reject it if the speed gain does not justify IRAM use.
 - [ ] Add a compact generated second-level table for only the unresolved
@@ -161,6 +163,34 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
 - [x] Reduce display-side packed-sample unpack work while preserving the
       Y6/U5/V5 correction table bit for bit.
 
+### IDF C decoder phase profile — 2026-08-04
+
+`PLM_MPEG_DECODE_PROFILE=ON` measured the first 60 frames of the available
+q41 heavy clip on the physical ESP32 at 240 MHz. Instrumentation is deliberately
+excluded from normal builds. Cycle counters are nested, so each named phase is
+exclusive while `total` also includes parser and macroblock control overhead.
+
+| Decode phase | Cycles, 60 frames | Per frame | Share |
+| --- | ---: | ---: | ---: |
+| Coefficient and VLC parsing | 374,407,065 | 26.000 ms | 34.9% |
+| Motion compensation | 366,662,776 | 25.463 ms | 34.2% |
+| Residual reconstruction and IDCT | 170,956,289 | 11.872 ms | 16.0% |
+| Compact Y6/U5/V5 reconstruction | 122,700,700 | 8.521 ms | 11.5% |
+| Decoder control remainder | 36,957,873 | 2.566 ms | 3.5% |
+| Total | 1,071,684,703 | 74.423 ms | 100% |
+
+The repeat total was 1,071,829,907 cycles, a 0.014% difference. Both runs
+decoded 78,433 blocks with identical classification: 5,320 DC-only blocks,
+73,113 general-IDCT blocks and 15,505 motion-compensated macroblocks. The
+instrumented total must not be compared directly with release timing because
+the cycle reads perturb short operations.
+
+The final default-OFF release produced the same `0xbcc50` application image
+size as the baseline. Its three-run q41 median was 67.9365 ms versus 67.9359 ms
+baseline (+0.0009%), with zero frame gaps or display skips. An earlier design
+that left unused profiler entry points in the OFF binary measured 68.2489 ms
+(+0.46%); that layout was discarded completely.
+
 ## Current heavy-clip campaign
 
 The speed decision for every new candidate is made on the physical
@@ -169,8 +199,8 @@ primary corpus deliberately uses the slowest retained 320x240 MPEG-1 files:
 
 | Clip | Previous decode average | Purpose |
 | --- | ---: | --- |
-| `Danila_320x240_30fps_MPEG1_44dB.mpg` | 86.491 ms | highest coefficient/load case |
-| `Danila_320x240_30fps_MPEG1_41dB.mpg` | 71.746 ms | second production quality point |
+| `Danila_320x240_30fps_MPEG1_44dB.mpg` | 86.491 ms | historical highest-load case; not present locally or on the current SD card |
+| `Danila_320x240_30fps_MPEG1_41dB.mpg` | 71.746 ms | primary available production quality point |
 | `VideoFormatRegression_320x240_30fps_MPEG1_q3.mpg` | 57.874 ms | independent content/regression case |
 
 `BigBuckBunny_320x240_24fps_MPEG1_40dB.mpg` is not a speed acceptance clip:
@@ -198,8 +228,9 @@ For each candidate:
 
 The hardware gate is mandatory: host or QEMU timing can reject an obviously
 bad candidate but cannot accept one. At the start of this campaign on
-2026-08-04 Windows reported no serial ports, so no candidate is considered
-accepted until the board is connected and the physical A/B is complete.
+2026-08-04 Windows reported no serial ports. The board was subsequently
+connected as COM8 and the physical A/B gate resumed. The q44 historical clip
+is not copied to the card; the current physical corpus is q41 plus Regression.
 
 ## Test commands
 

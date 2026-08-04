@@ -151,5 +151,24 @@ void app_main(void) {
             (unsigned)heap_caps_get_largest_free_block(
                 MALLOC_CAP_8BIT));
     }
+#if PLM_MPEG_DECODE_PROFILE
+    {
+        plm_video_decode_profile_t profile = {0};
+        plm_get_video_decode_profile(mpeg, &profile);
+        esp_rom_printf(
+            "MDP,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u\n",
+            (unsigned)profile.frames,
+            (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+            (unsigned long long)profile.total_cycles,
+            (unsigned long long)profile.coefficient_cycles,
+            (unsigned long long)profile.reconstruction_cycles,
+            (unsigned long long)profile.motion_cycles,
+            (unsigned long long)profile.compact_cycles,
+            (unsigned)profile.blocks,
+            (unsigned)profile.dc_only_blocks,
+            (unsigned)profile.general_idct_blocks,
+            (unsigned)profile.motion_macroblocks);
+    }
+#endif
     finish(0);
 }

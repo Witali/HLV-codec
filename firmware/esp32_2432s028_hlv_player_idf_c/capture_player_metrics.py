@@ -296,7 +296,7 @@ def main() -> int:
             line = raw.decode("ascii", errors="ignore").strip()
             if line:
                 recent_lines.append(line)
-            if line.startswith("MRP,"):
+            if line.startswith(("MRP,", "MDP,")):
                 print(line)
                 continue
             if "CRV," in line:

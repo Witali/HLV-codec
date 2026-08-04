@@ -753,6 +753,14 @@ reconstructed-frame hash, free heap and largest free block. The preparation
 step copies the original MPEG-1 video packets without re-encoding and rejects
 the clip unless its dimensions and frame count match the requested profile.
 
+`PLM_MPEG_DECODE_PROFILE` is a build-time CMake option and defaults to `OFF`.
+When enabled, all timing reads and counters are compiled into the decoder and
+an `MDP` record is printed every 60 decoded frames. Its cumulative fields are
+frames, CPU MHz, total, coefficient/VLC, reconstruction/IDCT, motion and
+compact-storage cycles, followed by block, DC-only block, general-IDCT block
+and motion-macroblock counts. Do not compare instrumented timing directly
+with a release build.
+
 The H.263 benchmark embeds 60 frames of the validated intra-only CIF AVI,
 including its IMA ADPCM audio stream, and uses one output frame because no
 display pipeline overlaps the decode:

@@ -133,5 +133,22 @@ extern "C" void app_main(void) {
             heap_caps_get_free_size(MALLOC_CAP_8BIT)),
         static_cast<unsigned>(
             heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+#if PLM_MPEG_DECODE_PROFILE
+    plm_video_decode_profile_t profile{};
+    plm_get_video_decode_profile(mpeg, &profile);
+    esp_rom_printf(
+        "MDP,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u\n",
+        static_cast<unsigned>(profile.frames),
+        static_cast<unsigned>(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ),
+        static_cast<unsigned long long>(profile.total_cycles),
+        static_cast<unsigned long long>(profile.coefficient_cycles),
+        static_cast<unsigned long long>(profile.reconstruction_cycles),
+        static_cast<unsigned long long>(profile.motion_cycles),
+        static_cast<unsigned long long>(profile.compact_cycles),
+        static_cast<unsigned>(profile.blocks),
+        static_cast<unsigned>(profile.dc_only_blocks),
+        static_cast<unsigned>(profile.general_idct_blocks),
+        static_cast<unsigned>(profile.motion_macroblocks));
+#endif
     finish(0);
 }

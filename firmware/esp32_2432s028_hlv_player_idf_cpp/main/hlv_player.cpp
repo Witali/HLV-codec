@@ -790,6 +790,30 @@ void decodeTask(void *) {
             result.result = HLV1_ERR_ARGUMENT;
         }
         result.decode_us = static_cast<uint32_t>(microsNow() - start);
+#if PLM_MPEG_DECODE_PROFILE
+        if (request.codec == VideoCodec::kMpeg1 &&
+            result.has_mpeg_frame) {
+            plm_video_decode_profile_t profile{};
+            plm_get_video_decode_profile(mpeg_video, &profile);
+            if (profile.frames != 0U && profile.frames % 60U == 0U) {
+                esp_rom_printf(
+                    "MDP,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u\n",
+                    static_cast<unsigned>(profile.frames),
+                    static_cast<unsigned>(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ),
+                    static_cast<unsigned long long>(profile.total_cycles),
+                    static_cast<unsigned long long>(
+                        profile.coefficient_cycles),
+                    static_cast<unsigned long long>(
+                        profile.reconstruction_cycles),
+                    static_cast<unsigned long long>(profile.motion_cycles),
+                    static_cast<unsigned long long>(profile.compact_cycles),
+                    static_cast<unsigned>(profile.blocks),
+                    static_cast<unsigned>(profile.dc_only_blocks),
+                    static_cast<unsigned>(profile.general_idct_blocks),
+                    static_cast<unsigned>(profile.motion_macroblocks));
+            }
+        }
+#endif
 #if HLV1_ENABLE_STAGE_PROFILE
         if (request.codec == VideoCodec::kHlv) {
             result.hlv_row_guard_wait_us = __atomic_load_n(

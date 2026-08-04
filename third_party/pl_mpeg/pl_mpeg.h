@@ -155,6 +155,14 @@ See below for detailed the API documentation.
 #define PLM_MPEG_FAST_DCT_PREFIX 0
 #endif
 
+#ifndef PLM_MPEG_DECODE_PROFILE
+#define PLM_MPEG_DECODE_PROFILE 0
+#endif
+
+#if PLM_MPEG_DECODE_PROFILE
+#include "esp_cpu.h"
+#endif
+
 #if PLM_MPEG_IRAM_BITREADER
 #include "esp_attr.h"
 #define PLM_MPEG_BITREADER_ATTR IRAM_ATTR
@@ -250,6 +258,19 @@ typedef struct {
 	plm_plane_t cr;
 	plm_plane_t cb;
 } plm_frame_t;
+
+typedef struct {
+	uint64_t total_cycles;
+	uint64_t coefficient_cycles;
+	uint64_t reconstruction_cycles;
+	uint64_t motion_cycles;
+	uint64_t compact_cycles;
+	uint32_t frames;
+	uint32_t blocks;
+	uint32_t dc_only_blocks;
+	uint32_t general_idct_blocks;
+	uint32_t motion_macroblocks;
+} plm_video_decode_profile_t;
 
 static inline uint8_t plm_plane_compact_sample(
 	const plm_plane_t *plane, int x, int y, unsigned bits
@@ -509,6 +530,11 @@ plm_frame_t *plm_decode_video(plm_t *self);
 // Discard compressed non-intra pictures without reconstructing them, decode
 // and return the next I-picture, and report how many pictures were skipped.
 plm_frame_t *plm_decode_video_keyframe(plm_t *self, unsigned *skipped);
+#if PLM_MPEG_DECODE_PROFILE
+void plm_get_video_decode_profile(
+	plm_t *self, plm_video_decode_profile_t *profile);
+void plm_reset_video_decode_profile(plm_t *self);
+#endif
 
 
 // Decode and return one audio frame. Returns NULL if no frame could be decoded
@@ -821,6 +847,11 @@ int plm_video_has_ended(plm_video_t *self);
 plm_frame_t *plm_video_decode(plm_video_t *self);
 plm_frame_t *plm_video_decode_keyframe(plm_video_t *self,
                                        unsigned *skipped);
+#if PLM_MPEG_DECODE_PROFILE
+void plm_video_get_decode_profile(
+	plm_video_t *self, plm_video_decode_profile_t *profile);
+void plm_video_reset_decode_profile(plm_video_t *self);
+#endif
 
 
 // Convert the YCrCb data of a frame into interleaved R G B data. The stride
@@ -1351,6 +1382,26 @@ plm_frame_t *plm_decode_video_keyframe(plm_t *self, unsigned *skipped) {
 	}
 	return frame;
 }
+
+#if PLM_MPEG_DECODE_PROFILE
+void plm_get_video_decode_profile(
+	plm_t *self, plm_video_decode_profile_t *profile
+) {
+	if (!profile) {
+		return;
+	}
+	memset(profile, 0, sizeof(*profile));
+	if (plm_init_decoders(self) && self->video_decoder) {
+		plm_video_get_decode_profile(self->video_decoder, profile);
+	}
+}
+
+void plm_reset_video_decode_profile(plm_t *self) {
+	if (plm_init_decoders(self) && self->video_decoder) {
+		plm_video_reset_decode_profile(self->video_decoder);
+	}
+}
+#endif
 
 plm_samples_t *plm_decode_audio(plm_t *self) {
 	if (!plm_init_decoders(self)) {
@@ -3072,7 +3123,23 @@ struct plm_video_t {
 
 	int has_reference_frame;
 	int assume_no_b_frames;
+#if PLM_MPEG_DECODE_PROFILE
+	plm_video_decode_profile_t decode_profile;
+#endif
 };
+
+#if PLM_MPEG_DECODE_PROFILE
+#define PLM_VIDEO_PROFILE_CALL(SELF, FIELD, CALL) do { \
+	uint32_t profile_call_start = esp_cpu_get_cycle_count(); \
+	CALL; \
+	(SELF)->decode_profile.FIELD += \
+		esp_cpu_get_cycle_count() - profile_call_start; \
+} while (0)
+#else
+#define PLM_VIDEO_PROFILE_CALL(SELF, FIELD, CALL) do { \
+	CALL; \
+} while (0)
+#endif
 
 static inline uint8_t plm_clamp(int n) {
 	if (n > 255) {
@@ -3200,13 +3267,34 @@ void plm_video_rewind(plm_video_t *self) {
 	self->frames_decoded = 0;
 	self->has_reference_frame = FALSE;
 	self->start_code = -1;
+#if PLM_MPEG_DECODE_PROFILE
+	plm_video_reset_decode_profile(self);
+#endif
 }
+
+#if PLM_MPEG_DECODE_PROFILE
+void plm_video_get_decode_profile(
+	plm_video_t *self, plm_video_decode_profile_t *profile
+) {
+	if (!profile) {
+		return;
+	}
+	*profile = self->decode_profile;
+}
+
+void plm_video_reset_decode_profile(plm_video_t *self) {
+	memset(&self->decode_profile, 0, sizeof(self->decode_profile));
+}
+#endif
 
 int plm_video_has_ended(plm_video_t *self) {
 	return plm_buffer_has_ended(self->buffer);
 }
 
 plm_frame_t *plm_video_decode(plm_video_t *self) {
+#if PLM_MPEG_DECODE_PROFILE
+	uint32_t profile_decode_start = esp_cpu_get_cycle_count();
+#endif
 	if (!plm_video_has_header(self)) {
 		return NULL;
 	}
@@ -3273,6 +3361,11 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 	frame->picture_type = self->picture_type;
 	self->frames_decoded++;
 	self->time = (double)self->frames_decoded / self->framerate;
+#if PLM_MPEG_DECODE_PROFILE
+	self->decode_profile.total_cycles +=
+		esp_cpu_get_cycle_count() - profile_decode_start;
+	self->decode_profile.frames++;
+#endif
 	
 	return frame;
 }
@@ -3778,14 +3871,22 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
 			if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE) {
-				plm_video_compact_copy_macroblock(self);
+				PLM_VIDEO_PROFILE_CALL(
+					self, compact_cycles,
+					plm_video_compact_copy_macroblock(self));
 			}
 			else {
-				plm_video_predict_macroblock(self);
-				plm_video_compact_store_macroblock(self);
+				PLM_VIDEO_PROFILE_CALL(
+					self, motion_cycles,
+					plm_video_predict_macroblock(self));
+				PLM_VIDEO_PROFILE_CALL(
+					self, compact_cycles,
+					plm_video_compact_store_macroblock(self));
 			}
 #else
-			plm_video_predict_macroblock(self);
+			PLM_VIDEO_PROFILE_CALL(
+				self, motion_cycles,
+				plm_video_predict_macroblock(self));
 #endif
 			increment--;
 		}
@@ -3825,7 +3926,9 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 
 		plm_video_decode_motion_vectors(self);
 #ifndef PLM_VIDEO_COMPACT_Y6_U5_V5
-		plm_video_predict_macroblock(self);
+		PLM_VIDEO_PROFILE_CALL(
+			self, motion_cycles,
+			plm_video_predict_macroblock(self));
 #endif
 	}
 
@@ -3843,16 +3946,22 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 			self->motion_forward.v == 0
 		) {
 			if (cbp == 0) {
-				plm_video_compact_copy_macroblock(self);
+				PLM_VIDEO_PROFILE_CALL(
+					self, compact_cycles,
+					plm_video_compact_copy_macroblock(self));
 				return;
 			}
 			copy_unchanged_blocks = TRUE;
 		}
 		if (copy_unchanged_blocks) {
-			plm_video_compact_predict_coded_blocks(self, cbp);
+			PLM_VIDEO_PROFILE_CALL(
+				self, compact_cycles,
+				plm_video_compact_predict_coded_blocks(self, cbp));
 		}
 		else {
-			plm_video_predict_macroblock(self);
+			PLM_VIDEO_PROFILE_CALL(
+				self, motion_cycles,
+				plm_video_predict_macroblock(self));
 		}
 	}
 #endif
@@ -3867,16 +3976,22 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 	if (copy_unchanged_blocks) {
 		for (int block = 0, mask = 0x20; block < 6; block++) {
 			if (cbp & mask) {
-				plm_video_compact_store_block(self, block);
+				PLM_VIDEO_PROFILE_CALL(
+					self, compact_cycles,
+					plm_video_compact_store_block(self, block));
 			}
 			else {
-				plm_video_compact_copy_block(self, block);
+				PLM_VIDEO_PROFILE_CALL(
+					self, compact_cycles,
+					plm_video_compact_copy_block(self, block));
 			}
 			mask >>= 1;
 		}
 	}
 	else {
-		plm_video_compact_store_macroblock(self);
+		PLM_VIDEO_PROFILE_CALL(
+			self, compact_cycles,
+			plm_video_compact_store_macroblock(self));
 	}
 #endif
 }
@@ -3931,6 +4046,9 @@ int plm_video_decode_motion_vector(plm_video_t *self, int r_size, int motion) {
 }
 
 void plm_video_predict_macroblock(plm_video_t *self) {
+#if PLM_MPEG_DECODE_PROFILE
+	self->decode_profile.motion_macroblocks++;
+#endif
 	int fw_h = self->motion_forward.h;
 	int fw_v = self->motion_forward.v;
 
@@ -4423,6 +4541,9 @@ void plm_video_compact_store_macroblock(plm_video_t *self) {
 #endif
 
 void plm_video_decode_block(plm_video_t *self, int block) {
+#if PLM_MPEG_DECODE_PROFILE
+	uint32_t profile_coefficient_start = esp_cpu_get_cycle_count();
+#endif
 
 	int n = 0;
 	uint8_t *quant_matrix;
@@ -4502,6 +4623,10 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 
 		n += run;
 		if (n < 0 || n >= 64) {
+#if PLM_MPEG_DECODE_PROFILE
+			self->decode_profile.coefficient_cycles +=
+				esp_cpu_get_cycle_count() - profile_coefficient_start;
+#endif
 			return; // invalid
 		}
 
@@ -4527,6 +4652,19 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 		// Save premultiplied coefficient
 		self->block_data[de_zig_zagged] = level * PLM_VIDEO_PREMULTIPLIER_MATRIX[de_zig_zagged];
 	}
+
+#if PLM_MPEG_DECODE_PROFILE
+	self->decode_profile.coefficient_cycles +=
+		esp_cpu_get_cycle_count() - profile_coefficient_start;
+	self->decode_profile.blocks++;
+	if (n == 1) {
+		self->decode_profile.dc_only_blocks++;
+	}
+	else {
+		self->decode_profile.general_idct_blocks++;
+	}
+	uint32_t profile_reconstruction_start = esp_cpu_get_cycle_count();
+#endif
 
 	// Move block to its place
 	uint8_t *d;
@@ -4586,6 +4724,10 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 			memset(self->block_data, 0, sizeof(self->block_data));
 		}
 	}
+#if PLM_MPEG_DECODE_PROFILE
+	self->decode_profile.reconstruction_cycles +=
+		esp_cpu_get_cycle_count() - profile_reconstruction_start;
+#endif
 }
 
 void plm_video_idct(int *block) {

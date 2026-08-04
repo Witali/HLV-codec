@@ -14,6 +14,8 @@ set(PLM_MPEG_IRAM_BITREADER ON CACHE BOOL
     "Place the MPEG bitreader and VLC traversal helpers in IRAM")
 set(PLM_MPEG_FAST_DCT_PREFIX ON CACHE BOOL
     "Use a six-bit lookup for frequent MPEG DCT coefficient VLCs")
+set(PLM_MPEG_DECODE_PROFILE OFF CACHE BOOL
+    "Collect MPEG-1 decoder phase cycle counters")
 if(PLM_MPEG_IRAM_BITREADER)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_IRAM_BITREADER=1
@@ -31,6 +33,16 @@ if(PLM_MPEG_FAST_DCT_PREFIX)
 else()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_FAST_DCT_PREFIX=0
+    )
+endif()
+
+if(PLM_MPEG_DECODE_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC
+        PLM_MPEG_DECODE_PROFILE=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC
+        PLM_MPEG_DECODE_PROFILE=0
     )
 endif()
 
