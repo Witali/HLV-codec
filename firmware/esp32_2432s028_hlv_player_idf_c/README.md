@@ -753,6 +753,16 @@ reconstructed-frame hash, free heap and largest free block. The preparation
 step copies the original MPEG-1 video packets without re-encoding and rejects
 the clip unless its dimensions and frame count match the requested profile.
 
+The two heap fields describe this isolated decoder benchmark, not the normal
+player's RAM headroom. This build links only the embedded MPEG bytes, the
+compact-YUV helper and `pl_mpeg`; it does not link or initialize the SD/FAT,
+display/DMA, I2S/audio-queue, UART-service, worker-task or other-codec state of
+`hlv_player.c`. Compare normal-player memory with the normal ELF linker map and
+capability-heap snapshots from the physical board. Also, QEMU's ESP32
+`-m 4M` option creates an emulated PSRAM device; this project has
+`CONFIG_SPIRAM` disabled, so that device is not added to the ESP-IDF heap and
+does not explain the benchmark's larger free-heap value.
+
 `PLM_MPEG_DECODE_PROFILE` is a build-time CMake option and defaults to `OFF`.
 When enabled, all timing reads and counters are compiled into the decoder and
 an `MDP` record is printed every 60 decoded frames. Its cumulative fields are
