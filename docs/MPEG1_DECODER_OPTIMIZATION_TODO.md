@@ -34,6 +34,7 @@ accepted decoder change must preserve the complete compact decode checksum
 | Build-time MPEG-1 phase profiler | q41 profile repeats within 0.014%; final OFF build 67.936 ms versus 67.936 ms baseline; identical image size | accepted diagnostic; default OFF |
 | Explicit compact MC half-pixel mode loops | heavy q41 QEMU 2,715,338 -> 2,855,545 cycles (+5.16%); identical hash | rejected before flash; implementation removed |
 | Fused IDCT row reconstruction | heavy q41 QEMU 2,715,338 -> 2,754,921 cycles (+1.46%); identical hash | rejected before flash; implementation removed |
+| Selective IRAM for compact MC | q41 67.935 -> 62.656 ms (-7.77%); Regression 59.999 -> 55.311 ms (-7.81%); checksums unchanged | accepted; +10,352 bytes IRAM |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -155,8 +156,10 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
       temporary and direct scalar stores preserved the heavy q41 hash but were
       1.46% slower in QEMU. The implementation and build option were removed
       without flashing the rejected binary.
-- [ ] Test selective IRAM placement only for the measured motion-compensation
-      hot kernels; reject it if the speed gain does not justify IRAM use.
+- [x] Test selective IRAM placement only for the measured motion-compensation
+      hot kernels. The two compact kernels use 10,352 bytes and leave 12,704
+      bytes to the SRAM1 boundary. Physical q41 and Regression medians improved
+      by 7.77% and 7.81%, so the option is retained and defaults to `ON`.
 - [ ] Add a compact generated second-level table for only the unresolved
       six-bit DCT coefficient prefixes, retaining the existing VLC tree as the
       fallback. Do not replace it with a large generic FFmpeg-style table
@@ -196,6 +199,29 @@ size as the baseline. Its three-run q41 median was 67.9365 ms versus 67.9359 ms
 baseline (+0.0009%), with zero frame gaps or display skips. An earlier design
 that left unused profiler entry points in the OFF binary measured 68.2489 ms
 (+0.46%); that layout was discarded completely.
+
+### Selective compact motion IRAM — 2026-08-04
+
+The phase profile identified motion compensation as 34.2% of instrumented
+q41 decode time. `PLM_MPEG_IRAM_COMPACT_MC=ON` moves only GCC's luma and
+chroma `plm_video_process_compact_macroblock()` constprop kernels from mapped
+flash to IRAM. Their linked code plus alignment is 10,352 bytes. Normal heap
+start is unchanged, while `_iram_end` moves from `0x4009a5f0` to `0x4009ce60`,
+leaving 12,704 bytes before `0x400a0000`.
+
+Independent medians from three physical runs per A/B variant were:
+
+| Clip | Flash kernels | IRAM kernels | Change |
+| --- | ---: | ---: | ---: |
+| Danila 320x240 q41, 300 frames | 67.9350 ms | 62.6558 ms | -5.2792 ms (-7.77%) |
+| VideoFormatRegression, 60 frames | 59.9989 ms | 55.3108 ms | -4.6881 ms (-7.81%) |
+
+Every run had the requested frame count, zero sequence gaps and zero display
+skips. The QEMU A/B retained hash `9ee0136f7b1ee63f`; its instruction-count
+average was exactly 2,715,338 cycles for both placements, as expected because
+QEMU does not model the physical mapped-flash cache penalty. MP2 `A` telemetry
+was absent in both physical A and B builds, so this is not an IRAM regression;
+video metadata consistently reported the expected 32 kHz audio stream.
 
 ## Current heavy-clip campaign
 

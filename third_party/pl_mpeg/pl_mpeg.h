@@ -159,6 +159,10 @@ See below for detailed the API documentation.
 #define PLM_MPEG_DECODE_PROFILE 0
 #endif
 
+#ifndef PLM_MPEG_IRAM_COMPACT_MC
+#define PLM_MPEG_IRAM_COMPACT_MC 0
+#endif
+
 #if PLM_MPEG_DECODE_PROFILE
 #include "esp_cpu.h"
 #endif
@@ -168,6 +172,13 @@ See below for detailed the API documentation.
 #define PLM_MPEG_BITREADER_ATTR IRAM_ATTR
 #else
 #define PLM_MPEG_BITREADER_ATTR
+#endif
+
+#if PLM_MPEG_IRAM_COMPACT_MC
+#include "esp_attr.h"
+#define PLM_MPEG_COMPACT_MC_ATTR IRAM_ATTR
+#else
+#define PLM_MPEG_COMPACT_MC_ATTR
 #endif
 
 #ifndef PLM_NO_STDIO
@@ -4082,7 +4093,7 @@ void plm_video_predict_macroblock(plm_video_t *self) {
 }
 
 #ifdef PLM_VIDEO_COMPACT_Y6_U5_V5
-static void plm_video_process_compact_macroblock(
+static PLM_MPEG_COMPACT_MC_ATTR void plm_video_process_compact_macroblock(
 	plm_video_t *self, const plm_plane_t *source, uint8_t *dest,
 	unsigned bits, int motion_h, int motion_v, int block_size,
 	int interpolate

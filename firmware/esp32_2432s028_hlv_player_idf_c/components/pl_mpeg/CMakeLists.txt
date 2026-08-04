@@ -16,6 +16,8 @@ set(PLM_MPEG_FAST_DCT_PREFIX ON CACHE BOOL
     "Use a six-bit lookup for frequent MPEG DCT coefficient VLCs")
 set(PLM_MPEG_DECODE_PROFILE OFF CACHE BOOL
     "Collect MPEG-1 decoder phase cycle counters")
+set(PLM_MPEG_IRAM_COMPACT_MC ON CACHE BOOL
+    "Place compact MPEG-1 motion-compensation kernels in IRAM")
 if(PLM_MPEG_IRAM_BITREADER)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_IRAM_BITREADER=1
@@ -43,6 +45,16 @@ if(PLM_MPEG_DECODE_PROFILE)
 else()
     target_compile_definitions(${COMPONENT_LIB} PUBLIC
         PLM_MPEG_DECODE_PROFILE=0
+    )
+endif()
+
+if(PLM_MPEG_IRAM_COMPACT_MC)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_IRAM_COMPACT_MC=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_IRAM_COMPACT_MC=0
     )
 endif()
 

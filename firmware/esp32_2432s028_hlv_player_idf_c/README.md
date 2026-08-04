@@ -761,6 +761,13 @@ compact-storage cycles, followed by block, DC-only block, general-IDCT block
 and motion-macroblock counts. Do not compare instrumented timing directly
 with a release build.
 
+`PLM_MPEG_IRAM_COMPACT_MC` defaults to `ON` and places only the two O3
+compact motion-compensation kernels in IRAM. On the physical 240 MHz ESP32 it
+reduced average decode time by 7.77% on Danila 320x240 q41 and by 7.81% on the
+independent MPEG-1 Regression clip. It costs 10,352 bytes of IRAM; the normal
+player link retains 12,704 bytes before the SRAM1 boundary. Disable the option
+for an IRAM-constrained diagnostic build.
+
 The H.263 benchmark embeds 60 frames of the validated intra-only CIF AVI,
 including its IMA ADPCM audio stream, and uses one output frame because no
 display pipeline overlaps the decode:
