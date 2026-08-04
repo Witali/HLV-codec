@@ -73,7 +73,7 @@ extern "C" void app_main(void) {
 
     const int width = plm_get_width(mpeg);
     const int height = plm_get_height(mpeg);
-    if (width != 240 || height != 180) {
+    if (width != 320 || height != 180) {
         ESP_LOGE(kTag, "Unexpected dimensions: %dx%d", width, height);
         finish(2);
     }

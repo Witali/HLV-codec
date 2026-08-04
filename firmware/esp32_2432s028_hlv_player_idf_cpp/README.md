@@ -548,7 +548,7 @@ the reconstructed-frame hash, decoder allocation, free heap and largest free
 block. The wrapper verifies that the generated embedded clip remains
 `msmpeg4v3`/`DIV3`, 320x240 and contains the requested number of frames.
 
-The MPEG-1 benchmark similarly embeds 60 frames of the validated 240x180
+The MPEG-1 benchmark similarly embeds 60 frames of the validated 320x180
 Program Stream and runs the Player's compact `pl_mpeg` component:
 
 ```powershell

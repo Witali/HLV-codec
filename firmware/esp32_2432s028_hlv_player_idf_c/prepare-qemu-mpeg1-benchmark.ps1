@@ -29,12 +29,11 @@ function Find-WorktreeFile {
 
 if (-not $InputFile) {
     $InputFile = Find-WorktreeFile (
-        "out\VID_20260522_181611_center-crop_240x180_" +
-        "mpeg1_q3_native-fps.mpg"
+        "out\MPEG1\BigBuckBunny_320x180_24fps_MPEG1_41dB.mpg"
     )
 }
 if (-not $InputFile -or -not (Test-Path -LiteralPath $InputFile)) {
-    throw "240x180 MPEG-1 benchmark input is missing."
+    throw "320x180 MPEG-1 benchmark input is missing."
 }
 $ffmpeg = Find-WorktreeFile "local_tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Find-WorktreeFile "local_tools\ffmpeg\bin\ffprobe.exe"
@@ -56,7 +55,7 @@ $probe = (
 $video = $probe.streams[0]
 if ($LASTEXITCODE -ne 0 -or
     $video.codec_name -ne "mpeg1video" -or
-    $video.width -ne 240 -or $video.height -ne 180 -or
+    $video.width -ne 320 -or $video.height -ne 180 -or
     [int]$video.nb_read_frames -ne $Frames) {
     throw "Prepared QEMU clip does not match the MPEG-1 profile."
 }
