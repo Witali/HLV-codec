@@ -70,6 +70,7 @@ $videoFilter = Get-Esp32PreparationFilter `
     -Fps $outputFps
 $gop = [Math]::Max(1, [Math]::Round($outputFps))
 $audioNormalization = $null
+$audioRate = 0
 if (-not $NoAudio) {
     $audioIndex = & $ffprobe -v error -select_streams a:0 `
         -show_entries stream=index -of csv=p=0 $info.InputFile |
@@ -78,10 +79,13 @@ if (-not $NoAudio) {
         throw "FFprobe audio inspection failed."
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$audioIndex)) {
+        $audioRate = Get-PrimaryAudioSampleRate `
+            -Ffprobe $ffprobe `
+            -InputFile $info.InputFile
         $audioNormalization = Get-PeakSafeAudioFilter `
             -Ffmpeg $ffmpeg `
             -InputFile $info.InputFile `
-            -Rate 16000
+            -Rate $audioRate
     }
 }
 $arguments = @(
@@ -101,14 +105,14 @@ $arguments = @(
 if ($MaxFrames) {
     $arguments += @("-frames:v", $MaxFrames)
 }
-if ($NoAudio) {
+if ($NoAudio -or -not $audioNormalization) {
     $arguments += "-an"
 }
 else {
     $arguments += @(
         "-map", "0:a:0?",
-        "-c:a", "pcm_u8",
-        "-ar", "16000",
+        "-c:a", "adpcm_ima_wav",
+        "-ar", "$audioRate",
         "-ac", "1"
     )
     if ($audioNormalization) {
@@ -179,7 +183,9 @@ $reportFile = [IO.Path]::ChangeExtension($OutputFile, ".json")
     bFrames = 0
     maximumVideoPacketBytes = [uint64]$maximumPacket
     maximumAllowedPacketBytes = 98304
-    audio = if ($audioNormalization) { "PCM_U8 mono 16000 Hz" } else { $null }
+    audio = if ($audioNormalization) {
+        "IMA_ADPCM_WAV mono $audioRate Hz"
+    } else { $null }
     audioNormalization = if ($audioNormalization) {
         [ordered]@{
             curve = "primary-compressor-peak"

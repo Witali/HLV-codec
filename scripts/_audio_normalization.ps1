@@ -1,5 +1,37 @@
 #requires -Version 7.4
 
+function Get-PrimaryAudioSampleRate {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Ffprobe,
+
+        [Parameter(Mandatory)]
+        [string]$InputFile,
+
+        [ValidateRange(8000, 48000)]
+        [int]$MinimumRate = 8000,
+
+        [ValidateRange(8000, 48000)]
+        [int]$MaximumRate = 48000
+    )
+
+    $rateLines = & $Ffprobe -v error -select_streams a:0 `
+        -show_entries stream=sample_rate -of csv=p=0 $InputFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFprobe audio sample-rate inspection failed."
+    }
+    $rateText = $rateLines | Select-Object -First 1
+    $rate = 0
+    if (-not [int]::TryParse(([string]$rateText).Trim(), [ref]$rate) -or
+        $rate -lt $MinimumRate -or $rate -gt $MaximumRate) {
+        throw (
+            "The primary audio sample rate must be within " +
+            "${MinimumRate}..${MaximumRate} Hz."
+        )
+    }
+    $rate
+}
+
 function Get-PeakSafeAudioFilter {
     param(
         [Parameter(Mandatory)]

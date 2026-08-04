@@ -18,9 +18,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 $source = Join-Path $repo `
     "out\sources\big_buck_bunny_1080p_h264\big_buck_bunny_1080p_h264.mov"
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
+$ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
 
 if (-not $OutputFile) {
     $OutputFile = Join-Path $repo `
@@ -40,11 +42,13 @@ if (-not [IO.Path]::IsPathRooted($SelectionFile)) {
 if (-not (Test-Path -LiteralPath $source)) {
     throw "Required 1080p source is missing: $source"
 }
-if (-not (Test-Path -LiteralPath $ffmpeg)) {
+if (-not (Test-Path -LiteralPath $ffmpeg) -or
+    -not (Test-Path -LiteralPath $ffprobe)) {
     & (Join-Path $PSScriptRoot "bootstrap_ffmpeg.ps1")
 }
-if (-not (Test-Path -LiteralPath $ffmpeg)) {
-    throw "FFmpeg is unavailable: $ffmpeg"
+if (-not (Test-Path -LiteralPath $ffmpeg) -or
+    -not (Test-Path -LiteralPath $ffprobe)) {
+    throw "Repository-local FFmpeg tools are unavailable."
 }
 
 $outputParent = Split-Path $OutputFile -Parent
@@ -52,54 +56,9 @@ $selectionParent = Split-Path $SelectionFile -Parent
 New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
 New-Item -ItemType Directory -Force -Path $selectionParent | Out-Null
 
-# Keep this curve byte-for-byte equivalent to the default HLV Big Buck Bunny
-# profile. The measurement pass computes only the compressor makeup required
-# to place the processed source peak at -0.1 dBFS.
-$audioConversion = "aformat=channel_layouts=mono,aresample=16000"
-$audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
-    "attack=0.01:release=250:knee=8:" +
-    "link=maximum:detection=peak"
-$audioPeakTargetDb = -0.1
-
-Write-Host (
-    "Measuring the established audio level curve on the approved 1080p MOV..."
-)
-$analysisFilter = (
-    "$audioConversion,$audioLevelCurve," +
-    "astats=metadata=0:reset=0"
-)
-$analysisOutput = & $ffmpeg -hide_banner -nostats -i $source `
-    -map 0:a:0 -vn -af $analysisFilter `
-    -ac 1 -ar 16000 -f null NUL 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "FFmpeg audio analysis failed with exit code $LASTEXITCODE."
-}
-$peakMatches = [regex]::Matches(
-    ($analysisOutput -join "`n"),
-    "Peak level dB:\s*(-?\d+(?:\.\d+)?)"
-)
-if (-not $peakMatches.Count) {
-    throw "FFmpeg did not report the processed audio peak."
-}
-$culture = [Globalization.CultureInfo]::InvariantCulture
-$curvePeakDb = (
-    $peakMatches |
-        ForEach-Object {
-            [double]::Parse($_.Groups[1].Value, $culture)
-        } |
-        Measure-Object -Maximum
-).Maximum
-$curveMakeupDb = $audioPeakTargetDb - $curvePeakDb
-if ($curveMakeupDb -lt 0.0) {
-    throw (
-        "The level curve needs attenuation, which compressor makeup " +
-        "cannot provide: $curveMakeupDb dB."
-    )
-}
-$curveMakeupText = $curveMakeupDb.ToString("0.000", $culture)
-$audioFilter = (
-    "$audioConversion,${audioLevelCurve}:makeup=${curveMakeupText}dB"
-)
+$audioRate = Get-PrimaryAudioSampleRate -Ffprobe $ffprobe -InputFile $source
+$audioNormalization = Get-PeakSafeAudioFilter -Ffmpeg $ffmpeg `
+    -InputFile $source -Rate $audioRate
 
 # A fixed 320-pixel width and an automatically calculated even height preserve
 # the source display aspect ratio. Big Buck Bunny is 16:9, so this is 320x180.
@@ -112,14 +71,14 @@ $arguments = @(
     "-i", $source,
     "-map", "0:v:0", "-map", "0:a:0",
     "-vf", $videoFilter,
-    "-af", $audioFilter,
+    "-af", $audioNormalization.Filter,
     "-c:v", "mjpeg",
     "-q:v", $Quality,
     "-threads:v", $Threads,
     "-pix_fmt", "yuvj420p",
     "-fps_mode", "passthrough",
-    "-c:a", "pcm_u8",
-    "-ar", "16000",
+    "-c:a", "adpcm_ima_wav",
+    "-ar", "$audioRate",
     "-ac", "1",
     "-shortest"
 )
@@ -130,7 +89,7 @@ $arguments += @("-f", "avi", $OutputFile)
 
 Write-Host (
     "Encoding MJPEG AVI: width 320, preserved aspect ratio, native FPS, " +
-    "quality $Quality, $Threads threads, PCM_U8 mono 16 kHz..."
+    "quality $Quality, $Threads threads, IMA ADPCM mono $audioRate Hz..."
 )
 & $ffmpeg @arguments
 if ($LASTEXITCODE -ne 0) {

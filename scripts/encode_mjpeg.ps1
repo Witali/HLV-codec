@@ -32,6 +32,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
 
@@ -64,49 +65,10 @@ New-Item -ItemType Directory -Force -Path (
     Split-Path $ReportFile -Parent
 ) | Out-Null
 
-# Keep this curve in sync with encode_bpv.ps1 and encode_mpeg1.ps1.
-# There is no EQ, loudness filter, standalone volume stage or limiter.
-$audioConversion = "aformat=channel_layouts=mono,aresample=16000"
-$audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
-    "attack=0.01:release=250:knee=8:" +
-    "link=maximum:detection=peak"
-$audioPeakTargetDb = -0.1
-
-Write-Host "Measuring the primary audio level curve..."
-$analysisFilter = (
-    "$audioConversion,$audioLevelCurve," +
-    "astats=metadata=0:reset=0"
-)
-$analysisOutput = & $ffmpeg -hide_banner -nostats -i $InputFile `
-    -map 0:a:0 -vn -af $analysisFilter `
-    -ac 1 -ar 16000 -f null NUL 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "FFmpeg audio analysis failed with exit code $LASTEXITCODE."
-}
-$peakMatches = [regex]::Matches(
-    ($analysisOutput -join "`n"),
-    "Peak level dB:\s*(-?\d+(?:\.\d+)?)"
-)
-if (-not $peakMatches.Count) {
-    throw "FFmpeg did not report the processed audio peak."
-}
-$culture = [Globalization.CultureInfo]::InvariantCulture
-$curvePeakDb = (
-    $peakMatches |
-        ForEach-Object {
-            [double]::Parse($_.Groups[1].Value, $culture)
-        } |
-        Measure-Object -Maximum
-).Maximum
-$curveMakeupDb = $audioPeakTargetDb - $curvePeakDb
-if ($curveMakeupDb -lt 0.0) {
-    throw "The primary audio curve would require attenuation."
-}
-$curveMakeupText = $curveMakeupDb.ToString("0.000", $culture)
-$audioFilter = (
-    "$audioConversion,${audioLevelCurve}:" +
-    "makeup=${curveMakeupText}dB"
-)
+$audioRate = Get-PrimaryAudioSampleRate -Ffprobe $ffprobe `
+    -InputFile $InputFile
+$audioNormalization = Get-PeakSafeAudioFilter -Ffmpeg $ffmpeg `
+    -InputFile $InputFile -Rate $audioRate
 
 if ($ResizeMode -eq "Crop") {
     $videoFilter = (
@@ -127,14 +89,14 @@ $arguments = @(
     "-i", $InputFile,
     "-map", "0:v:0", "-map", "0:a:0",
     "-vf", $videoFilter,
-    "-af", $audioFilter,
+    "-af", $audioNormalization.Filter,
     "-fps_mode", "cfr",
     "-c:v", "mjpeg",
     "-q:v", $Quality,
     "-threads:v", $Threads,
     "-pix_fmt", "yuvj420p",
-    "-c:a", "pcm_u8",
-    "-ar", "16000",
+    "-c:a", "adpcm_ima_wav",
+    "-ar", "$audioRate",
     "-ac", "1",
     "-shortest"
 )
@@ -145,7 +107,7 @@ $arguments += @("-f", "avi", $OutputFile)
 
 Write-Host (
     "Encoding standard MJPEG/AVI: ${Width}x${Height}, native FPS, " +
-    "quality $Quality, PCM_U8 mono 16 kHz, $Threads threads..."
+    "quality $Quality, IMA ADPCM mono $audioRate Hz, $Threads threads..."
 )
 & $ffmpeg @arguments
 if ($LASTEXITCODE -ne 0) {
@@ -169,8 +131,5 @@ $report | Set-Content -LiteralPath $ReportFile -Encoding utf8
 $result = Get-Item -LiteralPath $OutputFile
 Write-Host ("Ready: {0} ({1:N0} bytes)" -f
     $result.FullName, $result.Length)
-Write-Host (
-    "Audio curve: peak {0:N2} dBFS, makeup {1} dB, target {2:N1} dBFS" -f
-    $curvePeakDb, $curveMakeupText, $audioPeakTargetDb
-)
+Write-AudioNormalizationStatus -Normalization $audioNormalization
 Write-Host "Report: $ReportFile"

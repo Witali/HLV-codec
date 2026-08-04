@@ -143,11 +143,11 @@ try {
         -File (Join-Path $work "mpeg4-simple-esp32-speed.avi") `
         -Codec "pcm_s16le" -Rate 8000
     Assert-NormalizedAudio -File (Join-Path $work "mjpeg.avi") `
-        -Codec "pcm_u8" -Rate 16000
+        -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
     Assert-NormalizedAudio -File (Join-Path $work "mpeg1.mpg") `
         -Codec "mp2" -Rate 32000 -PeakToleranceDb 1.5
     Assert-NormalizedAudio -File (Join-Path $work "divx3.avi") `
-        -Codec "pcm_u8" -Rate 16000
+        -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
 
     foreach ($required in @(
         (Join-Path $work "divx3.json"),

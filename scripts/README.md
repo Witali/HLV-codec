@@ -69,7 +69,8 @@ report next to the encoded file. `MaxFrames=0` means encode the complete input.
 | Script | Purpose and important options |
 | --- | --- |
 | `prepare_esp32_video.ps1` | Produces an HLV file for ESP32 with configurable dimensions, frame rate, quality, duration, and 16 kHz audio normalization. Without `-InputFile`, it generates a deterministic test clip. |
-| `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with PCM_U8 mono 16 kHz audio. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
+| `encode_mjpeg.ps1` | Encodes baseline YUV420 MJPEG in AVI with standard mono IMA ADPCM audio at the source rate, up to 48 kHz. Controls include `Width`, `Height`, `ResizeMode`, `Quality`, `Threads`, and `MaxFrames`. |
+| `reencode_avi_audio_ima.ps1` | Copies an existing AVI video payload bit-for-bit and replaces its audio from a separate source with peak-safe normalized mono WAV IMA ADPCM at the source rate. `-Replace` updates the AVI only after payload-hash and full-decode validation; otherwise it creates an `_IMAADPCM.avi` sibling. |
 | `encode_mpeg1.ps1` | Encodes constrained MPEG-1 Program Stream with no B pictures and MP2 mono 32 kHz audio. Controls include dimensions, `VideoQuality`, GOP, audio bitrate, and frame limit. |
 | `encode_h263_avi.ps1` | Encodes baseline H.263 only at standard QCIF `176x144` or CIF `352x288`, always in AVI and at the full source frame rate, with optional PCM S16LE mono audio. Constant-quality Q6 is the default; use `VideoQuality=1..31` to override it or pass zero for bitrate control. |
 | `encode_mpeg4_simple_avi.ps1` | Encodes bounded MPEG-4 Part 2 Simple Profile at `320x240` in M4S2 AVI, with I/P pictures only, full source rate up to 30 fps, and optional PCM S16LE mono 8 kHz audio. The default Q5 profile is the accepted `35dB` quality profile. `-Preset Esp32Speed` is an explicit lower-quality decoder-speed trade-off that uses zero/integer motion vectors and stronger coefficient elimination. |
@@ -102,14 +103,14 @@ select the production parameters and output directory automatically:
 | `transcode_h263.ps1` | CIF/AVI only, macroblock-aligned visible 320x240 area at `(16,16)`, constant-quality Q6, full source FPS, intra-only. |
 | `transcode_mpeg4_simple.ps1` | `320x240` M4S2 AVI, MPEG-4 Simple Profile, GOP 30, I/P pictures only, full source FPS up to 30. The default accepted 35 dB profile uses Q5 and produces a `_MPEG4SP_35dB` filename; `-Preset Esp32Speed` is separately named, defaults to Q7, and produces `_MPEG4SP_SPEED_q7`. |
 | `transcode_divx3.ps1` | DIV3 AVI, exactly half source FPS, one-second GOP, no B pictures, maximum packet 98304 bytes. |
-| `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and PCM_U8 mono 16 kHz. |
+| `transcode_mjpeg.ps1` | Baseline MJPEG/AVI with YUVJ420P and standard mono IMA ADPCM at the source rate, up to 48 kHz. |
 | `transcode_mpeg1.ps1` | MPEG-1 Program Stream, GOP 30, no B pictures, 2048-byte packets and MP2 mono 32 kHz. |
 
 Every audio-enabled production wrapper uses the same peak-safe normalization:
 convert to the profile's mono sample rate, apply the primary gentle compressor,
 measure the complete processed source, and set compressor makeup so the
 pre-encode peak reaches -0.1 dBFS. HLV and BPV use IMA ADPCM at 32 kHz;
-DivX 3 and MJPEG use PCM_U8 at 16 kHz; H.263 and MPEG-4 Simple Profile use
+DivX 3 and MJPEG use standard AVI IMA ADPCM at the source rate up to 48 kHz; H.263 and MPEG-4 Simple Profile use
 PCM S16LE at 8 kHz; MPEG-1 uses MP2 at 32 kHz. Inputs without
 an audio stream remain video-only, and `-NoAudio` continues to bypass audio
 processing where that option is supported.

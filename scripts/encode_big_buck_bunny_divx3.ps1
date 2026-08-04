@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "_audio_normalization.ps1")
 $sourceRelative = (
     "out\sources\big_buck_bunny_1080p_h264\" +
     "big_buck_bunny_1080p_h264.mov"
@@ -86,44 +87,10 @@ New-Item -ItemType Directory -Force -Path (
     Split-Path $SelectionFile -Parent
 ) | Out-Null
 
-# Match the established HLV/MJPEG PCM_U8 audio curve.
-$audioConversion = "aformat=channel_layouts=mono,aresample=16000"
-$audioLevelCurve = "acompressor=threshold=-20dB:ratio=1.6:" +
-    "attack=0.01:release=250:knee=8:" +
-    "link=maximum:detection=peak"
-$audioPeakTargetDb = -0.1
-$analysisFilter = "$audioConversion,$audioLevelCurve,astats=metadata=0:reset=0"
-
-Write-Host "Measuring the established audio level curve..."
-$analysisOutput = & $ffmpeg -hide_banner -nostats -i $source `
-    -map 0:a:0 -vn -af $analysisFilter `
-    -ac 1 -ar 16000 -f null NUL 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "FFmpeg audio analysis failed with exit code $LASTEXITCODE."
-}
-$peakMatches = [regex]::Matches(
-    ($analysisOutput -join "`n"),
-    "Peak level dB:\s*(-?\d+(?:\.\d+)?)"
-)
-if (-not $peakMatches.Count) {
-    throw "FFmpeg did not report the processed audio peak."
-}
+$audioRate = Get-PrimaryAudioSampleRate -Ffprobe $ffprobe -InputFile $source
+$audioNormalization = Get-PeakSafeAudioFilter -Ffmpeg $ffmpeg `
+    -InputFile $source -Rate $audioRate
 $culture = [Globalization.CultureInfo]::InvariantCulture
-$curvePeakDb = (
-    $peakMatches |
-        ForEach-Object {
-            [double]::Parse($_.Groups[1].Value, $culture)
-        } |
-        Measure-Object -Maximum
-).Maximum
-$curveMakeupDb = $audioPeakTargetDb - $curvePeakDb
-if ($curveMakeupDb -lt 0.0) {
-    throw "The established audio curve would require attenuation."
-}
-$curveMakeupText = $curveMakeupDb.ToString("0.000", $culture)
-$audioFilter = (
-    "$audioConversion,${audioLevelCurve}:makeup=${curveMakeupText}dB"
-)
 
 $arguments = @(
     "-y", "-hide_banner", "-loglevel", "warning", "-stats",
@@ -134,7 +101,7 @@ $arguments = @(
         "flags=lanczos,pad=320:240:(ow-iw)/2:(oh-ih)/2:black," +
         "setsar=1,format=yuv420p"
     ),
-    "-af", $audioFilter,
+    "-af", $audioNormalization.Filter,
     "-fps_mode", "cfr",
     "-c:v", "msmpeg4",
     "-q:v", $Quality,
@@ -143,8 +110,8 @@ $arguments = @(
     "-pix_fmt", "yuv420p",
     "-threads:v", $Threads,
     "-vtag", "DIV3",
-    "-c:a", "pcm_u8",
-    "-ar", "16000",
+    "-c:a", "adpcm_ima_wav",
+    "-ar", "$audioRate",
     "-ac", "1"
 )
 if ($MaxFrames) {
@@ -154,7 +121,7 @@ $arguments += @("-f", "avi", $OutputFile)
 
 Write-Host (
     "Encoding DivX 3 AVI: 320x240, $Fps fps, q=$Quality, GOP $Gop, " +
-    "no B pictures, PCM_U8 mono 16 kHz..."
+    "no B pictures, IMA ADPCM mono $audioRate Hz..."
 )
 & $ffmpeg @arguments
 if ($LASTEXITCODE -ne 0) {
@@ -183,10 +150,10 @@ $audioProbe = (
 ) | ConvertFrom-Json
 $audio = $audioProbe.streams[0]
 if ($LASTEXITCODE -ne 0 -or
-    $audio.codec_name -ne "pcm_u8" -or
+    $audio.codec_name -ne "adpcm_ima_wav" -or
     $audio.channels -ne 1 -or
-    $audio.sample_rate -ne "16000") {
-    throw "The output does not match the required PCM_U8 audio profile."
+    $audio.sample_rate -ne "$audioRate") {
+    throw "The output does not match the required IMA ADPCM audio profile."
 }
 
 $pictureTypes = & $ffprobe -v error -select_streams v:0 `
@@ -214,7 +181,7 @@ if ($maximumPacket -gt 96KB) {
 Write-Host "Decoding the complete AVI with FFmpeg..."
 & $ffmpeg -v error -i $OutputFile -map 0:v:0 -map 0:a:0 -f null NUL
 if ($LASTEXITCODE -ne 0) {
-    throw "Full DivX 3/PCM_U8 validation failed."
+    throw "Full DivX 3/IMA ADPCM validation failed."
 }
 
 $selectedName = [IO.Path]::GetFileName($OutputFile)

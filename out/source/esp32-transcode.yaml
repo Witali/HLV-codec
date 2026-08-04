@@ -43,8 +43,8 @@ formats:
     cqTrials: 5
     # Adaptive feedback is sequential; hlvenc enforces one encoder thread.
     threads: 1
-    audioCodec: pcm_u8
-    audioSampleRate: 16000
+    audioCodec: ima_adpcm
+    audioSampleRate: 32000
     audioChannels: 1
 
   BPVv6:
@@ -65,8 +65,8 @@ formats:
     samplesPerFrame: 256
     activePalettes: true
     threads: 6
-    audioCodec: pcm_u8
-    audioSampleRate: 16000
+    audioCodec: ima_adpcm
+    audioSampleRate: 32000
     audioChannels: 1
 
   MJPEG:
@@ -82,8 +82,8 @@ formats:
     qMin: 2
     qMax: 31
     threads: 6
-    audioCodec: pcm_u8
-    audioSampleRate: 16000
+    audioCodec: adpcm_ima_wav
+    audioSampleRate: source
     audioChannels: 1
 
   MPEG1:
@@ -122,8 +122,8 @@ formats:
     qMin: 2
     qMax: 31
     threads: 6
-    audioCodec: pcm_u8
-    audioSampleRate: 16000
+    audioCodec: adpcm_ima_wav
+    audioSampleRate: source
     audioChannels: 1
 
   H263:

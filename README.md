@@ -14,12 +14,14 @@ source.
 The second device codec is the standard
 [`AVI/MJPEG profile`](codecs/mjpeg/). Its Big Buck Bunny preset keeps a
 320-pixel width, preserves the 16:9 aspect ratio (`320x180`), retains the
-native source frame rate, and muxes PCM_U8 audio through the same saved level
-curve as the HLV preset.
+native source frame rate, and applies the same saved audio level curve as the
+HLV preset. New production files use standard mono WAV IMA ADPCM while
+preserving source rates up to 48 kHz; legacy PCM_U8 files remain readable.
 
 [`DivX 3`](codecs/divx3/) support decodes the Microsoft MPEG-4 v3 bitstream
 found in `DIV3`/`MP43` AVI files. The memory-bounded ESP32 profile accepts up
-to 320x240 at 12 fps with I/P pictures only and optional PCM_U8 mono audio. It
+to 320x240 at 12 fps with I/P pictures only and optional mono WAV IMA ADPCM
+audio at the source rate up to 48 kHz. Legacy PCM_U8 audio remains readable. It
 stores predictive references as Y6/U5/V5 with Q4 block-average corrections;
 the two references are allocated independently so QVGA fits fragmented
 internal RAM. The portable decoder retains a pixel-exact 8-bit validation
@@ -159,7 +161,8 @@ Create the conservative DivX 3 AVI profile and its matching `play.txt`:
 ```
 
 The default profile is 320x240 at 12 fps, preserves the source aspect ratio
-with letterboxing, uses I/P pictures only and PCM_U8 mono audio at 16 kHz.
+with letterboxing, uses I/P pictures only and mono WAV IMA ADPCM audio at
+the source rate, up to 48 kHz.
 
 ## Native Windows player
 
@@ -192,7 +195,9 @@ it on the 320x240 ST7789 over SPI2 DMA. HLV/BPV IMA ADPCM is decoded directly
 to PCM16; legacy PCM_U8 and decoded MPEG MP2 share the same bounded queue and
 play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
 amplifier; GPIO22 carries the required PDM clock. AVI/H.263 PCM S16LE is
-converted to PCM_U8 while streaming. The BPV1 path keeps
+converted to PCM_U8 while streaming. MJPEG and DivX 3 AVI also accept standard
+mono WAV IMA ADPCM; each 1024-byte block is expanded directly into the bounded
+PCM16 queue through a 128-byte compressed refill buffer. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
 DMA strips without allocating a full RGB framebuffer. Arduino and LovyanGFX
