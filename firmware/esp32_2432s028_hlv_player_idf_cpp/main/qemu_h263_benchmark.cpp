@@ -29,8 +29,8 @@ extern const uint8_t kVideoEnd[]
     asm("_binary_qemu_mpeg4_benchmark_avi_end");
 #else
 constexpr char kTag[] = "h263-qemu-bench";
-constexpr uint16_t kBenchWidth = 320;
-constexpr uint16_t kBenchHeight = 240;
+constexpr uint16_t kBenchWidth = 352;
+constexpr uint16_t kBenchHeight = 288;
 constexpr uint8_t kOutputBuffers = 1;
 constexpr char kContainer[] = "3GP";
 extern const uint8_t kVideoStart[]
