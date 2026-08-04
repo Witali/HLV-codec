@@ -1,5 +1,7 @@
 #include "h263_3gp.h"
 
+#include "avi_demux.h"
+
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -102,22 +104,6 @@ typedef struct SttsEntry {
     uint32_t sample_delta;
 } SttsEntry;
 
-static uint16_t readLe16Value(const uint8_t *value) {
-    return (uint16_t)(value[0] | ((uint16_t)value[1] << 8));
-}
-
-static uint32_t readLe32Value(const uint8_t *value) {
-    return (uint32_t)value[0] | ((uint32_t)value[1] << 8) |
-           ((uint32_t)value[2] << 16) | ((uint32_t)value[3] << 24);
-}
-
-static int hexDigit(uint8_t value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    return -1;
-}
-
 static bool seekFile(FILE *file, uint64_t offset) {
 #ifdef _WIN32
     return offset <= (uint64_t)(INT64_MAX) &&
@@ -166,16 +152,6 @@ static bool readU64(FILE *file, uint64_t *value) {
     uint32_t low = 0;
     if (!readU32(file, &high) || !readU32(file, &low)) return false;
     *value = ((uint64_t)(high) << 32) | low;
-    return true;
-}
-
-static bool readLe32(FILE *file, uint32_t *value) {
-    uint8_t bytes[4];
-    if (!readExact(file, bytes, sizeof bytes)) return false;
-    *value = (uint32_t)(bytes[0]) |
-             ((uint32_t)(bytes[1]) << 8) |
-             ((uint32_t)(bytes[2]) << 16) |
-             ((uint32_t)(bytes[3]) << 24);
     return true;
 }
 
@@ -239,26 +215,6 @@ static uint32_t gcd32(uint32_t a, uint32_t b) {
         b = next;
     }
     return a ? a : 1;
-}
-
-static int aviStreamNumber(uint32_t id) {
-    const int high = hexDigit((uint8_t)(id));
-    const int low = hexDigit((uint8_t)(id >> 8));
-    return high < 0 || low < 0 ? -1 : (high << 4) | low;
-}
-
-static bool isAviVideoChunk(uint32_t id, uint8_t stream) {
-    const uint8_t c2 = (uint8_t)(id >> 16);
-    const uint8_t c3 = (uint8_t)(id >> 24);
-    return aviStreamNumber(id) == stream &&
-           ((c2 == 'd' && c3 == 'c') ||
-            (c2 == 'd' && c3 == 'b'));
-}
-
-static bool isAviAudioChunk(uint32_t id, uint8_t stream) {
-    return aviStreamNumber(id) == stream &&
-           (uint8_t)(id >> 16) == 'w' &&
-           (uint8_t)(id >> 24) == 'b';
 }
 
 typedef struct AviState {
@@ -613,6 +569,9 @@ static int refillPacketBuffer(uint8 *buffer, int bytes_required,
     return (int)(bytes_read);
 }
 
+/* Retained temporarily for source-history comparison; the only compiled AVI
+ * parser and packet walker is codecs/common/src/avi_demux.c. */
+#if 0
 static bool skipAviChunk(FILE *file, uint64_t data_start, uint32_t size) {
     const uint64_t end =
         data_start + (uint64_t)(size) + (size & 1U);
@@ -740,11 +699,19 @@ static int parseAviStreamList(FILE *file, uint64_t end, uint8_t stream_index,
         if (format_size < 16) return H263_3GP_ERR_FORMAT;
         avi->audio_stream = stream_index;
         avi->audio_format = readLe16Value(format);
+        info->audio_format_tag = (uint16_t)avi->audio_format;
         info->audio_channels =
             (uint8_t)(readLe16Value(format + 2));
         info->audio_sample_rate = readLe32Value(format + 4);
+        info->audio_block_align = readLe16Value(format + 12);
         info->audio_bits_per_sample =
             (uint8_t)(readLe16Value(format + 14));
+        if (avi->audio_format == 0x11U) {
+            if (format_size < 20 || readLe16Value(format + 16) < 2U)
+                return H263_3GP_ERR_FORMAT;
+            info->audio_samples_per_block =
+                readLe16Value(format + 18);
+        }
     }
     return H263_3GP_OK;
 }
@@ -847,6 +814,7 @@ static int scanAviMovie(FILE *file, H2633gpInfo *info, AviState avi,
     }
     return H263_3GP_OK;
 }
+#endif
 
 static int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
                     uint32_t indexed_frames) {
@@ -893,128 +861,109 @@ static int finalizeAviInfo(H2633gpInfo *info, AviState *avi,
     avi->next_video_offset = avi->movi_start;
     avi->next_audio_offset = avi->movi_start;
 
-    if (avi->audio_stream != 0xff &&
-        (avi->audio_format != 1 || info->audio_channels != 1 ||
-         info->audio_sample_rate != 8000 ||
-         (info->audio_bits_per_sample != 8 &&
-          info->audio_bits_per_sample != 16))) {
-        return H263_3GP_ERR_UNSUPPORTED;
+    if (avi->audio_stream != 0xff) {
+        const bool pcm =
+            avi->audio_format == 1U && info->audio_channels == 1U &&
+            info->audio_sample_rate == 8000U &&
+            (info->audio_bits_per_sample == 8U ||
+             info->audio_bits_per_sample == 16U) &&
+            info->audio_block_align ==
+                info->audio_bits_per_sample / 8U;
+        const bool ima =
+            avi->audio_format == 0x11U && info->audio_channels == 1U &&
+            info->audio_sample_rate >= 8000U &&
+            info->audio_sample_rate <= 48000U &&
+            info->audio_bits_per_sample == 4U &&
+            info->audio_block_align >= 4U &&
+            info->audio_block_align <= H263_AVI_IMA_MAX_BLOCK_BYTES &&
+            info->audio_samples_per_block ==
+                1U + 2U * (info->audio_block_align - 4U);
+        if (!pcm && !ima) return H263_3GP_ERR_UNSUPPORTED;
     }
     return H263_3GP_OK;
 }
 
 static int parseAviContainer(FILE *file, H2633gpInfo *info, AviState *avi) {
+    AviDemuxInfo demux;
+    uint32_t codec = H263_VIDEO_CODEC_UNKNOWN;
+    int demux_result;
     memset(info, 0, sizeof(*info));
     resetAviState(avi);
-    if (!seekFile(file, 0))
-        return H263_3GP_ERR_IO;
-    uint32_t riff = 0;
-    uint32_t riff_size = 0;
-    uint32_t type = 0;
-    if (!readLe32(file, &riff) || !readLe32(file, &riff_size) ||
-        !readLe32(file, &type)) {
-        return H263_3GP_ERR_IO;
-    }
-    const uint64_t riff_end = 8ULL + riff_size;
-    if (riff != fourccLe('R', 'I', 'F', 'F') ||
-        type != fourccLe('A', 'V', 'I', ' ') ||
-        riff_end < 12) {
-        return H263_3GP_ERR_FORMAT;
+    demux_result = avi_demux_read_info(file, &demux);
+    if (demux_result == AVI_DEMUX_ERR_IO) return H263_3GP_ERR_IO;
+    if (demux_result == AVI_DEMUX_ERR_RANGE)
+        return H263_3GP_ERR_UNSUPPORTED;
+    if (demux_result != AVI_DEMUX_OK) return H263_3GP_ERR_FORMAT;
+
+    if ((demux.video.handler_fourcc == fourccLe('H', '2', '6', '3') ||
+         demux.video.handler_fourcc == fourccLe('U', '2', '6', '3') ||
+         demux.video.handler_fourcc == fourccLe('I', '2', '6', '3')) &&
+        (demux.video.compression_fourcc == fourccLe('H', '2', '6', '3') ||
+         demux.video.compression_fourcc == fourccLe('U', '2', '6', '3') ||
+         demux.video.compression_fourcc == fourccLe('I', '2', '6', '3'))) {
+        codec = H263_VIDEO_CODEC_H263;
+    } else if (demux.video.handler_fourcc == fourccLe('M', '4', 'S', '2') &&
+               demux.video.compression_fourcc ==
+                   fourccLe('M', '4', 'S', '2')) {
+        codec = H263_VIDEO_CODEC_MPEG4_SIMPLE;
+    } else {
+        return H263_3GP_ERR_UNSUPPORTED;
     }
 
-    uint64_t cursor = 12;
-    uint64_t index_start = 0;
-    uint32_t index_size = 0;
-    bool header_is_complete = false;
-    while (cursor + 8 <= riff_end) {
-        if (!seekFile(file, cursor)) return H263_3GP_ERR_IO;
-        uint32_t id = 0;
-        uint32_t size = 0;
-        uint64_t data_start = 0;
-        if (!readAviChunkHeader(file, &id, &size, &data_start))
-            return H263_3GP_ERR_IO;
-        if (data_start > riff_end ||
-            (uint64_t)(size) > riff_end - data_start) {
-            return H263_3GP_ERR_FORMAT;
-        }
-        if (id == fourccLe('L', 'I', 'S', 'T')) {
-            uint32_t list_type = 0;
-            if (size < 4 || !readLe32(file, &list_type))
-                return H263_3GP_ERR_FORMAT;
-            if (list_type == fourccLe('h', 'd', 'r', 'l')) {
-                const int result = parseAviHeaderList(
-                    file, data_start + size, info, avi);
-                if (result != H263_3GP_OK) return result;
-            } else if (list_type == fourccLe('m', 'o', 'v', 'i')) {
-                avi->movi_start = data_start + 4;
-                avi->movi_end = data_start + size;
-                /*
-                 * A standard AVI header already supplies the frame count and
-                 * maximum packet size.  Avoid seeking across the entire movi
-                 * list merely to rescan idx1: on FAT that seek walks every
-                 * cluster in a large file and can take tens of seconds over
-                 * an emulated or slow SPI card.
-                 */
-                if (avi->video_stream != 0xff &&
-                    (avi->video_length || avi->main_frame_count) &&
-                    info->max_sample_size) {
-                    header_is_complete = true;
-                    break;
-                }
-            }
-        } else if (id == fourccLe('i', 'd', 'x', '1')) {
-            index_start = data_start;
-            index_size = size;
-        }
-        cursor = data_start + size + (size & 1U);
-    }
+    info->width = demux.video.width;
+    info->height = demux.video.height;
+    info->video_codec = (uint8_t)codec;
+    info->max_sample_size = demux.video.max_packet_size;
+    info->audio_format_tag = demux.audio.format_tag;
+    info->audio_channels = (uint8_t)demux.audio.channels;
+    info->audio_sample_rate = demux.audio.sample_rate;
+    info->audio_block_align = demux.audio.block_align;
+    info->audio_bits_per_sample = (uint8_t)demux.audio.bits_per_sample;
+    info->audio_samples_per_block = demux.audio.samples_per_block;
 
-    uint32_t video_frames = 0;
-    int result = H263_3GP_OK;
-    if (!header_is_complete && index_start && avi->video_stream != 0xff) {
-        result = scanAviIndex(
-            file, index_start, index_size, info, *avi, &video_frames);
-    } else if (!header_is_complete && avi->movi_start) {
-        result = scanAviMovie(file, info, *avi, &video_frames);
+    avi->movi_start = (uint64_t)demux.movi_start;
+    avi->movi_end = (uint64_t)demux.movi_end;
+    avi->video_scale = demux.video.scale;
+    avi->video_rate = demux.video.rate;
+    avi->video_length = demux.video.frame_count;
+    avi->main_frame_count = demux.main_frame_count;
+    avi->microseconds_per_frame = demux.microseconds_per_frame;
+    avi->audio_format = demux.audio.format_tag;
+    avi->video_stream = demux.video.stream_index;
+    avi->audio_stream = demux.audio.stream_index;
+    if (codec == H263_VIDEO_CODEC_MPEG4_SIMPLE) {
+        avi->mpeg4_vol_size = demux.video.format_extra_size;
+        memcpy(avi->mpeg4_vol, demux.video.format_extra,
+               avi->mpeg4_vol_size);
     }
-    if (result == H263_3GP_OK)
-        result = finalizeAviInfo(info, avi, video_frames);
-    return result;
+    return finalizeAviInfo(info, avi, 0);
 }
 
 static int nextAviPayload(FILE *file, AviState avi, bool video,
                    uint64_t *offset, uint32_t *size) {
-    if (!file || !offset || !size) return H263_3GP_ERR_ARGUMENT;
-    while (*offset + 8 <= avi.movi_end) {
-        if (!seekFile(file, *offset)) return H263_3GP_ERR_IO;
-        uint32_t id = 0;
-        uint64_t data_start = 0;
-        if (!readAviChunkHeader(file, &id, size, &data_start))
-            return H263_3GP_ERR_IO;
-        if (data_start > avi.movi_end ||
-            (uint64_t)(*size) > avi.movi_end - data_start) {
-            return H263_3GP_ERR_FORMAT;
-        }
-        if (id == fourccLe('L', 'I', 'S', 'T')) {
-            uint32_t list_type = 0;
-            if (*size < 4 || !readLe32(file, &list_type))
-                return H263_3GP_ERR_FORMAT;
-            if (list_type == fourccLe('r', 'e', 'c', ' ')) {
-                *offset = data_start + 4;
-                continue;
-            }
-        }
-        const bool wanted =
-            video ? isAviVideoChunk(id, avi.video_stream)
-                  : isAviAudioChunk(id, avi.audio_stream);
-        *offset = data_start + *size + (*size & 1U);
-        if (wanted && *size) {
-            return seekFile(file, data_start)
-                       ? H263_3GP_OK
-                       : H263_3GP_ERR_IO;
-        }
-    }
-    return H263_3GP_EOF;
+    AviDemuxInfo demux;
+    AviDemuxPacket packet;
+    int result;
+    if (!file || !offset || !size || *offset > LONG_MAX ||
+        avi.movi_start > LONG_MAX || avi.movi_end > LONG_MAX)
+        return H263_3GP_ERR_ARGUMENT;
+    memset(&demux, 0, sizeof(demux));
+    demux.video.stream_index = avi.video_stream;
+    demux.audio.stream_index = avi.audio_stream;
+    demux.movi_start = (long)avi.movi_start;
+    demux.movi_end = (long)avi.movi_end;
+    if (!seekFile(file, *offset)) return H263_3GP_ERR_IO;
+    result = avi_demux_next_packet(
+        file, &demux,
+        video ? AVI_DEMUX_PACKET_VIDEO : AVI_DEMUX_PACKET_AUDIO,
+        &packet);
+    if (result == AVI_DEMUX_EOF) return H263_3GP_EOF;
+    if (result == AVI_DEMUX_ERR_IO) return H263_3GP_ERR_IO;
+    if (result == AVI_DEMUX_ERR_RANGE) return H263_3GP_ERR_UNSUPPORTED;
+    if (result != AVI_DEMUX_OK) return H263_3GP_ERR_FORMAT;
+    *offset = (uint64_t)packet.next_offset;
+    *size = packet.payload_size;
+    return H263_3GP_OK;
 }
 
 static int parseMediaHeader(FILE *file, Box mdhd, H2633gpInfo *info) {
@@ -1601,7 +1550,8 @@ int h263_avi_pcm_reader_open_from_decoder(
 int h263_avi_pcm_reader_decode_next(H263AviPcmReader *reader, FILE *file,
                                     H263AviPcmFrame *frame) {
     if (!reader || !file || !frame ||
-        reader->info.container != H263_CONTAINER_AVI) {
+        reader->info.container != H263_CONTAINER_AVI ||
+        reader->info.audio_format_tag != 1U) {
         return H263_3GP_ERR_ARGUMENT;
     }
     memset(frame, 0, sizeof(*frame));
@@ -1730,6 +1680,18 @@ static void advanceVideoSample(H2633gpDecoder *decoder, uint32_t size,
     } else if (frame_type == MP4_P_FRAME) {
         H263_PROFILE_COUNT(decoder, p_frames, 1);
     }
+}
+
+int h263_avi_audio_reader_next_chunk(H263AviPcmReader *reader, FILE *file,
+                                     uint32_t *payload_size) {
+    if (!reader || !file || !payload_size ||
+        reader->info.container != H263_CONTAINER_AVI ||
+        reader->chunk_remaining) {
+        return H263_3GP_ERR_ARGUMENT;
+    }
+    *payload_size = 0;
+    return nextAviPayload(file, reader->avi, false,
+                          &reader->avi.next_audio_offset, payload_size);
 }
 
 int h263_3gp_decoder_decode_next_catchup(

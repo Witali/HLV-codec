@@ -1789,6 +1789,18 @@ int prefetchAmrNbAudioFrame() {
 
 int prefetchH263AviPcmFrame() {
     if (!h263_avi_audio_reader) return H263_3GP_ERR_FORMAT;
+    if (audio_output_codec == HLV1_AUDIO_IMA_ADPCM) {
+        uint32_t payload_size = 0;
+        const int result = h263_avi_audio_reader_next_chunk(
+            h263_avi_audio_reader, audio_file, &payload_size);
+        if (result != H263_3GP_OK) return result;
+        const int audio_result = prefetchImaWavAudioChunk(
+            payload_size, h263_info.audio_block_align);
+        if (audio_result != HLV1_OK) return audio_result;
+        if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR))
+            return H263_3GP_ERR_IO;
+        return H263_3GP_OK;
+    }
     H263AviPcmFrame frame{};
     const int result = h263_avi_pcm_reader_decode_next(
         h263_avi_audio_reader, audio_file, &frame);
@@ -2091,9 +2103,19 @@ bool prepareAudio(const HLV1Header &header) {
                 audio_info.frame_count != header.frame_count ||
                 audio_info.audio_sample_rate !=
                     header.audio_sample_rate ||
+                audio_info.audio_format_tag !=
+                    h263_info.audio_format_tag ||
+                audio_info.audio_block_align !=
+                    h263_info.audio_block_align ||
+                audio_info.audio_samples_per_block !=
+                    h263_info.audio_samples_per_block ||
                 audio_info.audio_channels != 1 ||
-                (audio_info.audio_bits_per_sample != 8 &&
-                 audio_info.audio_bits_per_sample != 16)) {
+                (audio_info.audio_format_tag == 0x11
+                     ? header.audio_codec != HLV1_AUDIO_IMA_ADPCM ||
+                           audio_info.audio_bits_per_sample != 4
+                     : header.audio_codec != HLV1_AUDIO_PCM_U8 ||
+                           (audio_info.audio_bits_per_sample != 8 &&
+                            audio_info.audio_bits_per_sample != 16))) {
                 stopAudio();
                 return false;
             }
@@ -3074,7 +3096,9 @@ bool openVideo() {
         sequence_header.frame_count = 0;
         if (audio_sample_rate > 0 && audio_sample_rate <= UINT16_MAX) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_codec =
+                h263_info.audio_format_tag == 0x11
+                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 static_cast<uint16_t>(audio_sample_rate);
             sequence_header.audio_channels = 1;
@@ -3159,7 +3183,7 @@ bool openVideo() {
         }
         ESP_LOGI(kTag,
                  "%s/%s: %ux%u, %u/%u fps, %u frames, "
-                 "profile=%u level=%u, audio=%u Hz/%u-bit, "
+                 "profile=%u level=%u, audio=%s %u Hz/%u-bit, "
                  "decoder=%u bytes",
                  packetVideoCodecName(video_codec),
                  h263_info.container == H263_CONTAINER_AVI
@@ -3169,6 +3193,8 @@ bool openVideo() {
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
                  h263_info.profile, h263_info.level,
+                 sequence_header.audio_codec == HLV1_AUDIO_IMA_ADPCM
+                     ? "IMA_ADPCM" : "PCM",
                  sequence_header.audio_sample_rate,
                  h263_info.container == H263_CONTAINER_AVI
                      ? h263_info.audio_bits_per_sample

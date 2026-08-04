@@ -9,9 +9,9 @@ audio, active per-GOP palettes and unified RAW blocks, and the
 constrained MPEG-1 Video/MP2 profile up to 320x240. It also
 supports baseline H.263 at `176x144` QCIF or intra-only baseline `352x288`
 CIF, with
-optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
+optional 8 kHz mono AMR-NB audio in 3GP or WAV IMA ADPCM audio in AVI.
 MPEG-4 Part 2 Simple Profile is supported at `320x240` in M4S2 AVI with I/P
-pictures and the same optional AVI PCM audio.
+pictures and the same optional AVI IMA audio.
 
 The audio output is configured anew from each opened file's sample rate. PDM
 playback accepts 8–48 kHz, including 22.05, 44.1 and 48 kHz; playlist items do not
@@ -26,7 +26,7 @@ New project H.263 assets use only baseline H.263 in AVI at standard QCIF
 `176x144` or CIF `352x288`, always at the full source frame rate. Legacy
 3GP/AMR-NB remains a decoder-only compatibility path for those same standard
 geometries; all H.263+ custom-size modes are rejected. AVI's
-interleaved video and PCM chunks are streamed without retaining an index in
+interleaved video and audio chunks are streamed without retaining an index in
 RAM; the legacy 3GP reader's sample-size and chunk-offset tables consume memory
 proportional to the number of samples.
 
@@ -41,10 +41,12 @@ The only application components are:
 - `main`: ST7789 SPI2 DMA, microSD SPI3 DMA, I2S PDM audio and player;
 - `hlv1`: a vendored decoder-only snapshot of the portable HLV codec;
 - `bpv1`: the shared portable BPV decoder from `codecs/bpv`;
-- `divx3`: the shared portable Microsoft MPEG-4 v3 decoder and AVI reader;
+- `avi_demux`: the one shared C99 RIFF/AVI parser and packet router used by
+  MJPEG, DivX 3, H.263 and MPEG-4 SP;
+- `divx3`: the portable Microsoft MPEG-4 v3 video decoder;
 - `pl_mpeg`: the pinned MPEG-PS, MPEG-1 Video and MP2 decoder.
-- `h263_3gp`: the shared bounded-table 3GP/AVI demultiplexer, streaming AVI
-  PCM reader, and PacketVideo H.263 decoder from `codecs/h263`.
+- `h263_3gp`: the bounded-table 3GP demultiplexer, AVI stream adapter, and
+  PacketVideo H.263/MPEG-4 SP decoder from `codecs/h263`.
 - `amrnb_3gp`: the companion `samr` demultiplexer and PacketVideo AMR-NB
   decoder from `codecs/amrnb`.
 

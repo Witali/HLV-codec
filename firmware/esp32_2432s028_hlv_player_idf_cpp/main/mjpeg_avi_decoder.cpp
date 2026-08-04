@@ -1,5 +1,7 @@
 #include "mjpeg_avi_decoder.hpp"
 
+#include "avi_demux.h"
+
 #include <algorithm>
 #include <climits>
 #include <cstring>
@@ -108,19 +110,6 @@ constexpr uint32_t fourcc(char a, char b, char c, char d) {
            (static_cast<uint32_t>(static_cast<uint8_t>(d)) << 24);
 }
 
-uint16_t readLe16(const uint8_t *bytes) {
-    return static_cast<uint16_t>(
-        static_cast<uint16_t>(bytes[0]) |
-        (static_cast<uint16_t>(bytes[1]) << 8));
-}
-
-uint32_t readLe32(const uint8_t *bytes) {
-    return static_cast<uint32_t>(bytes[0]) |
-           (static_cast<uint32_t>(bytes[1]) << 8) |
-           (static_cast<uint32_t>(bytes[2]) << 16) |
-           (static_cast<uint32_t>(bytes[3]) << 24);
-}
-
 bool seekAbsolute(FILE *file, long position);
 
 bool readExact(FILE *file, void *buffer, size_t size) {
@@ -149,6 +138,9 @@ bool seekAbsolute(FILE *file, long position) {
     return false;
 }
 
+// Retained temporarily for source-history comparison; the only compiled AVI
+// parser and packet walker is codecs/common/src/avi_demux.c.
+#if 0
 bool skipChunk(FILE *file, long data_start, uint32_t size) {
     const uint64_t end = static_cast<uint64_t>(data_start) + size +
                          (size & 1U);
@@ -346,39 +338,27 @@ int scanIndex(FILE *file, long data_start, uint32_t size,
     }
     return MJPEG_AVI_OK;
 }
+#endif
 
 int nextPayload(FILE *file, const MjpegAviInfo &info, bool video,
                 uint32_t *size) {
+    AviDemuxInfo demux{};
+    AviDemuxPacket packet{};
     if (!file || !size) return MJPEG_AVI_ERR_ARGUMENT;
-    for (;;) {
-        const long position = std::ftell(file);
-        if (position < 0) return MJPEG_AVI_ERR_IO;
-        if (position >= info.movi_end) return MJPEG_AVI_EOF;
-
-        uint32_t id = 0;
-        long data_start = 0;
-        if (!readChunkHeader(file, &id, size, &data_start)) {
-            return std::feof(file) ? MJPEG_AVI_EOF
-                                   : MJPEG_AVI_ERR_IO;
-        }
-        if (id == fourcc('L', 'I', 'S', 'T')) {
-            uint8_t list_type[4];
-            if (*size < 4 ||
-                !readExact(file, list_type, sizeof list_type))
-                return MJPEG_AVI_ERR_FORMAT;
-            // LIST "rec " contains ordinary stream chunks. Continue at its
-            // first child instead of skipping the complete list.
-            if (readLe32(list_type) == fourcc('r', 'e', 'c', ' '))
-                continue;
-        }
-
-        const bool wanted =
-            video ? isVideoChunk(id, info.video_stream)
-                  : isAudioChunk(id, info.audio_stream);
-        if (wanted) return MJPEG_AVI_OK;
-        if (!skipChunk(file, data_start, *size))
-            return MJPEG_AVI_ERR_IO;
-    }
+    demux.video.stream_index = info.video_stream;
+    demux.audio.stream_index = info.audio_stream;
+    demux.movi_start = info.movi_start;
+    demux.movi_end = info.movi_end;
+    const int result = avi_demux_next_packet(
+        file, &demux,
+        video ? AVI_DEMUX_PACKET_VIDEO : AVI_DEMUX_PACKET_AUDIO,
+        &packet);
+    if (result == AVI_DEMUX_EOF) return MJPEG_AVI_EOF;
+    if (result == AVI_DEMUX_ERR_IO) return MJPEG_AVI_ERR_IO;
+    if (result == AVI_DEMUX_ERR_RANGE) return MJPEG_AVI_ERR_RANGE;
+    if (result != AVI_DEMUX_OK) return MJPEG_AVI_ERR_FORMAT;
+    *size = packet.payload_size;
+    return MJPEG_AVI_OK;
 }
 
 }  // namespace
@@ -404,65 +384,52 @@ const char *mjpeg_avi_strerror(int result) {
 int mjpeg_avi_read_info(FILE *file, MjpegAviInfo *info) {
     if (!file || !info) return MJPEG_AVI_ERR_ARGUMENT;
     *info = {};
-    if (!seekAbsolute(file, 0)) return MJPEG_AVI_ERR_IO;
-
-    uint8_t riff[12];
-    if (!readExact(file, riff, sizeof riff)) return MJPEG_AVI_ERR_IO;
-    if (readLe32(riff) != fourcc('R', 'I', 'F', 'F') ||
-        readLe32(riff + 8) != fourcc('A', 'V', 'I', ' '))
+    AviDemuxInfo demux{};
+    const int result = avi_demux_read_info(file, &demux);
+    if (result == AVI_DEMUX_ERR_IO) return MJPEG_AVI_ERR_IO;
+    if (result == AVI_DEMUX_ERR_RANGE) return MJPEG_AVI_ERR_RANGE;
+    if (result != AVI_DEMUX_OK) return MJPEG_AVI_ERR_FORMAT;
+    if ((demux.video.handler_fourcc != fourcc('M', 'J', 'P', 'G') &&
+         demux.video.handler_fourcc != fourcc('m', 'j', 'p', 'g')) ||
+        (demux.video.compression_fourcc != fourcc('M', 'J', 'P', 'G') &&
+         demux.video.compression_fourcc != fourcc('m', 'j', 'p', 'g')) ||
+        !demux.video.rate || !demux.video.scale)
         return MJPEG_AVI_ERR_FORMAT;
-    const uint32_t riff_size = readLe32(riff + 4);
-    const uint64_t riff_end64 = 8ULL + riff_size;
-    if (riff_end64 > LONG_MAX || riff_end64 < 12)
-        return MJPEG_AVI_ERR_RANGE;
-    const long riff_end = static_cast<long>(riff_end64);
 
-    while (std::ftell(file) >= 0 && std::ftell(file) + 8 <= riff_end) {
-        uint32_t id = 0;
-        uint32_t size = 0;
-        long data_start = 0;
-        if (!readChunkHeader(file, &id, &size, &data_start))
-            return MJPEG_AVI_ERR_IO;
-        const uint64_t data_end =
-            static_cast<uint64_t>(data_start) + size;
-        if (data_end > static_cast<uint64_t>(riff_end))
+    info->width = demux.video.width;
+    info->height = demux.video.height;
+    info->fps_num = demux.video.rate;
+    info->fps_den = demux.video.scale;
+    info->frame_count = demux.video.frame_count
+                            ? demux.video.frame_count
+                            : demux.main_frame_count;
+    info->max_video_frame_size = demux.video.max_packet_size;
+    info->video_stream = demux.video.stream_index;
+    info->audio_stream = AVI_DEMUX_NO_STREAM;
+    info->movi_start = demux.movi_start;
+    info->movi_end = demux.movi_end;
+
+    const AviDemuxAudioInfo &audio = demux.audio;
+    if (audio.stream_index != AVI_DEMUX_NO_STREAM) {
+        if (audio.channels != 1 || !audio.sample_rate ||
+            (audio.format_tag == 1
+                 ? audio.bits_per_sample != 8 || audio.block_align != 1
+                 : audio.format_tag != 0x11 ||
+                       audio.bits_per_sample != 4 ||
+                       audio.sample_rate > 48000 || audio.extra_size < 2 ||
+                       ima_adpcm_wav_mono_sample_count(audio.block_align) !=
+                           audio.samples_per_block))
             return MJPEG_AVI_ERR_FORMAT;
-
-        if (id == fourcc('L', 'I', 'S', 'T')) {
-            uint8_t list_type[4];
-            if (size < 4 || !readExact(file, list_type, sizeof list_type))
-                return MJPEG_AVI_ERR_FORMAT;
-            const uint32_t type = readLe32(list_type);
-            if (type == fourcc('h', 'd', 'r', 'l')) {
-                const int result = parseHeaderList(
-                    file, data_start + static_cast<long>(size), info);
-                if (result != MJPEG_AVI_OK) return result;
-            } else if (type == fourcc('m', 'o', 'v', 'i')) {
-                info->movi_start = std::ftell(file);
-                info->movi_end =
-                    data_start + static_cast<long>(size);
-            }
-        } else if (id == fourcc('i', 'd', 'x', '1') &&
-                   info->video_stream != 0xff) {
-            const int result = scanIndex(file, data_start, size, info);
-            if (result != MJPEG_AVI_OK) return result;
-        }
-        if (!skipChunk(file, data_start, size))
-            return MJPEG_AVI_ERR_IO;
+        info->audio_format_tag = audio.format_tag;
+        info->audio_block_align = audio.block_align;
+        info->audio_samples_per_block =
+            audio.format_tag == 1 ? 1 : audio.samples_per_block;
+        info->audio_channels = static_cast<uint8_t>(audio.channels);
+        info->audio_sample_rate = audio.sample_rate;
+        info->audio_bits_per_sample =
+            static_cast<uint8_t>(audio.bits_per_sample);
+        info->audio_stream = audio.stream_index;
     }
-
-    if (info->video_stream == 0xff || !info->width || !info->height ||
-        !info->fps_num || !info->fps_den || !info->movi_start ||
-        info->movi_end <= info->movi_start)
-        return MJPEG_AVI_ERR_FORMAT;
-    if (info->audio_stream != 0xff &&
-        (info->audio_channels != 1 ||
-         (info->audio_format_tag == 1
-              ? info->audio_bits_per_sample != 8
-              : info->audio_format_tag != 0x11 ||
-                    info->audio_bits_per_sample != 4) ||
-         !info->audio_sample_rate))
-        return MJPEG_AVI_ERR_FORMAT;
     if (!info->max_video_frame_size)
         info->max_video_frame_size = kFallbackFrameBytes;
     if (info->max_video_frame_size > kMaximumFrameBytes)

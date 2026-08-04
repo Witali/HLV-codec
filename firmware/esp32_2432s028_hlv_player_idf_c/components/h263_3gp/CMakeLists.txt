@@ -34,6 +34,7 @@ idf_component_register(
     PRIV_INCLUDE_DIRS
         "${PV_ROOT}/src"
     REQUIRES
+        avi_demux
         compact_yuv420
 )
 

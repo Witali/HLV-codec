@@ -29,7 +29,7 @@ function Find-WorktreeFile {
 
 if (-not $InputFile) {
     $InputFile = Find-WorktreeFile (
-        "out\BigBuckBunny_1080p_divx3_q4_12fps_320x240.avi"
+        "out\DivX3\BigBuckBunny_320x240_12fps_DivX3_41dB.avi"
     )
 }
 if (-not $InputFile -or -not (Test-Path -LiteralPath $InputFile)) {

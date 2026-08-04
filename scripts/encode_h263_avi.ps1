@@ -172,6 +172,7 @@ else {
 }
 
 $audioNormalization = $null
+$audioRate = 0
 if (-not $NoAudio) {
     $audioIndex = & $ffprobe -v error -select_streams a:0 `
         -show_entries stream=index -of csv=p=0 $InputFile |
@@ -180,10 +181,12 @@ if (-not $NoAudio) {
         throw "FFprobe audio inspection failed."
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$audioIndex)) {
+        $audioRate = Get-PrimaryAudioSampleRate `
+            -Ffprobe $ffprobe -InputFile $InputFile
         $audioNormalization = Get-PeakSafeAudioFilter `
             -Ffmpeg $ffmpeg `
             -InputFile $InputFile `
-            -Rate 8000
+            -Rate $audioRate
     }
 }
 
@@ -221,14 +224,14 @@ if ($isCif) {
 if ($MaxFrames) {
     $arguments += @("-frames:v", $MaxFrames)
 }
-if ($NoAudio) {
+if ($NoAudio -or -not $audioNormalization) {
     $arguments += "-an"
 }
 else {
     $arguments += @(
         "-map", "0:a:0?",
-        "-c:a", "pcm_s16le",
-        "-ar", "8000",
+        "-c:a", "adpcm_ima_wav",
+        "-ar", "$audioRate",
         "-ac", "1"
     )
     if ($audioNormalization) {
@@ -262,7 +265,7 @@ Write-Host (
         "video only"
     }
     else {
-        "PCM S16LE mono 8 kHz"
+        "IMA ADPCM mono $audioRate Hz"
     })
 )
 & $ffmpeg @arguments
@@ -305,10 +308,10 @@ if ($audio.Count -gt 1) {
     throw "Output unexpectedly contains more than one audio track."
 }
 if ($audio.Count -eq 1 -and
-    ($audio[0].codec_name -ne "pcm_s16le" -or
-     $audio[0].sample_rate -ne "8000" -or
+    ($audio[0].codec_name -ne "adpcm_ima_wav" -or
+     $audio[0].sample_rate -ne "$audioRate" -or
      $audio[0].channels -ne 1)) {
-    throw "Output audio is not PCM S16LE mono 8 kHz."
+    throw "Output audio is not IMA ADPCM mono $audioRate Hz."
 }
 
 Write-Host "Decoding the complete H.263/AVI file with FFmpeg..."

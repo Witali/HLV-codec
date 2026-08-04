@@ -12,16 +12,17 @@ The legacy-compatible decoder profiles are intentionally bounded:
   `M4S2` FourCC, no B pictures, data partitioning, reverse VLC or scalability;
 - profile 0 in the `d263` sample description;
 - YUV 4:2:0 output;
-- AMR-NB mono audio at 8 kHz in 3GP, or PCM S16LE mono at 8 kHz in AVI;
+- AMR-NB mono audio at 8 kHz in 3GP, or mono WAV IMA ADPCM at 8–48 kHz in
+  AVI; legacy PCM mono at 8 kHz remains readable;
 - no B pictures and no resolution changes.
 
 The demultiplexer reads `stsz`, `stco`/`co64`, `stsc`, and `stts` tables.
 Sample sizes and chunk offsets are cached when a 3GP file is opened, removing
-two random SD seeks from every decoded frame. AVI video and PCM remain
+two random SD seeks from every decoded frame. AVI video and audio remain
 sequential streams through independent file cursors.
 
-The AVI path scans RIFF headers and `idx1` without retaining per-frame state.
-Video and PCM are then read sequentially through independent file cursors.
+The common C99 AVI demultiplexer scans RIFF headers without retaining a chunk
+index. Video and audio are then read sequentially through independent cursors.
 Zero-sized timing chunks emitted by some AVI muxing paths are skipped.
 
 `third_party/pv` is the Apache-2.0 PacketVideo decoder from AOSP. See
@@ -70,8 +71,8 @@ it does not expose an FPS override or a half-rate mode. Sources above 30 fps
 are rejected. `-FitMode Crop` fills the 4:3 frame and crops equal margins;
 `-FitMode Contain` retains the complete source with black padding. Fitting is
 performed at source resolution before one Lanczos downscale to the complete
-QCIF/CIF frame. AVI uses the `H263` FourCC and optional PCM S16LE mono audio at
-8 kHz. CIF is intra-only for the bounded ESP32 memory profile. Set
+QCIF/CIF frame. AVI uses the `H263` FourCC and optional source-rate mono WAV
+IMA ADPCM audio up to 48 kHz. CIF is intra-only for the bounded ESP32 memory profile. Set
 `-VideoQuality 1` for the highest constant-quantizer quality, or leave it at
 zero to use the profile's bitrate and VBV defaults.
 

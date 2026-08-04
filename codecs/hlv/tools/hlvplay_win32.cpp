@@ -841,6 +841,66 @@ bool submit_packet_audio(AudioOutput &output, uint8_t codec,
                          decoded_count * sizeof samples[0], error);
 }
 
+int decode_h263_avi_audio_chunk(H263AviPcmReader *reader, FILE *file,
+                                const H2633gpInfo &info,
+                                std::vector<uint8_t> &pcm,
+                                size_t &sample_count) {
+    pcm.clear();
+    sample_count = 0;
+    if (info.audio_format_tag == 1U) {
+        H263AviPcmFrame frame = {};
+        const int result =
+            h263_avi_pcm_reader_decode_next(reader, file, &frame);
+        if (result != H263_3GP_OK) return result;
+        pcm.assign(frame.samples, frame.samples + frame.sample_count);
+        sample_count = frame.sample_count;
+        return H263_3GP_OK;
+    }
+    if (info.audio_format_tag != 0x11U || !info.audio_block_align ||
+        info.audio_block_align > H263_AVI_IMA_MAX_BLOCK_BYTES) {
+        return H263_3GP_ERR_FORMAT;
+    }
+
+    uint32_t payload_size = 0;
+    int result = h263_avi_audio_reader_next_chunk(reader, file,
+                                                   &payload_size);
+    if (result != H263_3GP_OK) return result;
+    if (!payload_size || payload_size % info.audio_block_align) {
+        return H263_3GP_ERR_FORMAT;
+    }
+    std::vector<uint8_t> encoded(payload_size);
+    if (std::fread(encoded.data(), 1, encoded.size(), file) !=
+        encoded.size()) {
+        return H263_3GP_ERR_IO;
+    }
+
+    const size_t samples_per_block =
+        ima_adpcm_wav_mono_sample_count(info.audio_block_align);
+    if (!samples_per_block ||
+        samples_per_block != info.audio_samples_per_block) {
+        return H263_3GP_ERR_FORMAT;
+    }
+    const size_t block_count = payload_size / info.audio_block_align;
+    std::vector<int16_t> decoded(samples_per_block);
+    pcm.reserve(block_count * samples_per_block * sizeof(int16_t));
+    for (size_t block = 0; block < block_count; ++block) {
+        size_t decoded_count = 0;
+        if (ima_adpcm_decode_wav_mono_block(
+                encoded.data() + block * info.audio_block_align,
+                info.audio_block_align, decoded.data(), decoded.size(),
+                &decoded_count) ||
+            decoded_count != samples_per_block) {
+            return H263_3GP_ERR_DECODE;
+        }
+        const uint8_t *bytes =
+            reinterpret_cast<const uint8_t *>(decoded.data());
+        pcm.insert(pcm.end(), bytes,
+                   bytes + decoded_count * sizeof(decoded[0]));
+        sample_count += decoded_count;
+    }
+    return H263_3GP_OK;
+}
+
 struct SeekIndexEntry {
     __int64 packet_offset = 0;
     uint64_t keyframe_index = 0;
@@ -976,7 +1036,7 @@ public:
                 h263_info_.audio_sample_rate) {
                 if (_wfopen_s(&h263_audio_file_, path.c_str(), L"rb") != 0 ||
                     !h263_audio_file_) {
-                    return fail(L"Cannot open the AVI PCM audio track");
+                    return fail(L"Cannot open the AVI audio track");
                 }
                 h263_avi_audio_reader_ =
                     h263_avi_pcm_reader_create();
@@ -988,12 +1048,15 @@ public:
                               h263_audio_file_, &audio_info)
                         : H263_3GP_ERR_MEMORY;
                 if (audio_result != H263_3GP_OK) {
-                    return fail(L"Invalid PCM/AVI audio: " +
+                    return fail(L"Invalid AVI audio: " +
                                 widen_ascii(
                                     h263_3gp_strerror(audio_result)));
                 }
                 header_.flags = HLV1_FLAG_AUDIO;
-                header_.audio_codec = HLV1_AUDIO_PCM_U8;
+                header_.audio_codec =
+                    audio_info.audio_format_tag == 0x11U
+                        ? HLV1_AUDIO_IMA_ADPCM
+                        : HLV1_AUDIO_PCM_U8;
                 header_.audio_sample_rate =
                     static_cast<uint16_t>(
                         audio_info.audio_sample_rate);
@@ -1671,7 +1734,7 @@ private:
                 h263_avi_audio_reader_ = nullptr;
                 if (!h263_audio_file_ ||
                     _fseeki64(h263_audio_file_, 0, SEEK_SET) != 0) {
-                    error_ = L"Cannot rewind the PCM/AVI audio track";
+                    error_ = L"Cannot rewind the AVI audio track";
                     return false;
                 }
                 H2633gpInfo audio_info = {};
@@ -1685,9 +1748,11 @@ private:
                         : H263_3GP_ERR_MEMORY;
                 if (audio_result != H263_3GP_OK ||
                     audio_info.audio_sample_rate !=
-                        h263_info_.audio_sample_rate) {
+                        h263_info_.audio_sample_rate ||
+                    audio_info.audio_format_tag !=
+                        h263_info_.audio_format_tag) {
                     error_ =
-                        L"Cannot reset the PCM/AVI reader for seeking";
+                        L"Cannot reset the AVI audio reader for seeking";
                     return false;
                 }
                 amrnb_audio_samples_ = 0;
@@ -1846,26 +1911,23 @@ private:
                 }
                 while (amrnb_audio_samples_ < target_samples) {
                     if (h263_avi_audio_reader_) {
-                        H263AviPcmFrame audio_frame = {};
-                        const int audio_result =
-                            h263_avi_pcm_reader_decode_next(
-                                h263_avi_audio_reader_,
-                                h263_audio_file_, &audio_frame);
+                        std::vector<uint8_t> audio_chunk;
+                        size_t audio_sample_count = 0;
+                        const int audio_result = decode_h263_avi_audio_chunk(
+                            h263_avi_audio_reader_, h263_audio_file_,
+                            h263_info_, audio_chunk, audio_sample_count);
                         if (audio_result == H263_3GP_EOF) break;
                         if (audio_result != H263_3GP_OK) {
-                            error_ = L"PCM/AVI audio chunk failed: " +
+                            error_ = L"AVI audio chunk failed: " +
                                      widen_ascii(
                                          h263_3gp_strerror(
                                              audio_result));
                             return false;
                         }
-                        amrnb_audio_samples_ +=
-                            audio_frame.sample_count;
+                        amrnb_audio_samples_ += audio_sample_count;
                         if (queue_audio && audio_.active()) {
-                            pcm.insert(
-                                pcm.end(), audio_frame.samples,
-                                audio_frame.samples +
-                                    audio_frame.sample_count);
+                            pcm.insert(pcm.end(), audio_chunk.begin(),
+                                       audio_chunk.end());
                         }
                         continue;
                     }
@@ -2462,12 +2524,13 @@ int check_file(const wchar_t *path) {
                               audio_reader, audio_file, &audio_info)
                         : H263_3GP_ERR_MEMORY;
                 while (audio_result == H263_3GP_OK) {
-                    H263AviPcmFrame audio_frame = {};
-                    audio_result =
-                        h263_avi_pcm_reader_decode_next(
-                            audio_reader, audio_file, &audio_frame);
+                    std::vector<uint8_t> audio_chunk;
+                    size_t sample_count = 0;
+                    audio_result = decode_h263_avi_audio_chunk(
+                        audio_reader, audio_file, audio_info,
+                        audio_chunk, sample_count);
                     if (audio_result != H263_3GP_OK) break;
-                    audio_bytes += audio_frame.sample_count;
+                    audio_bytes += audio_chunk.size();
                 }
                 valid = valid && audio_result == H263_3GP_EOF;
                 h263_avi_pcm_reader_destroy(audio_reader);

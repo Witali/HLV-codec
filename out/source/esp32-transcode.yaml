@@ -138,8 +138,8 @@ formats:
     bFrames: 0
     pixelFormat: yuv420p
     threads: 6
-    audioCodec: pcm_s16le
-    audioSampleRate: 8000
+    audioCodec: adpcm_ima_wav
+    audioSampleRate: source
     audioChannels: 1
     profiles:
       QCIF:
@@ -177,8 +177,8 @@ formats:
     bFrames: 0
     pixelFormat: yuv420p
     threads: 6
-    audioCodec: pcm_s16le
-    audioSampleRate: 8000
+    audioCodec: adpcm_ima_wav
+    audioSampleRate: source
     audioChannels: 1
 
 videos:

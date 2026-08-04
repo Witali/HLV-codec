@@ -44,6 +44,7 @@ enum {
 };
 
 #define H263_AVI_PCM_MAX_SAMPLES 256
+#define H263_AVI_IMA_MAX_BLOCK_BYTES 2048
 
 typedef struct H2633gpInfo {
     uint16_t width;
@@ -55,6 +56,9 @@ typedef struct H2633gpInfo {
     uint32_t fps_num;
     uint32_t fps_den;
     uint32_t audio_sample_rate;
+    uint16_t audio_format_tag;
+    uint16_t audio_block_align;
+    uint16_t audio_samples_per_block;
     uint8_t profile;
     uint8_t level;
     uint8_t container;
@@ -119,7 +123,7 @@ void h263_3gp_decoder_set_output_row_guard(
  * Simple Profile uses 320x240 I/P pictures; its embedded path retains two
  * compact predictive/display frames rather than two full byte-planar
  * buffers. 3GP audio is handled by the companion AMR-NB decoder; AVI accepts
- * mono PCM at 8 kHz through the reader below.
+ * legacy mono PCM at 8 kHz or mono WAVE_FORMAT_IMA_ADPCM at 8..48 kHz.
  */
 int h263_3gp_decoder_open(H2633gpDecoder *decoder, FILE *file,
                           H2633gpInfo *info);
@@ -160,6 +164,12 @@ int h263_avi_pcm_reader_open_from_decoder(
     H2633gpInfo *info);
 int h263_avi_pcm_reader_decode_next(H263AviPcmReader *reader, FILE *file,
                                     H263AviPcmFrame *frame);
+
+/* Locate the next complete AVI audio chunk and leave file at its payload.
+ * This is used for bounded streaming decode of WAVE IMA blocks larger than
+ * the player's compressed refill buffer. PCM callers use decode_next(). */
+int h263_avi_audio_reader_next_chunk(H263AviPcmReader *reader, FILE *file,
+                                     uint32_t *payload_size);
 
 #ifdef __cplusplus
 }

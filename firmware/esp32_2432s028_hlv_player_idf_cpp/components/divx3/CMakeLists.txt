@@ -6,7 +6,7 @@ idf_component_register(
         "${DIVX3_ROOT}/src/divx3_avi.c"
     INCLUDE_DIRS
         "${DIVX3_ROOT}/include"
-    REQUIRES compact_yuv420 ima_adpcm
+    REQUIRES avi_demux compact_yuv420 ima_adpcm
 )
 
 set(DIVX3_IRAM_BITREADER ON CACHE BOOL

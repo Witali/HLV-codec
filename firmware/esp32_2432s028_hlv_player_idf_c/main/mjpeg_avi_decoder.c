@@ -1,5 +1,7 @@
 #include "mjpeg_avi_decoder.h"
 
+#include "avi_demux.h"
+
 #include <limits.h>
 #include <string.h>
 
@@ -45,24 +47,8 @@ static uint32_t fourcc(char a, char b, char c, char d) {
            ((uint32_t)(uint8_t)d << 24);
 }
 
-static uint16_t read_le16(const uint8_t *bytes) {
-    return (uint16_t)((uint16_t)bytes[0] |
-                      ((uint16_t)bytes[1] << 8));
-}
-
-static uint32_t read_le32(const uint8_t *bytes) {
-    return (uint32_t)bytes[0] |
-           ((uint32_t)bytes[1] << 8) |
-           ((uint32_t)bytes[2] << 16) |
-           ((uint32_t)bytes[3] << 24);
-}
-
 static size_t min_size(size_t left, size_t right) {
     return left < right ? left : right;
-}
-
-static uint32_t max_u32(uint32_t left, uint32_t right) {
-    return left > right ? left : right;
 }
 
 static uint16_t min_u16(uint16_t left, uint16_t right) {
@@ -201,6 +187,9 @@ static bool seek_absolute(FILE *file, long position) {
     return false;
 }
 
+/* Retained temporarily for source-history comparison; the only compiled AVI
+ * parser and packet walker is codecs/common/src/avi_demux.c. */
+#if 0
 static bool skip_chunk(FILE *file, long data_start, uint32_t size) {
     uint64_t end = (uint64_t)data_start + size + (size & 1U);
     return end <= LONG_MAX && seek_absolute(file, (long)end);
@@ -438,50 +427,32 @@ static int scan_index(FILE *file,
     }
     return MJPEG_AVI_OK;
 }
+#endif
 
 static int next_payload(FILE *file,
                         const mjpeg_avi_info_t *info,
                         bool video,
                         uint32_t *size) {
-    if (file == NULL || info == NULL || size == NULL) {
+    AviDemuxInfo demux;
+    AviDemuxPacket packet;
+    int result;
+    if (file == NULL || info == NULL || size == NULL)
         return MJPEG_AVI_ERR_ARGUMENT;
-    }
-    for (;;) {
-        long position = ftell(file);
-        uint32_t id = 0;
-        long data_start = 0;
-        bool wanted;
-        if (position < 0) {
-            return MJPEG_AVI_ERR_IO;
-        }
-        if (position >= info->movi_end) {
-            return MJPEG_AVI_EOF;
-        }
-        if (!read_chunk_header(file, &id, size, &data_start)) {
-            return feof(file) ? MJPEG_AVI_EOF : MJPEG_AVI_ERR_IO;
-        }
-        if (id == fourcc('L', 'I', 'S', 'T')) {
-            uint8_t list_type[4];
-            if (*size < 4U ||
-                !read_exact(file, list_type, sizeof list_type)) {
-                return MJPEG_AVI_ERR_FORMAT;
-            }
-            /* LIST "rec " contains ordinary stream chunks. */
-            if (read_le32(list_type) ==
-                fourcc('r', 'e', 'c', ' ')) {
-                continue;
-            }
-        }
-        wanted = video
-                     ? is_video_chunk(id, info->video_stream)
-                     : is_audio_chunk(id, info->audio_stream);
-        if (wanted) {
-            return MJPEG_AVI_OK;
-        }
-        if (!skip_chunk(file, data_start, *size)) {
-            return MJPEG_AVI_ERR_IO;
-        }
-    }
+    memset(&demux, 0, sizeof demux);
+    demux.video.stream_index = info->video_stream;
+    demux.audio.stream_index = info->audio_stream;
+    demux.movi_start = info->movi_start;
+    demux.movi_end = info->movi_end;
+    result = avi_demux_next_packet(
+        file, &demux,
+        video ? AVI_DEMUX_PACKET_VIDEO : AVI_DEMUX_PACKET_AUDIO,
+        &packet);
+    if (result == AVI_DEMUX_EOF) return MJPEG_AVI_EOF;
+    if (result == AVI_DEMUX_ERR_IO) return MJPEG_AVI_ERR_IO;
+    if (result == AVI_DEMUX_ERR_RANGE) return MJPEG_AVI_ERR_RANGE;
+    if (result != AVI_DEMUX_OK) return MJPEG_AVI_ERR_FORMAT;
+    *size = packet.payload_size;
+    return MJPEG_AVI_OK;
 }
 
 const char *mjpeg_avi_strerror(int result) {
@@ -500,91 +471,56 @@ const char *mjpeg_avi_strerror(int result) {
 }
 
 int mjpeg_avi_read_info(FILE *file, mjpeg_avi_info_t *info) {
-    uint8_t riff[12];
-    uint32_t riff_size;
-    uint64_t riff_end64;
-    long riff_end;
+    AviDemuxInfo demux;
+    const AviDemuxAudioInfo *audio;
+    int result;
 
-    if (file == NULL || info == NULL) {
-        return MJPEG_AVI_ERR_ARGUMENT;
-    }
+    if (file == NULL || info == NULL) return MJPEG_AVI_ERR_ARGUMENT;
     memset(info, 0, sizeof *info);
-    info->video_stream = 0xffU;
-    info->audio_stream = 0xffU;
-    if (!seek_absolute(file, 0)) {
-        return MJPEG_AVI_ERR_IO;
-    }
-    if (!read_exact(file, riff, sizeof riff)) {
-        return MJPEG_AVI_ERR_IO;
-    }
-    if (read_le32(riff) != fourcc('R', 'I', 'F', 'F') ||
-        read_le32(riff + 8) != fourcc('A', 'V', 'I', ' ')) {
+    info->video_stream = AVI_DEMUX_NO_STREAM;
+    info->audio_stream = AVI_DEMUX_NO_STREAM;
+    result = avi_demux_read_info(file, &demux);
+    if (result == AVI_DEMUX_ERR_IO) return MJPEG_AVI_ERR_IO;
+    if (result == AVI_DEMUX_ERR_RANGE) return MJPEG_AVI_ERR_RANGE;
+    if (result != AVI_DEMUX_OK) return MJPEG_AVI_ERR_FORMAT;
+    if ((demux.video.handler_fourcc != fourcc('M', 'J', 'P', 'G') &&
+         demux.video.handler_fourcc != fourcc('m', 'j', 'p', 'g')) ||
+        (demux.video.compression_fourcc != fourcc('M', 'J', 'P', 'G') &&
+         demux.video.compression_fourcc != fourcc('m', 'j', 'p', 'g')) ||
+        !demux.video.rate || !demux.video.scale) {
         return MJPEG_AVI_ERR_FORMAT;
     }
-    riff_size = read_le32(riff + 4);
-    riff_end64 = UINT64_C(8) + riff_size;
-    if (riff_end64 > LONG_MAX || riff_end64 < 12U) {
-        return MJPEG_AVI_ERR_RANGE;
-    }
-    riff_end = (long)riff_end64;
+    info->width = demux.video.width;
+    info->height = demux.video.height;
+    info->fps_num = demux.video.rate;
+    info->fps_den = demux.video.scale;
+    info->frame_count = demux.video.frame_count
+                            ? demux.video.frame_count
+                            : demux.main_frame_count;
+    info->max_video_frame_size = demux.video.max_packet_size;
+    info->video_stream = demux.video.stream_index;
+    info->movi_start = demux.movi_start;
+    info->movi_end = demux.movi_end;
 
-    while (ftell(file) >= 0 && ftell(file) + 8 <= riff_end) {
-        uint32_t id = 0;
-        uint32_t size = 0;
-        long data_start = 0;
-        uint64_t data_end;
-        if (!read_chunk_header(file, &id, &size, &data_start)) {
-            return MJPEG_AVI_ERR_IO;
-        }
-        data_end = (uint64_t)data_start + size;
-        if (data_end > (uint64_t)riff_end) {
+    audio = &demux.audio;
+    if (audio->stream_index != AVI_DEMUX_NO_STREAM) {
+        if (audio->channels != 1U || !audio->sample_rate ||
+            (audio->format_tag == 1U
+                 ? audio->bits_per_sample != 8U || audio->block_align != 1U
+                 : audio->format_tag != 0x11U ||
+                       audio->bits_per_sample != 4U ||
+                       audio->sample_rate > 48000U || audio->extra_size < 2U ||
+                       ima_adpcm_wav_mono_sample_count(audio->block_align) !=
+                           audio->samples_per_block))
             return MJPEG_AVI_ERR_FORMAT;
-        }
-        if (id == fourcc('L', 'I', 'S', 'T')) {
-            uint8_t list_type[4];
-            uint32_t type;
-            if (size < 4U ||
-                !read_exact(file, list_type, sizeof list_type)) {
-                return MJPEG_AVI_ERR_FORMAT;
-            }
-            type = read_le32(list_type);
-            if (type == fourcc('h', 'd', 'r', 'l')) {
-                int result = parse_header_list(
-                    file, data_start + (long)size, info);
-                if (result != MJPEG_AVI_OK) {
-                    return result;
-                }
-            } else if (type == fourcc('m', 'o', 'v', 'i')) {
-                info->movi_start = ftell(file);
-                info->movi_end = data_start + (long)size;
-            }
-        } else if (id == fourcc('i', 'd', 'x', '1') &&
-                   info->video_stream != 0xffU) {
-            int result = scan_index(file, data_start, size, info);
-            if (result != MJPEG_AVI_OK) {
-                return result;
-            }
-        }
-        if (!skip_chunk(file, data_start, size)) {
-            return MJPEG_AVI_ERR_IO;
-        }
-    }
-
-    if (info->video_stream == 0xffU ||
-        info->width == 0U || info->height == 0U ||
-        info->fps_num == 0U || info->fps_den == 0U ||
-        info->movi_start == 0 ||
-        info->movi_end <= info->movi_start) {
-        return MJPEG_AVI_ERR_FORMAT;
-    }
-    if (info->audio_stream != 0xffU &&
-        (info->audio_channels != 1U ||
-         (info->audio_format_tag == 1U
-              ? info->audio_bits_per_sample != 8U
-              : info->audio_format_tag != 0x11U ||
-                    info->audio_bits_per_sample != 4U) ||
-         info->audio_sample_rate == 0U)) {
-        return MJPEG_AVI_ERR_FORMAT;
+        info->audio_stream = audio->stream_index;
+        info->audio_format_tag = audio->format_tag;
+        info->audio_block_align = audio->block_align;
+        info->audio_samples_per_block =
+            audio->format_tag == 1U ? 1U : audio->samples_per_block;
+        info->audio_channels = (uint8_t)audio->channels;
+        info->audio_sample_rate = audio->sample_rate;
+        info->audio_bits_per_sample = (uint8_t)audio->bits_per_sample;
     }
     if (info->max_video_frame_size == 0U) {
         info->max_video_frame_size = FALLBACK_FRAME_BYTES;

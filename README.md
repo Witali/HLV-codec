@@ -42,7 +42,8 @@ in AVI at the standard `176x144` QCIF or `352x288` CIF picture size. The
 encoder preserves the full source frame rate and refuses sources above the
 supported 30 fps limit instead of silently halving their rate. It crops or
 pads to 4:3 at source resolution, performs one anti-aliased Lanczos downscale
-to the complete QCIF/CIF frame, and can add PCM S16LE mono audio at 8 kHz.
+to the complete QCIF/CIF frame, and can add mono WAV IMA ADPCM audio at the
+source rate up to 48 kHz. Legacy PCM S16LE mono at 8 kHz remains readable.
 CIF remains intra-only for the bounded ESP32 memory profile. The ESP32 displays
 the central `320x240` portion of CIF without scaling; the Windows Player shows
 the complete `352x288` frame.
@@ -194,9 +195,10 @@ from a FAT32 microSD card over an independent SPI3/VSPI DMA bus and displays
 it on the 320x240 ST7789 over SPI2 DMA. HLV/BPV IMA ADPCM is decoded directly
 to PCM16; legacy PCM_U8 and decoded MPEG MP2 share the same bounded queue and
 play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
-amplifier; GPIO22 carries the required PDM clock. AVI/H.263 PCM S16LE is
-converted to PCM_U8 while streaming. MJPEG and DivX 3 AVI also accept standard
-mono WAV IMA ADPCM; each 1024-byte block is expanded directly into the bounded
+amplifier; GPIO22 carries the required PDM clock. All four AVI video codecs
+use one C99 RIFF/AVI demultiplexer, which routes encoded video and audio chunks
+without decoding either payload. Legacy AVI PCM remains readable; production
+AVI audio uses mono WAV IMA ADPCM. Each 1024-byte block expands into the bounded
 PCM16 queue through a 128-byte compressed refill buffer. The BPV1 path keeps
 two compact 9-byte block-record frames. MJPEG converts each decoded MCU row
 into one 16-row RGB565 strip. Both paths render through the existing display
@@ -242,14 +244,14 @@ Create a standard CIF H.263 AVI from the required 1080p MOV source:
 .\scripts\encode_big_buck_bunny_h263_avi.ps1
 ```
 
-Create a baseline CIF H.263 AVI with PCM S16LE audio from any source:
+Create a baseline CIF H.263 AVI with source-rate IMA ADPCM audio:
 
 ```powershell
 .\scripts\encode_h263_avi.ps1 `
     -InputFile .\input.mp4 -Profile 352x288
 ```
 
-Create a `320x240` MPEG-4 Simple Profile M4S2 AVI with PCM S16LE audio:
+Create a `320x240` MPEG-4 Simple Profile M4S2 AVI with source-rate IMA ADPCM:
 
 ```powershell
 .\scripts\encode_mpeg4_simple_avi.ps1 -InputFile .\input.mp4

@@ -217,6 +217,7 @@ elseif(MJPEG_QEMU_BENCHMARK)
             espressif__esp_new_jpeg
             freertos
             heap
+            avi_demux
             ima_adpcm
             log
             vfs
@@ -322,6 +323,7 @@ elseif(DIVX3_QEMU_BENCHMARK)
             esp_system
             freertos
             heap
+            avi_demux
             ima_adpcm
             log
             vfs
@@ -367,6 +369,7 @@ else()
             divx3
             h263_3gp
             hlv1
+            avi_demux
             ima_adpcm
             esp_driver_i2s
             esp_driver_gpio

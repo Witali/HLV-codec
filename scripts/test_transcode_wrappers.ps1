@@ -136,12 +136,12 @@ try {
         -Entries "codec_name,codec_tag_string,r_frame_rate" `
         -Expected "(?s)msmpeg4v3.*DIV3.*15/1"
     Assert-NormalizedAudio -File (Join-Path $work "h263.avi") `
-        -Codec "pcm_s16le" -Rate 8000
+        -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
     Assert-NormalizedAudio -File (Join-Path $work "mpeg4-simple.avi") `
-        -Codec "pcm_s16le" -Rate 8000
+        -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
     Assert-NormalizedAudio `
         -File (Join-Path $work "mpeg4-simple-esp32-speed.avi") `
-        -Codec "pcm_s16le" -Rate 8000
+        -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
     Assert-NormalizedAudio -File (Join-Path $work "mjpeg.avi") `
         -Codec "adpcm_ima_wav" -Rate 48000 -PeakToleranceDb 1.0
     Assert-NormalizedAudio -File (Join-Path $work "mpeg1.mpg") `
