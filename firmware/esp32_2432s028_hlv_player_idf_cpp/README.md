@@ -782,8 +782,11 @@ Its modeled-device inventory and known accuracy limits are recorded in
   At 320x240 the QEMU decoder reports 193,880 bytes including PacketVideo
   tables, the 4 KiB refill buffer and container state.
 - Scheduling: one 4 KiB CPU1 decoder task, one high-priority CPU1 audio reader
-  with a static 2.5 KiB stack for MPEG MP2, a measured 4 KiB stack for HLV PCM
-  or 6 KiB for the other container and compressed-audio paths, and two
+  using one reusable static 6 KiB backing stack. MPEG MP2 activates 2.5 KiB of
+  it, HLV PCM activates the measured 4 KiB, and the other container and
+  compressed-audio paths activate all 6 KiB. The static task remains
+  synchronizable until the controller deletes it, avoiding deferred dynamic
+  stack reclamation and heap fragmentation across repeated playback. Two
   one-entry decode queues for HLV, BPV,
   MPEG-1, H.263 or DivX 3. MJPEG uses the sequential CPU0 path. Only frame
   descriptors cross cores in the pipelined paths, so no frame or packet

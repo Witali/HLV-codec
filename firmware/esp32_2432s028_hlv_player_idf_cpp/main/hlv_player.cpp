@@ -219,6 +219,9 @@ static_assert(CONFIG_FREERTOS_NUMBER_OF_CORES >= 2 ||
               "Dual-core playback requires a two-core FreeRTOS build");
 static_assert(player_settings::kKeyframeCatchupLateFrames > 0,
               "Keyframe catch-up needs a positive late-frame threshold");
+static_assert(kHlvAudioReaderStackBytes <= kAudioReaderStackBytes &&
+                  kMpegAudioReaderStackBytes <= kAudioReaderStackBytes,
+              "The shared static audio-reader stack must fit every codec");
 
 enum class VideoCodec {
     kNone,
@@ -445,12 +448,11 @@ alignas(4) uint8_t audio_stream_storage[kAudioStreamStorageBytes];
 alignas(4) uint8_t audio_dma_samples[kAudioDmaBufferBytes];
 i2s_chan_handle_t audio_pdm = nullptr;
 TaskHandle_t audio_reader_task_handle = nullptr;
-StaticTask_t mpeg_audio_reader_task_state{};
-StackType_t mpeg_audio_reader_task_stack[
-    (kMpegAudioReaderStackBytes + sizeof(StackType_t) - 1U) /
+StaticTask_t audio_reader_task_state{};
+StackType_t audio_reader_task_stack[
+    (kAudioReaderStackBytes + sizeof(StackType_t) - 1U) /
     sizeof(StackType_t)]{};
-volatile bool mpeg_audio_reader_task_finished = true;
-volatile bool audio_reader_task_static = false;
+volatile bool audio_reader_task_finished = true;
 void *audio_dma_buffer_keys[kAudioDmaDescriptors]{};
 uint16_t audio_dma_valid_samples[kAudioDmaDescriptors]{};
 bool audio_enabled = false;
@@ -1901,11 +1903,8 @@ void audioReaderTask(void *) {
              result, static_cast<unsigned>(mpeg_audio_decode_frames),
              static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) *
                                    sizeof(StackType_t)));
-    if (audio_reader_task_static) {
-        mpeg_audio_reader_task_finished = true;
-        vTaskSuspend(nullptr);
-    }
-    audio_reader_task_handle = nullptr;
+    audio_reader_task_finished = true;
+    vTaskSuspend(nullptr);
     vTaskDelete(nullptr);
 }
 
@@ -2001,27 +2000,17 @@ void stopAudio() {
         audio_reader_stop_requested = true;
         const int64_t deadline =
             millisNow() + kAudioReaderStopTimeoutMs;
-        if (audio_reader_task_static) {
-            while (!mpeg_audio_reader_task_finished &&
-                   millisNow() < deadline) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-            }
-            TaskHandle_t task = audio_reader_task_handle;
-            audio_reader_task_handle = nullptr;
-            vTaskDelete(task);
-        } else {
-            while (audio_reader_task_handle && millisNow() < deadline) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-            }
+        while (!audio_reader_task_finished && millisNow() < deadline) {
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-        if (audio_reader_task_handle) {
+        if (!audio_reader_task_finished) {
             ESP_LOGW(kTag, "Audio reader did not stop; deleting it");
-            vTaskDelete(audio_reader_task_handle);
-            audio_reader_task_handle = nullptr;
         }
+        TaskHandle_t task = audio_reader_task_handle;
+        audio_reader_task_handle = nullptr;
+        vTaskDelete(task);
     }
-    audio_reader_task_static = false;
-    mpeg_audio_reader_task_finished = true;
+    audio_reader_task_finished = true;
     if (audio_pdm) {
         if (audio_pdm_enabled) {
             i2s_channel_disable(audio_pdm);
@@ -2376,22 +2365,13 @@ bool prepareAudio(const HLV1Header &header) {
             : video_codec == VideoCodec::kMpeg1
                   ? kMpegAudioReaderStackBytes
                   : kAudioReaderStackBytes;
-    audio_reader_task_static = video_codec == VideoCodec::kMpeg1;
-    mpeg_audio_reader_task_finished = !audio_reader_task_static;
-    if (audio_reader_task_static) {
-        audio_reader_task_handle = xTaskCreateStaticPinnedToCore(
-            audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
-            nullptr, 3, mpeg_audio_reader_task_stack,
-            &mpeg_audio_reader_task_state, 1);
-    } else if (xTaskCreatePinnedToCore(
-                   audioReaderTask, "video-audio-read",
-                   audio_reader_stack_bytes, nullptr, 3,
-                   &audio_reader_task_handle, 1) != pdPASS) {
-        audio_reader_task_handle = nullptr;
-    }
+    audio_reader_task_finished = false;
+    audio_reader_task_handle = xTaskCreateStaticPinnedToCore(
+        audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
+        nullptr, 3, audio_reader_task_stack, &audio_reader_task_state, 1);
     if (!audio_reader_task_handle) {
         ESP_LOGE(kTag,
-                 "Audio reader task allocation failed: stack=%u, "
+                 "Audio reader static task creation failed: stack=%u, "
                  "heap=%u largest=%u",
                  static_cast<unsigned>(audio_reader_stack_bytes),
                  static_cast<unsigned>(
