@@ -804,7 +804,10 @@ Its modeled-device inventory and known accuracy limits are recorded in
   before reconstruction until the next independently decodable picture.
   When BPV already exposes that the next packet is an I-frame, a late pending
   predecessor may omit its display transfer so the I-frame gets priority.
-  MJPEG is all-keyframe; the BPV v7 direct stream retains ordered decoding.
+  MJPEG pictures are independent, so any picture that is already at least one
+  frame late is discarded before JPEG reconstruction; no already-decoded
+  MJPEG picture is withheld from the display. The BPV v7 direct stream retains
+  ordered decoding.
 - Flash: one 1.5 MiB factory application partition; no NVS or OTA partition.
 
 H.263 CIF scaling has been removed. The player starts the visible area at
@@ -845,5 +848,7 @@ predictive pictures are discarded without reconstruction until the next
 keyframe; that keyframe is decoded and shown even if video is still behind.
 For pipelined BPV, whose next keyframe flag is known in advance, the one late
 decoded frame immediately before that keyframe may omit its display transfer.
+MJPEG pictures are independent, so a picture that is at least one frame behind
+the audio or timer clock is skipped before JPEG reconstruction and display DMA.
 Each compressed skip advances the presentation timeline and is counted
 separately in the playback summary.

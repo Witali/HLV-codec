@@ -4528,6 +4528,22 @@ void applyKeyframeCatchup(PresentationState &state, bool keyframe) {
     applyKeyframeCatchupWithLookahead(state, keyframe, false);
 }
 
+void applyMjpegCatchup(PresentationState &state) {
+    if (state.seeking) return;
+
+    bool skip_decode = state.late;
+    if (!audio_enabled) {
+        skip_decode = microsNow() - next_present_us > frame_period_us;
+    }
+    if (!skip_decode) return;
+
+    // Every MJPEG picture is independently decodable. Drop a late compressed
+    // picture before JPEG reconstruction; never discard decoded display
+    // output or wait for a later keyframe.
+    state.render = false;
+    ++skipped_presentations;
+}
+
 void finishPresentation(const PresentationState &state, uint32_t read_us,
                         uint32_t decode_us, uint32_t render_us,
                         const BpvDecodeBreakdown *bpv_breakdown = nullptr) {
@@ -5151,7 +5167,7 @@ void playOneMjpegFrame() {
     }
 
     PresentationState presentation = beginPresentation();
-    applyKeyframeCatchup(presentation, true);
+    applyMjpegCatchup(presentation);
     uint32_t decode_us = 0;
     uint32_t render_us = 0;
     if (presentation.render) {
