@@ -768,6 +768,14 @@ independent MPEG-1 Regression clip. It costs 10,352 bytes of IRAM; the normal
 player link retains 12,704 bytes before the SRAM1 boundary. Disable the option
 for an IRAM-constrained diagnostic build.
 
+`PLM_MPEG_DCT_SECOND_LEVEL` defaults to `ON`. It adds 280 bytes of generated
+VLC data for only the five DCT coefficient prefixes unresolved by the existing
+six-bit table. Four short prefixes use 7- or 8-bit lookup; the long `000000`
+branch resolves its 10- and 12-bit codes directly and retains the complete
+tree fallback for 13- to 16-bit codes. Physical decode improved by 2.42% on
+Danila q41 and 2.59% on Regression. The full application grew by 352 bytes,
+with no IRAM or heap-start change.
+
 The H.263 benchmark embeds 60 frames of the validated intra-only CIF AVI,
 including its IMA ADPCM audio stream, and uses one output frame because no
 display pipeline overlaps the decode:

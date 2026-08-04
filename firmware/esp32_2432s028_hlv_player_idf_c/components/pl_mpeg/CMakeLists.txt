@@ -18,6 +18,8 @@ set(PLM_MPEG_DECODE_PROFILE OFF CACHE BOOL
     "Collect MPEG-1 decoder phase cycle counters")
 set(PLM_MPEG_IRAM_COMPACT_MC ON CACHE BOOL
     "Place compact MPEG-1 motion-compensation kernels in IRAM")
+set(PLM_MPEG_DCT_SECOND_LEVEL ON CACHE BOOL
+    "Use compact second-level MPEG-1 DCT coefficient VLC tables")
 if(PLM_MPEG_IRAM_BITREADER)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_IRAM_BITREADER=1
@@ -55,6 +57,16 @@ if(PLM_MPEG_IRAM_COMPACT_MC)
 else()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         PLM_MPEG_IRAM_COMPACT_MC=0
+    )
+endif()
+
+if(PLM_MPEG_DCT_SECOND_LEVEL)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_DCT_SECOND_LEVEL=1
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        PLM_MPEG_DCT_SECOND_LEVEL=0
     )
 endif()
 

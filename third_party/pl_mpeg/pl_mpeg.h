@@ -163,6 +163,10 @@ See below for detailed the API documentation.
 #define PLM_MPEG_IRAM_COMPACT_MC 0
 #endif
 
+#ifndef PLM_MPEG_DCT_SECOND_LEVEL
+#define PLM_MPEG_DCT_SECOND_LEVEL 0
+#endif
+
 #if PLM_MPEG_DECODE_PROFILE
 #include "esp_cpu.h"
 #endif
@@ -3034,6 +3038,45 @@ static const uint32_t PLM_VIDEO_DCT_COEFF_FAST[64] = {
 	0x00010001U, 0x00010001U, 0x00010001U, 0x00010001U,
 };
 
+#if PLM_MPEG_DCT_SECOND_LEVEL
+// Only five six-bit prefixes are unresolved above. Prefixes 000010 and
+// 000011 need one more bit; 001000 and 001001 need two. For 000000, this
+// table resolves all ten- and twelve-bit codes and leaves the longer codes
+// to the complete VLC tree. The generated tables occupy 280 bytes total.
+static const uint16_t PLM_VIDEO_DCT_COEFF_7[4] = {
+	0x0202U, 0x0901U, 0x0004U, 0x0801U,
+};
+
+static const uint16_t PLM_VIDEO_DCT_COEFF_8[8] = {
+	0x0d01U, 0x0006U, 0x0c01U, 0x0b01U,
+	0x0302U, 0x0103U, 0x0005U, 0x0a01U,
+};
+
+static const uint32_t PLM_VIDEO_DCT_COEFF_12[64] = {
+	0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+	0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+	0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+	0x00000000U, 0x00000000U, 0x00000000U, 0x00000000U,
+	0x000c000bU, 0x000c0802U, 0x000c0403U, 0x000c000aU,
+	0x000c0204U, 0x000c0702U, 0x000c1501U, 0x000c1401U,
+	0x000c0009U, 0x000c1301U, 0x000c1201U, 0x000c0105U,
+	0x000c0303U, 0x000c0008U, 0x000c0602U, 0x000c1101U,
+	0x000a1001U, 0x000a1001U, 0x000a1001U, 0x000a1001U,
+	0x000a0502U, 0x000a0502U, 0x000a0502U, 0x000a0502U,
+	0x000a0007U, 0x000a0007U, 0x000a0007U, 0x000a0007U,
+	0x000a0203U, 0x000a0203U, 0x000a0203U, 0x000a0203U,
+	0x000a0104U, 0x000a0104U, 0x000a0104U, 0x000a0104U,
+	0x000a0f01U, 0x000a0f01U, 0x000a0f01U, 0x000a0f01U,
+	0x000a0e01U, 0x000a0e01U, 0x000a0e01U, 0x000a0e01U,
+	0x000a0402U, 0x000a0402U, 0x000a0402U, 0x000a0402U,
+};
+typedef char plm_video_dct_second_level_size_must_be_280[
+	(sizeof(PLM_VIDEO_DCT_COEFF_7) +
+	 sizeof(PLM_VIDEO_DCT_COEFF_8) +
+	 sizeof(PLM_VIDEO_DCT_COEFF_12)) == 280U ? 1 : -1
+];
+#endif
+
 static inline uint16_t plm_buffer_read_dct_coeff(plm_buffer_t *self) {
 	enum { PLM_DCT_PREFIX_BITS = 6 };
 	if (
@@ -3051,6 +3094,39 @@ static inline uint16_t plm_buffer_read_dct_coeff(plm_buffer_t *self) {
 			self->bit_cache >>
 			(self->bit_cache_count - PLM_DCT_PREFIX_BITS);
 		uint32_t entry = PLM_VIDEO_DCT_COEFF_FAST[prefix];
+#if PLM_MPEG_DCT_SECOND_LEVEL
+		if (!entry) {
+			unsigned needed = prefix == 0U
+				? 12U
+				: (prefix < 4U ? 7U : 8U);
+			if (
+				self->bit_cache_count < needed &&
+				plm_buffer_has(self, needed)
+			) {
+				plm_buffer_refill_bit_cache(self);
+			}
+			if (
+				self->bit_cache_count >= needed &&
+				self->bit_cache_index == self->bit_index
+			) {
+				uint32_t bits =
+					self->bit_cache >> (self->bit_cache_count - needed);
+				if (prefix == 0U) {
+					entry = PLM_VIDEO_DCT_COEFF_12[bits & 0x3fU];
+				}
+				else if (prefix < 4U) {
+					unsigned index = ((unsigned)prefix - 2U) * 2U +
+						(bits & 1U);
+					entry = (7U << 16) | PLM_VIDEO_DCT_COEFF_7[index];
+				}
+				else {
+					unsigned index = ((unsigned)prefix - 8U) * 4U +
+						(bits & 3U);
+					entry = (8U << 16) | PLM_VIDEO_DCT_COEFF_8[index];
+				}
+			}
+		}
+#endif
 		unsigned used = entry >> 16;
 		if (used) {
 			unsigned remaining = self->bit_cache_count - used;

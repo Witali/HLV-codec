@@ -35,6 +35,7 @@ accepted decoder change must preserve the complete compact decode checksum
 | Explicit compact MC half-pixel mode loops | heavy q41 QEMU 2,715,338 -> 2,855,545 cycles (+5.16%); identical hash | rejected before flash; implementation removed |
 | Fused IDCT row reconstruction | heavy q41 QEMU 2,715,338 -> 2,754,921 cycles (+1.46%); identical hash | rejected before flash; implementation removed |
 | Selective IRAM for compact MC | q41 67.935 -> 62.656 ms (-7.77%); Regression 59.999 -> 55.311 ms (-7.81%); checksums unchanged | accepted; +10,352 bytes IRAM |
+| Compact second-level DCT VLC | q41 62.656 -> 61.141 ms (-2.42%); Regression 55.311 -> 53.879 ms (-2.59%); QEMU -2.26%; hashes unchanged | accepted; +352-byte app, no IRAM/heap change |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -160,10 +161,10 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
       hot kernels. The two compact kernels use 10,352 bytes and leave 12,704
       bytes to the SRAM1 boundary. Physical q41 and Regression medians improved
       by 7.77% and 7.81%, so the option is retained and defaults to `ON`.
-- [ ] Add a compact generated second-level table for only the unresolved
+- [x] Add a compact generated second-level table for only the unresolved
       six-bit DCT coefficient prefixes, retaining the existing VLC tree as the
-      fallback. Do not replace it with a large generic FFmpeg-style table
-      unless a separate flash/cache A/B supports that choice.
+      fallback. The 280-byte tables improved physical q41 and Regression by
+      2.42% and 2.59%; the option is retained and defaults to `ON`.
 - [ ] Compile out remaining B-picture/backward-prediction decisions in the
       constrained no-B profile and replace repeated macroblock address
       division/modulo only if profiling shows a measurable benefit.
@@ -222,6 +223,30 @@ average was exactly 2,715,338 cycles for both placements, as expected because
 QEMU does not model the physical mapped-flash cache penalty. MP2 `A` telemetry
 was absent in both physical A and B builds, so this is not an IRAM regression;
 video metadata consistently reported the expected 32 kHz audio stream.
+
+### Compact second-level DCT VLC — 2026-08-04
+
+`PLM_MPEG_DCT_SECOND_LEVEL=ON` extends the existing 64-entry six-bit prefix
+table without replacing the compact VLC tree. Prefixes `000010` and `000011`
+use four seven-bit values; `001000` and `001001` use eight eight-bit values.
+A 64-entry continuation table for `000000` resolves all ten- and twelve-bit
+codes, while 13- to 16-bit codes retain the original tree fallback. A C99
+compile-time check enforces 280 bytes of table data.
+
+The heavy q41 QEMU average improved from 2,715,338 to 2,654,102 cycles
+(-2.26%) with identical reconstructed hash `9ee0136f7b1ee63f`. Three-run
+physical medians with selective motion IRAM held ON were:
+
+| Clip | Six-bit table | Second level | Change |
+| --- | ---: | ---: | ---: |
+| Danila 320x240 q41, 300 frames | 62.6558 ms | 61.1409 ms | -1.5149 ms (-2.42%) |
+| VideoFormatRegression, 60 frames | 55.3108 ms | 53.8792 ms | -1.4316 ms (-2.59%) |
+
+All physical runs had the requested frame count, zero gaps and zero display
+skips. Full host q41 decoded 14,315 frames with the unchanged compact checksum
+`e9c4f082df3d933f`; Regression retained `7e90d6fe1e1db56f`. The normal app
+grew by 352 bytes from `0xbcc70` to `0xbcdd0`; `_iram_end` and heap start were
+unchanged.
 
 ## Current heavy-clip campaign
 
