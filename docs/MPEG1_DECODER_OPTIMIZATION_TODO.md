@@ -192,6 +192,60 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
 - [x] Reduce display-side packed-sample unpack work while preserving the
       Y6/U5/V5 correction table bit for bit.
 
+## Remaining quality-neutral optimization queue
+
+These experiments target complete, standards-compliant MPEG-1 I/P/B playback.
+They must not gain speed by skipping compressed pictures, omitting already
+decoded LCD submissions, reducing reconstruction precision or changing the
+encoded asset. Estimated gains below are hypotheses, not acceptance evidence.
+
+- [ ] Add a strict MPEG-1 presentation A/B mode that disables predictive
+      keyframe catch-up. First verify
+      `BigBuckBunny_320x180_24fps_MPEG1_41dB.mpg`
+      with every picture decoded and displayed and zero audio underruns. This
+      is a policy/correctness prerequisite and must not be credited as a
+      decoder speed improvement.
+- [ ] Extend default-OFF diagnostics with MPEG picture type, compressed-decode
+      skip reason, decoded-but-not-submitted count, PES/refill timing and
+      per-I/P/B decode distributions. Use this to distinguish isolated I-frame
+      or input-refill peaks from sustained decoder overload.
+- [ ] A/B-test codec-specific 9- or 10-bit direct DCT run/level lookup tables,
+      retaining the compact tree fallback. Also histogram and test small
+      direct tables for macroblock address/type and motion-vector VLCs. Budget
+      approximately 2-4 KiB and compare Flash versus conditional DRAM
+      placement; expected potential is 3-7% of complete decode time.
+- [ ] Implement bit-exact four-pixel packed motion-compensation primitives for
+      integer, half-X, half-Y and half-XY prediction. Test Xtensa LX6 assembly
+      or equivalent packed 32-bit arithmetic in selective IRAM; preserve the
+      standard MPEG rounding rules. The measured phase is 34.2% of decode and
+      the estimated potential is 8-15%, but IRAM growth must be recorded.
+- [ ] Collect non-zero coefficient-mask frequencies and implement an exact
+      Xtensa MAC16 IDCT fast path only for the one or two common cases that
+      justify dispatch overhead. Retain the existing DC-only path and the
+      portable general fallback. Estimated complete-decoder potential is
+      2-4%.
+- [ ] Replace PL_MPEG elementary/PES growth with a fixed-capacity streaming
+      refill/ring path that consumes packets larger than the refill buffer
+      without retaining a complete packet. Compare contiguous and streaming
+      decoded checksums and measure whether the current 100-160 ms peaks are
+      reduced even when average decode time is unchanged.
+- [ ] After decoder work, separately A/B-test another bit-exact packed
+      Y6/U5/V5-to-RGB565 Xtensa kernel, four-pixel stores and conditional DRAM
+      placement of only the hottest renderer tables. Do not combine renderer
+      and decoder timing claims; estimated renderer potential is 5-10%.
+
+The available heavy 320x240/30 fps streams currently require approximately
+54-61 ms of video decode against a 33.33 ms picture period. Their acceptance
+target is therefore below 33.33 ms for decode on CPU1 while CPU0 render also
+remains below its own picture-period budget. Micro-optimizations that cannot
+close this gap remain useful only when their independent physical-board gain
+justifies their Flash, IRAM and DRAM cost.
+
+Do not repeat the rejected explicit half-pixel C loops, fused IDCT
+reconstruction, sparse IDCT, current direct-packed prediction/scratch-block
+designs or cache-safe bitreader peek unchanged. A new experiment in one of
+those areas needs a materially different implementation and profiler evidence.
+
 ### IDF C decoder phase profile — 2026-08-04
 
 `PLM_MPEG_DECODE_PROFILE=ON` measured the first 60 frames of the available
