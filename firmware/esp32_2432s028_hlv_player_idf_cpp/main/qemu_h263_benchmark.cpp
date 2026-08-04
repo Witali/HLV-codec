@@ -32,11 +32,11 @@ constexpr char kTag[] = "h263-qemu-bench";
 constexpr uint16_t kBenchWidth = 352;
 constexpr uint16_t kBenchHeight = 288;
 constexpr uint8_t kOutputBuffers = 1;
-constexpr char kContainer[] = "3GP";
+constexpr char kContainer[] = "AVI";
 extern const uint8_t kVideoStart[]
-    asm("_binary_qemu_h263_benchmark_3gp_start");
+    asm("_binary_qemu_h263_benchmark_avi_start");
 extern const uint8_t kVideoEnd[]
-    asm("_binary_qemu_h263_benchmark_3gp_end");
+    asm("_binary_qemu_h263_benchmark_avi_end");
 #endif
 
 uint64_t hashPlane(uint64_t hash, const uint8_t *plane,

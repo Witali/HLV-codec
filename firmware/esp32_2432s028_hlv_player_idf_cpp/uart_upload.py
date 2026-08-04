@@ -38,7 +38,7 @@ MAX_FILE_SIZE = 0xFFFFFFFF
 BLOCK_MAGIC = b"HLVB"
 BLOCK_HEADER = struct.Struct("<4sIHI")
 VALID_NAME = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:hlv|avi|bpv1|mpg|mpeg|3gp|txt)$",
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:hlv|avi|bpv1|mpg|mpeg|txt)$",
     re.IGNORECASE,
 )
 
@@ -156,7 +156,7 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
            data_baud: int, response_timeout: float) -> None:
     if len(remote_name) > 48 or not VALID_NAME.fullmatch(remote_name):
         raise UploadError(
-            "remote name must end in .hlv, .avi, .bpv1, .mpg, .mpeg, .3gp or .txt and contain only ASCII letters, "
+            "remote name must end in .hlv, .avi, .bpv1, .mpg, .mpeg or .txt and contain only ASCII letters, "
             "digits, dot, underscore or dash (48 characters maximum)"
         )
     size = path.stat().st_size
@@ -175,18 +175,16 @@ def upload(path: pathlib.Path, port_name: str, remote_name: str,
         raise UploadError("source does not have a RIFF AVI file header")
     if suffix in (".mpg", ".mpeg") and header[:4] != b"\x00\x00\x01\xba":
         raise UploadError("source does not have an MPEG Program Stream header")
-    if suffix == ".3gp" and header[4:8] != b"ftyp":
-        raise UploadError("source does not have an ISO BMFF/3GP file header")
     if suffix == ".txt":
         try:
             selected = path.read_text(encoding="ascii").strip()
         except UnicodeError as error:
             raise UploadError("selection file must be ASCII") from error
         if not re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._ -]*\.(?:hlv|avi|bpv1|mpg|mpeg|3gp)",
+                r"[A-Za-z0-9][A-Za-z0-9._ -]*\.(?:hlv|avi|bpv1|mpg|mpeg)",
                             selected, re.IGNORECASE):
             raise UploadError(
-                "selection file must contain one safe .hlv, .avi, .bpv1, .mpg, .mpeg or .3gp filename"
+                "selection file must contain one safe .hlv, .avi, .bpv1, .mpg or .mpeg filename"
             )
 
     print(f"Calculating CRC32 for {path.name}...")

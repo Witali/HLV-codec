@@ -274,7 +274,7 @@ elseif(H263_QEMU_BENCHMARK)
             vfs
     )
     target_add_binary_data(
-        ${COMPONENT_LIB} "qemu_h263_benchmark.3gp" BINARY)
+        ${COMPONENT_LIB} "qemu_h263_benchmark.avi" BINARY)
 elseif(MPEG1_QEMU_BENCHMARK)
     idf_component_register(
         SRCS

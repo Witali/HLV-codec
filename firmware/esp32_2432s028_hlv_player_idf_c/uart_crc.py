@@ -14,7 +14,7 @@ from uart_baud import BaudError, begin_session, enable_monitoring
 from uart_list import list_files, open_port
 
 
-VIDEO_SUFFIXES = (".avi", ".bpv1", ".3gp", ".hlv", ".mpg", ".mpeg")
+VIDEO_SUFFIXES = (".avi", ".bpv1", ".hlv", ".mpg", ".mpeg")
 
 
 class CrcError(RuntimeError):

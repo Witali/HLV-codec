@@ -289,8 +289,7 @@ For repeatable tests, select an uploaded video without leaving a local
 The helper uploads a temporary ASCII selection through the same atomic,
 full-file CRC-verified protocol as a normal video.
 
-Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg`, `.3gp` or
-`.txt`,
+Names are ASCII, end in `.hlv`, `.avi`, `.bpv1`, `.mpg`, `.mpeg` or `.txt`,
 and are at most 111
 characters. The player never guesses a fallback file. If `play.txt` is absent
 or invalid, it displays `NO SELECTED FILE.` and waits.
@@ -562,18 +561,20 @@ reconstructed-frame hash, free heap and largest free block. The preparation
 step copies the original MPEG-1 video packets without re-encoding and rejects
 the clip unless its dimensions and frame count match the requested profile.
 
-The H.263 benchmark embeds 60 frames of the validated intra-only CIF 3GP
-and uses one output frame because no display pipeline overlaps the decode:
+The H.263 benchmark embeds 60 frames of the validated intra-only CIF AVI,
+including its IMA ADPCM audio stream, and uses one output frame because no
+display pipeline overlaps the decode:
 
 ```powershell
 .\qemu-h263-benchmark.ps1
-.\qemu-h263-benchmark.ps1 -InputFile input.3gp -Frames 60
+.\qemu-h263-benchmark.ps1 -InputFile input.avi -Frames 60
 ```
 
 It prints an `H` record containing the decode-only cycle distribution,
 reconstructed YUV420 hash, decoder allocation, free heap and largest free
-block. The preparation step copies video samples without re-encoding and
-rejects any clip that is not H.263 at 352x288 with the requested frame count.
+block. The preparation step copies video and audio without re-encoding and
+rejects any clip that is not H.263 at 352x288 with the requested frame count
+or does not preserve the source audio profile.
 
 The MPEG-4 SP benchmark embeds 60 frames of a validated `320x240` M4S2 AVI,
 uses two compact Y6/U5/V5 I/P pictures plus one 16-row reconstruction

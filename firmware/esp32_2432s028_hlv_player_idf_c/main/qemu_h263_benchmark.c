@@ -31,13 +31,13 @@ extern const uint8_t k_video_end[]
 #else
 static const char *const k_tag = "h263-qemu-bench";
 extern const uint8_t k_video_start[]
-    asm("_binary_qemu_h263_benchmark_3gp_start");
+    asm("_binary_qemu_h263_benchmark_avi_start");
 extern const uint8_t k_video_end[]
-    asm("_binary_qemu_h263_benchmark_3gp_end");
+    asm("_binary_qemu_h263_benchmark_avi_end");
 #define BENCH_DONE "H263_BENCH_DONE"
 #define BENCH_HEADER "#H"
 #define BENCH_ROW "H"
-#define BENCH_CONTAINER "3GP"
+#define BENCH_CONTAINER "AVI"
 #define BENCH_WIDTH 352U
 #define BENCH_HEIGHT 288U
 #define BENCH_OUTPUT_BUFFERS 1U
