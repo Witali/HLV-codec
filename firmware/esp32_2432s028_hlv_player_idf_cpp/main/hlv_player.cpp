@@ -231,6 +231,13 @@ enum class VideoCodec {
     kMpeg4Simple,
 };
 
+enum class BpvInputStartResult {
+    kReady,
+    kInvalidState,
+    kNoMemory,
+    kReadFailed,
+};
+
 bool isPacketVideoCodec(VideoCodec codec) {
     return codec == VideoCodec::kH263 ||
            codec == VideoCodec::kMpeg4Simple;
@@ -1035,10 +1042,10 @@ void stopBpvInputPrefetch() {
     bpv_input_reader_result = BPV1_OK;
 }
 
-bool startBpvInputPrefetch() {
+BpvInputStartResult startBpvInputPrefetch() {
     if (!video_file || bpv_input_stream ||
         bpv_input_reader_task_handle) {
-        return false;
+        return BpvInputStartResult::kInvalidState;
     }
     bpv_input_stream =
         xStreamBufferCreate(kBpvInputRingBytes, 1);
@@ -1046,7 +1053,7 @@ bool startBpvInputPrefetch() {
         heap_caps_malloc(kBpvInputChunkBytes, MALLOC_CAP_8BIT));
     if (!bpv_input_stream || !bpv_input_chunk) {
         stopBpvInputPrefetch();
-        return false;
+        return BpvInputStartResult::kNoMemory;
     }
     bpv_input_stop_requested = false;
     bpv_input_reader_done = false;
@@ -1057,7 +1064,7 @@ bool startBpvInputPrefetch() {
             &bpv_input_reader_task_handle, 1) != pdPASS) {
         bpv_input_reader_done = true;
         stopBpvInputPrefetch();
-        return false;
+        return BpvInputStartResult::kNoMemory;
     }
     const size_t preroll_bytes = kBpvInputRingBytes / 2;
     const int64_t deadline =
@@ -1072,7 +1079,7 @@ bool startBpvInputPrefetch() {
     if (!prefetched &&
         (bpv_input_reader_done || millisNow() >= deadline)) {
         stopBpvInputPrefetch();
-        return false;
+        return BpvInputStartResult::kReadFailed;
     }
     ESP_LOGI(
         kTag,
@@ -1081,7 +1088,7 @@ bool startBpvInputPrefetch() {
         static_cast<unsigned>(kBpvInputRingBytes),
         static_cast<unsigned>(kBpvInputChunkBytes),
         static_cast<unsigned>(prefetched));
-    return true;
+    return BpvInputStartResult::kReady;
 }
 
 size_t readBpvPrefetchedInput(
@@ -2539,6 +2546,21 @@ void reportHeap(const char *stage) {
                  heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
 }
 
+bool isPacketVideoMemoryError(int result) {
+    return result == H263_3GP_ERR_MEMORY ||
+           result == H263_3GP_ERR_FRAME_MEMORY ||
+           result == H263_3GP_ERR_DECODER_MEMORY ||
+           result == H263_3GP_ERR_PACKET_MEMORY;
+}
+
+void showVideoOpenFailure(const char *invalid_title, const char *detail,
+                          bool out_of_memory) {
+    const char *title = out_of_memory ? "Not enough RAM" : invalid_title;
+    ESP_LOGE(kTag, "%s: %s", title, detail);
+    showStatus(title, detail);
+    if (out_of_memory) reportHeap(detail);
+}
+
 bool isSafeVideoFilename(const char *name) {
     if (!name || !*name || !std::strcmp(name, ".") ||
         !std::strcmp(name, "..") || std::strstr(name, "..")) {
@@ -3142,7 +3164,8 @@ bool openVideo() {
         errno = 0;
         mpeg_video = plm_create_with_file(video_file, 0);
         if (!mpeg_video) {
-            showStatus("Not enough RAM", "MPEG-1 demux allocation failed");
+            showVideoOpenFailure("Invalid video.mpg",
+                                 "MPEG-1 demux allocation failed", true);
             closeVideo();
             return false;
         }
@@ -3170,13 +3193,12 @@ bool openVideo() {
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                      (unsigned)heap_caps_get_largest_free_block(
                          MALLOC_CAP_8BIT));
-            showStatus(
-                probe_errno == ENOMEM
-                    ? "Not enough RAM"
-                    : "Invalid video.mpg",
+            showVideoOpenFailure(
+                "Invalid video.mpg",
                 probe_errno == ENOMEM
                     ? "MPEG-1 frame allocation failed"
-                    : "unsupported MPEG-1 stream");
+                    : "unsupported MPEG-1 stream",
+                probe_errno == ENOMEM);
             closeVideo();
             return false;
         }
@@ -3199,8 +3221,9 @@ bool openVideo() {
                  sequence_header.fps_num, sequence_header.fps_den,
                  sequence_header.audio_sample_rate);
         if (!startDecodeWorker()) {
-            showStatus("Dual-core init failed",
-                       "cannot create CPU1 decoder task");
+            showVideoOpenFailure("Dual-core init failed",
+                                 "CPU1 decoder task allocation failed",
+                                 true);
             closeVideo();
             return false;
         }
@@ -3227,10 +3250,12 @@ bool openVideo() {
         if (result != H263_3GP_OK) {
             const int library_codec =
                 packetVideoLibraryCodec(video_codec);
-            showStatus(video_codec == VideoCodec::kMpeg4Simple
-                           ? "Invalid MPEG-4 SP"
-                           : "Invalid H.263",
-                       h263_3gp_codec_strerror(library_codec, result));
+            showVideoOpenFailure(
+                video_codec == VideoCodec::kMpeg4Simple
+                    ? "Invalid MPEG-4 SP"
+                    : "Invalid H.263",
+                h263_3gp_codec_strerror(library_codec, result),
+                isPacketVideoMemoryError(result));
             closeVideo();
             return false;
         }
@@ -3263,8 +3288,9 @@ bool openVideo() {
                     audio_info.sample_rate;
                 sequence_header.audio_channels = audio_info.channels;
             } else if (audio_result != AMRNB_3GP_ERR_UNSUPPORTED) {
-                showStatus("Invalid audio.3gp",
-                           amrnb_3gp_strerror(audio_result));
+                showVideoOpenFailure(
+                    "Invalid audio.3gp", amrnb_3gp_strerror(audio_result),
+                    audio_result == AMRNB_3GP_ERR_MEMORY);
                 closeVideo();
                 return false;
             }
@@ -3300,8 +3326,9 @@ bool openVideo() {
         }
         if ((h263_dual_buffered || h263_row_pipelined) &&
             !startDecodeWorker()) {
-            showStatus("Dual-core init failed",
-                       "cannot create CPU1 decoder task");
+            showVideoOpenFailure("Dual-core init failed",
+                                 "CPU1 decoder task allocation failed",
+                                 true);
             closeVideo();
             return false;
         }
@@ -3316,7 +3343,9 @@ bool openVideo() {
             result = MJPEG_AVI_ERR_RANGE;
         }
         if (result != MJPEG_AVI_OK) {
-            showStatus("Invalid video.avi", mjpeg_avi_strerror(result));
+            showVideoOpenFailure("Invalid video.avi",
+                                 mjpeg_avi_strerror(result),
+                                 result == MJPEG_AVI_ERR_MEMORY);
             closeVideo();
             return false;
         }
@@ -3371,9 +3400,8 @@ bool openVideo() {
             divx3_decoder_create_y6_u5_v5(
                 divx3_info.width, divx3_info.height);
         if (!divx3_decoder) {
-            showStatus("Not enough RAM",
-                       "DivX 3 decoder allocation failed");
-            reportHeap("DivX 3 decoder allocation failed");
+            showVideoOpenFailure("Invalid DivX 3 AVI",
+                                 "DivX 3 decoder allocation failed", true);
             closeVideo();
             return false;
         }
@@ -3408,22 +3436,25 @@ bool openVideo() {
                  static_cast<unsigned>(
                      divx3_info.max_video_packet_size));
         if (!startDecodeWorker()) {
-            showStatus("Dual-core init failed",
-                       "cannot create CPU1 decoder task");
+            showVideoOpenFailure("Dual-core init failed",
+                                 "CPU1 decoder task allocation failed",
+                                 true);
             closeVideo();
             return false;
         }
     } else if (video_codec == VideoCodec::kBpv) {
         bpv_runtime = new (std::nothrow) BpvRuntime{};
         if (!bpv_runtime) {
-            showStatus("Not enough RAM", "BPV runtime allocation failed");
+            showVideoOpenFailure("Invalid video.bpv1",
+                                 "BPV runtime allocation failed", true);
             closeVideo();
             return false;
         }
         const int result = bpv_decoder.begin(video_file, &bpv_header);
         if (result != BPV1_OK) {
-            showStatus("Invalid video.bpv1", bpv1_strerror(result));
-            reportHeap("BPV1 decoder allocation failed");
+            showVideoOpenFailure("Invalid video.bpv1",
+                                 bpv1_strerror(result),
+                                 result == BPV1_ERR_MEMORY);
             closeVideo();
             return false;
         }
@@ -3469,17 +3500,27 @@ bool openVideo() {
             closeVideo();
             return false;
         }
-        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION &&
-            !startBpvInputPrefetch()) {
-            showStatus("BPV input init failed",
-                       "cannot create CPU1 stream buffer");
-            closeVideo();
-            return false;
+        if (bpv_header.version >= BPV1_PIXEL_MOTION_VERSION) {
+            const BpvInputStartResult input_result =
+                startBpvInputPrefetch();
+            if (input_result != BpvInputStartResult::kReady) {
+                const bool out_of_memory =
+                    input_result == BpvInputStartResult::kNoMemory;
+                showVideoOpenFailure(
+                    "BPV input init failed",
+                    out_of_memory
+                        ? "BPV input buffer/task allocation failed"
+                        : "cannot prime CPU1 stream buffer",
+                    out_of_memory);
+                closeVideo();
+                return false;
+            }
         }
         if (bpv_header.version < BPV1_PIXEL_MOTION_VERSION &&
             !startDecodeWorker()) {
-            showStatus("Dual-core init failed",
-                       "cannot create CPU1 decoder task");
+            showVideoOpenFailure("Dual-core init failed",
+                                 "CPU1 decoder task allocation failed",
+                                 true);
             closeVideo();
             return false;
         }
@@ -3500,8 +3541,9 @@ bool openVideo() {
         const int decoder_result = decoder.begin(
             sequence_header, player_settings::kUseCompactHlvReference);
         if (decoder_result != HLV1_OK) {
-            showStatus("Not enough RAM", "use at most the 320x180 profile");
-            reportHeap("decoder or packet-pool allocation failed");
+            showVideoOpenFailure("Invalid video.hlv",
+                                 hlv1_strerror(decoder_result),
+                                 decoder_result == HLV1_ERR_MEMORY);
             closeVideo();
             return false;
         }
@@ -3512,8 +3554,9 @@ bool openVideo() {
         // Allocate the large predictive planes and stream buffer before the
         // worker stack, preserving the largest contiguous heap regions.
         if (!startDecodeWorker()) {
-            showStatus("Dual-core init failed",
-                       "cannot create CPU1 decoder task");
+            showVideoOpenFailure("Dual-core init failed",
+                                 "CPU1 decoder task allocation failed",
+                                 true);
             closeVideo();
             return false;
         }
@@ -4290,7 +4333,7 @@ void failSdCardRead(const char *detail) {
             "SD read could not allocate DMA memory: free=%u largest=%u: %s",
             static_cast<unsigned>(dma_free),
             static_cast<unsigned>(dma_largest), detail);
-        showStatus("OUT OF MEMORY", "SD DMA buffer unavailable");
+        showStatus("Not enough RAM", "SD DMA buffer unavailable");
         closeVideo();
         last_retry_ms = millisNow();
         return;
