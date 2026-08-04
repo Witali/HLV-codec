@@ -17,6 +17,9 @@ typedef struct Divx3AviInfo {
     uint32_t frame_count;
     uint32_t max_video_packet_size;
     uint32_t audio_sample_rate;
+    uint16_t audio_format_tag;
+    uint16_t audio_block_align;
+    uint16_t audio_samples_per_block;
     uint8_t audio_channels;
     uint8_t audio_bits_per_sample;
     uint8_t video_stream;
@@ -49,14 +52,14 @@ int divx3_avi_finish_video_packet(FILE *file, long next_offset);
 
 /*
  * Read the next compressed video packet. The file must initially be at
- * info.movi_start. Non-video chunks, including PCM audio, are skipped.
+ * info.movi_start. Non-video chunks, including audio, are skipped.
  */
 int divx3_avi_read_video_packet(FILE *file, const Divx3AviInfo *info,
                                 uint8_t *buffer, size_t capacity,
                                 size_t *packet_size);
 
 /*
- * Locate the next PCM audio payload and leave the file positioned at it.
+ * Locate the next audio payload and leave the file positioned at it.
  * The caller consumes payload_size bytes and its optional RIFF padding byte.
  */
 int divx3_avi_next_audio_chunk(FILE *file, const Divx3AviInfo *info,

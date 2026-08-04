@@ -124,12 +124,13 @@ function Build-Divx3StreamTest {
     $testSource = Join-Path $repo "codecs\divx3\tests\test_stream_decode.c"
     $decoderSource = Join-Path $repo "codecs\divx3\src\divx3_decode.c"
     $aviSource = Join-Path $repo "codecs\divx3\src\divx3_avi.c"
+    $imaSource = Join-Path $repo "codecs\common\src\ima_adpcm.c"
     $command = (
         'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
         'cl /nologo /O2 /W4 /TC /D_CRT_SECURE_NO_WARNINGS ' +
-        '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" /Fe:"{7}"'
+        '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" "{7}" /Fe:"{8}"'
     ) -f $devcmd, $build, $include, $compactInclude, $testSource,
-        $decoderSource, $aviSource, $Destination
+        $decoderSource, $aviSource, $imaSource, $Destination
     & cmd.exe /d /c $command | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
         throw "MSVC failed while building the DivX 3 stream test."

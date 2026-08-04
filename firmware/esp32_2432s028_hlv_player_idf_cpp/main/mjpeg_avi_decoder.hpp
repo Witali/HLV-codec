@@ -25,6 +25,9 @@ struct MjpegAviInfo {
     uint32_t frame_count = 0;
     uint32_t audio_sample_rate = 0;
     uint32_t max_video_frame_size = 0;
+    uint16_t audio_format_tag = 0;
+    uint16_t audio_block_align = 0;
+    uint16_t audio_samples_per_block = 0;
     uint8_t audio_channels = 0;
     uint8_t audio_bits_per_sample = 0;
     uint8_t video_stream = 0xff;
@@ -56,7 +59,7 @@ using MjpegAviStripAcquire = uint16_t *(*)(
 const char *mjpeg_avi_strerror(int result);
 int mjpeg_avi_read_info(FILE *file, MjpegAviInfo *info);
 
-// Find the next PCM audio chunk and leave the file positioned at its payload.
+// Find the next audio chunk and leave the file positioned at its payload.
 // The caller reads exactly payload_size bytes and consumes one padding byte
 // when payload_size is odd.
 int mjpeg_avi_next_audio_chunk(FILE *file, const MjpegAviInfo &info,

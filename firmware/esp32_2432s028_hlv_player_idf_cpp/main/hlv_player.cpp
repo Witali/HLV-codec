@@ -1587,6 +1587,61 @@ int prefetchImaAudioBlock(size_t block_bytes) {
     return remaining_samples ? HLV1_ERR_FORMAT : HLV1_OK;
 }
 
+int prefetchImaWavAudioBlock(size_t block_bytes) {
+    uint8_t header[IMA_ADPCM_WAV_BLOCK_HEADER_SIZE];
+    uint8_t compressed[128];
+    IMAADPCMState state{};
+    const size_t sample_count =
+        ima_adpcm_wav_mono_sample_count(block_bytes);
+    size_t remaining_samples;
+    size_t remaining_bytes;
+    uint8_t first_sample[2];
+    if (!sample_count ||
+        std::fread(header, 1, sizeof header, audio_file) != sizeof header ||
+        ima_adpcm_wav_block_header_read(header, sizeof header, &state)) {
+        return HLV1_ERR_FORMAT;
+    }
+    first_sample[0] = static_cast<uint8_t>(state.predictor);
+    first_sample[1] = static_cast<uint8_t>(
+        static_cast<uint16_t>(static_cast<int16_t>(state.predictor)) >> 8);
+    queueAudioBytes(first_sample, sizeof first_sample);
+    remaining_samples = sample_count - 1U;
+    remaining_bytes = block_bytes - sizeof header;
+    while (remaining_bytes) {
+        const size_t chunk = std::min(remaining_bytes, sizeof compressed);
+        size_t output = 0;
+        if (std::fread(compressed, 1, chunk, audio_file) != chunk)
+            return HLV1_ERR_IO;
+        for (size_t input = 0; input < chunk; ++input) {
+            int16_t decoded = ima_adpcm_decode_nibble(
+                &state, compressed[input] & 15U);
+            audio_read_chunk[output++] = static_cast<uint8_t>(decoded);
+            audio_read_chunk[output++] = static_cast<uint8_t>(
+                static_cast<uint16_t>(decoded) >> 8);
+            decoded = ima_adpcm_decode_nibble(
+                &state, compressed[input] >> 4);
+            audio_read_chunk[output++] = static_cast<uint8_t>(decoded);
+            audio_read_chunk[output++] = static_cast<uint8_t>(
+                static_cast<uint16_t>(decoded) >> 8);
+            remaining_samples -= 2U;
+        }
+        queueAudioBytes(audio_read_chunk, output);
+        remaining_bytes -= chunk;
+    }
+    return remaining_samples ? HLV1_ERR_FORMAT : HLV1_OK;
+}
+
+int prefetchImaWavAudioChunk(size_t payload_size, size_t block_align) {
+    if (!block_align || payload_size % block_align)
+        return HLV1_ERR_FORMAT;
+    while (payload_size) {
+        const int result = prefetchImaWavAudioBlock(block_align);
+        if (result != HLV1_OK) return result;
+        payload_size -= block_align;
+    }
+    return HLV1_OK;
+}
+
 int prefetchHlvAudioPacket() {
     uint8_t header[HLV1_FRAME_HEADER_SIZE];
     const size_t header_bytes = std::fread(header, 1, sizeof header, audio_file);
@@ -1623,7 +1678,10 @@ int prefetchMjpegAudioChunk() {
     const int result =
         mjpeg_avi_next_audio_chunk(audio_file, mjpeg_info, &payload_size);
     if (result != MJPEG_AVI_OK) return result;
-    const int audio_result = prefetchAudioBytes(payload_size);
+    const int audio_result = audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+        ? prefetchImaWavAudioChunk(
+              payload_size, mjpeg_info.audio_block_align)
+        : prefetchAudioBytes(payload_size);
     if (audio_result != HLV1_OK) return audio_result;
     if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR)) {
         return MJPEG_AVI_ERR_IO;
@@ -1637,7 +1695,10 @@ int prefetchDivx3AudioChunk() {
         divx3_avi_next_audio_chunk(audio_file, &divx3_info,
                                    &payload_size);
     if (result != DIVX3_AVI_OK) return result;
-    const int audio_result = prefetchAudioBytes(payload_size);
+    const int audio_result = audio_output_codec == HLV1_AUDIO_IMA_ADPCM
+        ? prefetchImaWavAudioChunk(
+              payload_size, divx3_info.audio_block_align)
+        : prefetchAudioBytes(payload_size);
     if (audio_result != HLV1_OK) return audio_result;
     if ((payload_size & 1U) && std::fseek(audio_file, 1, SEEK_CUR)) {
         return DIVX3_AVI_ERR_IO;
@@ -1951,6 +2012,14 @@ bool prepareAudio(const HLV1Header &header) {
         return true;
     }
 
+    if (header.audio_sample_rate < 8000U ||
+        header.audio_sample_rate > 48000U) {
+        ESP_LOGE(kTag,
+                 "Unsupported audio sample rate: %u Hz; expected 8000..48000",
+                 static_cast<unsigned>(header.audio_sample_rate));
+        return false;
+    }
+
     audio_output_codec = header.audio_codec;
     const size_t audio_sample_bytes =
         audio_output_codec == HLV1_AUDIO_IMA_ADPCM ? 2U : 1U;
@@ -2053,8 +2122,16 @@ bool prepareAudio(const HLV1Header &header) {
             audio_info.fps_den != header.fps_den ||
             audio_info.frame_count != header.frame_count ||
             audio_info.audio_sample_rate != header.audio_sample_rate ||
+            audio_info.audio_format_tag != mjpeg_info.audio_format_tag ||
+            audio_info.audio_block_align != mjpeg_info.audio_block_align ||
+            audio_info.audio_samples_per_block !=
+                mjpeg_info.audio_samples_per_block ||
             audio_info.audio_channels != 1 ||
-            audio_info.audio_bits_per_sample != 8) {
+            (audio_info.audio_format_tag == 0x11
+                 ? header.audio_codec != HLV1_AUDIO_IMA_ADPCM ||
+                       audio_info.audio_bits_per_sample != 4
+                 : header.audio_codec != HLV1_AUDIO_PCM_U8 ||
+                       audio_info.audio_bits_per_sample != 8)) {
             stopAudio();
             return false;
         }
@@ -2068,8 +2145,16 @@ bool prepareAudio(const HLV1Header &header) {
             audio_info.fps_den != header.fps_den ||
             audio_info.frame_count != header.frame_count ||
             audio_info.audio_sample_rate != header.audio_sample_rate ||
+            audio_info.audio_format_tag != divx3_info.audio_format_tag ||
+            audio_info.audio_block_align != divx3_info.audio_block_align ||
+            audio_info.audio_samples_per_block !=
+                divx3_info.audio_samples_per_block ||
             audio_info.audio_channels != 1 ||
-            audio_info.audio_bits_per_sample != 8) {
+            (audio_info.audio_format_tag == 0x11
+                 ? header.audio_codec != HLV1_AUDIO_IMA_ADPCM ||
+                       audio_info.audio_bits_per_sample != 4
+                 : header.audio_codec != HLV1_AUDIO_PCM_U8 ||
+                       audio_info.audio_bits_per_sample != 8)) {
             stopAudio();
             return false;
         }
@@ -2233,9 +2318,13 @@ bool prepareAudio(const HLV1Header &header) {
 
     i2s_chan_info_t channel_info{};
     i2s_channel_get_info(audio_pdm, &channel_info);
+    const uint32_t queued_ms = static_cast<uint32_t>(
+        static_cast<uint64_t>(kAudioStreamBytes) * 1000U /
+        (static_cast<uint64_t>(header.audio_sample_rate) *
+         audio_sample_bytes));
     ESP_LOGI(kTag,
              "Audio: %s mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
-             "%u Hz carrier, high-SNR divider 13, static %u-byte queue, "
+             "%u Hz carrier, high-SNR divider 13, static %u-byte/%u-ms queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
              audio_output_codec == HLV1_AUDIO_IMA_ADPCM
                  ? "IMA_ADPCM" : "PCM_U8",
@@ -2243,6 +2332,7 @@ bool prepareAudio(const HLV1Header &header) {
              board::kAudioPdmClock,
              static_cast<unsigned>(channel_info.bclk_hz),
              static_cast<unsigned>(kAudioStreamBytes),
+             static_cast<unsigned>(queued_ms),
              static_cast<unsigned>(kAudioDmaDescriptors),
              static_cast<unsigned>(kAudioDmaSamples),
              static_cast<unsigned>(prefetched));
@@ -3125,17 +3215,21 @@ bool openVideo() {
         sequence_header.frame_count = mjpeg_info.frame_count;
         if (mjpeg_info.audio_stream != 0xff) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_codec =
+                mjpeg_info.audio_format_tag == 0x11
+                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 static_cast<uint16_t>(mjpeg_info.audio_sample_rate);
             sequence_header.audio_channels = 1;
         }
         ESP_LOGI(kTag,
                  "MJPEG/AVI: %ux%u, %u/%u fps, %u frames, "
-                 "PCM_U8 audio=%u Hz, max JPEG=%u",
+                 "%s audio=%u Hz, max JPEG=%u",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
+                 sequence_header.audio_codec == HLV1_AUDIO_IMA_ADPCM
+                     ? "IMA_ADPCM" : "PCM_U8",
                  sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
                      mjpeg_decoder.compressedCapacity()));
@@ -3178,18 +3272,22 @@ bool openVideo() {
         sequence_header.frame_count = divx3_info.frame_count;
         if (divx3_info.audio_stream != 0xff) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_codec =
+                divx3_info.audio_format_tag == 0x11
+                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 static_cast<uint16_t>(divx3_info.audio_sample_rate);
             sequence_header.audio_channels = 1;
         }
         ESP_LOGI(kTag,
                  "DivX 3/AVI: %ux%u, %u/%u fps, %u frames, "
-                 "PCM_U8 audio=%u Hz, compact decoder=%u bytes, "
+                 "%s audio=%u Hz, compact decoder=%u bytes, "
                  "4 KB stream buffer, max packet=%u bytes",
                  sequence_header.width, sequence_header.height,
                  sequence_header.fps_num, sequence_header.fps_den,
                  static_cast<unsigned>(sequence_header.frame_count),
+                 sequence_header.audio_codec == HLV1_AUDIO_IMA_ADPCM
+                     ? "IMA_ADPCM" : "PCM_U8",
                  sequence_header.audio_sample_rate,
                  static_cast<unsigned>(
                      divx3_decoder_memory_bytes(divx3_decoder)),

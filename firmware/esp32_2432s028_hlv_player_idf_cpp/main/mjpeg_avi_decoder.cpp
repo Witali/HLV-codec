@@ -8,6 +8,7 @@
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "ima_adpcm.h"
 #ifdef MJPEG_PHASE_TIMING
 #include "esp_cpu.h"
 #endif
@@ -263,9 +264,32 @@ int parseStreamList(FILE *file, long end, uint8_t stream_index,
         info->frame_count = stream.length;
         info->max_video_frame_size = stream.suggested_buffer;
     } else if (stream.type == fourcc('a', 'u', 'd', 's')) {
-        if (format_size < 16 || readLe16(format) != 1)
+        if (format_size < 16) return MJPEG_AVI_ERR_FORMAT;
+        const uint16_t format_tag = readLe16(format);
+        const uint16_t channels = readLe16(format + 2);
+        const uint16_t block_align = readLe16(format + 12);
+        const uint16_t bits_per_sample = readLe16(format + 14);
+        if (channels != 1 || !readLe32(format + 4))
             return MJPEG_AVI_ERR_FORMAT;
+        if (format_tag == 1) {
+            if (bits_per_sample != 8 || block_align != 1)
+                return MJPEG_AVI_ERR_FORMAT;
+            info->audio_samples_per_block = 1;
+        } else if (format_tag == 0x11) {
+            const size_t expected_samples =
+                ima_adpcm_wav_mono_sample_count(block_align);
+            if (format_size < 20 || bits_per_sample != 4 ||
+                readLe32(format + 4) > 48000 ||
+                readLe16(format + 16) < 2 || !expected_samples ||
+                readLe16(format + 18) != expected_samples)
+                return MJPEG_AVI_ERR_FORMAT;
+            info->audio_samples_per_block = readLe16(format + 18);
+        } else {
+            return MJPEG_AVI_ERR_FORMAT;
+        }
         info->audio_stream = stream_index;
+        info->audio_format_tag = format_tag;
+        info->audio_block_align = block_align;
         info->audio_channels =
             static_cast<uint8_t>(readLe16(format + 2));
         info->audio_sample_rate = readLe32(format + 4);
@@ -433,7 +457,10 @@ int mjpeg_avi_read_info(FILE *file, MjpegAviInfo *info) {
         return MJPEG_AVI_ERR_FORMAT;
     if (info->audio_stream != 0xff &&
         (info->audio_channels != 1 ||
-         info->audio_bits_per_sample != 8 ||
+         (info->audio_format_tag == 1
+              ? info->audio_bits_per_sample != 8
+              : info->audio_format_tag != 0x11 ||
+                    info->audio_bits_per_sample != 4) ||
          !info->audio_sample_rate))
         return MJPEG_AVI_ERR_FORMAT;
     if (!info->max_video_frame_size)

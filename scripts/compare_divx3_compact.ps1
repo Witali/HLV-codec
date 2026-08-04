@@ -30,15 +30,17 @@ $compactInclude = Join-Path $repo "codecs\common\include"
 $testSource = Join-Path $divx "tests\compare_compact.c"
 $decoderSource = Join-Path $divx "src\divx3_decode.c"
 $aviSource = Join-Path $divx "src\divx3_avi.c"
+$imaSource = Join-Path $repo "codecs\common\src\ima_adpcm.c"
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $output = Join-Path $OutputDirectory "compare_divx3_compact.exe"
 $command = (
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /TC /D_CRT_SECURE_NO_WARNINGS ' +
-    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" /Fe:"{7}"'
+    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" "{7}" /Fe:"{8}"'
 ) -f $devcmd, $OutputDirectory, (Join-Path $divx "include"), `
-    $compactInclude, $testSource, $decoderSource, $aviSource, $output
+    $compactInclude, $testSource, $decoderSource, $aviSource, $imaSource, `
+    $output
 & cmd.exe /d /c $command | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building the DivX 3 comparison."

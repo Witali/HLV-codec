@@ -2,15 +2,21 @@
 
 This is a repository-local ESP-IDF 5.5.5 project for the two-USB CYD board. It
 does not use Arduino, LovyanGFX or globally installed Espressif tools. The
-application supports HLV-1, standard AVI/MJPEG with PCM_U8 audio, Microsoft
-MPEG-4 v3 (`DIV3`/`MP43`) AVI with optional PCM_U8 audio, BPV1 v1 through v6
-with PCM_U8 audio, active per-GOP palettes and unified RAW blocks, and the
+application supports HLV-1, standard AVI/MJPEG with mono WAV IMA ADPCM or
+legacy PCM_U8 audio, Microsoft MPEG-4 v3 (`DIV3`/`MP43`) AVI with the same
+optional audio profiles, BPV1 v1 through v6 with PCM_U8 or project IMA ADPCM
+audio, active per-GOP palettes and unified RAW blocks, and the
 constrained MPEG-1 Video/MP2 profile up to 320x240. It also
 supports baseline H.263 at `176x144` QCIF or intra-only baseline `352x288`
 CIF, with
 optional 8 kHz mono AMR-NB audio in 3GP or PCM S16LE audio in AVI.
 MPEG-4 Part 2 Simple Profile is supported at `320x240` in M4S2 AVI with I/P
 pictures and the same optional AVI PCM audio.
+
+The audio output is configured anew from each opened file's sample rate. PDM
+playback accepts 8–48 kHz, including 22.05, 44.1 and 48 kHz; playlist items do not
+need to share one rate. Diagnostics report the actual rate and the resulting
+time capacity of the fixed byte queue.
 
 The strict C99 migration plan, preserved C++ baseline and physical all-codec
 A/B acceptance matrix are documented in
@@ -83,6 +89,7 @@ The current decoder audit is:
 | H.263/MPEG-4 SP video | One reusable 4 KiB PacketVideo callback/refill buffer | Compliant; AVI/3GP samples may exceed the buffer. Only MPEG-4 VOL configuration is retained contiguously, capped at 256 bytes |
 | MPEG-1 video and MP2 audio | PL_MPEG file and elementary ring buffers, initially 4 KiB | Streaming, but PL_MPEG can reallocate an elementary ring to fit a large PES packet; keep the encoded profile PES-bounded and remove this growth when changing the core |
 | Player PCM_U8/PCM_S16LE audio | One 4 KiB FreeRTOS stream buffer filled in at most 512-byte reads | Compliant |
+| AVI WAV IMA ADPCM audio | Standard blocks up to 2 KiB are decoded directly into the PCM16 stream through one 128-byte compressed refill buffer | Compliant; the production 1024-byte block exceeds both the refill and one SD sector |
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
 | BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
 | BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
@@ -962,12 +969,13 @@ test build. Set it to `false` to restore bit-exact 8-bit YUV420 references.
 `kUseDualCorePipeline` selects the CPU1-decode/CPU0-render pipeline and is also
 `true`; set it to `false` to compare against sequential playback without
 changing the HLV file.
-`kEnableAudio` enables PCM_U8 playback through I2S0 PCM-to-PDM on GPIO26 data
-and GPIO22 clock. The current test
+`kEnableAudio` enables PCM_U8, PCM_S16LE and decoded IMA ADPCM playback through
+I2S0 PCM-to-PDM on GPIO26 data and GPIO22 clock. The current test
 build sets it to `true`; the 4 KiB FreeRTOS stream buffer is statically
 allocated. Playback starts, and resumes after an underrun, only after that
 queue is filled completely. This holds 128 ms at 32 kHz, 256 ms at 16 kHz or
-512 ms at 8 kHz. Files without audio, an explicitly disabled output, or a
+512 ms at 8 kHz for one-byte PCM; decoded PCM16 IMA holds about 43 ms at
+48 kHz. Files without audio, an explicitly disabled output, or a
 failed audio reader/PDM output automatically use the monotonic ESP timer as the video
 clock. The periodic log reports queued bytes, controlled rebuffer events and
 silence DMA chunks; the two legacy DMA-repeat fields remain zero for collector

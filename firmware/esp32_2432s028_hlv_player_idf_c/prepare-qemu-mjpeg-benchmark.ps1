@@ -42,23 +42,38 @@ if (-not $ffmpeg -or -not $ffprobe) {
 }
 $output = Join-Path $project "main\qemu_mjpeg_benchmark.avi"
 & $ffmpeg -hide_banner -loglevel error -y -i $InputFile `
-    -map 0:v:0 -frames:v $Frames -c:v copy -an -f avi $output
+    -map 0:v:0 -map 0:a:0? -frames:v $Frames `
+    -c:v copy -c:a copy -shortest -f avi $output
 if ($LASTEXITCODE -ne 0) {
     throw "Could not prepare the MJPEG QEMU clip."
 }
 $probe = (
-    & $ffprobe -v error -select_streams v:0 `
-        -count_frames `
+    & $ffprobe -v error -count_frames `
         -show_entries `
-        stream=codec_name,codec_tag_string,width,height,nb_read_frames `
+        stream=codec_type,codec_name,codec_tag_string,width,height,nb_read_frames,sample_rate,channels `
         -of json $output
 ) | ConvertFrom-Json
-$video = $probe.streams[0]
+$video = @($probe.streams | Where-Object codec_type -eq "video")[0]
+$audio = @($probe.streams | Where-Object codec_type -eq "audio")
 if ($LASTEXITCODE -ne 0 -or
     $video.codec_name -ne "mjpeg" -or
     $video.width -ne 320 -or $video.height -ne 240 -or
     [int]$video.nb_read_frames -ne $Frames) {
     throw "Prepared QEMU clip does not match the QVGA MJPEG profile."
 }
+$inputAudio = & $ffprobe -v error -select_streams a:0 `
+    -show_entries stream=codec_name,sample_rate,channels -of json $InputFile |
+    ConvertFrom-Json
+$inputAudio = @($inputAudio.streams)
+if ($inputAudio.Count -ne $audio.Count -or
+    ($audio.Count -eq 1 -and
+     ($audio[0].codec_name -ne $inputAudio[0].codec_name -or
+      $audio[0].sample_rate -ne $inputAudio[0].sample_rate -or
+      $audio[0].channels -ne $inputAudio[0].channels))) {
+    throw "Prepared QEMU clip did not preserve the source audio profile."
+}
 $size = (Get-Item -LiteralPath $output).Length
-Write-Host "Prepared MJPEG QEMU clip: $Frames frames, $size bytes"
+$audioStatus = if ($audio.Count) {
+    ", $($audio[0].codec_name) mono $($audio[0].sample_rate) Hz"
+} else { ", no audio" }
+Write-Host "Prepared MJPEG QEMU clip: $Frames frames, $size bytes$audioStatus"

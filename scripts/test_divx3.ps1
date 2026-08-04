@@ -45,21 +45,24 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $testExe = Join-Path $OutputDirectory "test_divx3_decode.exe"
 $inputAvi = Join-Path $OutputDirectory "bbb_divx3_256x144.avi"
 $inputMp3Avi = Join-Path $OutputDirectory "bbb_divx3_mp3_256x144.avi"
+$inputImaAvi = Join-Path $OutputDirectory "bbb_divx3_ima_256x144.avi"
 $referenceYuv = Join-Path $OutputDirectory "reference.yuv"
 $decodedYuv = Join-Path $OutputDirectory "decoded.yuv"
 $decodedMp3Yuv = Join-Path $OutputDirectory "decoded_mp3.yuv"
+$decodedImaYuv = Join-Path $OutputDirectory "decoded_ima.yuv"
 $include = Join-Path $repo "codecs\divx3\include"
 $compactInclude = Join-Path $repo "codecs\common\include"
 $testSource = Join-Path $repo "codecs\divx3\tests\test_decode.c"
 $decoderSource = Join-Path $repo "codecs\divx3\src\divx3_decode.c"
 $aviSource = Join-Path $repo "codecs\divx3\src\divx3_avi.c"
+$imaSource = Join-Path $repo "codecs\common\src\ima_adpcm.c"
 
 $compile = (
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
     'cl /nologo /O2 /W4 /TC /D_CRT_SECURE_NO_WARNINGS ' +
-    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" /Fe:"{7}"'
+    '/I"{2}" /I"{3}" "{4}" "{5}" "{6}" "{7}" /Fe:"{8}"'
 ) -f $devcmd, $OutputDirectory, $include, $compactInclude, $testSource, `
-    $decoderSource, $aviSource, $testExe
+    $decoderSource, $aviSource, $imaSource, $testExe
 & cmd.exe /d /c $compile | ForEach-Object { Write-Host $_ }
 if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed while building the DivX 3 regression test."
@@ -109,6 +112,50 @@ if ($referenceHash -ne $decodedMp3Hash) {
     )
 }
 
+& $ffmpeg -hide_banner -loglevel error -y -ss 00:00:00 -t 1 `
+    -i $source -vf "fps=12,scale=256:144:flags=lanczos" `
+    -c:v msmpeg4 -q:v 4 -g 12 -bf 0 -vtag DIV3 `
+    -c:a adpcm_ima_wav -ac 1 -ar 48000 $inputImaAvi
+if ($LASTEXITCODE -ne 0) {
+    throw "FFmpeg failed while creating the DivX 3 + IMA fixture."
+}
+$imaDecoderResult = & $testExe $inputImaAvi $decodedImaYuv
+if ($LASTEXITCODE -ne 0) {
+    throw "Portable decoder rejected a DivX 3 AVI with IMA audio."
+}
+$decodedImaHash = (Get-FileHash -Algorithm SHA256 $decodedImaYuv).Hash
+if ($referenceHash -ne $decodedImaHash) {
+    throw (
+        "IMA audio changed decoded video pixels: " +
+        "reference=$referenceHash decoded=$decodedImaHash"
+    )
+}
+
+$imaRateResults = @()
+foreach ($rate in @(8000, 16000, 22050, 32000, 44100)) {
+    $rateInput = Join-Path $OutputDirectory "bbb_divx3_ima_${rate}hz.avi"
+    $rateDecoded = Join-Path $OutputDirectory "decoded_ima_${rate}hz.yuv"
+    & $ffmpeg -hide_banner -loglevel error -y -ss 00:00:00 -t 1 `
+        -i $source -vf "fps=12,scale=256:144:flags=lanczos" `
+        -c:v msmpeg4 -q:v 4 -g 12 -bf 0 -vtag DIV3 `
+        -c:a adpcm_ima_wav -ac 1 -ar $rate $rateInput
+    if ($LASTEXITCODE -ne 0) {
+        throw "FFmpeg failed while creating the ${rate} Hz IMA fixture."
+    }
+    $rateResult = & $testExe $rateInput $rateDecoded
+    if ($LASTEXITCODE -ne 0) {
+        throw "Portable decoder rejected ${rate} Hz IMA audio."
+    }
+    $rateHash = (Get-FileHash -Algorithm SHA256 $rateDecoded).Hash
+    if ($referenceHash -ne $rateHash) {
+        throw "${rate} Hz IMA audio changed decoded video pixels."
+    }
+    $imaRateResults += $rateResult
+}
+
 Write-Host $decoderResult
 Write-Host $mp3DecoderResult
+Write-Host $imaDecoderResult
+Write-Host $imaRateResults
+Write-Host "IMA AVI sample-rate matrix passed: 8, 16, 22.05, 32, 44.1 and 48 kHz"
 Write-Host "DivX 3 pixel-exact regression passed: $decodedHash"

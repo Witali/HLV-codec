@@ -1,8 +1,8 @@
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra -pedantic
-CPPFLAGS += -Iinclude
+CPPFLAGS += -Iinclude -I../common/include
 
-SOURCES = src/divx3_decode.c src/divx3_avi.c
+SOURCES = src/divx3_decode.c src/divx3_avi.c ../common/src/ima_adpcm.c
 
 .PHONY: all clean
 

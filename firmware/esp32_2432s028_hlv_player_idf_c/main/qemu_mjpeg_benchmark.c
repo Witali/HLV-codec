@@ -108,6 +108,11 @@ void app_main(void) {
         info.width != 320U || info.height != 240U) {
         finish(2);
     }
+    ESP_LOGI(k_tag, "AVI audio tag=%u rate=%u align=%u samples/block=%u",
+             (unsigned)info.audio_format_tag,
+             (unsigned)info.audio_sample_rate,
+             (unsigned)info.audio_block_align,
+             (unsigned)info.audio_samples_per_block);
     output.hash = UINT64_C(1469598103934665603);
     output.buffers[0] = (uint16_t *)heap_caps_aligned_alloc(
         16, STRIP_PIXELS * sizeof(uint16_t), MALLOC_CAP_8BIT);

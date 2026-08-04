@@ -1,4 +1,5 @@
 #include "divx3_avi.h"
+#include "ima_adpcm.h"
 
 #include <limits.h>
 #include <string.h>
@@ -193,16 +194,40 @@ static int parse_stream_list(FILE *file, long end, uint8_t stream_index,
         info->frame_count = stream.length;
         info->max_video_packet_size = stream.suggested_buffer;
     } else if (stream.type == fourcc('a', 'u', 'd', 's')) {
+        uint16_t format_tag;
+        uint16_t channels;
+        uint16_t block_align;
+        uint16_t bits_per_sample;
         if (format_size < 16) return DIVX3_AVI_ERR_FORMAT;
-        if (read_le16(format) == 1 &&
-            read_le16(format + 2) == 1 &&
-            read_le16(format + 14) == 8 &&
-            read_le32(format + 4) != 0) {
-            info->audio_stream = stream_index;
-            info->audio_channels = 1;
-            info->audio_sample_rate = read_le32(format + 4);
-            info->audio_bits_per_sample = 8;
+        format_tag = read_le16(format);
+        channels = read_le16(format + 2);
+        block_align = read_le16(format + 12);
+        bits_per_sample = read_le16(format + 14);
+        if (format_tag != 1 && format_tag != 0x11)
+            return DIVX3_AVI_OK;
+        if (!read_le32(format + 4) || channels != 1)
+            return DIVX3_AVI_ERR_FORMAT;
+        if (format_tag == 1) {
+            if (bits_per_sample != 8 || block_align != 1)
+                return DIVX3_AVI_ERR_FORMAT;
+            info->audio_samples_per_block = 1;
+        } else if (format_tag == 0x11) {
+            const size_t expected_samples =
+                ima_adpcm_wav_mono_sample_count(block_align);
+            if (format_size < 20 || bits_per_sample != 4 ||
+                read_le32(format + 4) > 48000 ||
+                read_le16(format + 16) < 2 || !expected_samples ||
+                read_le16(format + 18) != expected_samples) {
+                return DIVX3_AVI_ERR_FORMAT;
+            }
+            info->audio_samples_per_block = read_le16(format + 18);
         }
+        info->audio_stream = stream_index;
+        info->audio_format_tag = format_tag;
+        info->audio_block_align = block_align;
+        info->audio_channels = 1;
+        info->audio_sample_rate = read_le32(format + 4);
+        info->audio_bits_per_sample = (uint8_t)bits_per_sample;
     }
     return DIVX3_AVI_OK;
 }

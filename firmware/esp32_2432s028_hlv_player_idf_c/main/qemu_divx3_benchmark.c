@@ -109,6 +109,11 @@ void app_main(void) {
         fclose(file);
         finish(2);
     }
+    ESP_LOGI(k_tag, "AVI audio tag=%u rate=%u align=%u samples/block=%u",
+             (unsigned)info.audio_format_tag,
+             (unsigned)info.audio_sample_rate,
+             (unsigned)info.audio_block_align,
+             (unsigned)info.audio_samples_per_block);
     decoder = divx3_decoder_create_y6_u5_v5(info.width, info.height);
     packet = (uint8_t *)malloc(info.max_video_packet_size);
     scratch = (uint8_t *)malloc(info.width);

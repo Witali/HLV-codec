@@ -30,6 +30,9 @@ typedef struct {
     uint32_t frame_count;
     uint32_t audio_sample_rate;
     uint32_t max_video_frame_size;
+    uint16_t audio_format_tag;
+    uint16_t audio_block_align;
+    uint16_t audio_samples_per_block;
     uint8_t audio_channels;
     uint8_t audio_bits_per_sample;
     uint8_t video_stream;
@@ -81,7 +84,7 @@ const char *mjpeg_avi_strerror(int result);
 int mjpeg_avi_read_info(FILE *file, mjpeg_avi_info_t *info);
 
 /*
- * Find the next PCM audio chunk and leave the file positioned at its
+ * Find the next audio chunk and leave the file positioned at its
  * payload. The caller reads exactly payload_size bytes and consumes one
  * padding byte when payload_size is odd.
  */

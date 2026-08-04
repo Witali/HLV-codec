@@ -217,6 +217,7 @@ elseif(MJPEG_QEMU_BENCHMARK)
             espressif__esp_new_jpeg
             freertos
             heap
+            ima_adpcm
             log
             vfs
     )
@@ -321,6 +322,7 @@ elseif(DIVX3_QEMU_BENCHMARK)
             esp_system
             freertos
             heap
+            ima_adpcm
             log
             vfs
     )
@@ -352,14 +354,12 @@ else()
             "hlv_esp32_decoder.c"
             "mjpeg_avi_decoder.c"
             "uart_file_upload.c"
-            "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/src/ima_adpcm.c"
             ${mjpeg_idct_sources}
             ${mjpeg_clear_sources}
             ${mjpeg_color_sources}
             ${mjpeg_stream_sources}
             ${compact_yuv_rgb565_sources}
         INCLUDE_DIRS "." "${mjpeg_stream_dir}"
-            "${CMAKE_CURRENT_LIST_DIR}/../../../codecs/common/include"
         REQUIRES
             amrnb_3gp
             bpv1
@@ -367,6 +367,7 @@ else()
             divx3
             h263_3gp
             hlv1
+            ima_adpcm
             esp_driver_i2s
             esp_driver_gpio
             esp_driver_sdspi

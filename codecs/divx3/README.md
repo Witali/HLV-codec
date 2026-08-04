@@ -11,7 +11,8 @@ The current decoder supports:
 - all three selectable luma/chroma run-level tables;
 - DC and AC prediction, half-pixel motion compensation, and all three AC
   escape forms;
-- optional mono 8-bit PCM metadata in the AVI container.
+- optional legacy PCM_U8 or standard mono IMA ADPCM metadata in AVI at
+  8–48 kHz, including 22.05 and 44.1 kHz.
 
 The first embedded profile intentionally excludes B-pictures and per-
 macroblock quantizer changes. The default portable decoder keeps two padded
@@ -39,7 +40,7 @@ preceding I-frame, with:
 ```
 
 Create the validated 256x144, 12 fps, `q=4` Big Buck Bunny profile with mono
-PCM_U8 audio:
+IMA ADPCM audio at 32 kHz:
 
 ```powershell
 .\scripts\encode_big_buck_bunny_divx3.ps1
