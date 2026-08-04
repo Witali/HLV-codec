@@ -6,6 +6,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+size_t divx3_replay_read(
+    void *context, uint8_t *buffer, size_t capacity) {
+    Divx3ReplayReader *reader = (Divx3ReplayReader *)(context);
+    size_t bytes_read = 0;
+    if (!reader || !reader->read || !buffer || !capacity) return 0;
+    if (reader->prefix_pending) {
+        buffer[bytes_read++] = reader->prefix;
+        reader->prefix_pending = 0;
+    }
+    if (bytes_read == capacity) return bytes_read;
+    return bytes_read + reader->read(
+                            reader->read_context, buffer + bytes_read,
+                            capacity - bytes_read);
+}
+
 #ifndef DIVX3_IRAM_BITREADER
 #define DIVX3_IRAM_BITREADER 0
 #endif

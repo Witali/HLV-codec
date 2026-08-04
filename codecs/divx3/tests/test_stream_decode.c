@@ -133,6 +133,7 @@ int main(int argc, char **argv) {
         Divx3Frame contiguous_frame = {0};
         Divx3Frame stream_frame = {0};
         MemoryReader reader;
+        Divx3ReplayReader replay;
         size_t packet_size = 0;
         uint64_t contiguous_checksum;
         uint64_t stream_checksum;
@@ -165,10 +166,14 @@ int main(int argc, char **argv) {
         }
         reader.data = packet;
         reader.size = packet_size;
-        reader.position = 0;
+        reader.position = 1;
         reader.maximum_chunk = 257;
+        replay.read = read_memory;
+        replay.read_context = &reader;
+        replay.prefix = packet[0];
+        replay.prefix_pending = 1;
         result = divx3_decoder_decode_stream(
-            stream_decoder, packet_size, read_memory, &reader,
+            stream_decoder, packet_size, divx3_replay_read, &replay,
             &stream_frame);
         if (result != DIVX3_OK) {
             fprintf(stderr, "stream frame %u failed: %s\n",

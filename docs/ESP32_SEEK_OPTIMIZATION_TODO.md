@@ -91,16 +91,36 @@ total-RAM shortage rather than only late heap fragmentation. No static-stack
 candidate code was retained. The original MJPEG `play.txt` selection was
 restored and no test asset was added to the SD card.
 
-### 3. DivX3 prefix replay
+### 3. DivX3 prefix replay (retained)
 
-- [ ] Replace the one-byte read/backward-seek probe with a stream context that
+- [x] Replace the one-byte read/backward-seek probe with a stream context that
       returns the saved prefix byte before continuing from the `FILE`.
-- [ ] Apply the same behavior to sequential and dual-core decode paths in C99
+- [x] Apply the same behavior to sequential and dual-core decode paths in C99
       and C++.
-- [ ] Preserve I/P classification, compressed skip behavior and exact frame
+- [x] Preserve I/P classification, compressed skip behavior and exact frame
       checksums.
-- [ ] Regress normal playback and large catch-up-to-keyframe sequences on the
+- [x] Regress normal playback and large catch-up-to-keyframe sequences on the
       physical ESP32.
+
+Result, 2026-08-04: retained. A shared `Divx3ReplayReader` returns the saved
+probe byte and then continues through the original bounded reader. The stream
+regression deliberately starts its underlying reader at byte one of every
+packet and replays byte zero through this adapter. It matches the contiguous
+decoder frame-for-frame; the generated test has a 13,042-byte maximum packet,
+which exceeds the decoder's fixed 4 KiB refill buffer. All seven production
+formats decode completely, DivX3 QEMU tests pass, and both firmware variants
+build.
+
+On the physical ESP32, normal 320x240 12 fps heavy playback changed from
+80.868 ms average work and 114.478 ms p95 to 80.785 ms and 114.475 ms. The
+0.10% average reduction is below run-to-run content noise, with no frame gaps,
+audio rebuffers or underruns in either 600-frame run. A deliberately overloaded
+320x240 15 fps clip exercised the catch-up path: 300 consecutive frame records,
+146 compressed predictive packets skipped before decoding, and zero audio
+rebuffers, underrun samples or inserted silence. Thus an encountered I-frame
+is decoded using the already consumed prefix without seeking backward; no
+already decoded frame is discarded. The original MJPEG `play.txt` selection
+was restored and no test asset was added to the SD card.
 
 ### 4. HLV parsed-header decode entry
 

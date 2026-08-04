@@ -27,6 +27,19 @@ enum {
 typedef size_t (*Divx3ReadFunction)(
     void *context, uint8_t *buffer, size_t capacity);
 
+/* Sequential reader wrapper used after a caller has consumed one byte while
+ * probing the picture header.  The saved byte is returned first, followed by
+ * data from the wrapped reader, without repositioning the input stream. */
+typedef struct Divx3ReplayReader {
+    Divx3ReadFunction read;
+    void *read_context;
+    uint8_t prefix;
+    uint8_t prefix_pending;
+} Divx3ReplayReader;
+
+size_t divx3_replay_read(
+    void *context, uint8_t *buffer, size_t capacity);
+
 typedef struct Divx3Frame {
     const uint8_t *y;
     const uint8_t *cb;

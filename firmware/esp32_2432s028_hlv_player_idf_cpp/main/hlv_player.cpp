@@ -711,7 +711,7 @@ void endH263RowPipeline() {
     __atomic_store_n(&h263_row_pipeline_active, 0, __ATOMIC_RELEASE);
 }
 
-size_t readDivx3Stream(void *context, uint8_t *buffer, size_t capacity) {
+size_t readDivx3File(void *context, uint8_t *buffer, size_t capacity) {
     FILE *file = static_cast<FILE *>(context);
     return file && buffer && capacity
                ? std::fread(buffer, 1, capacity, file)
@@ -807,19 +807,19 @@ void decodeTask(void *) {
             }
         } else if (request.codec == VideoCodec::kDivx3) {
             int intra = 0;
-            const long payload_offset = request.divx3_file
-                                            ? std::ftell(request.divx3_file)
-                                            : -1;
-            if (request.skip_predictive && payload_offset >= 0) {
+            Divx3ReplayReader stream{
+                readDivx3File, request.divx3_file, 0, 0};
+            if (request.skip_predictive && request.divx3_file) {
                 uint8_t prefix = 0;
-                if (std::fread(&prefix, 1, 1, request.divx3_file) == 1 &&
-                    std::fseek(request.divx3_file, payload_offset,
-                               SEEK_SET) == 0 &&
-                    divx3_packet_probe_intra(&prefix, 1, &intra) ==
-                        DIVX3_OK &&
-                    !intra) {
-                    result.result = DIVX3_OK;
-                    result.skipped = true;
+                if (std::fread(&prefix, 1, 1, request.divx3_file) == 1) {
+                    stream.prefix = prefix;
+                    stream.prefix_pending = 1;
+                    if (divx3_packet_probe_intra(&prefix, 1, &intra) ==
+                            DIVX3_OK &&
+                        !intra) {
+                        result.result = DIVX3_OK;
+                        result.skipped = true;
+                    }
                 }
             }
             if (!result.skipped) {
@@ -829,7 +829,7 @@ void decodeTask(void *) {
                             request.divx3_next_offset >= 0
                         ? divx3_decoder_decode_stream(
                               divx3_decoder, request.divx3_packet_size,
-                              readDivx3Stream, request.divx3_file,
+                              divx3_replay_read, &stream,
                               &result.divx3_frame)
                         : DIVX3_ERR_ARGUMENT;
             }
@@ -5546,37 +5546,34 @@ void playOneDivx3Frame() {
         return;
     }
 
+    Divx3ReplayReader stream{readDivx3File, video_file, 0, 0};
     if (video_waiting_for_keyframe) {
-        const long payload_offset = std::ftell(video_file);
         uint8_t prefix = 0;
         int intra = 0;
         const int64_t skip_start = microsNow();
-        if (payload_offset >= 0 &&
-            std::fread(&prefix, 1, 1, video_file) == 1 &&
-            std::fseek(video_file, payload_offset, SEEK_SET) == 0 &&
-            divx3_packet_probe_intra(&prefix, 1, &intra) == DIVX3_OK &&
-            !intra) {
-            if (divx3_avi_finish_video_packet(
-                    video_file, next_offset) != DIVX3_AVI_OK) {
-                failSdCardRead("cannot skip DivX 3 video packet");
+        if (std::fread(&prefix, 1, 1, video_file) == 1) {
+            stream.prefix = prefix;
+            stream.prefix_pending = 1;
+            if (divx3_packet_probe_intra(&prefix, 1, &intra) == DIVX3_OK &&
+                !intra) {
+                if (divx3_avi_finish_video_packet(
+                        video_file, next_offset) != DIVX3_AVI_OK) {
+                    failSdCardRead("cannot skip DivX 3 video packet");
+                    return;
+                }
+                finishCompressedPredictiveSkip(
+                    read_us,
+                    static_cast<uint32_t>(microsNow() - skip_start));
                 return;
             }
-            finishCompressedPredictiveSkip(
-                read_us, static_cast<uint32_t>(microsNow() - skip_start));
-            return;
-        }
-        if (payload_offset < 0 ||
-            std::fseek(video_file, payload_offset, SEEK_SET) != 0) {
-            failSdCardRead("cannot probe DivX 3 video packet");
-            return;
         }
     }
 
     Divx3Frame decoded{};
     const int64_t decode_start = microsNow();
     int decode_result = divx3_decoder_decode_stream(
-        divx3_decoder, packet_size, readDivx3Stream,
-        video_file, &decoded);
+        divx3_decoder, packet_size, divx3_replay_read,
+        &stream, &decoded);
     if (divx3_avi_finish_video_packet(
             video_file, next_offset) != DIVX3_AVI_OK &&
         decode_result == DIVX3_OK) {
