@@ -196,8 +196,8 @@ from a FAT32 microSD card over an independent SPI3/VSPI DMA bus and displays
 it on the 320x240 ST7789 over SPI2 DMA. HLV/BPV IMA ADPCM is decoded directly
 to PCM16; MPEG MP2 is synthesized directly to signed PCM16, while legacy
 PCM_U8 remains readable. All formats share the same bounded queue and
-play through I2S0 PCM-to-PDM data on GPIO26 and the onboard
-amplifier; GPIO22 carries the required PDM clock. All four AVI video codecs
+play through I2S0 PCM-to-PDM data on GPIO26 and the onboard amplifier. The PDM
+clock remains internal and is not routed to a GPIO. All four AVI video codecs
 use one C99 RIFF/AVI demultiplexer, which routes encoded video and audio chunks
 without decoding either payload. Legacy AVI PCM remains readable; production
 AVI audio uses mono WAV IMA ADPCM. Each 1024-byte block expands into the bounded

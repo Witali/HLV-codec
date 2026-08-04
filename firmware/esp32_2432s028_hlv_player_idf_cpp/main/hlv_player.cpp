@@ -2555,7 +2555,7 @@ bool prepareAudio(const HLV1Header &header) {
         .slot_cfg = I2S_PDM_TX_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
-            .clk = board::kAudioPdmClock,
+            .clk = I2S_GPIO_UNUSED,
             .dout = board::kAudioPdmData,
             .invert_flags = {
                 .clk_inv = false,
@@ -2651,7 +2651,7 @@ bool prepareAudio(const HLV1Header &header) {
         (static_cast<uint64_t>(header.audio_sample_rate) *
          audio_sample_bytes));
     ESP_LOGI(kTag,
-             "Audio: %s mono %u Hz via I2S PDM GPIO%d data/GPIO%d clock, "
+             "Audio: %s mono %u Hz via I2S PDM GPIO%d data, clock unpinned, "
              "%u Hz carrier, high-SNR divider 13, static %u-byte/%u-ms queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
              audio_output_signed_pcm16
@@ -2660,7 +2660,6 @@ bool prepareAudio(const HLV1Header &header) {
                        ? "IMA_ADPCM"
                        : "PCM_U8",
              header.audio_sample_rate, board::kAudioPdmData,
-             board::kAudioPdmClock,
              static_cast<unsigned>(channel_info.bclk_hz),
              static_cast<unsigned>(kAudioStreamBytes),
              static_cast<unsigned>(queued_ms),
