@@ -43,9 +43,14 @@
 #include "pl_mpeg.h"
 #include "uart_file_upload.hpp"
 #include "y6u5v5_rgb565.h"
+#include "avi_demux.h"
 
 #ifndef COMPACT_YUV_RGB565_FAST_PATH
 #define COMPACT_YUV_RGB565_FAST_PATH 0
+#endif
+
+#ifndef MJPEG_INPUT_PREFETCH
+#define MJPEG_INPUT_PREFETCH 0
 #endif
 
 namespace {
@@ -74,6 +79,23 @@ constexpr size_t kBpvInputChunkBytes = 4 * 1024;
 constexpr uint32_t kBpvInputReaderStackBytes = 4096;
 constexpr uint32_t kBpvInputStopTimeoutMs = 500;
 constexpr uint32_t kBpvInputPrerollTimeoutMs = 1000;
+#if MJPEG_INPUT_PREFETCH
+// This capacity is deliberately unrelated to the maximum JPEG packet.
+constexpr size_t kMjpegInputRingBytes = 8 * 1024;
+constexpr size_t kMjpegInputRingStorageBytes = kMjpegInputRingBytes + 1;
+constexpr size_t kMjpegInputChunkBytes = 512;
+// Keep one producer chunk free so a late skip can never leave the reader
+// blocked in xStreamBufferSend before it observes the skip command.
+constexpr size_t kMjpegInputSpeculativeBytes =
+    kMjpegInputRingBytes - kMjpegInputChunkBytes;
+constexpr uint32_t kMjpegInputReaderStackBytes = 3072;
+constexpr uint32_t kMjpegInputStopTimeoutMs = 500;
+constexpr uint32_t kMjpegInputWaitTimeoutMs = 3000;
+constexpr size_t kMjpegMaximumPacketBytes = 1024 * 1024;
+constexpr uint32_t kMjpegInputCommandDecode = 1;
+constexpr uint32_t kMjpegInputCommandSkip = 2;
+constexpr uint32_t kMjpegInputCommandStop = 3;
+#endif
 constexpr size_t kAudioStreamBytes = 4096;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
@@ -240,6 +262,13 @@ enum class BpvInputStartResult {
     kNoMemory,
     kReadFailed,
 };
+
+#if MJPEG_INPUT_PREFETCH
+struct MjpegInputPacket {
+    int result = MJPEG_AVI_OK;
+    size_t jpeg_size = 0;
+};
+#endif
 
 bool isPacketVideoCodec(VideoCodec codec) {
     return codec == VideoCodec::kH263 ||
@@ -487,6 +516,22 @@ uint8_t *bpv_input_chunk = nullptr;
 volatile bool bpv_input_stop_requested = false;
 volatile bool bpv_input_reader_done = true;
 volatile int bpv_input_reader_result = BPV1_OK;
+#if MJPEG_INPUT_PREFETCH
+StreamBufferHandle_t mjpeg_input_stream = nullptr;
+StaticStreamBuffer_t mjpeg_input_stream_state{};
+alignas(4) uint8_t
+    mjpeg_input_stream_storage[kMjpegInputRingStorageBytes]{};
+QueueHandle_t mjpeg_input_packet_queue = nullptr;
+StaticQueue_t mjpeg_input_packet_queue_state{};
+uint8_t mjpeg_input_packet_queue_storage[sizeof(MjpegInputPacket)]{};
+TaskHandle_t mjpeg_input_reader_task_handle = nullptr;
+StaticTask_t mjpeg_input_reader_task_state{};
+StackType_t mjpeg_input_reader_task_stack[
+    (kMjpegInputReaderStackBytes + sizeof(StackType_t) - 1U) /
+    sizeof(StackType_t)]{};
+volatile bool mjpeg_input_stop_requested = false;
+volatile bool mjpeg_input_reader_finished = true;
+#endif
 union PendingFrameStorage {
     HLV1Frame hlv;
     plm_frame_t mpeg;
@@ -1092,6 +1137,207 @@ BpvInputStartResult startBpvInputPrefetch() {
         static_cast<unsigned>(prefetched));
     return BpvInputStartResult::kReady;
 }
+
+#if MJPEG_INPUT_PREFETCH
+int mapAviDemuxToMjpeg(int result) {
+    switch (result) {
+        case AVI_DEMUX_OK: return MJPEG_AVI_OK;
+        case AVI_DEMUX_EOF: return MJPEG_AVI_EOF;
+        case AVI_DEMUX_ERR_IO: return MJPEG_AVI_ERR_IO;
+        case AVI_DEMUX_ERR_RANGE: return MJPEG_AVI_ERR_RANGE;
+        default: return MJPEG_AVI_ERR_FORMAT;
+    }
+}
+
+bool sendMjpegInputPacket(const MjpegInputPacket &packet) {
+    while (!mjpeg_input_stop_requested) {
+        if (xQueueSend(mjpeg_input_packet_queue, &packet,
+                       pdMS_TO_TICKS(20)) == pdTRUE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool sendMjpegInputBytes(const uint8_t *bytes, size_t size) {
+    size_t sent = 0;
+    while (sent < size && !mjpeg_input_stop_requested) {
+        sent += xStreamBufferSend(
+            mjpeg_input_stream, bytes + sent, size - sent,
+            pdMS_TO_TICKS(20));
+    }
+    return sent == size;
+}
+
+void mjpegInputReaderTask(void *) {
+    std::array<uint8_t, kMjpegInputChunkBytes> chunk{};
+    AviDemuxInfo demux_info{};
+    demux_info.video.stream_index = mjpeg_info.video_stream;
+    demux_info.audio.stream_index = mjpeg_info.audio_stream;
+    demux_info.movi_start = mjpeg_info.movi_start;
+    demux_info.movi_end = mjpeg_info.movi_end;
+
+    while (!mjpeg_input_stop_requested) {
+        AviDemuxPacket avi_packet{};
+        MjpegInputPacket packet{};
+        uint32_t command = 0;
+        packet.result = mapAviDemuxToMjpeg(
+            avi_demux_next_packet(video_file, &demux_info,
+                                  AVI_DEMUX_PACKET_VIDEO, &avi_packet));
+        if (packet.result != MJPEG_AVI_OK) {
+            (void)sendMjpegInputPacket(packet);
+            break;
+        }
+        if (avi_packet.payload_size < 4U ||
+            avi_packet.payload_size > kMjpegMaximumPacketBytes) {
+            packet.result = MJPEG_AVI_ERR_RANGE;
+            (void)sendMjpegInputPacket(packet);
+            break;
+        }
+        packet.jpeg_size = avi_packet.payload_size;
+        if (!sendMjpegInputPacket(packet)) break;
+
+        size_t remaining = packet.jpeg_size;
+        size_t prefetch_remaining =
+            std::min(remaining, kMjpegInputSpeculativeBytes);
+        while (prefetch_remaining && !mjpeg_input_stop_requested) {
+            const size_t bytes =
+                std::min(prefetch_remaining, chunk.size());
+            if (std::fread(chunk.data(), 1, bytes, video_file) != bytes ||
+                !sendMjpegInputBytes(chunk.data(), bytes)) {
+                remaining = SIZE_MAX;
+                break;
+            }
+            remaining -= bytes;
+            prefetch_remaining -= bytes;
+        }
+        if (remaining == SIZE_MAX) break;
+
+        while (!mjpeg_input_stop_requested &&
+               xTaskNotifyWait(0, UINT32_MAX, &command,
+                               pdMS_TO_TICKS(20)) != pdTRUE) {
+        }
+        if (mjpeg_input_stop_requested ||
+            command == kMjpegInputCommandStop) {
+            break;
+        }
+        if (command == kMjpegInputCommandSkip) {
+            (void)xStreamBufferReset(mjpeg_input_stream);
+            if (avi_demux_finish_packet(video_file, &avi_packet) !=
+                AVI_DEMUX_OK) {
+                break;
+            }
+            continue;
+        }
+        if (command != kMjpegInputCommandDecode) break;
+
+        while (remaining && !mjpeg_input_stop_requested) {
+            const size_t bytes = std::min(remaining, chunk.size());
+            if (std::fread(chunk.data(), 1, bytes, video_file) != bytes ||
+                !sendMjpegInputBytes(chunk.data(), bytes)) {
+                remaining = SIZE_MAX;
+                break;
+            }
+            remaining -= bytes;
+        }
+        if (remaining ||
+            avi_demux_finish_packet(video_file, &avi_packet) !=
+                AVI_DEMUX_OK) {
+            break;
+        }
+    }
+    mjpeg_input_reader_finished = true;
+    vTaskSuspend(nullptr);
+}
+
+size_t readMjpegInput(void *, uint8_t *destination, size_t capacity) {
+    while (!mjpeg_input_stop_requested) {
+        const size_t bytes = xStreamBufferReceive(
+            mjpeg_input_stream, destination, capacity,
+            pdMS_TO_TICKS(20));
+        if (bytes) return bytes;
+        if (mjpeg_input_reader_finished) return 0;
+    }
+    return 0;
+}
+
+bool startMjpegInputPrefetch() {
+    if (mjpeg_input_reader_task_handle || !video_file) return false;
+    mjpeg_input_stop_requested = false;
+    mjpeg_input_reader_finished = false;
+    mjpeg_input_stream = xStreamBufferCreateStatic(
+        kMjpegInputRingBytes, 1, mjpeg_input_stream_storage,
+        &mjpeg_input_stream_state);
+    mjpeg_input_packet_queue = xQueueCreateStatic(
+        1, sizeof(MjpegInputPacket), mjpeg_input_packet_queue_storage,
+        &mjpeg_input_packet_queue_state);
+    if (!mjpeg_input_stream || !mjpeg_input_packet_queue) {
+        mjpeg_input_reader_finished = true;
+        return false;
+    }
+    mjpeg_input_reader_task_handle = xTaskCreateStaticPinnedToCore(
+        mjpegInputReaderTask, "mjpeg-input", kMjpegInputReaderStackBytes,
+        nullptr, 2, mjpeg_input_reader_task_stack,
+        &mjpeg_input_reader_task_state, 1);
+    if (!mjpeg_input_reader_task_handle) {
+        mjpeg_input_reader_finished = true;
+        return false;
+    }
+    return true;
+}
+
+bool signalMjpegInputPacket(bool decode) {
+    if (!mjpeg_input_reader_task_handle) return false;
+    return xTaskNotify(mjpeg_input_reader_task_handle,
+                       decode ? kMjpegInputCommandDecode
+                              : kMjpegInputCommandSkip,
+                       eSetValueWithOverwrite) == pdPASS;
+}
+
+void stopMjpegInputPrefetch() {
+    const int64_t deadline = millisNow() + kMjpegInputStopTimeoutMs;
+    mjpeg_input_stop_requested = true;
+    if (mjpeg_input_reader_task_handle) {
+        (void)xTaskNotify(mjpeg_input_reader_task_handle,
+                          kMjpegInputCommandStop,
+                          eSetValueWithOverwrite);
+    }
+    while (mjpeg_input_reader_task_handle &&
+           !mjpeg_input_reader_finished && millisNow() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    if (mjpeg_input_reader_task_handle) {
+        vTaskDelete(mjpeg_input_reader_task_handle);
+        mjpeg_input_reader_task_handle = nullptr;
+    }
+    if (mjpeg_input_stream) {
+        vStreamBufferDelete(mjpeg_input_stream);
+        mjpeg_input_stream = nullptr;
+    }
+    if (mjpeg_input_packet_queue) {
+        vQueueDelete(mjpeg_input_packet_queue);
+        mjpeg_input_packet_queue = nullptr;
+    }
+    mjpeg_input_reader_finished = true;
+}
+
+int nextMjpegInputPacket(MjpegAviPacket *packet) {
+    MjpegInputPacket input_packet{};
+    if (!packet || !mjpeg_input_packet_queue ||
+        xQueueReceive(mjpeg_input_packet_queue, &input_packet,
+                      pdMS_TO_TICKS(kMjpegInputWaitTimeoutMs)) != pdTRUE) {
+        return MJPEG_AVI_ERR_IO;
+    }
+    if (input_packet.result != MJPEG_AVI_OK) return input_packet.result;
+    *packet = {};
+    packet->input_read = readMjpegInput;
+    packet->jpeg_size = input_packet.jpeg_size;
+    return MJPEG_AVI_OK;
+}
+#else
+bool startMjpegInputPrefetch() { return true; }
+void stopMjpegInputPrefetch() {}
+#endif
 
 size_t readBpvPrefetchedInput(
     void *, uint8_t *destination, size_t size
@@ -2435,6 +2681,7 @@ void closeVideo() {
     endHlvRowPipeline();
     stopDecodeWorker();
     stopBpvInputPrefetch();
+    stopMjpegInputPrefetch();
     pending_frame_valid = false;
     pending_frame_keyframe = false;
     pending_mpeg_frame_valid = false;
@@ -3564,6 +3811,15 @@ bool openVideo() {
                  "Audio initialization failed; continuing with timer clock");
         stopAudio();
     }
+#if MJPEG_INPUT_PREFETCH
+    if (video_codec == VideoCodec::kMjpeg &&
+        !startMjpegInputPrefetch()) {
+        showVideoOpenFailure("MJPEG input init failed",
+                             "cannot create bounded input pipeline", true);
+        closeVideo();
+        return false;
+    }
+#endif
 
     const uint64_t frame_period_numerator =
         1000000ULL * sequence_header.fps_den;
@@ -5132,6 +5388,9 @@ void playOneMpegFramePipelined() {
 void playOneMjpegFrame() {
     MjpegAviPacket packet{};
     const int64_t read_start = microsNow();
+#if MJPEG_INPUT_PREFETCH
+    int packet_result = nextMjpegInputPacket(&packet);
+#else
     int packet_result =
         mjpeg_decoder.readPacket(video_file, &packet);
     if (packet_result == MJPEG_AVI_ERR_IO) {
@@ -5151,6 +5410,7 @@ void playOneMjpegFrame() {
             if (packet_result != MJPEG_AVI_ERR_IO) break;
         }
     }
+#endif
     const uint32_t read_us =
         static_cast<uint32_t>(microsNow() - read_start);
     if (packet_result == MJPEG_AVI_EOF) {
@@ -5171,6 +5431,12 @@ void playOneMjpegFrame() {
     uint32_t decode_us = 0;
     uint32_t render_us = 0;
     if (presentation.render) {
+#if MJPEG_INPUT_PREFETCH
+        if (!signalMjpegInputPacket(true)) {
+            failSdCardRead("cannot start MJPEG packet");
+            return;
+        }
+#endif
         MjpegRenderContext render_context{};
         const int64_t decode_start = microsNow();
         const int decode_result =
@@ -5198,7 +5464,12 @@ void playOneMjpegFrame() {
             failPlayback("JPEG output error", MJPEG_AVI_ERR_DECODE);
             return;
         }
-    } else if (mjpeg_decoder.skipPacket(packet) != MJPEG_AVI_OK) {
+    }
+#if MJPEG_INPUT_PREFETCH
+    else if (!signalMjpegInputPacket(false)) {
+#else
+    else if (mjpeg_decoder.skipPacket(packet) != MJPEG_AVI_OK) {
+#endif
         failSdCardRead("cannot skip MJPEG video");
         return;
     }

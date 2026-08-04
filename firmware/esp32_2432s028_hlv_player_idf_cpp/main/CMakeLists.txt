@@ -14,6 +14,10 @@ set(MJPEG_FIXED_RGB565 ON CACHE BOOL
     "Use a fixed 16x16/stride-320 YUV420-to-RGB565LE kernel")
 set(MJPEG_COLOR_TABLES ON CACHE BOOL
     "Use packed exact U/V contribution tables in the fixed RGB565 kernel")
+set(MJPEG_INPUT_PREFETCH ON CACHE BOOL
+    "Overlap bounded MJPEG input reads with decode on the other core")
+set(MJPEG_QEMU_CALLBACK_INPUT OFF CACHE BOOL
+    "Feed QEMU MJPEG packets through the generic bounded input callback")
 set(TONE_TEST OFF CACHE BOOL
     "Build the SD-free GPIO26 DAC sine-ramp diagnostic firmware")
 set(PDM_TONE_TEST OFF CACHE BOOL
@@ -205,6 +209,10 @@ elseif(MJPEG_QEMU_BENCHMARK)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         MJPEG_QEMU_FRAME_LIMIT=${MJPEG_QEMU_FRAME_LIMIT}
         MJPEG_PHASE_TIMING=1)
+    if(MJPEG_QEMU_CALLBACK_INPUT)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            MJPEG_QEMU_CALLBACK_INPUT=1)
+    endif()
     if(MJPEG_STREAMING_INPUT)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE
             MJPEG_STREAMING_INPUT=1
@@ -393,6 +401,10 @@ target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 if(HLV_PLAYER_BARE_METAL_STYLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         HLV_PLAYER_BARE_METAL_STYLE=1)
+endif()
+if(MJPEG_INPUT_PREFETCH)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        MJPEG_INPUT_PREFETCH=1)
 endif()
 if(COMPACT_YUV_RGB565_FAST_PATH)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE

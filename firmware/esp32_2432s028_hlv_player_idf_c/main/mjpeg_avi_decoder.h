@@ -42,6 +42,9 @@ typedef struct {
 } mjpeg_avi_info_t;
 
 typedef struct {
+    size_t (*input_read)(void *context, uint8_t *destination,
+                         size_t capacity);
+    void *input_context;
     const uint8_t *jpeg;
     size_t jpeg_size;
     FILE *file;
@@ -72,6 +75,9 @@ typedef struct {
     uint32_t packet_index;
     long packet_offset;
     FILE *stream_file;
+    size_t (*stream_input_read)(void *context, uint8_t *destination,
+                                size_t capacity);
+    void *stream_input_context;
     uint32_t stream_remaining;
     mjpeg_huffman_stream_t entropy_stream;
     uint16_t decode_height;
@@ -113,7 +119,8 @@ size_t mjpeg_avi_decoder_strip_buffer_bytes(
 int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
                                   FILE *file,
                                   mjpeg_avi_packet_t *packet);
-int mjpeg_avi_decoder_skip_packet(const mjpeg_avi_packet_t *packet);
+int mjpeg_avi_decoder_skip_packet(mjpeg_avi_decoder_t *decoder,
+                                  const mjpeg_avi_packet_t *packet);
 int mjpeg_avi_decoder_decode(mjpeg_avi_decoder_t *decoder,
                              const mjpeg_avi_packet_t *packet,
                              mjpeg_avi_strip_output_t output,

@@ -37,6 +37,9 @@ struct MjpegAviInfo {
 };
 
 struct MjpegAviPacket {
+    size_t (*input_read)(void *context, uint8_t *destination,
+                         size_t capacity) = nullptr;
+    void *input_context = nullptr;
     const uint8_t *jpeg = nullptr;
     size_t jpeg_size = 0;
     FILE *file = nullptr;
@@ -105,6 +108,9 @@ private:
     uint32_t packet_index_ = 0;
     long packet_offset_ = -1;
     FILE *stream_file_ = nullptr;
+    size_t (*stream_input_read_)(void *context, uint8_t *destination,
+                                 size_t capacity) = nullptr;
+    void *stream_input_context_ = nullptr;
     uint32_t stream_remaining_ = 0;
     mjpeg_huffman_stream_t entropy_stream_{};
     uint16_t decode_height_ = 0;

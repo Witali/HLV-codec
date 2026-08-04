@@ -17,6 +17,10 @@
 #define MJPEG_QEMU_FRAME_LIMIT 12
 #endif
 
+#ifndef MJPEG_QEMU_CALLBACK_INPUT
+#define MJPEG_QEMU_CALLBACK_INPUT 0
+#endif
+
 #define TARGET_CPU_HZ 240000000U
 #define STRIP_PIXELS (320U * 16U)
 
@@ -33,6 +37,34 @@ typedef struct {
     uint64_t hash;
     uint64_t callback_cycles;
 } output_context_t;
+
+#if MJPEG_QEMU_CALLBACK_INPUT
+typedef struct {
+    FILE *file;
+    size_t remaining;
+    long next_packet_offset;
+} input_context_t;
+
+static size_t read_input(void *opaque, uint8_t *destination,
+                         size_t capacity) {
+    input_context_t *context = (input_context_t *)opaque;
+    size_t bytes;
+    if (context == NULL || context->file == NULL ||
+        destination == NULL || capacity == 0U) {
+        return 0U;
+    }
+    bytes = capacity < context->remaining
+                ? capacity
+                : context->remaining;
+    bytes = fread(destination, 1, bytes, context->file);
+    context->remaining -= bytes;
+    if (context->remaining == 0U &&
+        fseek(context->file, context->next_packet_offset, SEEK_SET) != 0) {
+        return 0U;
+    }
+    return bytes;
+}
+#endif
 
 static uint16_t *acquire_strip(void *opaque,
                                uint16_t y,
@@ -124,6 +156,9 @@ void app_main(void) {
 
     while (frames < MJPEG_QEMU_FRAME_LIMIT) {
         mjpeg_avi_packet_t packet = {0};
+#if MJPEG_QEMU_CALLBACK_INPUT
+        input_context_t input = {0};
+#endif
         uint64_t callback_before;
         uint32_t start;
         int decode_result;
@@ -136,6 +171,14 @@ void app_main(void) {
         if (packet.jpeg_size > maximum_packet) {
             maximum_packet = (uint32_t)packet.jpeg_size;
         }
+#if MJPEG_QEMU_CALLBACK_INPUT
+        input.file = file;
+        input.remaining = packet.jpeg_size;
+        input.next_packet_offset = packet.next_offset;
+        packet.input_read = read_input;
+        packet.input_context = &input;
+        packet.file = NULL;
+#endif
         callback_before = output.callback_cycles;
         start = esp_cpu_get_cycle_count();
         decode_result = mjpeg_avi_decoder_decode_direct(

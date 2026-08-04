@@ -5,6 +5,8 @@ param(
     [int]$Frames = 12,
     [ValidateSet("ON", "OFF")]
     [string]$StreamingInput = "ON",
+    [ValidateSet("ON", "OFF")]
+    [string]$CallbackInput = "OFF",
     [ValidateRange(1024, 65536)]
     [int]$InputBufferBytes = 8192,
     [ValidateSet("ON", "OFF")]
@@ -42,6 +44,7 @@ $project = $PSScriptRoot
     "-D", "MJPEG_QEMU_BENCHMARK=ON",
     "-D", "MJPEG_QEMU_FRAME_LIMIT=$Frames",
     "-D", "MJPEG_STREAMING_INPUT=$StreamingInput",
+    "-D", "MJPEG_QEMU_CALLBACK_INPUT=$CallbackInput",
     "-D", "MJPEG_INPUT_BUFFER_BYTES=$InputBufferBytes",
     "-D", "MJPEG_HOT_IRAM=$HotIram",
     "-D", "MJPEG_OPTIMIZED_IDCT=$OptimizedIdct",

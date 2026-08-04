@@ -610,6 +610,17 @@ int MjpegAviDecoder::readPacket(FILE *file, MjpegAviPacket *packet) {
 
 int MjpegAviDecoder::skipPacket(const MjpegAviPacket &packet) {
 #ifdef MJPEG_STREAMING_INPUT
+    if (packet.input_read) {
+        size_t remaining = packet.jpeg_size;
+        while (remaining) {
+            const size_t chunk = std::min(remaining, compressed_capacity_);
+            const size_t bytes = packet.input_read(
+                packet.input_context, compressed_, chunk);
+            if (!bytes || bytes > chunk) return MJPEG_AVI_ERR_IO;
+            remaining -= bytes;
+        }
+        return MJPEG_AVI_OK;
+    }
     if (!packet.file || packet.next_offset < 0)
         return MJPEG_AVI_ERR_ARGUMENT;
     return seekAbsolute(packet.file, packet.next_offset)
@@ -638,7 +649,9 @@ int MjpegAviDecoder::decodeDirect(const MjpegAviPacket &packet,
 size_t MjpegAviDecoder::refillStream(
     void *context, uint8_t *destination, size_t capacity) {
     auto *decoder = static_cast<MjpegAviDecoder *>(context);
-    if (!decoder || !decoder->stream_file_ || !destination ||
+    if (!decoder ||
+        (!decoder->stream_input_read_ && !decoder->stream_file_) ||
+        !destination ||
         !capacity || !decoder->stream_remaining_) {
         return 0;
     }
@@ -647,7 +660,26 @@ size_t MjpegAviDecoder::refillStream(
 #ifdef MJPEG_PHASE_TIMING
     const uint32_t start = esp_cpu_get_cycle_count();
 #endif
-    if (!readExact(decoder->stream_file_, destination, bytes)) {
+    if (decoder->stream_input_read_) {
+        size_t received = 0;
+        while (received < bytes) {
+            const size_t count = decoder->stream_input_read_(
+                decoder->stream_input_context_, destination + received,
+                bytes - received);
+            if (!count || count > bytes - received) {
+                decoder->stream_failed_ = true;
+                break;
+            }
+            received += count;
+        }
+        if (received != bytes) {
+#ifdef MJPEG_PHASE_TIMING
+            decoder->last_decode_cycles_.input +=
+                esp_cpu_get_cycle_count() - start;
+#endif
+            return 0;
+        }
+    } else if (!readExact(decoder->stream_file_, destination, bytes)) {
 #ifdef MJPEG_PHASE_TIMING
         decoder->last_decode_cycles_.input +=
             esp_cpu_get_cycle_count() - start;
@@ -671,8 +703,9 @@ int MjpegAviDecoder::decodeImpl(
 #endif
     if (!ready() ||
 #ifdef MJPEG_STREAMING_INPUT
-        !packet.file || packet.payload_offset < 0 ||
-        packet.next_offset < 0 ||
+        (!packet.input_read &&
+         (!packet.file || packet.payload_offset < 0 ||
+          packet.next_offset < 0)) ||
 #else
         !packet.jpeg ||
 #endif
@@ -682,18 +715,31 @@ int MjpegAviDecoder::decodeImpl(
     jpeg_dec_io_t io{};
     jpeg_dec_header_info_t header{};
 #ifdef MJPEG_STREAMING_INPUT
-    const long current_offset = std::ftell(packet.file);
-    if (current_offset < 0 ||
-        (current_offset != packet.payload_offset &&
-         !seekAbsolute(packet.file, packet.payload_offset)))
-        return MJPEG_AVI_ERR_IO;
+    if (!packet.input_read) {
+        const long current_offset = std::ftell(packet.file);
+        if (current_offset < 0 ||
+            (current_offset != packet.payload_offset &&
+             !seekAbsolute(packet.file, packet.payload_offset)))
+            return MJPEG_AVI_ERR_IO;
+    }
     const size_t initial_bytes =
         std::min(compressed_capacity_, packet.jpeg_size);
 #ifdef MJPEG_PHASE_TIMING
     uint32_t input_start = esp_cpu_get_cycle_count();
 #endif
-    if (!readExact(packet.file, compressed_, initial_bytes))
+    if (packet.input_read) {
+        size_t received = 0;
+        while (received < initial_bytes) {
+            const size_t count = packet.input_read(
+                packet.input_context, compressed_ + received,
+                initial_bytes - received);
+            if (!count || count > initial_bytes - received)
+                return MJPEG_AVI_ERR_IO;
+            received += count;
+        }
+    } else if (!readExact(packet.file, compressed_, initial_bytes)) {
         return MJPEG_AVI_ERR_IO;
+    }
 #ifdef MJPEG_PHASE_TIMING
     last_decode_cycles_.input +=
         esp_cpu_get_cycle_count() - input_start;
@@ -705,6 +751,8 @@ int MjpegAviDecoder::decodeImpl(
         return MJPEG_AVI_ERR_FORMAT;
     }
     stream_file_ = packet.file;
+    stream_input_read_ = packet.input_read;
+    stream_input_context_ = packet.input_context;
     stream_remaining_ =
         static_cast<uint32_t>(packet.jpeg_size - initial_bytes);
     stream_failed_ = false;
@@ -829,8 +877,17 @@ int MjpegAviDecoder::decodeImpl(
     }
 #ifdef MJPEG_STREAMING_INPUT
     mjpeg_huffman_stream_detach(&entropy_stream_);
-    if (!seekAbsolute(packet.file, packet.next_offset) || stream_failed_)
+    if (packet.input_read) {
+        while (stream_remaining_) {
+            const size_t chunk =
+                std::min<size_t>(stream_remaining_, compressed_capacity_);
+            if (refillStream(this, compressed_, chunk) != chunk)
+                return MJPEG_AVI_ERR_IO;
+        }
+    } else if (!seekAbsolute(packet.file, packet.next_offset)) {
         return MJPEG_AVI_ERR_IO;
+    }
+    if (stream_failed_) return MJPEG_AVI_ERR_IO;
 #endif
     return decoded_y == decode_height_ ? MJPEG_AVI_OK
                                        : MJPEG_AVI_ERR_DECODE;

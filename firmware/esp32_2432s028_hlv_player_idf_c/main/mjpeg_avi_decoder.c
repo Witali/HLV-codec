@@ -775,16 +775,34 @@ int mjpeg_avi_decoder_read_packet(mjpeg_avi_decoder_t *decoder,
     return MJPEG_AVI_OK;
 }
 
-int mjpeg_avi_decoder_skip_packet(const mjpeg_avi_packet_t *packet) {
+int mjpeg_avi_decoder_skip_packet(mjpeg_avi_decoder_t *decoder,
+                                  const mjpeg_avi_packet_t *packet) {
 #ifdef MJPEG_STREAMING_INPUT
-    if (packet == NULL || packet->file == NULL ||
-        packet->next_offset < 0) {
+    if (decoder == NULL || packet == NULL) {
+        return MJPEG_AVI_ERR_ARGUMENT;
+    }
+    if (packet->input_read != NULL) {
+        size_t remaining = packet->jpeg_size;
+        while (remaining != 0U) {
+            const size_t chunk = min_size(
+                remaining, decoder->compressed_capacity);
+            const size_t bytes = packet->input_read(
+                packet->input_context, decoder->compressed, chunk);
+            if (bytes == 0U || bytes > chunk) {
+                return MJPEG_AVI_ERR_IO;
+            }
+            remaining -= bytes;
+        }
+        return MJPEG_AVI_OK;
+    }
+    if (packet->file == NULL || packet->next_offset < 0) {
         return MJPEG_AVI_ERR_ARGUMENT;
     }
     return seek_absolute(packet->file, packet->next_offset)
                ? MJPEG_AVI_OK
                : MJPEG_AVI_ERR_IO;
 #else
+    (void)decoder;
     (void)packet;
     return MJPEG_AVI_OK;
 #endif
@@ -799,7 +817,9 @@ static size_t refill_stream_buffer(
     uint32_t start;
 #endif
 
-    if (decoder == NULL || decoder->stream_file == NULL ||
+    if (decoder == NULL ||
+        (decoder->stream_input_read == NULL &&
+         decoder->stream_file == NULL) ||
         destination == NULL || capacity == 0U ||
         decoder->stream_remaining == 0U) {
         return 0U;
@@ -808,7 +828,26 @@ static size_t refill_stream_buffer(
 #ifdef MJPEG_PHASE_TIMING
     start = esp_cpu_get_cycle_count();
 #endif
-    if (!read_exact(decoder->stream_file, destination, bytes)) {
+    if (decoder->stream_input_read != NULL) {
+        size_t received = 0U;
+        while (received < bytes) {
+            const size_t count = decoder->stream_input_read(
+                decoder->stream_input_context, destination + received,
+                bytes - received);
+            if (count == 0U || count > bytes - received) {
+                decoder->stream_failed = true;
+                break;
+            }
+            received += count;
+        }
+        if (received != bytes) {
+#ifdef MJPEG_PHASE_TIMING
+            decoder->last_decode_cycles.input +=
+                esp_cpu_get_cycle_count() - start;
+#endif
+            return 0U;
+        }
+    } else if (!read_exact(decoder->stream_file, destination, bytes)) {
 #ifdef MJPEG_PHASE_TIMING
         decoder->last_decode_cycles.input +=
             esp_cpu_get_cycle_count() - start;
@@ -852,8 +891,9 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
 
     if (!mjpeg_avi_decoder_ready(decoder) || packet == NULL ||
 #ifdef MJPEG_STREAMING_INPUT
-        packet->file == NULL ||
-        packet->payload_offset < 0 || packet->next_offset < 0 ||
+        (packet->input_read == NULL &&
+         (packet->file == NULL || packet->payload_offset < 0 ||
+          packet->next_offset < 0)) ||
 #else
         packet->jpeg == NULL || packet->jpeg_size == 0U ||
 #endif
@@ -865,18 +905,32 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
         return MJPEG_AVI_ERR_ARGUMENT;
     }
 #ifdef MJPEG_STREAMING_INPUT
-    const long current_offset = ftell(packet->file);
-    if (current_offset < 0 ||
-        (current_offset != packet->payload_offset &&
-         !seek_absolute(packet->file, packet->payload_offset))) {
-        return MJPEG_AVI_ERR_IO;
+    if (packet->input_read == NULL) {
+        const long current_offset = ftell(packet->file);
+        if (current_offset < 0 ||
+            (current_offset != packet->payload_offset &&
+             !seek_absolute(packet->file, packet->payload_offset))) {
+            return MJPEG_AVI_ERR_IO;
+        }
     }
     initial_bytes = min_size(
         decoder->compressed_capacity, packet->jpeg_size);
 #ifdef MJPEG_PHASE_TIMING
     phase_start = esp_cpu_get_cycle_count();
 #endif
-    if (!read_exact(packet->file, decoder->compressed, initial_bytes)) {
+    if (packet->input_read != NULL) {
+        size_t received = 0U;
+        while (received < initial_bytes) {
+            const size_t count = packet->input_read(
+                packet->input_context, decoder->compressed + received,
+                initial_bytes - received);
+            if (count == 0U || count > initial_bytes - received) {
+                return MJPEG_AVI_ERR_IO;
+            }
+            received += count;
+        }
+    } else if (!read_exact(
+                   packet->file, decoder->compressed, initial_bytes)) {
         return MJPEG_AVI_ERR_IO;
     }
 #ifdef MJPEG_PHASE_TIMING
@@ -895,6 +949,8 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
         return MJPEG_AVI_ERR_FORMAT;
     }
     decoder->stream_file = packet->file;
+    decoder->stream_input_read = packet->input_read;
+    decoder->stream_input_context = packet->input_context;
     decoder->stream_remaining =
         (uint32_t)(packet->jpeg_size - initial_bytes);
     decoder->stream_failed = false;
@@ -1030,8 +1086,19 @@ static int decode_impl(mjpeg_avi_decoder_t *decoder,
     }
 #ifdef MJPEG_STREAMING_INPUT
     mjpeg_huffman_stream_detach(&decoder->entropy_stream);
-    if (!seek_absolute(packet->file, packet->next_offset) ||
-        decoder->stream_failed) {
+    if (packet->input_read != NULL) {
+        while (decoder->stream_remaining != 0U) {
+            const size_t chunk = min_size(
+                decoder->stream_remaining, decoder->compressed_capacity);
+            if (refill_stream_buffer(
+                    decoder, decoder->compressed, chunk) != chunk) {
+                return MJPEG_AVI_ERR_IO;
+            }
+        }
+    } else if (!seek_absolute(packet->file, packet->next_offset)) {
+        return MJPEG_AVI_ERR_IO;
+    }
+    if (decoder->stream_failed) {
         return MJPEG_AVI_ERR_IO;
     }
 #endif

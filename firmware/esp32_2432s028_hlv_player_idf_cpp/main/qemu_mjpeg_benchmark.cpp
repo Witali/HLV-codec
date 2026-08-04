@@ -19,6 +19,10 @@ namespace {
 #define MJPEG_QEMU_FRAME_LIMIT 12
 #endif
 
+#ifndef MJPEG_QEMU_CALLBACK_INPUT
+#define MJPEG_QEMU_CALLBACK_INPUT 0
+#endif
+
 constexpr char kTag[] = "mjpeg-qemu-bench";
 constexpr uint32_t kFrameLimit = MJPEG_QEMU_FRAME_LIMIT;
 constexpr uint32_t kTargetCpuHz = 240000000;
@@ -35,6 +39,33 @@ struct OutputContext {
     uint64_t hash = UINT64_C(1469598103934665603);
     uint64_t callback_cycles = 0;
 };
+
+#if MJPEG_QEMU_CALLBACK_INPUT
+struct InputContext {
+    FILE *file = nullptr;
+    size_t remaining = 0;
+    long next_packet_offset = -1;
+};
+
+size_t readInput(void *opaque, uint8_t *destination,
+                 size_t capacity) {
+    auto *context = static_cast<InputContext *>(opaque);
+    if (!context || !context->file || !destination || !capacity) {
+        return 0;
+    }
+    const size_t requested = capacity < context->remaining
+                                 ? capacity
+                                 : context->remaining;
+    const size_t bytes =
+        fread(destination, 1, requested, context->file);
+    context->remaining -= bytes;
+    if (!context->remaining &&
+        fseek(context->file, context->next_packet_offset, SEEK_SET)) {
+        return 0;
+    }
+    return bytes;
+}
+#endif
 
 uint16_t *acquireStrip(void *opaque, uint16_t, uint16_t rows) {
     auto *context = static_cast<OutputContext *>(opaque);
@@ -102,7 +133,18 @@ extern "C" void app_main(void) {
     uint32_t frames = 0;
     while (frames < kFrameLimit) {
         MjpegAviPacket packet{};
+#if MJPEG_QEMU_CALLBACK_INPUT
+        InputContext input{};
+#endif
         if (decoder.readPacket(file, &packet) != MJPEG_AVI_OK) finish(6);
+#if MJPEG_QEMU_CALLBACK_INPUT
+        input.file = file;
+        input.remaining = packet.jpeg_size;
+        input.next_packet_offset = packet.next_offset;
+        packet.input_read = readInput;
+        packet.input_context = &input;
+        packet.file = nullptr;
+#endif
         const uint64_t callback_before = output.callback_cycles;
         const uint32_t start = esp_cpu_get_cycle_count();
         const int decode_result = decoder.decodeDirect(

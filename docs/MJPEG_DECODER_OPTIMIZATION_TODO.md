@@ -63,6 +63,39 @@ The current firmware link report uses 61,620 bytes of static DRAM and reports
 320x180 RGB565 framebuffer needs 115,200 bytes, so full-frame double buffering
 is not a viable design on this board.
 
+### Retained bounded input prefetch (2026-08-04)
+
+Ordinary MJPEG video input now has a CPU1 sequential AVI reader and a reusable
+8 KiB stream ring. The ring capacity is independent of JPEG packet size; only
+the small packet descriptor is queued. The playback task decodes directly from
+the ring while the reader supplies the remainder. A 7.5 KiB speculative fill
+overlaps SD access with frame-clock waiting, while reserving one 512-byte
+producer chunk so a late skip cannot deadlock on a full ring. On skip, the
+reader resets those speculative bytes and advances directly to the aligned end
+of the AVI packet. Audio deliberately remains on its existing independent
+reader until the single-reader AV demux work in Priority 3 is completed.
+
+The static cost reported by the C firmware map is approximately 11.5 KiB
+(8,193-byte stream storage, 3,072-byte task stack and about 486 bytes of task,
+queue, stream and flag state). No complete compressed packet is retained or
+copied between tasks.
+
+The QEMU correctness run decoded 60 frames through the generic callback with
+an 8,192-byte decoder refill buffer. Its largest JPEG was 24,693 bytes and it
+performed 123 refills; the complete RGB565 hash `411cd6756ec6ac87` matched the
+contiguous-input control exactly.
+
+On the physical 320x240/24 fps Big Buck Bunny stress clip, the preceding
+seek-only path logged 30.527 ms average complete work, 44.588 ms p95, 63.604 ms
+maximum and seven display skips in 600 frames. The retained prefetch path
+logged 25.233 ms average, 33.531 ms p95, 45.798 ms maximum and zero skips over
+the same 600-frame interval. A subsequent 1,800-frame reset-to-reset run also
+completed with no frame-number gaps or skips: 26.661 ms average work, 33.592 ms
+p95, 58.051 ms maximum, and zero audio rebuffers, underruns or inserted silence.
+The foreground SD field now measures packet-descriptor wait; producer SD time
+is overlapped and any decoder wait for compressed bytes remains included in
+complete work.
+
 ## Acceptance criteria
 
 Every retained optimization must pass all applicable checks:
@@ -168,7 +201,8 @@ Measure rather than relying on the estimate.
 - [ ] Dispatch `00dc` JPEG payloads to the video packet queue and `01wb` PCM
       payloads to the audio stream buffer.
 - [ ] Remove the second complete scan of interleaved AVI chunks.
-- [ ] Avoid `fseek()` for ordinary sequential payload consumption.
+- [x] Avoid reverse `fseek()` for ordinary sequential MJPEG video payload
+      consumption; retain forward packet alignment and explicit seek/skip.
 - [ ] Keep FatFs per-file cache and FastSeek enabled for file opening,
       validation, seeking and loop restart.
 - [ ] Preserve the existing audio preroll and DMA sample clock.
@@ -179,15 +213,18 @@ make a 54 ms JPEG decode fit a 41.7 ms frame budget.
 
 ## Priority 4: overlap read and decode across the two cores
 
-- [ ] Add two bounded compressed-packet buffers sized from the AVI index.
-- [ ] Pin JPEG decode to CPU1.
-- [ ] Let CPU0 demux the next AVI chunks and maintain the PCM queue while CPU1
-      decodes the current JPEG.
-- [ ] Queue packets by frame number and preserve presentation order.
-- [ ] Avoid sharing a mutable decoder work area between cores.
-- [ ] Record task migration, queue waits and per-core cycle use.
-- [ ] Reject the design if the second packet buffer leaves insufficient
-      largest-free-block headroom.
+- [x] Add one reusable fixed-size compressed-input ring whose capacity is
+      independent of maximum JPEG packet size.
+- [x] Pin the sequential AVI video reader to CPU1 and keep JPEG reconstruction
+      on the playback task.
+- [x] Let the reader supply compressed bytes while the playback task decodes
+      the current JPEG; keep audio on its existing reader for this isolated A/B.
+- [x] Queue one packet descriptor at a time and preserve presentation order.
+- [x] Keep the mutable JPEG decoder state entirely on the playback task.
+- [ ] Record task migration and per-core cycle use.
+- [x] Test a packet larger than both the reader ring and decoder refill buffer
+      against contiguous-input frame checksums.
+- [x] Verify static DRAM cost and DMA allocation on the physical board.
 
 Read/decode overlap can hide approximately the normal 5.5 ms video read time
 and prevents the CPU0 audio reader from pre-empting JPEG decode. It does not
