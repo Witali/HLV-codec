@@ -33,6 +33,7 @@ accepted decoder change must preserve the complete compact decode checksum
 | Cache-safe 23-bit slice-ending peek | q41 decode 67.936 -> 68.041 ms (+0.154%); QEMU 2,715,338 -> 2,711,931 cycles (-0.125%); checksums unchanged | rejected; hardware regressed |
 | Build-time MPEG-1 phase profiler | q41 profile repeats within 0.014%; final OFF build 67.936 ms versus 67.936 ms baseline; identical image size | accepted diagnostic; default OFF |
 | Explicit compact MC half-pixel mode loops | heavy q41 QEMU 2,715,338 -> 2,855,545 cycles (+5.16%); identical hash | rejected before flash; implementation removed |
+| Fused IDCT row reconstruction | heavy q41 QEMU 2,715,338 -> 2,754,921 cycles (+1.46%); identical hash | rejected before flash; implementation removed |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly
@@ -150,8 +151,10 @@ SHA-256), and a fresh listing contained the same 52 persistent SD files.
       cycles by 5.16%, indicating that the O3 loop/code layout was already
       preferable. The implementation and build option were removed without
       flashing the rejected binary.
-- [ ] Fuse the IDCT row pass with destination put/add/clamp so the general
-      residual path does not write, reread and then clear all 64 coefficients.
+- [x] Fuse the IDCT row pass with destination put/add/clamp. Both an indexed
+      temporary and direct scalar stores preserved the heavy q41 hash but were
+      1.46% slower in QEMU. The implementation and build option were removed
+      without flashing the rejected binary.
 - [ ] Test selective IRAM placement only for the measured motion-compensation
       hot kernels; reject it if the speed gain does not justify IRAM use.
 - [ ] Add a compact generated second-level table for only the unresolved
