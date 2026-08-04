@@ -122,16 +122,41 @@ is decoded using the already consumed prefix without seeking backward; no
 already decoded frame is discarded. The original MJPEG `play.txt` selection
 was restored and no test asset was added to the SD card.
 
-### 4. HLV parsed-header decode entry
+### 4. HLV parsed-header decode entry (retained)
 
-- [ ] Add a bounded streaming decoder entry that accepts an already parsed
+- [x] Add a bounded streaming decoder entry that accepts an already parsed
       HLV packet header and expected CRC.
-- [ ] Reuse that entry when catch-up encounters a keyframe instead of seeking
+- [x] Reuse that entry when catch-up encounters a keyframe instead of seeking
       backward and parsing the header twice.
-- [ ] Keep forward seek when intentionally dropping a predictive frame unless
+- [x] Keep forward seek when intentionally dropping a predictive frame unless
       the later common AV-reader work makes it unnecessary.
-- [ ] Preserve CRC verification, all frame types and exact decoded checksums.
-- [ ] Test long predictive sequences and catch-up on the physical ESP32.
+- [x] Preserve CRC verification, all frame types and exact decoded checksums.
+- [x] Test long predictive sequences and catch-up on the physical ESP32.
+
+Result, 2026-08-04: retained. `hlv1_decoder_decode_file_packet()` accepts the
+already parsed bounded packet metadata and expected CRC with the cursor at the
+first payload byte. It consumes the complete payload through the same reusable
+refill buffer even when the bit decoder finishes early, and rejects a checksum
+mismatch. A default-on CMake switch retains the old path for reproducible A/B
+testing.
+
+The C99 and C++ simulators decode every HLV v15 regression frame through both
+ordinary and parsed-header entries, in dual- and single-reference modes, using
+a deliberately small 257-byte refill. All paths produce reconstruction hash
+`298a10a7ebbaa1db`; a deliberately wrong expected CRC is rejected. The largest
+packet is 25,578 bytes, exceeding both that test refill and the firmware's
+7,680-byte refill. Both firmware builds and the complete seven-format
+regression pass.
+
+On the physical ESP32, the same heavy 320x240 24 fps HLV clip produced 600
+consecutive frame records in both runs and exercised 251 compressed predictive
+skips while catching up. The old backward-seek path measured 56.457 ms average
+work and 112.942 ms p95; parsed-header decode measured 56.421 ms and 112.317 ms.
+Both observed 24.065 fps with identical skip counts and zero audio rebuffers,
+underrun samples or inserted silence. The small average difference is not
+claimed as a decode-kernel acceleration, but the redundant SD/filesystem
+round-trip is gone. The original MJPEG `play.txt` selection was restored and
+no test asset was added to the SD card.
 
 ### 5. Single AVI AV demuxer
 

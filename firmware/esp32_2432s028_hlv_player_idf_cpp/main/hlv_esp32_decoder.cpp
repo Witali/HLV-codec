@@ -9,6 +9,10 @@ namespace {
 
 constexpr char kTag[] = "hlv-decoder";
 
+#ifndef HLV_PARSED_HEADER_CATCHUP
+#define HLV_PARSED_HEADER_CATCHUP 1
+#endif
+
 }  // namespace
 
 int HlvEsp32Decoder::begin(const HLV1Header &header,
@@ -124,6 +128,28 @@ void HlvEsp32Decoder::setReferenceRowGuard(
         hlv1_decoder_set_reference_row_guard(decoder_, guard, opaque);
 }
 
+int HlvEsp32Decoder::decodeParsedPacket(
+    FILE *file, const HLV1Packet &packet, uint32_t expected_crc,
+    const HLV1Frame **frame, HLV1StageProfile *profile) {
+#if HLV1_ENABLE_STAGE_PROFILE
+    hlv1_decoder_stage_profile_reset(decoder_);
+    const int result = hlv1_decoder_decode_file_packet(
+        decoder_, file, stream_buffer_, kStreamBufferBytes,
+        &packet, expected_crc, frame);
+    if (profile) {
+        const HLV1StageProfile *measured =
+            hlv1_decoder_stage_profile(decoder_);
+        *profile = measured ? *measured : HLV1StageProfile{};
+    }
+    return result;
+#else
+    (void)profile;
+    return hlv1_decoder_decode_file_packet(
+        decoder_, file, stream_buffer_, kStreamBufferBytes,
+        &packet, expected_crc, frame);
+#endif
+}
+
 int HlvEsp32Decoder::decodeNext(FILE *file, const HLV1Frame **frame,
                                 HLV1Packet *packet_info,
                                 HLV1StageProfile *profile) {
@@ -156,8 +182,10 @@ int HlvEsp32Decoder::decodeNextCatchup(
         return decodeNext(file, frame, packet_info, profile);
     if (!ready() || !file || !frame) return HLV1_ERR_ARGUMENT;
 
+#if !HLV_PARSED_HEADER_CATCHUP
     const long packet_offset = ftell(file);
     if (packet_offset < 0) return HLV1_ERR_IO;
+#endif
     uint8_t header[HLV1_FRAME_HEADER_SIZE];
     const size_t header_size = fread(header, 1, sizeof header, file);
     if (!header_size && feof(file)) return HLV1_EOF;
@@ -167,7 +195,6 @@ int HlvEsp32Decoder::decodeNextCatchup(
     const int result =
         hlv1_packet_header_parse(header, &packet, &expected_crc);
     if (result != HLV1_OK) return result;
-    (void)expected_crc;
     if (packet_info) *packet_info = packet;
     if (packet.frame_type != HLV1_FRAME_KEY) {
         if (fseek(file, static_cast<long>(packet.payload_size), SEEK_CUR) != 0)
@@ -177,6 +204,12 @@ int HlvEsp32Decoder::decodeNextCatchup(
         if (profile) *profile = HLV1StageProfile{};
         return HLV1_OK;
     }
+#if HLV_PARSED_HEADER_CATCHUP
+    return decodeParsedPacket(
+        file, packet, expected_crc, frame, profile);
+#else
+    (void)expected_crc;
     if (fseek(file, packet_offset, SEEK_SET) != 0) return HLV1_ERR_IO;
     return decodeNext(file, frame, packet_info, profile);
+#endif
 }

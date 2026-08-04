@@ -2305,6 +2305,36 @@ static size_t file_decode_refill(void *opaque, const uint8_t **data,
     return bytes;
 }
 
+int hlv1_decoder_decode_file_packet(
+    HLV1Decoder *d, FILE *file, uint8_t *buffer, size_t buffer_size,
+    const HLV1Packet *packet, uint32_t expected_crc,
+    const HLV1Frame **frame) {
+    if (!d || !file || !buffer || !buffer_size || !packet || !frame ||
+        packet->payload || packet->payload_blocks)
+        return HLV1_ERR_ARGUMENT;
+    HLV1FileDecodeStream stream = {
+        .file = file,
+        .buffer = buffer,
+        .buffer_size = buffer_size,
+        .remaining = packet->payload_size,
+        .crc = hlv1_crc32_begin(),
+        .profile = HLV1_PROFILE_POINTER(d)
+    };
+    int result = decoder_decode_packet(
+        d, packet, frame, 0, file_decode_refill, &stream);
+    while (stream.remaining) {
+        const uint8_t *unused = NULL;
+        int refill_error = HLV1_OK;
+        if (!file_decode_refill(&stream, &unused, &refill_error)) {
+            if (result >= 0) result = refill_error;
+            break;
+        }
+    }
+    if (!stream.remaining && hlv1_crc32_end(stream.crc) != expected_crc)
+        result = HLV1_ERR_CRC;
+    return result;
+}
+
 int hlv1_decoder_decode_file(HLV1Decoder *d, FILE *file,
                              uint8_t *buffer, size_t buffer_size,
                              HLV1Packet *packet_info,
@@ -2324,27 +2354,8 @@ int hlv1_decoder_decode_file(HLV1Decoder *d, FILE *file,
     if (result < 0) return result;
     if (packet_info) *packet_info = packet;
 
-    HLV1FileDecodeStream stream = {
-        .file = file,
-        .buffer = buffer,
-        .buffer_size = buffer_size,
-        .remaining = packet.payload_size,
-        .crc = hlv1_crc32_begin(),
-        .profile = HLV1_PROFILE_POINTER(d)
-    };
-    result = decoder_decode_packet(
-        d, &packet, frame, 0, file_decode_refill, &stream);
-    while (stream.remaining) {
-        const uint8_t *unused = NULL;
-        int refill_error = HLV1_OK;
-        if (!file_decode_refill(&stream, &unused, &refill_error)) {
-            if (result >= 0) result = refill_error;
-            break;
-        }
-    }
-    if (!stream.remaining && hlv1_crc32_end(stream.crc) != expected_crc)
-        result = HLV1_ERR_CRC;
-    return result;
+    return hlv1_decoder_decode_file_packet(
+        d, file, buffer, buffer_size, &packet, expected_crc, frame);
 }
 
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *d) {

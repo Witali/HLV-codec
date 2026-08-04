@@ -20,6 +20,8 @@ set(MJPEG_QEMU_CALLBACK_INPUT OFF CACHE BOOL
     "Feed QEMU MJPEG packets through the generic bounded input callback")
 set(MPEG1_RENDER_PROFILE OFF CACHE BOOL
     "Measure MPEG-1 render phases and emit one MRP record after 60 frames")
+set(HLV_PARSED_HEADER_CATCHUP ON CACHE BOOL
+    "Decode a catch-up HLV keyframe after its already parsed header")
 set(TONE_TEST OFF CACHE BOOL
     "Build the SD-free GPIO26 DAC sine-ramp diagnostic firmware")
 set(PDM_TONE_TEST OFF CACHE BOOL
@@ -420,6 +422,13 @@ else()
 endif()
 
 target_compile_features(${COMPONENT_LIB} PRIVATE c_std_99)
+if(HLV_PARSED_HEADER_CATCHUP)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV_PARSED_HEADER_CATCHUP=1)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        HLV_PARSED_HEADER_CATCHUP=0)
+endif()
 if(HLV_PLAYER_BARE_METAL_STYLE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         HLV_PLAYER_BARE_METAL_STYLE=1)

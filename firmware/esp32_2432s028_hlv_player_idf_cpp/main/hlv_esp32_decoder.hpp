@@ -30,6 +30,10 @@ public:
                           bool skip_predictive, bool *skipped);
 
 private:
+    int decodeParsedPacket(FILE *file, const HLV1Packet &packet,
+                           uint32_t expected_crc,
+                           const HLV1Frame **frame,
+                           HLV1StageProfile *profile);
     HLV1Decoder *decoder_ = nullptr;
     uint8_t *stream_buffer_ = nullptr;
     bool dma_buffer_ = false;

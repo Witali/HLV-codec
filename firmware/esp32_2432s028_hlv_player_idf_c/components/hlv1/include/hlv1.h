@@ -454,6 +454,13 @@ int hlv1_decoder_decode_file(HLV1Decoder *decoder, FILE *file,
                              uint8_t *buffer, size_t buffer_size,
                              HLV1Packet *packet_info,
                              const HLV1Frame **frame);
+/* Decode a packet whose 20-byte container header has already been parsed.
+ * The file cursor must point at the first payload byte.  The complete bounded
+ * payload is consumed and checked against expected_crc. */
+int hlv1_decoder_decode_file_packet(
+    HLV1Decoder *decoder, FILE *file, uint8_t *buffer, size_t buffer_size,
+    const HLV1Packet *packet, uint32_t expected_crc,
+    const HLV1Frame **frame);
 const HLV1Stats *hlv1_decoder_stats(const HLV1Decoder *decoder);
 const HLV1StageProfile *hlv1_decoder_stage_profile(
     const HLV1Decoder *decoder);

@@ -138,7 +138,7 @@ static int decode_pass(const HLV1Header *header, const PacketList *list,
 }
 
 static int decode_file_pass(const char *path, int single_reference,
-                            uint64_t *hash) {
+                            int parsed_headers, uint64_t *hash) {
     FILE *file = fopen(path, "rb");
     if (!file) return HLV1_ERR_IO;
     HLV1Header header;
@@ -154,8 +154,28 @@ static int decode_file_pass(const char *path, int single_reference,
     uint64_t local_hash = UINT64_C(14695981039346656037);
     while (result >= 0) {
         const HLV1Frame *frame = NULL;
-        result = hlv1_decoder_decode_file(
-            decoder, file, buffer, sizeof buffer, NULL, &frame);
+        if (parsed_headers) {
+            uint8_t header_bytes[HLV1_FRAME_HEADER_SIZE];
+            HLV1Packet packet = {0};
+            uint32_t expected_crc = 0;
+            size_t header_size = fread(
+                header_bytes, 1, sizeof header_bytes, file);
+            if (!header_size && feof(file)) {
+                result = HLV1_EOF;
+            } else if (header_size != sizeof header_bytes) {
+                result = HLV1_ERR_IO;
+            } else {
+                result = hlv1_packet_header_parse(
+                    header_bytes, &packet, &expected_crc);
+                if (result >= 0)
+                    result = hlv1_decoder_decode_file_packet(
+                        decoder, file, buffer, sizeof buffer,
+                        &packet, expected_crc, &frame);
+            }
+        } else {
+            result = hlv1_decoder_decode_file(
+                decoder, file, buffer, sizeof buffer, NULL, &frame);
+        }
         if (result == HLV1_EOF) {
             result = HLV1_OK;
             break;
@@ -166,6 +186,36 @@ static int decode_file_pass(const char *path, int single_reference,
     hlv1_decoder_destroy(decoder);
     fclose(file);
     return result;
+}
+
+static int verify_parsed_crc_rejection(const char *path) {
+    FILE *file = fopen(path, "rb");
+    if (!file) return HLV1_ERR_IO;
+    HLV1Header header;
+    int result = hlv1_header_read(file, &header);
+    HLV1Decoder *decoder =
+        result < 0 ? NULL : hlv1_decoder_create_y7_u6_v6(&header);
+    if (result >= 0 && !decoder) result = HLV1_ERR_MEMORY;
+    uint8_t header_bytes[HLV1_FRAME_HEADER_SIZE];
+    HLV1Packet packet = {0};
+    uint32_t expected_crc = 0;
+    if (result >= 0 &&
+        fread(header_bytes, 1, sizeof header_bytes, file) !=
+            sizeof header_bytes)
+        result = HLV1_ERR_IO;
+    if (result >= 0)
+        result = hlv1_packet_header_parse(
+            header_bytes, &packet, &expected_crc);
+    if (result >= 0) {
+        uint8_t buffer[257];
+        const HLV1Frame *frame = NULL;
+        result = hlv1_decoder_decode_file_packet(
+            decoder, file, buffer, sizeof buffer, &packet,
+            expected_crc ^ 1U, &frame);
+    }
+    hlv1_decoder_destroy(decoder);
+    fclose(file);
+    return result == HLV1_ERR_CRC ? HLV1_OK : HLV1_ERR_CRC;
 }
 
 static int verify_compact_expanded(const HLV1Header *header,
@@ -318,8 +368,10 @@ int main(int argc, char **argv) {
     uint64_t frame_hash = 0;
     uint64_t expanded_hash = 0;
     uint64_t streamed_hash = 0;
+    uint64_t parsed_streamed_hash = 0;
     uint64_t single_hash = 0;
     uint64_t single_streamed_hash = 0;
+    uint64_t single_parsed_streamed_hash = 0;
     uint64_t guard = 0;
     HLV1Stats stats = {0};
     result = decode_pass(&header, &list, 1, 1, &frame_hash, &guard, &stats);
@@ -345,12 +397,21 @@ int main(int argc, char **argv) {
         packet_list_free(&list);
         return 1;
     }
-    result = decode_file_pass(argv[1], 0, &streamed_hash);
+    result = decode_file_pass(argv[1], 0, 0, &streamed_hash);
     if (result < 0 || streamed_hash != frame_hash) {
         fprintf(stderr,
                 "Streamed reconstruction mismatch: %s, %016" PRIx64
                 " != %016" PRIx64 "\n",
                 hlv1_strerror(result), streamed_hash, frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_file_pass(argv[1], 0, 1, &parsed_streamed_hash);
+    if (result < 0 || parsed_streamed_hash != frame_hash) {
+        fprintf(stderr,
+                "Parsed-header streamed reconstruction mismatch: %s, "
+                "%016" PRIx64 " != %016" PRIx64 "\n",
+                hlv1_strerror(result), parsed_streamed_hash, frame_hash);
         packet_list_free(&list);
         return 1;
     }
@@ -364,12 +425,29 @@ int main(int argc, char **argv) {
         packet_list_free(&list);
         return 1;
     }
-    result = decode_file_pass(argv[1], 1, &single_streamed_hash);
+    result = decode_file_pass(argv[1], 1, 0, &single_streamed_hash);
     if (result < 0 || single_streamed_hash != frame_hash) {
         fprintf(stderr,
                 "Single-reference streamed reconstruction mismatch: %s, "
                 "%016" PRIx64 " != %016" PRIx64 "\n",
                 hlv1_strerror(result), single_streamed_hash, frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = decode_file_pass(
+        argv[1], 1, 1, &single_parsed_streamed_hash);
+    if (result < 0 || single_parsed_streamed_hash != frame_hash) {
+        fprintf(stderr,
+                "Single-reference parsed-header mismatch: %s, "
+                "%016" PRIx64 " != %016" PRIx64 "\n",
+                hlv1_strerror(result), single_parsed_streamed_hash,
+                frame_hash);
+        packet_list_free(&list);
+        return 1;
+    }
+    result = verify_parsed_crc_rejection(argv[1]);
+    if (result < 0) {
+        fprintf(stderr, "Parsed-header CRC rejection failed\n");
         packet_list_free(&list);
         return 1;
     }
@@ -397,6 +475,8 @@ int main(int argc, char **argv) {
     printf("Reconstruction hash: %016" PRIx64 "\n", frame_hash);
     printf("Compact/expanded reconstruction: bit exact\n");
     printf("257-byte refill reconstruction: bit exact\n");
+    printf("Parsed-header 257-byte refill reconstruction: bit exact\n");
+    printf("Parsed-header CRC mismatch: rejected\n");
     printf("Single-reference segmented/refill reconstruction: bit exact\n");
     printf("Timed decode: %.3f s, %.1f fps, %.2f us/frame (%d loop%s)\n",
            elapsed, fps, microseconds, loops, loops == 1 ? "" : "s");
