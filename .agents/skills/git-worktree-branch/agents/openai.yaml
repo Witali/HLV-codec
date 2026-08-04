@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Worktree Branch"
+  short_description: "Safely isolate changes in a new worktree"
+  default_prompt: "Use $git-worktree-branch to make this change in a separate worktree and merge it safely."
