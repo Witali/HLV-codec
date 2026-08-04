@@ -30,7 +30,9 @@ $OutputDirectory = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $output = Join-Path $OutputDirectory "test_avi_demux.exe"
 $command = (
     'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
-    'cl /nologo /O2 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /TC /I"{2}" ' +
+    'cl /nologo /O2 /W4 /WX /D_CRT_SECURE_NO_WARNINGS ' +
+    '/DAVI_DEMUX_CURSOR_AWARE_FINISH=1 /DAVI_DEMUX_FINISH_PROFILE=1 ' +
+    '/TC /I"{2}" ' +
     '"{3}" "{4}" /Fe:"{5}"'
 ) -f $devcmd, $OutputDirectory, $include, $testSource, $demuxSource, $output
 & cmd.exe /d /c $command | ForEach-Object { Write-Host $_ }

@@ -70,6 +70,12 @@ typedef struct AviDemuxPacket {
     AviDemuxPacketKind kind;
 } AviDemuxPacket;
 
+typedef struct AviDemuxFinishStats {
+    uint32_t cursor_matches;
+    uint32_t sequential_single_bytes;
+    uint32_t fallback_seeks;
+} AviDemuxFinishStats;
+
 uint32_t avi_demux_fourcc(char a, char b, char c, char d);
 
 /* Parse RIFF/AVI headers and leave file positioned at movi_start. */
@@ -83,6 +89,8 @@ int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
                           AviDemuxPacket *packet);
 
 int avi_demux_finish_packet(FILE *file, const AviDemuxPacket *packet);
+void avi_demux_finish_stats_reset(void);
+void avi_demux_finish_stats_get(AviDemuxFinishStats *stats);
 const char *avi_demux_strerror(int result);
 
 #ifdef __cplusplus

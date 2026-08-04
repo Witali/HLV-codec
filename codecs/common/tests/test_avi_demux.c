@@ -3,6 +3,71 @@
 #include <inttypes.h>
 #include <stdio.h>
 
+static int test_finish_packet(void) {
+    static const uint8_t bytes[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    AviDemuxPacket packet = {0};
+    AviDemuxFinishStats stats;
+    FILE *file = tmpfile();
+    if (!file || fwrite(bytes, 1, sizeof(bytes), file) != sizeof(bytes)) {
+        if (file) fclose(file);
+        return 1;
+    }
+
+    packet.next_offset = 5;
+    avi_demux_finish_stats_reset();
+    if (fseek(file, 5, SEEK_SET) != 0 ||
+        avi_demux_finish_packet(file, &packet) != AVI_DEMUX_OK ||
+        ftell(file) != 5) {
+        fclose(file);
+        return 1;
+    }
+    avi_demux_finish_stats_get(&stats);
+    if (stats.cursor_matches != 1 || stats.sequential_single_bytes != 0 ||
+        stats.fallback_seeks != 0) {
+        fclose(file);
+        return 1;
+    }
+
+    avi_demux_finish_stats_reset();
+    if (fseek(file, 4, SEEK_SET) != 0 ||
+        avi_demux_finish_packet(file, &packet) != AVI_DEMUX_OK ||
+        ftell(file) != 5) {
+        fclose(file);
+        return 1;
+    }
+    avi_demux_finish_stats_get(&stats);
+    if (stats.cursor_matches != 0 || stats.sequential_single_bytes != 1 ||
+        stats.fallback_seeks != 0) {
+        fclose(file);
+        return 1;
+    }
+
+    avi_demux_finish_stats_reset();
+    if (fseek(file, 2, SEEK_SET) != 0 ||
+        avi_demux_finish_packet(file, &packet) != AVI_DEMUX_OK ||
+        ftell(file) != 5) {
+        fclose(file);
+        return 1;
+    }
+    avi_demux_finish_stats_get(&stats);
+    if (stats.cursor_matches != 0 || stats.sequential_single_bytes != 0 ||
+        stats.fallback_seeks != 1) {
+        fclose(file);
+        return 1;
+    }
+    fclose(file);
+
+    file = tmpfile();
+    if (!file || fwrite(bytes, 1, 4, file) != 4 ||
+        fseek(file, 4, SEEK_SET) != 0 ||
+        avi_demux_finish_packet(file, &packet) != AVI_DEMUX_ERR_IO) {
+        if (file) fclose(file);
+        return 1;
+    }
+    fclose(file);
+    return 0;
+}
+
 static int scan_packets(FILE *file, const AviDemuxInfo *info,
                         AviDemuxPacketKind kind, uint32_t *count,
                         uint32_t *maximum) {
@@ -81,6 +146,10 @@ static int validate_file(const char *path) {
 int main(int argc, char **argv) {
     int failures = 0;
     int index;
+    if (test_finish_packet()) {
+        fprintf(stderr, "AVI packet completion regression failed\n");
+        return 1;
+    }
     if (argc < 2) {
         fprintf(stderr, "usage: test_avi_demux FILE.avi [...]\n");
         return 2;

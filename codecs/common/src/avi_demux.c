@@ -4,6 +4,21 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifndef AVI_DEMUX_CURSOR_AWARE_FINISH
+#define AVI_DEMUX_CURSOR_AWARE_FINISH 1
+#endif
+
+#ifndef AVI_DEMUX_FINISH_PROFILE
+#define AVI_DEMUX_FINISH_PROFILE 0
+#endif
+
+#if AVI_DEMUX_FINISH_PROFILE
+static AviDemuxFinishStats finish_stats;
+#define FINISH_COUNT(field) (++finish_stats.field)
+#else
+#define FINISH_COUNT(field) ((void)0)
+#endif
+
 typedef struct AviStreamHeader {
     uint32_t type;
     uint32_t handler;
@@ -321,8 +336,40 @@ int avi_demux_next_packet(FILE *file, const AviDemuxInfo *info,
 
 int avi_demux_finish_packet(FILE *file, const AviDemuxPacket *packet) {
     if (!file || !packet) return AVI_DEMUX_ERR_ARGUMENT;
+#if AVI_DEMUX_CURSOR_AWARE_FINISH
+    {
+        long current = ftell(file);
+        if (current < 0) return AVI_DEMUX_ERR_IO;
+        if (current == packet->next_offset) {
+            FINISH_COUNT(cursor_matches);
+            return AVI_DEMUX_OK;
+        }
+        if (current < LONG_MAX && current + 1L == packet->next_offset) {
+            uint8_t byte;
+            if (!read_exact(file, &byte, 1U)) return AVI_DEMUX_ERR_IO;
+            FINISH_COUNT(sequential_single_bytes);
+            return AVI_DEMUX_OK;
+        }
+    }
+#endif
+    FINISH_COUNT(fallback_seeks);
     return seek_absolute(file, packet->next_offset) ? AVI_DEMUX_OK
                                                     : AVI_DEMUX_ERR_IO;
+}
+
+void avi_demux_finish_stats_reset(void) {
+#if AVI_DEMUX_FINISH_PROFILE
+    memset(&finish_stats, 0, sizeof(finish_stats));
+#endif
+}
+
+void avi_demux_finish_stats_get(AviDemuxFinishStats *stats) {
+    if (!stats) return;
+#if AVI_DEMUX_FINISH_PROFILE
+    *stats = finish_stats;
+#else
+    memset(stats, 0, sizeof(*stats));
+#endif
 }
 
 const char *avi_demux_strerror(int result) {

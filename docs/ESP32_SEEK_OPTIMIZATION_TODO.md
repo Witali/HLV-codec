@@ -23,20 +23,36 @@ separately and remove rejected candidate code.
 
 ## Execution order
 
-### 1. Cursor-aware AVI packet completion
+### 1. Cursor-aware AVI packet completion (retained)
 
-- [ ] Make `avi_demux_finish_packet()` a no-op when `ftell()` already equals
+- [x] Make `avi_demux_finish_packet()` a no-op when `ftell()` already equals
       `packet->next_offset`.
-- [ ] When the complete odd-sized payload was consumed, read the one-byte RIFF
+- [x] When the complete odd-sized payload was consumed, read the one-byte RIFF
       padding sequentially instead of seeking over it.
-- [ ] Retain absolute seek as a fallback when a decoder did not consume the
+- [x] Retain absolute seek as a fallback when a decoder did not consume the
       complete payload or the cursor is otherwise different.
-- [ ] Count no-op completions, padding reads and fallback seeks in the A/B
+- [x] Count no-op completions, padding reads and fallback seeks in the A/B
       test build.
-- [ ] Test even and odd packets, partial payload consumption and truncated
+- [x] Test even and odd packets, partial payload consumption and truncated
       padding.
-- [ ] Regress MJPEG and DivX3 packet/frame checksums in QEMU.
-- [ ] Test heavy MJPEG and DivX3 clips on the physical ESP32.
+- [x] Regress MJPEG and DivX3 packet/frame checksums in QEMU.
+- [x] Test heavy MJPEG and DivX3 clips on the physical ESP32.
+
+Result, 2026-08-04: retained. The profiled host test exercises and counts all
+three completion paths and passes the complete 20-file AVI demux corpus. All
+seven generated video formats retain their expected frame and audio checksums;
+the C99 and C++ firmware builds and DivX3 QEMU regressions pass.
+
+On the physical ESP32, a 600-frame 320x240 24 fps heavy MJPEG A/B measured
+25.232 ms average work and 33.541 ms p95 with unconditional seek, versus
+25.243 ms and 33.556 ms with cursor-aware completion. Both runs had one frame
+over budget, no display skips, no audio underruns and no silence insertion.
+The 0.04% average difference is measurement noise: this removes the redundant
+filesystem operation but does not claim a measurable decode-speed gain. The
+optimized build also played 600 frames of the 320x240 heavy DivX3 clip with no
+frame-number gaps, display skips, audio rebuffers or underruns. The pre-existing
+MJPEG selection was restored in `play.txt`; no test asset was added to the SD
+card.
 
 ### 2. Sequential H.263 / MPEG-4SP AVI positioning
 
@@ -95,4 +111,3 @@ separately and remove rejected candidate code.
 - audio queued/played samples, rebuffers, underruns and inserted silence;
 - free heap, minimum heap and largest DMA-capable block;
 - RGB565/frame checksums and decoded audio sample checksums where available.
-
