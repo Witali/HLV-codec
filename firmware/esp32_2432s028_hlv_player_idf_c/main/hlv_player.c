@@ -95,7 +95,7 @@ enum {
     kH263VideoReadAheadBytes = 4 * 1024,
     kBpvVideoReadAheadBytes = 4 * 1024,
     /* Capacity is deliberately unrelated to the maximum encoded frame. */
-    kBpvInputRingBytes = 16 * 1024,
+    kBpvInputRingBytes = 8 * 1024,
     kBpvInputChunkBytes = 4 * 1024,
     kBpvInputReaderStackBytes = 4096,
     kBpvInputStopTimeoutMs = 500,

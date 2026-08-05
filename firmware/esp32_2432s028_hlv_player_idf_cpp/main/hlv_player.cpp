@@ -75,7 +75,7 @@ constexpr size_t kH263VideoReadAheadBytes = 4 * 1024;
 constexpr size_t kBpvVideoReadAheadBytes = 4 * 1024;
 // This capacity is deliberately unrelated to BPV's maximum encoded frame.
 // The decoder consumes sequential spans while CPU1 keeps the ring refilled.
-constexpr size_t kBpvInputRingBytes = 16 * 1024;
+constexpr size_t kBpvInputRingBytes = 8 * 1024;
 constexpr size_t kBpvInputChunkBytes = 4 * 1024;
 constexpr uint32_t kBpvInputReaderStackBytes = 4096;
 constexpr uint32_t kBpvInputStopTimeoutMs = 500;

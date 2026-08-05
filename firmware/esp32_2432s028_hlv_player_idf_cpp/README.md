@@ -87,7 +87,7 @@ The current decoder audit is:
 | AVI WAV IMA ADPCM audio | Standard blocks up to 2 KiB are decoded directly into the PCM16 stream through one 128-byte compressed refill buffer | Compliant; the production 1024-byte block exceeds both the refill and one SD sector |
 | Legacy AMR-NB audio | One complete compressed sample, strictly limited to 32 bytes | Documented atomic-frame exception; streaming would not reduce meaningful memory |
 | BPV v1-v6 video | One complete bounded frame packet, including palette/modes/payload/audio | Technical debt: add a core file/refill API that retains only palette and mode metadata and streams the sequential payload; preserve or deliberately replace the current CPU1 packet prefetch |
-| BPV v7 video | Fixed 16 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
+| BPV v7 video | Fixed 8 KiB FreeRTOS stream buffer filled by CPU1 in 4 KiB SD reads, followed by the decoder's reusable 4 KiB refill buffer | Compliant; both capacities are independent of the maximum encoded frame |
 | DivX 3 video | One reusable 4 KiB decoder refill buffer over a bounded AVI packet span | Compliant; packets may exceed the refill buffer, the player caps their span at 96 KiB, and no packet payload is copied between tasks |
 | MJPEG video | One reusable configurable refill buffer, 8,192 bytes by default | Compliant; the project replaces only `esp_new_jpeg` entropy input, so packets may exceed the buffer while the existing IDCT, RGB565 and block-output paths remain active |
 

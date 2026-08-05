@@ -60,7 +60,7 @@ then waits longer for the fixed-rate display DMA. The two runs had zero display
 skips and respectively one and zero frames beyond the 33,333-us period.
 
 The retained v7 input path assigns SD reads to a dedicated CPU1 producer. It
-fills a fixed 16 KiB FreeRTOS stream buffer in 4 KiB chunks while CPU0 consumes
+fills a fixed 8 KiB FreeRTOS stream buffer in 4 KiB chunks while CPU0 consumes
 sequential decoder requests; neither capacity depends on the maximum encoded
 frame. Two physical 300-frame runs measured 98.0 and 98.3 us average consumer
 input time, 10,916 us average complete decode, and 19,396 and 19,384 us average
@@ -69,6 +69,14 @@ beyond the 33,333-us period. The corresponding prefetch-free optimized run
 averaged 6,709 us input, 16,888 us decode and 25,614 us total work. A host
 validator also read the same real stream through 257-byte physical refills and
 matched the contiguous reconstruction hash `93682c11462696bc`.
+
+The ring was reduced from 16 KiB to 8 KiB after the larger allocation stopped
+fitting beside the QVGA v7 reference frame and the other codec workspaces. A
+physical 300-frame Big Buck Bunny run averaged 18,369 compressed bytes per
+frame, maintained 24.041/24 fps, and had zero gaps, display skips, or audio
+underruns. The heavier 320x240 30 fps Danila run averaged 33,717 compressed
+bytes per frame and maintained 30.104/30 fps with the same zero-error result.
+Both streams therefore exercise frames larger than the ring in normal use.
 
 Before the pipeline change, the same file ran at 15.881 fps with the active
 SD setting accidentally left at 10 MHz. Moving BPV prefetch to CPU1 raised
@@ -101,7 +109,7 @@ clock then reached the native 30 fps.
       30 fps with no video gaps or audio underruns.
 - [x] Force a close/reopen through the UART CRC command and validate another
       300 frames at 29.993 fps with no gaps or audio errors.
-- [x] Replace the v7 main-task SD reads with a fixed 16 KiB CPU1 producer ring.
+- [x] Replace the v7 main-task SD reads with a fixed 8 KiB CPU1 producer ring.
       Validate packets larger than the decoder's 4 KiB refill against the
       contiguous path and repeat the physical 300-frame measurement.
 

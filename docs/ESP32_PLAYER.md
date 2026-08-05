@@ -36,7 +36,7 @@ preserved baseline and all-codec physical A/B matrix, is tracked in
   stdio read-ahead buffer (4 KiB for MPEG-1/DivX 3/H.263/BPV v7 and 16 KiB otherwise); HLV then
   streams each packet through one reusable 7,680-byte refill buffer, while MJPEG
   and BPV v1-v6 use bounded maximum-frame packet buffers; BPV v7 instead uses
-  a fixed 16 KiB CPU1 producer ring, a 4 KiB decoder refill buffer and its
+  a fixed 8 KiB CPU1 producer ring, a 4 KiB decoder refill buffer and its
   mode map;
 - writes the ST7789 on the independent SPI2/HSPI bus using DMA strips.
   H.263 and the normal-memory codecs use two 320x16 allocations. DivX 3 and
@@ -162,7 +162,7 @@ the active palette. Set the flag to `false` to retain the sequential
 comparison mode.
 
 BPV v7 uses CPU1 differently: a dedicated 4 KiB-stack producer is the only
-task that reads its video cursor. It sends 4 KiB chunks into a fixed 16 KiB
+task that reads its video cursor. It sends 4 KiB chunks into a fixed 8 KiB
 FreeRTOS stream buffer while CPU0 decodes and submits RGB565 strips. The ring
 is recreated on every open and destroyed before the file is closed.
 
