@@ -8,8 +8,11 @@ $repo = Split-Path -Parent $PSScriptRoot
 $work = Join-Path $repo "build\mpeg1-audio-pcm16-test"
 $fixture = Join-Path $work "mp2-tone.mpg"
 $test = Join-Path $work "test_audio_pcm16.exe"
+$embeddedTest = Join-Path $work "test_audio_pcm16_embedded.exe"
 $ffmpeg = Join-Path $repo "local_tools\ffmpeg\bin\ffmpeg.exe"
-if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf)) {
+$ffprobe = Join-Path $repo "local_tools\ffmpeg\bin\ffprobe.exe"
+if (-not (Test-Path -LiteralPath $ffmpeg -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $ffprobe -PathType Leaf)) {
     throw "Repository-local FFmpeg is unavailable. Run setup.ps1."
 }
 $vswhere =
@@ -28,10 +31,17 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
     -f lavfi -i "sine=frequency=997:sample_rate=32000:duration=1" `
     -map 0:v:0 -map 1:a:0 `
     -c:v mpeg1video -g 25 -bf 0 -pix_fmt yuv420p `
-    -c:a mp2 -sample_fmt s16 -b:a 64k -ac 1 -ar 32000 `
+    -c:a mp2 -sample_fmt s16 -b:a 384k -ac 2 -ar 32000 `
     -f mpeg $fixture
 if ($LASTEXITCODE -ne 0) {
     throw "Could not generate the signed PCM16-to-MP2 fixture."
+}
+$maximumAudioPacket = & $ffprobe -v error -select_streams a:0 `
+    -show_entries packet=size -of csv=p=0 $fixture |
+    ForEach-Object { [int]$_ } | Measure-Object -Maximum |
+    Select-Object -ExpandProperty Maximum
+if ($maximumAudioPacket -le 1024) {
+    throw "MP2 fixture needs an audio packet larger than the 1 KiB refill."
 }
 
 $include = Join-Path $repo "third_party\pl_mpeg"
@@ -48,7 +58,24 @@ if ($LASTEXITCODE -ne 0) {
     throw "MSVC failed to build the MP2 PCM16 regression test."
 }
 
-& $test $fixture
+$reference = (& $test $fixture | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "MP2 signed PCM16 regression failed."
 }
+Write-Host $reference
+
+$embeddedCommand = (
+    'call "{0}" -no_logo -arch=x64 && cd /d "{1}" && ' +
+    'cl /nologo /O2 /W4 /DPLM_AUDIO_MONO_S16=1 ' +
+    '/DPLM_MPEG_EMBEDDED=1 /I"{2}" /I"{3}" ' +
+    '"{4}" "{5}" /Fe:"{6}"'
+) -f $devcmd, $work, $include, $commonInclude, $testSource, $decoderSource, $embeddedTest
+& cmd.exe /d /c $embeddedCommand | ForEach-Object { Write-Host $_ }
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVC failed to build the bounded MP2 refill regression test."
+}
+$bounded = (& $embeddedTest $fixture | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $bounded -ne $reference) {
+    throw "Bounded MP2 refill output differs from the contiguous path."
+}
+Write-Host "MP2 bounded refill: max packet $maximumAudioPacket bytes, outputs match."

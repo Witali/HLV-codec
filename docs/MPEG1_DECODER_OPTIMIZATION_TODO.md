@@ -55,6 +55,7 @@ quality decision and cannot pass this speed campaign on timing alone.
 | Compact second-level DCT VLC | q41 62.656 -> 61.141 ms (-2.42%); Regression 55.311 -> 53.879 ms (-2.59%); QEMU -2.26%; hashes unchanged | accepted; +352-byte app, no IRAM/heap change |
 | Bounded standard I/P/B decode | physical 180/180, 7 I / 54 P / 119 B; two compact references; no gaps | accepted; B pictures rendered from the row workspace |
 | Static MPEG audio-reader stack | repeated loop no longer falls to a 1108-byte heap and fails task creation | accepted; fixed 2.5 KiB early reservation |
+| QVGA MP2 memory path | 320x240 previously left heap=2832/largest=1152 and disabled MP2; one 10 KiB display allocation plus a fixed 1 KiB streaming ES refill now starts PCM16 audio | accepted; host 1728-byte packet matches the contiguous PCM16 hash, physical 24 fps QVGA has zero audio underruns |
 
 The accepted decoder changes reduce average video decode time by 11.4%,
 from 57,380.6 to about 50,831 us. The render lookup tables then remove roughly

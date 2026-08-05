@@ -764,8 +764,13 @@ Its modeled-device inventory and known accuracy limits are recorded in
   per 8x8 plane block and one 8-bit macroblock row (174,480 bytes total at
   320x240). The correction tables add 3,600 bytes and preserve the discarded
   local average to 1/16 sample during prediction and presentation. The player
-  also uses bounded 4 KiB read-ahead and elementary buffers plus a separate
-  audio-only PL_MPEG instance. Packed planes use separate allocations. B
+  also uses a bounded 4 KiB video buffer and a fixed 1 KiB audio elementary
+  refill plus a separate audio-only PL_MPEG instance. MP2 PES payloads larger
+  than the refill are consumed incrementally without growing the buffer. The
+  large MP2 synthesis state is allocated before that refill. At 320x240 MPEG
+  reuses the permanent 320x16 display allocation as two 320x8 DMA strips
+  instead of retaining a second 10 KiB strip. Smaller profiles retain the
+  faster pair of 16-row strips. Packed planes use separate allocations. B
   pictures are non-reference frames and are rendered synchronously from the
   macroblock-row workspace, avoiding a third full frame. Files larger than
   320x240 are rejected by the saved profile.

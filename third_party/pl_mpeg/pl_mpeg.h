@@ -1023,6 +1023,12 @@ struct plm_t {
 
 	plm_audio_decode_callback audio_decode_callback;
 	void *audio_decode_callback_user_data;
+
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+	uint8_t *audio_packet_data;
+	size_t audio_packet_length;
+	size_t audio_packet_offset;
+#endif
 };
 
 int plm_init_decoders(plm_t *self);
@@ -1030,6 +1036,15 @@ void plm_handle_end(plm_t *self);
 void plm_read_video_packet(plm_buffer_t *buffer, void *user);
 void plm_read_audio_packet(plm_buffer_t *buffer, void *user);
 void plm_read_packets(plm_t *self, int requested_type);
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+plm_audio_t *plm_audio_create_with_bounded_buffer(
+	size_t capacity, plm_buffer_load_callback load_callback,
+	void *load_callback_user_data, plm_buffer_t **buffer_out
+);
+size_t plm_buffer_write_bounded(
+	plm_buffer_t *self, uint8_t *bytes, size_t length
+);
+#endif
 
 #ifndef PLM_NO_STDIO
 
@@ -1111,6 +1126,16 @@ int plm_init_decoders(plm_t *self) {
 		if (self->audio_enabled) {
 			self->audio_packet_type = PLM_DEMUX_PACKET_AUDIO_1 + self->audio_stream_index;
 			if (!self->audio_decoder) {
+				#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+				self->audio_decoder = plm_audio_create_with_bounded_buffer(
+					PLM_AUDIO_BUFFER_DEFAULT_SIZE, plm_read_audio_packet,
+					self, &self->audio_buffer
+				);
+				if (!self->audio_decoder) {
+					self->audio_buffer = NULL;
+					return FALSE;
+				}
+				#else
 				self->audio_buffer = plm_buffer_create_with_capacity(
 					PLM_AUDIO_BUFFER_DEFAULT_SIZE);
 				if (!self->audio_buffer) {
@@ -1122,6 +1147,7 @@ int plm_init_decoders(plm_t *self) {
 					self->audio_buffer = NULL;
 					return FALSE;
 				}
+				#endif
 			}
 		}
 	}
@@ -1297,6 +1323,11 @@ void plm_rewind(plm_t *self) {
 	}
 
 	plm_demux_rewind(self->demux);
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+	self->audio_packet_data = NULL;
+	self->audio_packet_length = 0;
+	self->audio_packet_offset = 0;
+#endif
 	self->time = 0;
 	self->has_ended = FALSE;
 }
@@ -1486,11 +1517,45 @@ void plm_read_audio_packet(plm_buffer_t *buffer, void *user) {
 
 void plm_read_packets(plm_t *self, int requested_type) {
 	plm_packet_t *packet;
+
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+	if (requested_type == self->audio_packet_type &&
+		self->audio_packet_offset < self->audio_packet_length) {
+		size_t remaining = self->audio_packet_length -
+			self->audio_packet_offset;
+		size_t copy_length = plm_buffer_write_bounded(
+			self->audio_buffer,
+			self->audio_packet_data + self->audio_packet_offset,
+			remaining
+		);
+		self->audio_packet_offset += copy_length;
+		if (self->audio_packet_offset == self->audio_packet_length) {
+			self->audio_packet_data = NULL;
+			self->audio_packet_length = 0;
+			self->audio_packet_offset = 0;
+		}
+		return;
+	}
+#endif
+
 	while ((packet = plm_demux_decode(self->demux))) {
 		if (packet->type == self->video_packet_type) {
 			plm_buffer_write(self->video_buffer, packet->data, packet->length);
 		}
 		else if (packet->type == self->audio_packet_type) {
+			#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+			if (!self->video_enabled) {
+				size_t copy_length = plm_buffer_write_bounded(
+					self->audio_buffer, packet->data, packet->length
+				);
+				if (copy_length < packet->length) {
+					self->audio_packet_data = packet->data;
+					self->audio_packet_length = packet->length;
+					self->audio_packet_offset = copy_length;
+				}
+			}
+			else
+			#endif
 			plm_buffer_write(self->audio_buffer, packet->data, packet->length);
 		}
 
@@ -1875,6 +1940,22 @@ void plm_buffer_discard_read_bytes(plm_buffer_t *self) {
 		self->length -= byte_pos;
 	}
 }
+
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+size_t plm_buffer_write_bounded(
+	plm_buffer_t *self, uint8_t *bytes, size_t length
+) {
+	plm_buffer_discard_read_bytes(self);
+	size_t available = self->capacity - self->length;
+	size_t copy_length = length < available ? length : available;
+	if (copy_length) {
+		memcpy(self->bytes + self->length, bytes, copy_length);
+		self->length += copy_length;
+		self->has_ended = FALSE;
+	}
+	return copy_length;
+}
+#endif
 
 #ifndef PLM_NO_STDIO
 
@@ -5334,6 +5415,38 @@ plm_audio_t *plm_audio_create_with_buffer(plm_buffer_t *buffer, int destroy_when
 	return self;
 }
 
+#if PLM_AUDIO_BOUNDED_PACKET_STREAM
+plm_audio_t *plm_audio_create_with_bounded_buffer(
+	size_t capacity, plm_buffer_load_callback load_callback,
+	void *load_callback_user_data, plm_buffer_t **buffer_out
+) {
+	plm_audio_t *self = (plm_audio_t *)PLM_MALLOC(sizeof(plm_audio_t));
+	if (!self) {
+		*buffer_out = NULL;
+		return NULL;
+	}
+	memset(self, 0, sizeof(plm_audio_t));
+
+	plm_buffer_t *buffer = plm_buffer_create_with_capacity(capacity);
+	if (!buffer) {
+		PLM_FREE(self);
+		*buffer_out = NULL;
+		return NULL;
+	}
+	plm_buffer_set_load_callback(
+		buffer, load_callback, load_callback_user_data
+	);
+	*buffer_out = buffer;
+
+	self->samples.count = PLM_AUDIO_SAMPLES_PER_FRAME;
+	self->buffer = buffer;
+	self->destroy_buffer_when_done = TRUE;
+	self->samplerate_index = 3;
+	self->next_frame_data_size = plm_audio_decode_header(self);
+	return self;
+}
+#endif
+
 void plm_audio_destroy(plm_audio_t *self) {
 	if (self->destroy_buffer_when_done) {
 		plm_buffer_destroy(self->buffer);
@@ -5387,8 +5500,11 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self) {
 	}
 
 	if (
-		self->next_frame_data_size == 0 ||
+		self->next_frame_data_size == 0
+		#if !PLM_AUDIO_BOUNDED_PACKET_STREAM
+		||
 		!plm_buffer_has(self->buffer, self->next_frame_data_size << 3)
+		#endif
 	) {
 		return NULL;
 	}

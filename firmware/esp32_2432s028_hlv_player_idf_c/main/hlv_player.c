@@ -87,6 +87,7 @@ enum {
     kSdReadFailuresBeforeReinit = 3,
     kVideoReadAheadBytes = 16 * 1024,
     kMpegVideoReadAheadBytes = 4 * 1024,
+    kMpegDimensionProbeBytes = 256 * 1024,
     kDivx3VideoReadAheadBytes = 4 * 1024,
     kDivx3MaximumPacketBytes = 96 * 1024,
     kDivx3MaximumMacroblocks = 300,
@@ -134,7 +135,7 @@ enum {
        proactive compressed refill fits beside the decoder and PDM heap. */
     kHlvAudioReaderStackBytes = 4096,
     kMpegAudioReaderStackBytes = 2560,
-    kMpegAudioPrefetchThresholdBytes = 4096,
+    kMpegAudioPrefetchThresholdBytes = 512,
     kAudioReaderStackBytes = 6144,
     kAudioReaderStopTimeoutMs = 500,
     kAudioPrerollTimeoutMs = 3000,
@@ -3508,6 +3509,47 @@ VideoOpenResult openVideoCandidate(const char *path) {
     return VIDEO_OPEN_kReady;
 }
 
+static bool probeMpegDimensions(FILE *file, uint16_t *width,
+                                uint16_t *height) {
+    if (!file || !width || !height) return false;
+
+    long original_position = ftell(file);
+    if (original_position < 0) original_position = 0;
+    clearerr(file);
+    if (fseek(file, 0, SEEK_SET) != 0) return false;
+
+    uint32_t start_code = UINT32_MAX;
+    bool found = false;
+    for (size_t offset = 0; offset < kMpegDimensionProbeBytes; ++offset) {
+        const int value = fgetc(file);
+        if (value == EOF) break;
+        start_code = (start_code << 8) | (uint8_t)value;
+        if (start_code == 0x000001b3U) {
+            uint8_t dimensions[3];
+            if (fread(dimensions, 1, sizeof dimensions, file) ==
+                sizeof dimensions) {
+                const uint16_t parsed_width =
+                    (uint16_t)(((uint16_t)dimensions[0] << 4) |
+                               (dimensions[1] >> 4));
+                const uint16_t parsed_height =
+                    (uint16_t)(((uint16_t)(dimensions[1] & 0x0f) << 8) |
+                               dimensions[2]);
+                if (parsed_width && parsed_height) {
+                    *width = parsed_width;
+                    *height = parsed_height;
+                    found = true;
+                }
+            }
+            break;
+        }
+    }
+
+    const bool io_error = ferror(file) != 0;
+    clearerr(file);
+    const bool restored = fseek(file, original_position, SEEK_SET) == 0;
+    return found && !io_error && restored;
+}
+
 int probeMpegAudioSampleRate(const char *path) {
     FILE *file = fopen(path, "rb");
     if (!file) return 0;
@@ -3578,8 +3620,22 @@ bool openVideo() {
                    "missing or unsupported video");
         return false;
     }
+    bool compact_mpeg_display = video_codec == VIDEO_CODEC_kMpeg1;
+    if (compact_mpeg_display) {
+        uint16_t mpeg_width = 0;
+        uint16_t mpeg_height = 0;
+        if (probeMpegDimensions(video_file, &mpeg_width, &mpeg_height)) {
+            compact_mpeg_display =
+                mpeg_width == kScreenWidth && mpeg_height == kScreenHeight;
+        } else {
+            ESP_LOGW(kTag,
+                     "Could not probe MPEG dimensions before allocation; "
+                     "using the compact display buffers");
+        }
+    }
     const bool use_double_display_buffer =
         video_codec != VIDEO_CODEC_kDivx3 &&
+        !compact_mpeg_display &&
         !(video_codec == VIDEO_CODEC_kBpv &&
           bpv_file_version >= BPV1_PIXEL_MOTION_VERSION);
     if (cyd_display_set_double_buffered(
