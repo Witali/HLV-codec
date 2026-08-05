@@ -97,7 +97,7 @@ constexpr uint32_t kMjpegInputCommandDecode = 1;
 constexpr uint32_t kMjpegInputCommandSkip = 2;
 constexpr uint32_t kMjpegInputCommandStop = 3;
 #endif
-constexpr size_t kAudioStreamBytes = 4096;
+constexpr size_t kAudioStreamBytes = 3072;
 // A FreeRTOS static stream buffer reserves one byte to distinguish full from
 // empty, so the backing array is one byte larger than its useful capacity.
 constexpr size_t kAudioStreamStorageBytes = kAudioStreamBytes + 1;
@@ -110,19 +110,19 @@ constexpr size_t kAudioDmaMinimumFreeBytes =
     2 * kSdDmaMinimumBlockBytes;
 constexpr size_t kAudioReadAheadBytes = 512;
 constexpr size_t kAudioReadChunkBytes = 512;
-// HLV PCM peaked below 1.9 KiB on hardware, so it keeps four KiB. The compact
-// MP2 task measured below two KiB and uses 2.5 KiB so its proactive
-// compressed refill fits beside the decoder and PDM heap.
-constexpr uint32_t kHlvAudioReaderStackBytes = 4096;
+// HLV/AVI audio peaked below 2.7 KiB including the reserved 512-byte staging
+// prefix on hardware. MP2 measured below two KiB and uses 2.5 KiB so its
+// proactive refill fits beside the decoder and PDM heap.
+constexpr uint32_t kHlvAudioReaderStackBytes = 3584;
 constexpr uint32_t kMpegAudioReaderStackBytes = 2560;
 constexpr size_t kMpegAudioPrefetchThresholdBytes = 512;
-constexpr uint32_t kAudioReaderStackBytes = 6144;
+constexpr uint32_t kAudioReaderStackBytes = 3584;
 constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
 constexpr uint32_t kAudioBiasRampMs = 100;
 constexpr uint32_t kAudioBiasRampSettleMs = 2;
-constexpr uint32_t kDecodeWorkerStackBytes = 4096;
+constexpr uint32_t kDecodeWorkerStackBytes = 3584;
 constexpr uint32_t kBootButtonTaskStackBytes = 2048;
 constexpr size_t kBrowserFilenameBytes = 112;
 constexpr size_t kBrowserVisibleFiles = 5;
@@ -247,6 +247,9 @@ static_assert(player_settings::kKeyframeCatchupLateFrames > 0,
 static_assert(kHlvAudioReaderStackBytes <= kAudioReaderStackBytes &&
                   kMpegAudioReaderStackBytes <= kAudioReaderStackBytes,
               "The shared static audio-reader stack must fit every codec");
+static_assert(kHlvAudioReaderStackBytes > kAudioReadChunkBytes &&
+                  kAudioReaderStackBytes > kAudioReadChunkBytes,
+              "The audio-reader stack must retain space after its scratch");
 
 enum class VideoCodec {
     kNone,
@@ -398,8 +401,17 @@ VideoCodec video_codec = VideoCodec::kNone;
 const char *active_video_path = nullptr;
 char selected_video_path[160]{};
 char browser_filename[kBrowserFilenameBytes]{};
-char browser_visible_filenames[kBrowserVisibleFiles]
-                              [kBrowserFilenameBytes]{};
+// Browsing closes playback before scanning. Reuse the inactive browser list
+// as the audio FILE buffer once a video starts.
+union alignas(4) BrowserAudioScratch {
+    char browser_visible_filenames[kBrowserVisibleFiles]
+                                  [kBrowserFilenameBytes];
+    uint8_t audio_read_ahead[kAudioReadAheadBytes];
+};
+BrowserAudioScratch browser_audio_scratch{};
+#define browser_visible_filenames \
+    (browser_audio_scratch.browser_visible_filenames)
+#define audio_read_ahead (browser_audio_scratch.audio_read_ahead)
 size_t browser_visible_count = 0;
 size_t browser_selected_visible_index = 0;
 bool file_browser_active = false;
@@ -432,21 +444,24 @@ uint8_t native_y_row[kScreenWidth];
 uint8_t native_u_row[kScreenWidth / 2];
 uint8_t native_v_row[kScreenWidth / 2];
 int hlv_cached_chroma_y = -1;
-union PlayerScratch {
+struct PlayerScratch {
     struct {
         int32_t red_add[kMaximumH263Width / 2];
         int32_t green_add[kMaximumH263Width / 2];
         int32_t blue_add[kMaximumH263Width / 2];
     } mpeg;
-    alignas(4) uint8_t audio_read_chunk[kAudioReadChunkBytes];
-    alignas(4) uint8_t amrnb_audio_pcm[AMRNB_SAMPLES_PER_FRAME];
 };
 PlayerScratch player_scratch{};
+// The audio reader runs concurrently with H.263 rendering, which reuses the
+// MPEG YUV row conversion. Its staging bytes are carved from the prefix of the
+// already reserved static audio-task stack so neither task overwrites the
+// other's data and no additional static DRAM is consumed.
+#define audio_read_chunk \
+    (reinterpret_cast<uint8_t *>(audio_reader_task_stack))
 #define mpeg_red_add (player_scratch.mpeg.red_add)
 #define mpeg_green_add (player_scratch.mpeg.green_add)
 #define mpeg_blue_add (player_scratch.mpeg.blue_add)
-#define audio_read_chunk (player_scratch.audio_read_chunk)
-#define amrnb_audio_pcm (player_scratch.amrnb_audio_pcm)
+#define amrnb_audio_pcm (audio_read_chunk)
 constexpr std::array<int32_t, 256> makeLumaTable() {
     std::array<int32_t, 256> values{};
     for (int sample = 0; sample < 256; ++sample)
@@ -475,7 +490,6 @@ const y6u5v5_rgb565_color_tables_t y6u5v5_color_tables{
 int mpeg_cached_chroma_y = -1;
 uint8_t *video_read_ahead = nullptr;
 size_t video_read_ahead_size = 0;
-alignas(4) uint8_t audio_read_ahead[kAudioReadAheadBytes];
 sdmmc_card_t *sd_card = nullptr;
 void *sd_dma_aligned_buffer = nullptr;
 bool sd_bus_initialized = false;
@@ -1833,7 +1847,7 @@ int queueAudioBytes(const uint8_t *bytes, size_t size) {
 
 int prefetchAudioBytes(size_t remaining) {
     while (remaining && !audio_reader_stop_requested) {
-        const size_t chunk = std::min(remaining, sizeof audio_read_chunk);
+        const size_t chunk = std::min(remaining, kAudioReadChunkBytes);
         if (std::fread(audio_read_chunk, 1, chunk, audio_file) != chunk) {
             return HLV1_ERR_IO;
         }
@@ -2692,11 +2706,11 @@ bool prepareAudio(const HLV1Header &header) {
     for (size_t descriptor = 0;
          descriptor < kAudioDmaDescriptors;
          ++descriptor) {
-        fillAudioBiasSamples(reinterpret_cast<int16_t *>(audio_read_chunk),
+        fillAudioBiasSamples(reinterpret_cast<int16_t *>(audio_dma_samples),
                              kAudioDmaSamples);
         size_t loaded = 0;
         if (i2s_channel_preload_data(
-                audio_pdm, audio_read_chunk, kAudioDmaBufferBytes,
+                audio_pdm, audio_dma_samples, kAudioDmaBufferBytes,
                 &loaded) != ESP_OK ||
             loaded != kAudioDmaBufferBytes) {
             stopAudio();
@@ -2727,15 +2741,24 @@ bool prepareAudio(const HLV1Header &header) {
             : video_codec == VideoCodec::kMpeg1
                   ? kMpegAudioReaderStackBytes
                   : kAudioReaderStackBytes;
+    const bool audio_reader_uses_scratch =
+        video_codec != VideoCodec::kMpeg1;
+    const uint32_t audio_reader_stack_offset =
+        audio_reader_uses_scratch ? kAudioReadChunkBytes : 0U;
     audio_reader_task_finished = false;
     audio_reader_task_handle = xTaskCreateStaticPinnedToCore(
-        audioReaderTask, "video-audio-read", audio_reader_stack_bytes,
-        nullptr, 3, audio_reader_task_stack, &audio_reader_task_state, 1);
+        audioReaderTask, "video-audio-read",
+        audio_reader_stack_bytes - audio_reader_stack_offset,
+        nullptr, 3,
+        audio_reader_task_stack +
+            audio_reader_stack_offset / sizeof(StackType_t),
+        &audio_reader_task_state, 1);
     if (!audio_reader_task_handle) {
         ESP_LOGE(kTag,
                  "Audio reader static task creation failed: stack=%u, "
                  "heap=%u largest=%u",
-                 static_cast<unsigned>(audio_reader_stack_bytes),
+                 static_cast<unsigned>(audio_reader_stack_bytes -
+                                       audio_reader_stack_offset),
                  static_cast<unsigned>(
                      heap_caps_get_free_size(MALLOC_CAP_8BIT)),
                  static_cast<unsigned>(
@@ -3670,7 +3693,9 @@ bool openVideo() {
         if (h263_info.container == H263_CONTAINER_AVI &&
             h263_info.audio_sample_rate) {
             sequence_header.flags = HLV1_FLAG_AUDIO;
-            sequence_header.audio_codec = HLV1_AUDIO_PCM_U8;
+            sequence_header.audio_codec =
+                h263_info.audio_format_tag == 0x11
+                    ? HLV1_AUDIO_IMA_ADPCM : HLV1_AUDIO_PCM_U8;
             sequence_header.audio_sample_rate =
                 static_cast<uint16_t>(h263_info.audio_sample_rate);
             sequence_header.audio_channels = h263_info.audio_channels;

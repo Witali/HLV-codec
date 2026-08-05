@@ -72,8 +72,7 @@ CONFIG_VFS_SUPPORT_SELECT=n
 CONFIG_VFS_SUPPORT_TERMIOS=n
 CONFIG_VFS_INITIALIZE_DEV_NULL=n
 
-# Multi-codec open paths and stdio/FatFs calls need headroom on app_main.
-# Keep 8 KB: the former 4 KB stack overflowed while opening MJPEG after BPV
-# audio integration.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Multi-codec open paths, diagnostics, and stdio/FatFs calls need headroom on
+# app_main. Hardware tests overflowed at 5.5 KiB, so keep 6.5 KiB.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6656
 CONFIG_FREERTOS_HZ=1000
