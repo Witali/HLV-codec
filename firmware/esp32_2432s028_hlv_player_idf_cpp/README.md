@@ -19,7 +19,10 @@ pictures and the same optional AVI IMA audio.
 The audio output is configured anew from each opened file's sample rate. PDM
 playback accepts 8–48 kHz, including 22.05, 44.1 and 48 kHz; playlist items do not
 need to share one rate. Diagnostics report the actual rate and the resulting
-time capacity of the fixed byte queue.
+time capacity of the fixed byte queue. Before media playback, the signed-PCM
+PDM bias rises linearly from 0 V to the half-supply midpoint over 100 ms. The
+inverse ramp is drained through the DMA ring before I2S is disabled, and GPIO26
+is then held low, avoiding a step at either end of a clip.
 
 New project H.263 assets use only baseline H.263 in AVI at standard QCIF
 `176x144` or CIF `352x288`, always at the full source frame rate. Legacy

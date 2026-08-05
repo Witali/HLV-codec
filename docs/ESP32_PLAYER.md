@@ -83,6 +83,12 @@ compressed-audio and container readers retain 6 KiB. Periodic logs report
 queued audio bytes and underruns so starvation can be distinguished from a DAC
 failure or reset.
 
+The current GPIO26 output uses I2S PCM-to-PDM. Before a clip starts, its signed
+PCM bias rises linearly from the 0 V code to the half-supply midpoint in 100 ms.
+At close, the inverse 100 ms ramp is queued after the outstanding DMA audio,
+drained completely, and followed by a GPIO-low hold before the I2S channel is
+deleted. These bias samples are not counted in the media audio clock.
+
 The MPEG-1 decoder has a separate compact path. It keeps two packed
 Y6/U5/V5 reference frames, uses one 8-bit macroblock row for reconstruction,
 and streams a compressed picture through a bounded 4 KiB elementary buffer.

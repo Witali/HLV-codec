@@ -120,6 +120,8 @@ constexpr uint32_t kAudioReaderStackBytes = 6144;
 constexpr uint32_t kAudioReaderStopTimeoutMs = 500;
 constexpr uint32_t kAudioPrerollTimeoutMs = 3000;
 constexpr uint32_t kAudioClockWaitTimeoutMs = 3000;
+constexpr uint32_t kAudioBiasRampMs = 100;
+constexpr uint32_t kAudioBiasRampSettleMs = 2;
 constexpr uint32_t kDecodeWorkerStackBytes = 4096;
 constexpr uint32_t kBootButtonTaskStackBytes = 2048;
 constexpr size_t kBrowserFilenameBytes = 112;
@@ -255,6 +257,13 @@ enum class VideoCodec {
     kMpeg1,
     kH263,
     kMpeg4Simple,
+};
+
+enum class AudioBiasState {
+    kLow,
+    kRampUp,
+    kCentered,
+    kRampDown,
 };
 
 enum class BpvInputStartResult {
@@ -488,6 +497,11 @@ uint16_t audio_dma_valid_samples[kAudioDmaDescriptors]{};
 bool audio_enabled = false;
 volatile bool audio_started = false;
 bool audio_pdm_enabled = false;
+volatile AudioBiasState audio_bias_state = AudioBiasState::kLow;
+volatile uint32_t audio_bias_phase_q16 = 0;
+volatile uint32_t audio_bias_step_q16 = 0;
+volatile uint32_t audio_bias_ramp_remaining = 0;
+uint32_t audio_output_sample_rate = 0;
 volatile bool audio_reader_stop_requested = false;
 volatile bool audio_prefetch_eof = false;
 volatile bool audio_rebuffering = false;
@@ -2155,6 +2169,69 @@ void audioReaderTask(void *) {
     vTaskDelete(nullptr);
 }
 
+uint32_t audioBiasRampSampleCount() {
+    const uint64_t scaled =
+        static_cast<uint64_t>(audio_output_sample_rate) * kAudioBiasRampMs;
+    const uint32_t samples =
+        static_cast<uint32_t>((scaled + 999U) / 1000U);
+    return samples > 2U ? samples : 2U;
+}
+
+void beginAudioBiasRamp(AudioBiasState state) {
+    const uint32_t samples = audioBiasRampSampleCount();
+    constexpr uint32_t kMaximumPhaseQ16 = UINT32_C(0x80000000);
+    audio_bias_ramp_remaining = samples;
+    audio_bias_step_q16 =
+        (kMaximumPhaseQ16 + samples - 2U) / (samples - 1U);
+    audio_bias_phase_q16 =
+        state == AudioBiasState::kRampUp ? 0U : kMaximumPhaseQ16;
+    // Publish the state last because the DMA callback consumes these fields.
+    audio_bias_state = state;
+}
+
+void fillAudioBiasSamples(int16_t *pcm, size_t sample_count) {
+    constexpr uint32_t kMaximumPhaseQ16 = UINT32_C(0x80000000);
+    for (size_t sample = 0; sample < sample_count; ++sample) {
+        const AudioBiasState state = audio_bias_state;
+        if (state == AudioBiasState::kCentered) {
+            std::memset(pcm + sample, 0,
+                        (sample_count - sample) * sizeof(*pcm));
+            return;
+        }
+        if (state == AudioBiasState::kLow) {
+            for (; sample < sample_count; ++sample) pcm[sample] = INT16_MIN;
+            return;
+        }
+
+        const uint32_t phase_q16 = audio_bias_phase_q16;
+        pcm[sample] = static_cast<int16_t>(
+            INT16_MIN + static_cast<int32_t>(phase_q16 >> 16));
+        if (audio_bias_ramp_remaining <= 1U) {
+            audio_bias_ramp_remaining = 0;
+            audio_bias_phase_q16 =
+                state == AudioBiasState::kRampUp ? kMaximumPhaseQ16 : 0U;
+            audio_bias_state = state == AudioBiasState::kRampUp
+                                   ? AudioBiasState::kCentered
+                                   : AudioBiasState::kLow;
+            continue;
+        }
+
+        audio_bias_ramp_remaining = audio_bias_ramp_remaining - 1U;
+        if (state == AudioBiasState::kRampUp) {
+            const uint32_t next = phase_q16 + audio_bias_step_q16;
+            audio_bias_phase_q16 =
+                next < phase_q16 || next > kMaximumPhaseQ16
+                    ? kMaximumPhaseQ16
+                    : next;
+        } else {
+            audio_bias_phase_q16 =
+                phase_q16 > audio_bias_step_q16
+                    ? phase_q16 - audio_bias_step_q16
+                    : 0U;
+        }
+    }
+}
+
 bool onAudioPdmSent(i2s_chan_handle_t handle,
                     i2s_event_data_t *event, void *) {
     (void)handle;
@@ -2186,13 +2263,15 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
 
     BaseType_t task_woken = pdFALSE;
     size_t received = 0;
+    const bool bias_only =
+        audio_bias_state != AudioBiasState::kCentered;
     const size_t sample_bytes =
         audio_output_codec == HLV1_AUDIO_IMA_ADPCM ||
                 audio_output_signed_pcm16
             ? 2U
             : 1U;
     const size_t requested_bytes = kAudioDmaSamples * sample_bytes;
-    if (audio_started && !audio_rebuffering && audio_stream) {
+    if (!bias_only && audio_started && !audio_rebuffering && audio_stream) {
         received = xStreamBufferReceiveFromISR(
             audio_stream, audio_dma_samples, requested_bytes,
             &task_woken);
@@ -2202,7 +2281,7 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
             audio_rebuffers = audio_rebuffers + 1;
         }
     }
-    if (received < requested_bytes) {
+    if (!bias_only && received < requested_bytes) {
         std::memset(audio_dma_samples + received,
                     sample_bytes == 2U ? 0 : 128,
                     requested_bytes - received);
@@ -2221,7 +2300,9 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
         audio_output_failed = true;
     } else {
         auto *pcm = static_cast<int16_t *>(event->dma_buf);
-        if (sample_bytes == 2U) {
+        if (bias_only) {
+            fillAudioBiasSamples(pcm, kAudioDmaSamples);
+        } else if (sample_bytes == 2U) {
             std::memcpy(pcm, audio_dma_samples, kAudioDmaBufferBytes);
         } else {
             for (size_t sample = 0; sample < kAudioDmaSamples; ++sample) {
@@ -2243,6 +2324,21 @@ bool onAudioPdmSent(i2s_chan_handle_t handle,
 
 void stopAudio() {
     audio_started = false;
+    int64_t bias_shutdown_deadline = 0;
+    if (audio_pdm_enabled && !audio_output_failed &&
+        audio_output_sample_rate &&
+        audio_bias_state == AudioBiasState::kCentered) {
+        beginAudioBiasRamp(AudioBiasState::kRampDown);
+        const uint32_t queued_samples =
+            (kAudioDmaDescriptors + 1U) * kAudioDmaSamples;
+        const uint32_t drain_ms = static_cast<uint32_t>(
+            (static_cast<uint64_t>(queued_samples) * 1000U +
+             audio_output_sample_rate - 1U) /
+            audio_output_sample_rate);
+        bias_shutdown_deadline =
+            millisNow() + kAudioBiasRampMs + drain_ms +
+            kAudioBiasRampSettleMs;
+    }
     if (audio_reader_task_handle) {
         audio_reader_stop_requested = true;
         const int64_t deadline =
@@ -2260,12 +2356,19 @@ void stopAudio() {
     audio_reader_task_finished = true;
     if (audio_pdm) {
         if (audio_pdm_enabled) {
+            while (bias_shutdown_deadline &&
+                   millisNow() < bias_shutdown_deadline) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
             i2s_channel_disable(audio_pdm);
             audio_pdm_enabled = false;
         }
         i2s_del_channel(audio_pdm);
         audio_pdm = nullptr;
     }
+    gpio_reset_pin(board::kAudioPdmData);
+    gpio_set_direction(board::kAudioPdmData, GPIO_MODE_OUTPUT);
+    gpio_set_level(board::kAudioPdmData, 0);
     if (audio_file) {
         if (mpeg_audio) {
             plm_destroy(mpeg_audio);
@@ -2307,6 +2410,11 @@ void stopAudio() {
     audio_preroll_bytes = 0;
     audio_output_codec = HLV1_AUDIO_NONE;
     audio_output_signed_pcm16 = false;
+    audio_output_sample_rate = 0;
+    audio_bias_state = AudioBiasState::kLow;
+    audio_bias_phase_q16 = 0;
+    audio_bias_step_q16 = 0;
+    audio_bias_ramp_remaining = 0;
     consecutive_late_presentations = 0;
     std::memset(audio_dma_buffer_keys, 0, sizeof audio_dma_buffer_keys);
     std::memset(audio_dma_valid_samples, 0,
@@ -2335,6 +2443,7 @@ bool prepareAudio(const HLV1Header &header) {
 
     audio_output_codec = header.audio_codec;
     audio_output_signed_pcm16 = video_codec == VideoCodec::kMpeg1;
+    audio_output_sample_rate = header.audio_sample_rate;
     const size_t audio_sample_bytes =
         audio_output_codec == HLV1_AUDIO_IMA_ADPCM ||
                 audio_output_signed_pcm16
@@ -2579,10 +2688,12 @@ bool prepareAudio(const HLV1Header &header) {
         return false;
     }
 
-    std::memset(audio_read_chunk, 0, kAudioDmaBufferBytes);
+    beginAudioBiasRamp(AudioBiasState::kRampUp);
     for (size_t descriptor = 0;
          descriptor < kAudioDmaDescriptors;
          ++descriptor) {
+        fillAudioBiasSamples(reinterpret_cast<int16_t *>(audio_read_chunk),
+                             kAudioDmaSamples);
         size_t loaded = 0;
         if (i2s_channel_preload_data(
                 audio_pdm, audio_read_chunk, kAudioDmaBufferBytes,
@@ -2597,6 +2708,10 @@ bool prepareAudio(const HLV1Header &header) {
         return false;
     }
     audio_pdm_enabled = true;
+    // The preloaded DMA stream begins at 0 V and reaches the PDM midpoint
+    // before any media sample is allowed onto GPIO26.
+    vTaskDelay(pdMS_TO_TICKS(kAudioBiasRampMs +
+                            kAudioBiasRampSettleMs));
     audio_enabled = true;
 
     // Audio is the master clock. Fill the complete bounded PCM queue before
@@ -2653,7 +2768,8 @@ bool prepareAudio(const HLV1Header &header) {
          audio_sample_bytes));
     ESP_LOGI(kTag,
              "Audio: %s mono %u Hz via I2S PDM GPIO%d data, clock unpinned, "
-             "%u Hz carrier, high-SNR divider 13, static %u-byte/%u-ms queue, "
+             "%u Hz carrier, high-SNR divider 13, 100-ms bias ramps, "
+             "static %u-byte/%u-ms queue, "
              "%u x %u-sample DMA ring, %u-byte preroll",
              audio_output_signed_pcm16
                  ? "PCM_S16"
